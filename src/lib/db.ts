@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS issues (
   updated_at TEXT NOT NULL,
   closed_at TEXT,
   comments INTEGER NOT NULL,
-  labels TEXT NOT NULL DEFAULT '[]'
+  labels TEXT NOT NULL DEFAULT '[]',
+  is_bot INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
@@ -53,6 +54,7 @@ CREATE TABLE IF NOT EXISTS classifications (
   functionality TEXT NOT NULL,
   affected_users TEXT NOT NULL,
   has_workaround INTEGER NOT NULL,
+  workaround_status TEXT NOT NULL DEFAULT 'unknown',
   duplicate_cluster TEXT,
   affects_version TEXT,
   confidence REAL NOT NULL,
@@ -65,6 +67,30 @@ CREATE TABLE IF NOT EXISTS classifications (
 CREATE INDEX IF NOT EXISTS idx_classifications_version ON classifications(affects_version);
 CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at);
 `);
+
+// Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
+// column already exists, so we swallow the error rather than guard it.
+for (const sql of [
+  `ALTER TABLE issues ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
+]) {
+  try { db.exec(sql); } catch { /* column already exists */ }
+}
+
+// Bot detection. Cheap, deterministic, no extra LLM tokens.
+// Markers we consider bot-generated:
+//   - login ends with [bot] (GitHub's convention for app installations)
+//   - login matches a known sweeper/automation pattern
+//   - any label hints at bot origin
+// Marked issues are NOT excluded from scoring — they're down-weighted in score.ts.
+const BOT_AUTHOR_RE = /\[bot\]$|^(github-actions|dependabot|renovate|stale|clawsweeper|claw-sweeper)$/i;
+const BOT_LABEL_RE = /\b(bot|automated|ai-generated|sweeper|clawsweeper)\b/i;
+
+export function detectBot(author: string | null, labelsJson: string): boolean {
+  if (author && BOT_AUTHOR_RE.test(author)) return true;
+  if (BOT_LABEL_RE.test(labelsJson)) return true;
+  return false;
+}
 
 // ---------- releases ----------
 export interface ReleaseRow {
@@ -147,11 +173,12 @@ export interface IssueRow {
   closed_at: string | null;
   comments: number;
   labels: string;
+  is_bot: number; // 0/1; computed at write time via detectBot()
 }
 
 const upsertIssueStmt = db.prepare(`
-INSERT INTO issues (number, state, title, author, html_url, created_at, updated_at, closed_at, comments, labels)
-VALUES (:number, :state, :title, :author, :html_url, :created_at, :updated_at, :closed_at, :comments, :labels)
+INSERT INTO issues (number, state, title, author, html_url, created_at, updated_at, closed_at, comments, labels, is_bot)
+VALUES (:number, :state, :title, :author, :html_url, :created_at, :updated_at, :closed_at, :comments, :labels, :is_bot)
 ON CONFLICT(number) DO UPDATE SET
   state=excluded.state,
   title=excluded.title,
@@ -161,7 +188,8 @@ ON CONFLICT(number) DO UPDATE SET
   updated_at=excluded.updated_at,
   closed_at=excluded.closed_at,
   comments=excluded.comments,
-  labels=excluded.labels
+  labels=excluded.labels,
+  is_bot=excluded.is_bot
 `);
 
 export function upsertIssue(i: IssueRow): void {
@@ -174,11 +202,15 @@ export function getIssue(number: number): IssueRow | undefined {
 }
 
 // ---------- classifications ----------
+// `has_workaround` is the legacy boolean — we keep writing it for back-compat with old
+// rows, but new scoring code only reads `workaround_status`.
 const upsertClassificationStmt = db.prepare(`
 INSERT INTO classifications (issue_number, sentiment, severity, scope, functionality, affected_users,
-  has_workaround, duplicate_cluster, affects_version, confidence, rationale, classified_at, classified_updated_at)
+  has_workaround, workaround_status, duplicate_cluster, affects_version, confidence, rationale,
+  classified_at, classified_updated_at)
 VALUES (:issue_number, :sentiment, :severity, :scope, :functionality, :affected_users,
-  :has_workaround, :duplicate_cluster, :affects_version, :confidence, :rationale, :classified_at, :classified_updated_at)
+  :has_workaround, :workaround_status, :duplicate_cluster, :affects_version, :confidence, :rationale,
+  :classified_at, :classified_updated_at)
 ON CONFLICT(issue_number) DO UPDATE SET
   sentiment=excluded.sentiment,
   severity=excluded.severity,
@@ -186,6 +218,7 @@ ON CONFLICT(issue_number) DO UPDATE SET
   functionality=excluded.functionality,
   affected_users=excluded.affected_users,
   has_workaround=excluded.has_workaround,
+  workaround_status=excluded.workaround_status,
   duplicate_cluster=excluded.duplicate_cluster,
   affects_version=excluded.affects_version,
   confidence=excluded.confidence,
@@ -202,11 +235,10 @@ export function upsertClassification(issueNumber: number, c: IssueClassification
     scope: c.scope,
     functionality: c.functionality,
     affected_users: c.affectedUsers,
-    has_workaround: c.hasWorkaround ? 1 : 0,
+    has_workaround: c.workaroundStatus === 'confirmed' ? 1 : 0,
+    workaround_status: c.workaroundStatus,
     duplicate_cluster: c.duplicateCluster,
-    // affects_version column kept for backward DB compat; always null in new code.
-    // Release attribution now uses time-window queries (issuesOpenDuring).
-    affects_version: null,
+    affects_version: c.affectsVersion,
     confidence: c.confidence,
     rationale: c.rationale,
     classified_at: new Date().toISOString(),
@@ -222,6 +254,7 @@ export interface ClassificationRow {
   functionality: string;
   affected_users: string;
   has_workaround: number;
+  workaround_status: string;
   duplicate_cluster: string | null;
   affects_version: string | null;
   confidence: number;
@@ -238,27 +271,20 @@ export function getClassification(issueNumber: number): ClassificationRow | unde
 // Joined view for scoring + UI
 export interface JoinedIssue extends IssueRow, ClassificationRow {}
 
-// Time-window attribution: an issue "affects" a release if it was open at any
-// point during that release's lifetime (from release.published_at to the next
-// release's published_at, or to now for the latest release).
-//
-// Open during [start, end) means:
-//   - created_at < end          (existed by the end of the window)
-//   - closed_at IS NULL OR closed_at > start  (wasn't already closed before window)
-//
-// Deterministic, no LLM guessing, closed bugs naturally stop affecting newer releases.
-const issuesOpenDuringStmt = db.prepare(`
+// LLM-based attribution (agent-watch model): an issue affects a release ONLY if the LLM
+// extracted an explicit version mention from the issue. Issues with affects_version=null
+// are intentionally dropped from scoring rather than dumped onto the latest release —
+// this avoids polluting every release with the long tail of unattributed open bugs.
+const issuesForVersionStmt = db.prepare(`
 SELECT i.*, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
-       c.has_workaround, c.duplicate_cluster, c.affects_version, c.confidence,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version, c.confidence,
        c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
-WHERE i.created_at < :end_ts
-  AND (i.closed_at IS NULL OR i.closed_at > :start_ts)
+WHERE c.affects_version = ?
 ORDER BY i.updated_at DESC
 `);
 
-export function issuesOpenDuring(startTs: string, endTs: string | null): JoinedIssue[] {
-  const end = endTs ?? new Date().toISOString();
-  return issuesOpenDuringStmt.all({ start_ts: startTs, end_ts: end }) as unknown as JoinedIssue[];
+export function issuesForVersion(tag: string): JoinedIssue[] {
+  return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
 }

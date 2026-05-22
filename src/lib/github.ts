@@ -59,13 +59,26 @@ export async function listReleases(limit = 10): Promise<GhRelease[]> {
 }
 
 export async function listIssues(limit = 80): Promise<GhIssue[]> {
-  // sorted by updated desc — covers fresh activity efficiently
+  // The /issues endpoint returns BOTH issues and PRs (GitHub treats PRs as a kind of issue).
+  // On active repos like openclaw/openclaw, the first page is dominated by PRs (~80%) and
+  // a single 100-item page yields only ~20 real issues. We paginate until we either:
+  //   - collect `limit` non-PR issues, or
+  //   - exhaust MAX_PAGES (safety cap against runaway fetches), or
+  //   - GitHub returns a short page (end of dataset).
   const { owner, repo } = config.github;
-  const perPage = Math.min(100, limit);
-  const data = await gh<GhIssue[]>(
-    `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=${perPage}`,
-  );
-  return data.filter((i) => !i.pull_request).slice(0, limit);
+  const MAX_PAGES = 10; // 10 × 100 = up to ~1000 raw items, plenty even with heavy PR traffic
+  const out: GhIssue[] = [];
+  for (let page = 1; page <= MAX_PAGES && out.length < limit; page++) {
+    const data = await gh<GhIssue[]>(
+      `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+    );
+    for (const i of data) {
+      if (!i.pull_request) out.push(i);
+      if (out.length >= limit) break;
+    }
+    if (data.length < 100) break; // last page
+  }
+  return out.slice(0, limit);
 }
 
 export async function listIssueComments(issueNumber: number): Promise<GhComment[]> {

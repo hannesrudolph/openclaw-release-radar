@@ -4,30 +4,10 @@ import { getCached, setCached } from '../lib/cache';
 import {
   getRefreshState,
   getRelease,
-  issuesOpenDuring,
+  issuesForVersion,
   listReleasesDb,
   refresh,
 } from '../lib/refresh';
-import type { ReleaseRow } from '../lib/db';
-
-// For each release, the "lifetime window" is [published_at, next_newer.published_at).
-// Latest release has no upper bound (end = null → treated as "now" by issuesOpenDuring).
-// allReleases must be sorted by published_at DESC (as returned by listReleasesDb).
-function releaseWindow(
-  rel: ReleaseRow,
-  allReleases: ReleaseRow[],
-): { start: string; end: string | null } | null {
-  if (!rel.published_at) return null;
-  const start = rel.published_at;
-  let end: string | null = null;
-  for (const r of allReleases) {
-    if (!r.published_at) continue;
-    if (r.published_at > start && (end === null || r.published_at < end)) {
-      end = r.published_at;
-    }
-  }
-  return { start, end };
-}
 
 export const api = Router();
 
@@ -71,11 +51,7 @@ api.get('/release/:tag', (req, res) => {
     res.status(404).json({ error: 'release not found' });
     return;
   }
-  const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
-  const win = releaseWindow(rel, allReleases);
-  const issues = win
-    ? issuesOpenDuring(win.start, win.end).map(serializeIssue)
-    : [];
+  const issues = issuesForVersion(rel.tag).map(serializeIssue);
   res.json({
     tag: rel.tag,
     name: rel.name,
@@ -94,15 +70,20 @@ api.get('/release/:tag', (req, res) => {
 // ── Public API ────────────────────────────────────────────────────────────────
 // Single endpoint with everything needed to understand release stability.
 //
-// score:      0–10 (10 = perfectly stable, 0 = on fire)
-// grade:      stable | mostly-stable | mixed | risky | unstable | pending
-// riskIndex:  raw aggregated risk before score conversion (higher = worse)
+// score:      1–10 (10 = stable, 5 = neutral/insufficient signal, 1 = unstable floor)
+// grade:      stable | mostly-stable | mixed | risky | unstable | insufficient
+// riskIndex:  effective core-risk after positive cancellation (higher = worse)
 // sentiment:  negative | positive | neutral
 // severity:   critical | high | medium | low
 // scope:      broad (most users) | moderate | niche (specific config/OS)
 // hasWorkaround: true if a known workaround exists for the issue
 // confidence: 0–1, how confident the LLM is in its classification
-// rationale:  one-sentence explanation from the LLM
+//
+// Attribution: only issues where the LLM extracted an explicit version mention
+// from the issue body/comments are counted toward a release. Unattributed bugs
+// are intentionally dropped (the "long tail of open bugs" doesn't pollute every
+// release). A release with no attributed issues scores 5 (neutral baseline),
+// not 10 — absence of signal is not evidence of stability.
 //
 // Data refreshes every 30 min via cron. scoredAt = last time score was computed.
 
@@ -110,13 +91,8 @@ function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
   const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
 
-  const releases = allReleases.map((r, idx) => {
-    // allReleases is sorted DESC by published_at, so the next-newer release is at idx-1.
-    // Latest (idx=0) has no upper bound → null = "open until now".
-    const start = r.published_at;
-    const end = idx === 0 ? null : (allReleases[idx - 1].published_at ?? null);
-    const pool = start ? issuesOpenDuring(start, end) : [];
-    const issues = pool.map((i) => ({
+  const releases = allReleases.map((r) => {
+    const issues = issuesForVersion(r.tag).map((i) => ({
       number:         i.number,
       title:          i.title,
       url:            i.html_url,
@@ -159,12 +135,16 @@ api.get('/public', (_req, res) => {
   res.json(data);
 });
 
+// Grade thresholds ported from agent-watch. Note the asymmetric "insufficient" band
+// (4.9–5.1): a release with no attributed issues sits at the 5.0 neutral baseline
+// and should not be labelled "mixed".
 function scoreToGrade(score: number | null): string {
   if (score == null) return 'pending';
-  if (score >= 8.0)  return 'stable';
-  if (score >= 6.0)  return 'mostly-stable';
-  if (score >= 4.0)  return 'mixed';
-  if (score >= 2.0)  return 'risky';
+  if (score >= 8.2) return 'stable';
+  if (score >= 6.8) return 'mostly-stable';
+  if (score > 5.1)  return 'mixed';
+  if (score >= 4.9) return 'insufficient';
+  if (score >= 3.5) return 'risky';
   return 'unstable';
 }
 

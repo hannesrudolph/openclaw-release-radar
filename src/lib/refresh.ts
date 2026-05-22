@@ -4,10 +4,11 @@ import { listIssueComments, listIssues, listReleases } from './github';
 import { classifyIssue, type IssueClassification } from './llm';
 import { scoreRelease, type IssueInput } from './score';
 import {
+  detectBot,
   getClassification,
   getLastScoredAt,
   getRelease,
-  issuesOpenDuring,
+  issuesForVersion,
   listReleasesDb,
   updateReleaseScore,
   upsertClassification,
@@ -49,6 +50,7 @@ export async function refresh(): Promise<{
         prerelease: r.prerelease,
       });
     }
+    const tags = releases.map((r) => r.tag_name);
 
     // 2. Pull issues sorted by updated desc.
     const issues = await listIssues(config.limits.issues);
@@ -56,17 +58,20 @@ export async function refresh(): Promise<{
     // 3. Classify only new/changed issues.
     let classifiedCount = 0;
     for (const issue of issues) {
+      const author = issue.user?.login ?? null;
+      const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
       upsertIssue({
         number: issue.number,
         state: issue.state,
         title: issue.title,
-        author: issue.user?.login ?? null,
+        author,
         html_url: issue.html_url,
         created_at: issue.created_at,
         updated_at: issue.updated_at,
         closed_at: issue.closed_at,
         comments: issue.comments,
-        labels: JSON.stringify(issue.labels.map((l) => l.name)),
+        labels: labelsJson,
+        is_bot: detectBot(author, labelsJson) ? 1 : 0,
       });
 
       const existing = getClassification(issue.number);
@@ -76,7 +81,7 @@ export async function refresh(): Promise<{
 
       try {
         const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
-        const cls: IssueClassification = await classifyIssue(issue, comments);
+        const cls: IssueClassification = await classifyIssue(issue, comments, tags);
         upsertClassification(issue.number, cls, issue.updated_at);
         classifiedCount++;
       } catch (e) {
@@ -84,33 +89,43 @@ export async function refresh(): Promise<{
       }
     }
 
-    // 4. Recompute scores per release using time-window attribution.
+    // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
     //
-    // For each release, the "lifetime window" is [release.published_at, next_release.published_at).
-    // The latest release has no upper bound (end = now). An issue counts against a release if it
-    // was open at any point during that window. This is deterministic and replaces the old
-    // LLM-based affectsVersion guess (which couldn't reliably attribute issues without explicit
-    // version mentions, leading to all unversioned bugs being dumped on the latest release).
+    // Only issues where the LLM extracted an explicit affectsVersion are counted toward
+    // that version's score. Unattributed issues are silently dropped — this is by design,
+    // see the rationale in db.ts/issuesForVersionStmt.
+    //
+    // Two passes: pass 1 scores without peer floor to collect each release's
+    // weightedNegSum; pass 2 re-scores rated releases with the median injected, so
+    // average-or-better releases get lifted to PEER_MEDIAN_FLOOR (5.5) if they fell below.
     const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
 
-    // allReleases is sorted by published_at DESC, so index 0 = newest. Build [start, end) windows.
-    // Skip releases with null published_at (drafts) — no meaningful window.
-    for (let i = 0; i < allReleases.length; i++) {
-      const rel = allReleases[i];
-      if (!rel.published_at) continue;
-      const start = rel.published_at;
-      // The "next-newer" release in time terms sits at i-1 in this DESC list.
-      // For i === 0 (latest), end is null → issuesOpenDuring treats as "now".
-      const end = i === 0 ? null : (allReleases[i - 1].published_at ?? null);
-
-      const pool = issuesOpenDuring(start, end);
-      const inputs: IssueInput[] = pool.map((r) => ({
+    const pass1 = allReleases.map((rel) => {
+      const versioned = issuesForVersion(rel.tag);
+      const inputs: IssueInput[] = versioned.map((r) => ({
         number: r.number,
         updatedAt: r.updated_at,
         commentCount: r.comments,
+        publishedAt: rel.published_at,
+        isBot: r.is_bot === 1,
         classification: rowToClassification(r),
       }));
-      const score = scoreRelease(inputs);
+      return { rel, inputs, score: scoreRelease(inputs, rel.published_at) };
+    });
+
+    // Median weightedNegSum across rated releases that actually have negative signal.
+    // Need at least 3 such releases — otherwise the median is meaningless noise.
+    const negSums = pass1
+      .filter((p) => p.score.state === 'rated' && p.score.negativeIssues > 0)
+      .map((p) => p.score.weightedNegSum)
+      .sort((a, b) => a - b);
+    const peerMedian = negSums.length >= 3 ? negSums[Math.floor(negSums.length / 2)] : undefined;
+
+    for (const { rel, inputs, score: firstScore } of pass1) {
+      const score =
+        peerMedian !== undefined && firstScore.state === 'rated'
+          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian)
+          : firstScore;
       updateReleaseScore({
         tag: rel.tag,
         final_score: score.finalScore,
@@ -142,22 +157,33 @@ function rowToClassification(row: {
   functionality: string;
   affected_users: string;
   has_workaround: number;
+  workaround_status: string;
   duplicate_cluster: string | null;
+  affects_version: string | null;
   confidence: number;
   rationale: string | null;
 }): IssueClassification {
+  // workaround_status was added later; rows written by old code have the default 'unknown',
+  // but be defensive: if it's an unexpected value, fall back to deriving from has_workaround.
+  const wsAllowed = ['none', 'partial', 'confirmed', 'unknown'] as const;
+  const ws = wsAllowed.includes(row.workaround_status as (typeof wsAllowed)[number])
+    ? (row.workaround_status as IssueClassification['workaroundStatus'])
+    : row.has_workaround === 1
+      ? 'confirmed'
+      : 'unknown';
   return {
     sentiment: row.sentiment as IssueClassification['sentiment'],
     severity: row.severity as IssueClassification['severity'],
     scope: row.scope as IssueClassification['scope'],
     functionality: row.functionality as IssueClassification['functionality'],
     affectedUsers: row.affected_users as IssueClassification['affectedUsers'],
-    hasWorkaround: row.has_workaround === 1,
+    workaroundStatus: ws,
     duplicateCluster: row.duplicate_cluster,
+    affectsVersion: row.affects_version,
     confidence: row.confidence,
     rationale: row.rationale ?? '',
   };
 }
 
 // re-export for routes
-export { getRelease, issuesOpenDuring, listReleasesDb };
+export { getRelease, issuesForVersion, listReleasesDb };

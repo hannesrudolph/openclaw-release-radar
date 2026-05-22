@@ -265,6 +265,7 @@ footer a:hover{color:var(--text)}
 <nav class="topbar">
   <a class="topbar__brand" href="https://iclaw.digital" target="_blank" rel="noopener">
     <img src="/iclaw-logo.png" alt="iClaw" class="topbar__logo-img" />
+    iClaw
   </a>
   <div class="topbar__spacer"></div>
   <div class="topbar__updated" id="topbarUpdated">
@@ -325,11 +326,14 @@ function timeAgo(iso) {
 }
 
 function scoreInfo(s) {
-  if (s == null) return { color: 'var(--muted)',   label: 'Analyzing…',      num: '—'  };
-  if (s >= 8.0)  return { color: 'var(--ok)',      label: 'Stable',          num: s.toFixed(1) };
-  if (s >= 6.0)  return { color: 'var(--warn)',    label: 'Mostly stable',   num: s.toFixed(1) };
-  if (s >= 4.0)  return { color: '#f97316',        label: 'Issues reported', num: s.toFixed(1) };
-  return           { color: 'var(--danger)', label: 'Unstable',        num: s.toFixed(1) };
+  if (s == null) return { color: 'var(--muted)',   label: 'Analyzing…',     num: '—'  };
+  if (s >= 8.2)  return { color: 'var(--ok)',      label: 'Stable',         num: s.toFixed(1) };
+  if (s >= 6.8)  return { color: 'var(--warn)',    label: 'Mostly stable',  num: s.toFixed(1) };
+  if (s >  5.1)  return { color: '#f97316',        label: 'Mixed',          num: s.toFixed(1) };
+  // 4.9–5.1 is the neutral "no attributed issues yet" baseline.
+  if (s >= 4.9)  return { color: 'var(--muted)',   label: 'No signal yet',  num: s.toFixed(1) };
+  if (s >= 3.5)  return { color: '#f97316',        label: 'Risky',          num: s.toFixed(1) };
+  return           { color: 'var(--danger)', label: 'Unstable',       num: s.toFixed(1) };
 }
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
