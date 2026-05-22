@@ -7,7 +7,7 @@ import {
   getClassification,
   getLastScoredAt,
   getRelease,
-  issuesOpenDuring,
+  issuesForVersion,
   listReleasesDb,
   updateReleaseScore,
   upsertClassification,
@@ -49,6 +49,7 @@ export async function refresh(): Promise<{
         prerelease: r.prerelease,
       });
     }
+    const tags = releases.map((r) => r.tag_name);
 
     // 2. Pull issues sorted by updated desc.
     const issues = await listIssues(config.limits.issues);
@@ -76,7 +77,7 @@ export async function refresh(): Promise<{
 
       try {
         const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
-        const cls: IssueClassification = await classifyIssue(issue, comments);
+        const cls: IssueClassification = await classifyIssue(issue, comments, tags);
         upsertClassification(issue.number, cls, issue.updated_at);
         classifiedCount++;
       } catch (e) {
@@ -84,33 +85,23 @@ export async function refresh(): Promise<{
       }
     }
 
-    // 4. Recompute scores per release using time-window attribution.
+    // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
     //
-    // For each release, the "lifetime window" is [release.published_at, next_release.published_at).
-    // The latest release has no upper bound (end = now). An issue counts against a release if it
-    // was open at any point during that window. This is deterministic and replaces the old
-    // LLM-based affectsVersion guess (which couldn't reliably attribute issues without explicit
-    // version mentions, leading to all unversioned bugs being dumped on the latest release).
+    // Only issues where the LLM extracted an explicit affectsVersion are counted toward
+    // that version's score. Unattributed issues are silently dropped — this is by design,
+    // see the rationale in db.ts/issuesForVersionStmt.
     const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
 
-    // allReleases is sorted by published_at DESC, so index 0 = newest. Build [start, end) windows.
-    // Skip releases with null published_at (drafts) — no meaningful window.
-    for (let i = 0; i < allReleases.length; i++) {
-      const rel = allReleases[i];
-      if (!rel.published_at) continue;
-      const start = rel.published_at;
-      // The "next-newer" release in time terms sits at i-1 in this DESC list.
-      // For i === 0 (latest), end is null → issuesOpenDuring treats as "now".
-      const end = i === 0 ? null : (allReleases[i - 1].published_at ?? null);
-
-      const pool = issuesOpenDuring(start, end);
-      const inputs: IssueInput[] = pool.map((r) => ({
+    for (const rel of allReleases) {
+      const versioned = issuesForVersion(rel.tag);
+      const inputs: IssueInput[] = versioned.map((r) => ({
         number: r.number,
         updatedAt: r.updated_at,
         commentCount: r.comments,
+        publishedAt: rel.published_at,
         classification: rowToClassification(r),
       }));
-      const score = scoreRelease(inputs);
+      const score = scoreRelease(inputs, rel.published_at);
       updateReleaseScore({
         tag: rel.tag,
         final_score: score.finalScore,
@@ -143,6 +134,7 @@ function rowToClassification(row: {
   affected_users: string;
   has_workaround: number;
   duplicate_cluster: string | null;
+  affects_version: string | null;
   confidence: number;
   rationale: string | null;
 }): IssueClassification {
@@ -154,10 +146,11 @@ function rowToClassification(row: {
     affectedUsers: row.affected_users as IssueClassification['affectedUsers'],
     hasWorkaround: row.has_workaround === 1,
     duplicateCluster: row.duplicate_cluster,
+    affectsVersion: row.affects_version,
     confidence: row.confidence,
     rationale: row.rationale ?? '',
   };
 }
 
 // re-export for routes
-export { getRelease, issuesOpenDuring, listReleasesDb };
+export { getRelease, issuesForVersion, listReleasesDb };

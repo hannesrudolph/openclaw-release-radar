@@ -204,9 +204,7 @@ export function upsertClassification(issueNumber: number, c: IssueClassification
     affected_users: c.affectedUsers,
     has_workaround: c.hasWorkaround ? 1 : 0,
     duplicate_cluster: c.duplicateCluster,
-    // affects_version column kept for backward DB compat; always null in new code.
-    // Release attribution now uses time-window queries (issuesOpenDuring).
-    affects_version: null,
+    affects_version: c.affectsVersion,
     confidence: c.confidence,
     rationale: c.rationale,
     classified_at: new Date().toISOString(),
@@ -238,27 +236,20 @@ export function getClassification(issueNumber: number): ClassificationRow | unde
 // Joined view for scoring + UI
 export interface JoinedIssue extends IssueRow, ClassificationRow {}
 
-// Time-window attribution: an issue "affects" a release if it was open at any
-// point during that release's lifetime (from release.published_at to the next
-// release's published_at, or to now for the latest release).
-//
-// Open during [start, end) means:
-//   - created_at < end          (existed by the end of the window)
-//   - closed_at IS NULL OR closed_at > start  (wasn't already closed before window)
-//
-// Deterministic, no LLM guessing, closed bugs naturally stop affecting newer releases.
-const issuesOpenDuringStmt = db.prepare(`
+// LLM-based attribution (agent-watch model): an issue affects a release ONLY if the LLM
+// extracted an explicit version mention from the issue. Issues with affects_version=null
+// are intentionally dropped from scoring rather than dumped onto the latest release —
+// this avoids polluting every release with the long tail of unattributed open bugs.
+const issuesForVersionStmt = db.prepare(`
 SELECT i.*, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.duplicate_cluster, c.affects_version, c.confidence,
        c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
-WHERE i.created_at < :end_ts
-  AND (i.closed_at IS NULL OR i.closed_at > :start_ts)
+WHERE c.affects_version = ?
 ORDER BY i.updated_at DESC
 `);
 
-export function issuesOpenDuring(startTs: string, endTs: string | null): JoinedIssue[] {
-  const end = endTs ?? new Date().toISOString();
-  return issuesOpenDuringStmt.all({ start_ts: startTs, end_ts: end }) as unknown as JoinedIssue[];
+export function issuesForVersion(tag: string): JoinedIssue[] {
+  return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
 }

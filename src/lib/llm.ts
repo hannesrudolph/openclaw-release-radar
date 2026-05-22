@@ -16,10 +16,16 @@ export interface IssueClassification {
   affectedUsers: AffectedUsers;
   hasWorkaround: boolean;
   duplicateCluster: string | null; // short label like "ollama-timeout" — same label across dupes
+  affectsVersion: string | null;   // explicit release tag this issue affects, or null if not stated
   confidence: number;              // 0..1
   rationale: string;               // kept for DB compat, no longer generated
 }
 
+// Attribution philosophy (mirrors agent-watch):
+// - The LLM is asked to identify the affected release ONLY when the issue explicitly
+//   mentions one, or it's obvious from a stack trace / log / "I'm running vX.Y.Z" line.
+// - When unclear, return null. Unattributed issues are intentionally ignored by scoring
+//   so that long-running open bugs don't drag down every release.
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
 Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
 
@@ -31,6 +37,7 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "affected_users":  "many" | "some" | "few" | "unknown",
   "hasWorkaround":   true | false,
   "duplicateCluster": "<kebab-slug>" | null,
+  "affectsVersion":  "<exact-tag-from-known-list>" | null,
   "confidence":      0.0..1.0
 }
 
@@ -41,19 +48,30 @@ Be conservative. Critical rules:
 - Users saying something works well → sentiment "positive".
 - Bug reports → sentiment "negative".
 - duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-timeout").
-  Use the SAME tag for clearly duplicate issues. null if unique.`;
+  Use the SAME tag for clearly duplicate issues. null if unique.
+- affectsVersion: set ONLY when the issue body, title, or comments explicitly identify a
+  specific release tag (e.g. "in v2026.5.18", "since 2026.5.20-beta.1", a stack trace
+  referencing the version). Must match one of the known tags EXACTLY. If you have to
+  guess, return null — unattributed issues are dropped from scoring rather than dumped
+  on the latest release.`;
 
 interface OpenAIResp {
   choices: { message: { content: string } }[];
 }
 
-function buildUserMessage(issue: GhIssue, comments: GhComment[]): string {
+function buildUserMessage(
+  issue: GhIssue,
+  comments: GhComment[],
+  knownTags: string[],
+): string {
   const body = (issue.body ?? '').slice(0, 3000);
   const recentComments = comments
     .slice(-10)
     .map((c) => `@${c.user?.login ?? 'unknown'}: ${(c.body ?? '').slice(0, 800)}`)
     .join('\n---\n');
   return [
+    `Known release tags (most recent first): ${knownTags.slice(0, 15).join(', ') || '(none)'}`,
+    '',
     `Issue #${issue.number} (${issue.state})`,
     `Title: ${issue.title}`,
     `Author: @${issue.user?.login ?? 'unknown'}`,
@@ -72,6 +90,7 @@ function buildUserMessage(issue: GhIssue, comments: GhComment[]): string {
 export async function classifyIssue(
   issue: GhIssue,
   comments: GhComment[],
+  knownTags: string[],
 ): Promise<IssueClassification> {
   if (!config.openai.apiKey) throw new Error('OPENAI_API_KEY is not set');
 
@@ -87,7 +106,7 @@ export async function classifyIssue(
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserMessage(issue, comments) },
+        { role: 'user', content: buildUserMessage(issue, comments, knownTags) },
       ],
     }),
   });
@@ -129,6 +148,10 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     duplicateCluster:
       typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()
         ? r.duplicateCluster.trim().toLowerCase()
+        : null,
+    affectsVersion:
+      typeof r.affectsVersion === 'string' && r.affectsVersion.trim()
+        ? r.affectsVersion.trim()
         : null,
     confidence: clamp01(typeof r.confidence === 'number' ? r.confidence : 0.5),
     rationale: typeof r.rationale === 'string' ? r.rationale.slice(0, 400) : '',
