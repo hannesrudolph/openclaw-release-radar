@@ -8,7 +8,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-<title>OpenClaw Release Radar</title>
+<title>iClaw Release Radar</title>
 <style>
 /* ── design tokens (iClaw subset) ─────────────────────────────────────── */
 :root {
@@ -22,22 +22,18 @@
 
   --bg:#f9f9f9; --surface:#fff; --surface-2:#f4f4f4;
   --border:#e4e4e7; --border-soft:rgba(0,0,0,.09);
-  --text:#18181b; --muted:#71717a; --hover:#ececec;
-  --btn-bg:#18181b; --btn-fg:#fff; --btn-bg-hover:#000;
+  --text:#18181b; --muted:#71717a;
   --ok:#16a34a; --warn:#c47a00; --danger:#dc2626;
   --link:#2962ff; --link-hover:#1e54e5;
-  --focus-ring:0 0 0 3px color-mix(in srgb,var(--text) 12%,transparent);
 }
 @media (prefers-color-scheme:dark) {
   :root {
     --bg:#1a1a1a; --surface:#232323; --surface-2:#141414;
     --border:#424242; --border-soft:rgba(255,255,255,.10);
-    --text:#ececec; --muted:#9ca3af; --hover:#2a2a2a;
-    --btn-bg:#ececec; --btn-fg:#18181b; --btn-bg-hover:#fff;
+    --text:#ececec; --muted:#9ca3af;
     --ok:#4ade80; --warn:#fbbf24; --danger:#fca5a5;
     --link:#7ab7ff; --link-hover:#a8d0ff;
     --shadow-sm:0 1px 2px rgba(0,0,0,.25);
-    --shadow-md:0 2px 8px rgba(0,0,0,.35);
   }
 }
 
@@ -64,13 +60,14 @@ a:hover{color:var(--link-hover)}
 .topbar__brand{
   display:flex;align-items:center;gap:var(--space-5);
   font-weight:600;font-size:var(--text-md);letter-spacing:-.01em;
+  color:var(--text);text-decoration:none;
+  transition:opacity .15s;
 }
-.topbar__logo{
+.topbar__brand:hover{opacity:.75;color:var(--text)}
+.topbar__logo-img{
   width:24px;height:24px;border-radius:var(--radius-sm);
-  background:var(--btn-bg);color:var(--btn-fg);
-  display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+  flex-shrink:0;display:block;
 }
-.topbar__logo svg{width:16px;height:16px}
 .topbar__spacer{flex:1}
 .topbar__updated{
   font-size:var(--text-xs);color:var(--muted);
@@ -270,16 +267,10 @@ footer a:hover{color:var(--text)}
 <body>
 
 <nav class="topbar">
-  <div class="topbar__brand">
-    <span class="topbar__logo" aria-hidden="true">
-      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.25" opacity=".5"/>
-        <circle cx="8" cy="8" r="3"    stroke="currentColor" stroke-width="1.25" opacity=".8"/>
-        <circle cx="8" cy="8" r="1.25" fill="currentColor"/>
-      </svg>
-    </span>
-    OpenClaw
-  </div>
+  <a class="topbar__brand" href="https://iclaw.digital" target="_blank" rel="noopener">
+    <img src="/iclaw-logo.png" alt="iClaw" class="topbar__logo-img" />
+    iClaw
+  </a>
   <div class="topbar__spacer"></div>
   <div class="topbar__updated" id="topbarUpdated">
     <span class="pulse stale" id="pulse"></span>
@@ -482,7 +473,6 @@ function renderIssues(det, issues) {
       </div>`;
   }).join('');
 }
-
 
 /* ── status dot ───────────────────────────────────────────────────────── */
 async function loadStatus() {
