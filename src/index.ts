@@ -10,8 +10,8 @@ app.use(express.json());
 app.use('/api', api);
 app.use(express.static(join(__dirname, '..', 'public')));
 
-app.listen(config.server.port, () => {
-  console.log(`[radar] listening on http://localhost:${config.server.port}`);
+app.listen(config.server.port, '127.0.0.1', () => {
+  console.log(`[radar] listening on http://127.0.0.1:${config.server.port}`);
   console.log(`[radar] watching ${config.github.owner}/${config.github.repo}`);
 });
 

@@ -83,6 +83,40 @@ node dist/index.js
 Run behind a reverse proxy (nginx/Caddy). State is a single SQLite file in `./data/` —
 back that directory up.
 
+### GitHub Actions deploy
+
+The repo includes `.github/workflows/deploy-radar.yml`.
+
+Recommended usage:
+
+* deploy automatically on push to `main`
+* optional manual re-run via **Actions → Deploy radar.iclaw.digital**
+
+Required GitHub secrets:
+
+* `DEPLOY_SSH_HOST`
+* `DEPLOY_SSH_PORT`
+* `DEPLOY_SSH_USER`
+* `DEPLOY_SSH_KEY`
+
+What the workflow does:
+
+1. builds the app in CI
+2. packages a tarball with `dist/`, `public/`, and package manifests
+3. uploads the tarball to `viralo` over SSH
+4. invokes `/usr/local/bin/openclaw-release-radar-install-release`
+5. verifies `https://radar.iclaw.digital/api/health`
+
+The workflow assumes:
+
+* release root: `/opt/openclaw-release-radar`
+* shared env: `/opt/openclaw-release-radar/shared/.env`
+* shared data: `/opt/openclaw-release-radar/shared/data/`
+* current symlink: `/opt/openclaw-release-radar/current`
+* service name: `openclaw-release-radar.service`
+* release installer: `/usr/local/bin/openclaw-release-radar-install-release`
+* runtime secrets stay server-side and are not part of the tarball
+
 ## Cost (gpt-4o-mini)
 
 * ~5–15 changed issues per refresh → ~2k tokens each
