@@ -4,6 +4,7 @@ import { listIssueComments, listIssues, listReleases } from './github';
 import { classifyIssue, type IssueClassification } from './llm';
 import { scoreRelease, type IssueInput } from './score';
 import {
+  detectBot,
   getClassification,
   getLastScoredAt,
   getRelease,
@@ -57,17 +58,20 @@ export async function refresh(): Promise<{
     // 3. Classify only new/changed issues.
     let classifiedCount = 0;
     for (const issue of issues) {
+      const author = issue.user?.login ?? null;
+      const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
       upsertIssue({
         number: issue.number,
         state: issue.state,
         title: issue.title,
-        author: issue.user?.login ?? null,
+        author,
         html_url: issue.html_url,
         created_at: issue.created_at,
         updated_at: issue.updated_at,
         closed_at: issue.closed_at,
         comments: issue.comments,
-        labels: JSON.stringify(issue.labels.map((l) => l.name)),
+        labels: labelsJson,
+        is_bot: detectBot(author, labelsJson) ? 1 : 0,
       });
 
       const existing = getClassification(issue.number);
@@ -90,18 +94,38 @@ export async function refresh(): Promise<{
     // Only issues where the LLM extracted an explicit affectsVersion are counted toward
     // that version's score. Unattributed issues are silently dropped — this is by design,
     // see the rationale in db.ts/issuesForVersionStmt.
+    //
+    // Two passes: pass 1 scores without peer floor to collect each release's
+    // weightedNegSum; pass 2 re-scores rated releases with the median injected, so
+    // average-or-better releases get lifted to PEER_MEDIAN_FLOOR (5.5) if they fell below.
     const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
 
-    for (const rel of allReleases) {
+    const pass1 = allReleases.map((rel) => {
       const versioned = issuesForVersion(rel.tag);
       const inputs: IssueInput[] = versioned.map((r) => ({
         number: r.number,
         updatedAt: r.updated_at,
         commentCount: r.comments,
         publishedAt: rel.published_at,
+        isBot: r.is_bot === 1,
         classification: rowToClassification(r),
       }));
-      const score = scoreRelease(inputs, rel.published_at);
+      return { rel, inputs, score: scoreRelease(inputs, rel.published_at) };
+    });
+
+    // Median weightedNegSum across rated releases that actually have negative signal.
+    // Need at least 3 such releases — otherwise the median is meaningless noise.
+    const negSums = pass1
+      .filter((p) => p.score.state === 'rated' && p.score.negativeIssues > 0)
+      .map((p) => p.score.weightedNegSum)
+      .sort((a, b) => a - b);
+    const peerMedian = negSums.length >= 3 ? negSums[Math.floor(negSums.length / 2)] : undefined;
+
+    for (const { rel, inputs, score: firstScore } of pass1) {
+      const score =
+        peerMedian !== undefined && firstScore.state === 'rated'
+          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian)
+          : firstScore;
       updateReleaseScore({
         tag: rel.tag,
         final_score: score.finalScore,
@@ -133,18 +157,27 @@ function rowToClassification(row: {
   functionality: string;
   affected_users: string;
   has_workaround: number;
+  workaround_status: string;
   duplicate_cluster: string | null;
   affects_version: string | null;
   confidence: number;
   rationale: string | null;
 }): IssueClassification {
+  // workaround_status was added later; rows written by old code have the default 'unknown',
+  // but be defensive: if it's an unexpected value, fall back to deriving from has_workaround.
+  const wsAllowed = ['none', 'partial', 'confirmed', 'unknown'] as const;
+  const ws = wsAllowed.includes(row.workaround_status as (typeof wsAllowed)[number])
+    ? (row.workaround_status as IssueClassification['workaroundStatus'])
+    : row.has_workaround === 1
+      ? 'confirmed'
+      : 'unknown';
   return {
     sentiment: row.sentiment as IssueClassification['sentiment'],
     severity: row.severity as IssueClassification['severity'],
     scope: row.scope as IssueClassification['scope'],
     functionality: row.functionality as IssueClassification['functionality'],
     affectedUsers: row.affected_users as IssueClassification['affectedUsers'],
-    hasWorkaround: row.has_workaround === 1,
+    workaroundStatus: ws,
     duplicateCluster: row.duplicate_cluster,
     affectsVersion: row.affects_version,
     confidence: row.confidence,

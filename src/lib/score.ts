@@ -20,6 +20,11 @@ const NEW_VERSION_GREY_HOURS = 3;
 const HALF_LIFE_DAYS = 45;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
+export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ median
+// Bot-generated issues still get counted, but their contribution is dampened. They tend
+// to over-report (one human bug → 20 bot reports), so weighting prevents volume bias
+// while preserving the underlying signal.
+const BOT_WEIGHT_MULTIPLIER = 0.3;
 
 const SEVERITY: Record<IssueClassification['severity'], number> = {
   critical: 2.8,
@@ -48,16 +53,19 @@ const USER_SHARE: Record<IssueClassification['affectedUsers'], number> = {
   unknown: 0.75,
 };
 
-// Boolean workaround → 2-value weight. agent-watch has 4 values; we keep things simple.
-function workaroundWeight(hasWorkaround: boolean): number {
-  return hasWorkaround ? 0.5 : 1.0;
-}
+const WORKAROUND: Record<IssueClassification['workaroundStatus'], number> = {
+  none: 1.0,
+  unknown: 0.85,
+  partial: 0.65,
+  confirmed: 0.35,
+};
 
 export interface IssueInput {
   number: number;
   updatedAt: string;
   commentCount: number;
   publishedAt: string | null; // release published_at, used for age-based grace + signal age
+  isBot: boolean;             // true → contribution multiplied by BOT_WEIGHT_MULTIPLIER
   classification: IssueClassification;
 }
 
@@ -72,6 +80,7 @@ export interface ScoreBreakdown {
   finalScore: number;
   baseScore: number;
   riskIndex: number;          // effective core risk, post-cancellation
+  weightedNegSum: number;     // total negative signal pre-cancellation, used for peer median
   negativeIssues: number;
   positiveIssues: number;
   perIssue: ScoredIssue[];
@@ -95,6 +104,7 @@ function duplicateBoost(clusterSize: number): number {
 function issueRiskWeight(i: IssueInput, now: number, clusterSize: number): number {
   const c = i.classification;
   const conf = Math.max(0.2, c.confidence);
+  const botFactor = i.isBot ? BOT_WEIGHT_MULTIPLIER : 1.0;
   return (
     recencyFactor(i.updatedAt, now) *
     discussionBoost(i.commentCount) *
@@ -104,7 +114,8 @@ function issueRiskWeight(i: IssueInput, now: number, clusterSize: number): numbe
     SCOPE[c.scope] *
     FUNCTIONALITY[c.functionality] *
     USER_SHARE[c.affectedUsers] *
-    workaroundWeight(c.hasWorkaround)
+    WORKAROUND[c.workaroundStatus] *
+    botFactor
   );
 }
 
@@ -135,6 +146,7 @@ export function scoreRelease(
   issues: IssueInput[],
   releasePublishedAt: string | null,
   now = Date.now(),
+  peerMedianWeightedNeg?: number,
 ): ScoreBreakdown {
   // 3-hour grace period for fresh releases — no useful signal yet.
   if (releasePublishedAt) {
@@ -144,6 +156,7 @@ export function scoreRelease(
         finalScore: NEUTRAL_SCORE,
         baseScore: NEUTRAL_SCORE,
         riskIndex: 0,
+        weightedNegSum: 0,
         negativeIssues: 0,
         positiveIssues: 0,
         perIssue: [],
@@ -158,6 +171,7 @@ export function scoreRelease(
       finalScore: NEUTRAL_SCORE,
       baseScore: NEUTRAL_SCORE,
       riskIndex: 0,
+      weightedNegSum: 0,
       negativeIssues: 0,
       positiveIssues: 0,
       perIssue: [],
@@ -215,12 +229,29 @@ export function scoreRelease(
   // Core drives the score; other issues drop it by at most OTHER_DROP_MAX.
   const coreScore = scoreFromRiskIndex(effectiveCore);
   const otherDrop = OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
-  const baseScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
+  let finalScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
+  const baseScore = finalScore;
+
+  // Peer median floor: if this release's total negative signal is at or below the median
+  // across all rated releases in this project, and our score fell below 5.5, lift it
+  // to 5.5. Prevents an unusually-buggy project from making every average release look
+  // catastrophic.
+  const weightedNegSum = weightedNegCoreSerious + weightedNegOther;
+  if (
+    peerMedianWeightedNeg !== undefined &&
+    Number.isFinite(peerMedianWeightedNeg) &&
+    peerMedianWeightedNeg > 0 &&
+    weightedNegSum <= peerMedianWeightedNeg &&
+    finalScore < PEER_MEDIAN_FLOOR
+  ) {
+    finalScore = PEER_MEDIAN_FLOOR;
+  }
 
   return {
-    finalScore: round1(baseScore),
+    finalScore: round1(finalScore),
     baseScore: round1(baseScore),
     riskIndex: round2(effectiveCore),
+    weightedNegSum: round2(weightedNegSum),
     negativeIssues: neg,
     positiveIssues: pos,
     perIssue,

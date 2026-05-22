@@ -18,7 +18,7 @@ function mkClass(overrides: Partial<IssueClassification> = {}): IssueClassificat
     scope: 'moderate',
     functionality: 'integration',
     affectedUsers: 'some',
-    hasWorkaround: false,
+    workaroundStatus: 'none',
     duplicateCluster: null,
     affectsVersion: 'v1.0.0',
     confidence: 1.0,
@@ -27,12 +27,17 @@ function mkClass(overrides: Partial<IssueClassification> = {}): IssueClassificat
   };
 }
 
-function mkIssue(num: number, cls: IssueClassification, opts: { updatedAt?: string; comments?: number } = {}): IssueInput {
+function mkIssue(
+  num: number,
+  cls: IssueClassification,
+  opts: { updatedAt?: string; comments?: number; isBot?: boolean } = {},
+): IssueInput {
   return {
     number: num,
     updatedAt: opts.updatedAt ?? '2024-06-30T00:00:00Z', // fresh by default
     commentCount: opts.comments ?? 0,
     publishedAt: RELEASE_PUB,
+    isBot: opts.isBot ?? false,
     classification: cls,
   };
 }
@@ -98,18 +103,50 @@ describe('scoreRelease', () => {
     assert.ok(withPos > withoutPos, `pos should soften: with=${withPos}, without=${withoutPos}`);
   });
 
-  it('hasWorkaround dampens severity', () => {
-    const noFix = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core', hasWorkaround: false }))],
+  it('workaroundStatus dampens severity progressively (none > partial > confirmed)', () => {
+    const ri = (ws: IssueClassification['workaroundStatus']) =>
+      scoreRelease(
+        [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core', workaroundStatus: ws }))],
+        RELEASE_PUB,
+        NOW,
+      ).riskIndex;
+    assert.ok(ri('none') > ri('partial'), `none (${ri('none')}) should hit harder than partial (${ri('partial')})`);
+    assert.ok(ri('partial') > ri('confirmed'), `partial > confirmed`);
+  });
+
+  it('bot-generated issues are down-weighted', () => {
+    const human = scoreRelease(
+      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { isBot: false })],
       RELEASE_PUB,
       NOW,
     ).riskIndex;
-    const withFix = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core', hasWorkaround: true }))],
+    const bot = scoreRelease(
+      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { isBot: true })],
       RELEASE_PUB,
       NOW,
     ).riskIndex;
-    assert.ok(noFix > withFix, `no-workaround (${noFix}) should hit harder than with-workaround (${withFix})`);
+    assert.ok(bot < human, `bot (${bot}) should weigh less than human (${human})`);
+    // Bot multiplier is 0.3, so expect a roughly ~70% reduction.
+    assert.ok(bot < human * 0.5, `bot weight should be substantially below human`);
+  });
+
+  it('peer median floor lifts at-median rated releases below 5.5 up to 5.5', () => {
+    const issues = [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }))];
+    const baseline = scoreRelease(issues, RELEASE_PUB, NOW).finalScore;
+    assert.ok(baseline < 5.5, `baseline must be < 5.5 for this test to mean anything (got ${baseline})`);
+
+    // Median exactly equal to this release's signal → at-or-below condition holds → floor applies.
+    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
+    const floored = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
+    assert.equal(floored.finalScore, 5.5, `at-median release should be lifted to 5.5, got ${floored.finalScore}`);
+  });
+
+  it('peer median floor does NOT apply when signal exceeds the median', () => {
+    const issues = [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }))];
+    const { weightedNegSum, finalScore } = scoreRelease(issues, RELEASE_PUB, NOW);
+    // Median lower than this release's signal → release is above-average-bad → no floor.
+    const noFloor = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 0.5);
+    assert.equal(noFloor.finalScore, finalScore, 'above-median signal should not get the peer floor');
   });
 
   it('floor: finalScore never drops below 1 under heavy load', () => {

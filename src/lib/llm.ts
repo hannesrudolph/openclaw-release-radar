@@ -7,6 +7,7 @@ export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type Scope = 'broad' | 'moderate' | 'niche';
 export type Functionality = 'core' | 'integration' | 'provider' | 'docs';
 export type AffectedUsers = 'many' | 'some' | 'few' | 'unknown';
+export type WorkaroundStatus = 'none' | 'partial' | 'confirmed' | 'unknown';
 
 export interface IssueClassification {
   sentiment: Sentiment;
@@ -14,7 +15,7 @@ export interface IssueClassification {
   scope: Scope;
   functionality: Functionality;
   affectedUsers: AffectedUsers;
-  hasWorkaround: boolean;
+  workaroundStatus: WorkaroundStatus;
   duplicateCluster: string | null; // short label like "ollama-timeout" — same label across dupes
   affectsVersion: string | null;   // explicit release tag this issue affects, or null if not stated
   confidence: number;              // 0..1
@@ -35,7 +36,7 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "scope":           "broad" | "moderate" | "niche",
   "functionality":   "core" | "integration" | "provider" | "docs",
   "affected_users":  "many" | "some" | "few" | "unknown",
-  "hasWorkaround":   true | false,
+  "workaroundStatus": "none" | "partial" | "confirmed" | "unknown",
   "duplicateCluster": "<kebab-slug>" | null,
   "affectsVersion":  "<exact-tag-from-known-list>" | null,
   "confidence":      0.0..1.0
@@ -49,11 +50,21 @@ Be conservative. Critical rules:
 - Bug reports → sentiment "negative".
 - duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-timeout").
   Use the SAME tag for clearly duplicate issues. null if unique.
-- affectsVersion: set ONLY when the issue body, title, or comments explicitly identify a
-  specific release tag (e.g. "in v2026.5.18", "since 2026.5.20-beta.1", a stack trace
-  referencing the version). Must match one of the known tags EXACTLY. If you have to
-  guess, return null — unattributed issues are dropped from scoring rather than dumped
-  on the latest release.`;
+- workaroundStatus: "confirmed" when an explicit fix or successful workaround is described
+  in the issue/comments; "partial" when a workaround helps but isn't reliable
+  ("most of the time", "until restart", "for some users"); "none" when explicitly stated
+  none exists; "unknown" when there's no signal either way.
+- affectsVersion: set when the issue body, title, or comments mention a specific release
+  version. The mention can be in ANY of these forms — treat them all as equivalent:
+    * "v2026.5.18", "2026.5.18", "OpenClaw 2026.5.18", "version 2026.5.18"
+    * stack traces with the version
+    * "Observed on X.Y.Z", "running X.Y.Z", "since X.Y.Z", "in X.Y.Z-beta.N"
+  Return the value as it appears in the known-tags list (e.g. always with the "v" prefix
+  if the canonical tag uses one). If the version mentioned doesn't match ANY known tag,
+  pick the closest one only if you're highly confident — otherwise return null.
+  Return null when no version is mentioned at all (e.g. "X is broken" with no version
+  context). Unattributed issues are dropped from scoring rather than dumped on the latest
+  release, so it's safe to be aggressive about matching when a version IS mentioned.`;
 
 interface OpenAIResp {
   choices: { message: { content: string } }[];
@@ -85,6 +96,25 @@ function buildUserMessage(
     'RECENT COMMENTS:',
     recentComments || '(none)',
   ].join('\n');
+}
+
+// Map an LLM-returned version reference to a canonical known tag.
+// LLMs sometimes drop the "v" prefix or vice versa; we accept both forms so a
+// mention of "2026.5.7" still matches the canonical tag "v2026.5.7".
+function resolveAffectsVersion(
+  raw: string | null | undefined,
+  knownTags: string[],
+): string | null {
+  if (!raw || typeof raw !== 'string') return null;
+  const candidate = raw.trim();
+  if (!candidate) return null;
+  if (knownTags.includes(candidate)) return candidate;
+  const stripped = candidate.startsWith('v') ? candidate.slice(1) : candidate;
+  for (const tag of knownTags) {
+    const tagStripped = tag.startsWith('v') ? tag.slice(1) : tag;
+    if (tagStripped === stripped) return tag; // return canonical form
+  }
+  return null;
 }
 
 export async function classifyIssue(
@@ -125,7 +155,9 @@ export async function classifyIssue(
     throw new Error(`OpenAI returned non-JSON: ${raw.slice(0, 200)}`);
   }
 
-  return normalize(parsed);
+  const normalized = normalize(parsed);
+  normalized.affectsVersion = resolveAffectsVersion(normalized.affectsVersion, knownTags);
+  return normalized;
 }
 
 function normalize(r: Partial<IssueClassification>): IssueClassification {
@@ -134,9 +166,17 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
   const scopes: Scope[] = ['broad', 'moderate', 'niche'];
   const funcs: Functionality[] = ['core', 'integration', 'provider', 'docs'];
   const users: AffectedUsers[] = ['many', 'some', 'few', 'unknown'];
+  const workarounds: WorkaroundStatus[] = ['none', 'partial', 'confirmed', 'unknown'];
 
   const oneOf = <T extends string>(val: unknown, allowed: T[], fallback: T): T =>
     allowed.includes(val as T) ? (val as T) : fallback;
+
+  // Back-compat: older LLM responses might still send `hasWorkaround: true|false`.
+  // Map them to the new enum so a re-prompt isn't strictly required.
+  const wsRaw = (r as any).workaroundStatus
+    ?? (typeof (r as any).hasWorkaround === 'boolean'
+      ? ((r as any).hasWorkaround ? 'confirmed' : 'unknown')
+      : undefined);
 
   return {
     sentiment: oneOf(r.sentiment, sentiments, 'neutral'),
@@ -144,7 +184,7 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     scope: oneOf(r.scope, scopes, 'niche'),
     functionality: oneOf(r.functionality, funcs, 'integration'),
     affectedUsers: oneOf((r as any).affected_users ?? r.affectedUsers, users, 'unknown'),
-    hasWorkaround: Boolean(r.hasWorkaround),
+    workaroundStatus: oneOf(wsRaw, workarounds, 'unknown'),
     duplicateCluster:
       typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()
         ? r.duplicateCluster.trim().toLowerCase()
