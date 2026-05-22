@@ -1,0 +1,17 @@
+node_modules/
+dist/
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+.env
+.env.local
+.env.*.local
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# stray sandbox file from build verification — superseded by scripts/score-smoke.mjs
+/score_test.mjs

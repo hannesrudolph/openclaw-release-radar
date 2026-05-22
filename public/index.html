@@ -1,0 +1,216 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>OpenClaw Release Radar</title>
+<style>
+  :root {
+    --bg: #0e0e0e;
+    --fg: #e8e8e8;
+    --muted: #888;
+    --line: #222;
+    --accent: #e8e8e8;
+    --good: #6dd28e;
+    --warn: #e2c14a;
+    --bad: #e26d6d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
+    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line); }
+  a:hover { border-bottom-color: var(--accent); }
+  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 32px; }
+  header h1 { font-size: 16px; font-weight: 500; margin: 0; letter-spacing: 0.5px; }
+  header .meta { font-size: 12px; color: var(--muted); }
+  .repo { color: var(--muted); font-size: 12px; margin-bottom: 24px; }
+  table { width: 100%; border-collapse: collapse; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
+  th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  td.score { font-variant-numeric: tabular-nums; }
+  .score-bar { display: inline-block; width: 56px; height: 4px; background: var(--line); margin-left: 8px; vertical-align: middle; }
+  .score-bar > span { display: block; height: 100%; background: var(--accent); }
+  .pre { color: var(--muted); font-size: 11px; margin-left: 6px; }
+  .row { cursor: pointer; }
+  .row:hover td { background: #161616; }
+  .details { display: none; background: #111; }
+  .details.open { display: table-row; }
+  .details td { padding: 16px 12px; border-bottom: 1px solid var(--line); }
+  .issue { display: grid; grid-template-columns: 80px 1fr auto; gap: 12px; padding: 8px 0; border-bottom: 1px dashed #1c1c1c; }
+  .issue:last-child { border-bottom: none; }
+  .issue .num { color: var(--muted); }
+  .issue .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .issue .badges { color: var(--muted); font-size: 11px; }
+  .b { display: inline-block; padding: 1px 6px; margin-left: 4px; border: 1px solid var(--line); border-radius: 2px; }
+  .b.neg { color: var(--bad); border-color: #3a1818; }
+  .b.pos { color: var(--good); border-color: #183a1f; }
+  .b.crit { color: var(--bad); }
+  .b.high { color: var(--warn); }
+  .b.core { color: var(--warn); }
+  .summary { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
+  button { background: transparent; color: var(--fg); border: 1px solid var(--line); padding: 4px 10px;
+    font: inherit; cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  .empty { color: var(--muted); padding: 16px 0; text-align: center; }
+  .footer { color: var(--muted); font-size: 11px; margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>openclaw / release radar</h1>
+    <div class="meta">
+      <span id="status">loading…</span>
+      <button id="refresh">refresh</button>
+    </div>
+  </header>
+  <div class="repo" id="repo"></div>
+
+  <table>
+    <thead>
+      <tr>
+        <th style="width:30%">version</th>
+        <th>published</th>
+        <th>issues</th>
+        <th style="width:30%; text-align:right">stability</th>
+      </tr>
+    </thead>
+    <tbody id="releases">
+      <tr><td colspan="4" class="empty">loading…</td></tr>
+    </tbody>
+  </table>
+
+  <div class="footer">
+    polled every 20 min · LLM-classified bug reports weighted by severity, scope, recency &amp; duplicates · 10 = stable, 0 = on fire
+  </div>
+</main>
+
+<script>
+const $ = (sel) => document.querySelector(sel);
+
+function fmt(d) {
+  if (!d) return '—';
+  const t = new Date(d);
+  return t.toISOString().slice(0, 10);
+}
+
+function scoreColor(s) {
+  if (s == null) return 'var(--muted)';
+  if (s >= 7.5) return 'var(--good)';
+  if (s >= 5) return 'var(--warn)';
+  return 'var(--bad)';
+}
+
+async function api(path, opts) {
+  const r = await fetch('/api' + path, opts);
+  if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
+  return r.json();
+}
+
+async function loadReleases() {
+  const rows = await api('/releases');
+  const tbody = $('#releases');
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="4" class="empty">no releases yet — waiting for first refresh</td></tr>';
+    return;
+  }
+  tbody.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    tr.className = 'row';
+    tr.dataset.tag = r.tag;
+    const score = r.finalScore;
+    const pct = score == null ? 0 : Math.min(100, (score / 10) * 100);
+    tr.innerHTML = `
+      <td>${escapeHtml(r.tag)}${r.prerelease ? '<span class="pre">pre</span>' : ''}</td>
+      <td>${fmt(r.publishedAt)}</td>
+      <td>${(r.negativeIssues ?? 0)} neg · ${(r.positiveIssues ?? 0)} pos</td>
+      <td class="score" style="text-align:right; color:${scoreColor(score)}">
+        ${score == null ? '—' : score.toFixed(1)}
+        <span class="score-bar"><span style="width:${pct}%; background:${scoreColor(score)}"></span></span>
+      </td>`;
+    tbody.appendChild(tr);
+
+    const det = document.createElement('tr');
+    det.className = 'details';
+    det.innerHTML = `<td colspan="4"><div class="summary" id="sum-${escapeHtml(r.tag)}">loading…</div><div id="iss-${escapeHtml(r.tag)}"></div></td>`;
+    tbody.appendChild(det);
+
+    tr.addEventListener('click', () => toggle(r.tag, det));
+  }
+}
+
+async function toggle(tag, detRow) {
+  const open = detRow.classList.toggle('open');
+  if (!open) return;
+  try {
+    const data = await api('/release/' + encodeURIComponent(tag));
+    const sum = document.getElementById('sum-' + tag);
+    sum.innerHTML = `<a href="${data.htmlUrl}" target="_blank" rel="noopener">release notes ↗</a> · risk index ${data.riskIndex ?? 0}`;
+    const iss = document.getElementById('iss-' + tag);
+    if (!data.issues.length) {
+      iss.innerHTML = '<div class="empty">no classified issues for this version</div>';
+      return;
+    }
+    iss.innerHTML = data.issues.map(renderIssue).join('');
+  } catch (e) {
+    document.getElementById('sum-' + tag).textContent = 'failed: ' + e.message;
+  }
+}
+
+function renderIssue(i) {
+  const sentBadge = i.sentiment === 'negative' ? 'neg' : i.sentiment === 'positive' ? 'pos' : '';
+  const sevClass = i.severity === 'critical' ? 'crit' : i.severity === 'high' ? 'high' : '';
+  const coreClass = i.functionality === 'core' ? 'core' : '';
+  return `
+    <div class="issue">
+      <span class="num">#${i.number}</span>
+      <a class="title" href="${i.htmlUrl}" target="_blank" rel="noopener" title="${escapeHtml(i.title)}">${escapeHtml(i.title)}</a>
+      <span class="badges">
+        <span class="b ${sentBadge}">${i.sentiment}</span>
+        <span class="b ${sevClass}">${i.severity}</span>
+        <span class="b ${coreClass}">${i.functionality}</span>
+        ${i.hasWorkaround ? '<span class="b">workaround</span>' : ''}
+      </span>
+    </div>`;
+}
+
+function escapeHtml(s) {
+  return String(s ?? '').replace(/[&<>"']/g, (c) =>
+    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+
+async function loadStatus() {
+  try {
+    const h = await api('/health');
+    $('#repo').textContent = h.repo;
+    const s = await api('/status');
+    $('#status').textContent = s.refreshing
+      ? 'refreshing…'
+      : s.lastRefreshAt
+      ? 'updated ' + new Date(s.lastRefreshAt).toLocaleString()
+      : 'never refreshed';
+  } catch (e) {
+    $('#status').textContent = 'offline';
+  }
+}
+
+$('#refresh').addEventListener('click', async (e) => {
+  e.preventDefault();
+  $('#status').textContent = 'refreshing…';
+  try {
+    await api('/refresh', { method: 'POST' });
+    await loadStatus();
+    await loadReleases();
+  } catch (err) {
+    $('#status').textContent = 'failed: ' + err.message;
+  }
+});
+
+loadStatus();
+loadReleases();
+setInterval(loadStatus, 30_000);
+</script>
+</body>
+</html>
