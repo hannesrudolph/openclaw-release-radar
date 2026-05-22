@@ -4,11 +4,30 @@ import { getCached, setCached } from '../lib/cache';
 import {
   getRefreshState,
   getRelease,
-  issuesForVersion,
-  issuesWithoutVersion,
+  issuesOpenDuring,
   listReleasesDb,
   refresh,
 } from '../lib/refresh';
+import type { ReleaseRow } from '../lib/db';
+
+// For each release, the "lifetime window" is [published_at, next_newer.published_at).
+// Latest release has no upper bound (end = null → treated as "now" by issuesOpenDuring).
+// allReleases must be sorted by published_at DESC (as returned by listReleasesDb).
+function releaseWindow(
+  rel: ReleaseRow,
+  allReleases: ReleaseRow[],
+): { start: string; end: string | null } | null {
+  if (!rel.published_at) return null;
+  const start = rel.published_at;
+  let end: string | null = null;
+  for (const r of allReleases) {
+    if (!r.published_at) continue;
+    if (r.published_at > start && (end === null || r.published_at < end)) {
+      end = r.published_at;
+    }
+  }
+  return { start, end };
+}
 
 export const api = Router();
 
@@ -52,7 +71,11 @@ api.get('/release/:tag', (req, res) => {
     res.status(404).json({ error: 'release not found' });
     return;
   }
-  const issues = issuesForVersion(rel.tag).map(serializeIssue);
+  const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
+  const win = releaseWindow(rel, allReleases);
+  const issues = win
+    ? issuesOpenDuring(win.start, win.end).map(serializeIssue)
+    : [];
   res.json({
     tag: rel.tag,
     name: rel.name,
@@ -66,10 +89,6 @@ api.get('/release/:tag', (req, res) => {
     scoredAt: rel.scored_at,
     issues,
   });
-});
-
-api.get('/unversioned', (_req, res) => {
-  res.json(issuesWithoutVersion().map(serializeIssue));
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -91,8 +110,13 @@ function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
   const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
 
-  const releases = allReleases.map((r) => {
-    const issues = issuesForVersion(r.tag).map((i) => ({
+  const releases = allReleases.map((r, idx) => {
+    // allReleases is sorted DESC by published_at, so the next-newer release is at idx-1.
+    // Latest (idx=0) has no upper bound → null = "open until now".
+    const start = r.published_at;
+    const end = idx === 0 ? null : (allReleases[idx - 1].published_at ?? null);
+    const pool = start ? issuesOpenDuring(start, end) : [];
+    const issues = pool.map((i) => ({
       number:         i.number,
       title:          i.title,
       url:            i.html_url,
