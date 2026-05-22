@@ -87,6 +87,12 @@ main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
   font-size:1.5rem;font-weight:600;letter-spacing:-.02em;
   margin-bottom:var(--space-3);
 }
+.page-title-row{
+  display:flex;align-items:center;justify-content:space-between;
+  gap:var(--space-6);
+  margin-bottom:var(--space-3);
+}
+.page-title-row .page-title{margin-bottom:0}
 .page-sub{
   color:var(--muted);font-size:var(--text-sm);line-height:1.55;
   margin-bottom:var(--space-10);
@@ -276,20 +282,18 @@ footer a:hover{color:var(--text)}
 </nav>
 
 <main>
-  <h1 class="page-title">Release stability</h1>
-  <p class="page-sub">
-    Automatically tracks GitHub issues for each release and scores stability
-    from 0 to 10. Click any version to see what users are reporting.
-    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
-  </p>
-
-  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-6)">
-    <span style="font-size:var(--text-sm);color:var(--muted)" id="releaseCount"></span>
+  <div class="page-title-row">
+    <h1 class="page-title">Release stability</h1>
     <label class="beta-toggle">
       <input type="checkbox" id="showBeta" />
       show beta
     </label>
   </div>
+  <p class="page-sub">
+    Automatically tracks GitHub issues for each release and scores stability
+    from 0 to 10. Click any version to see what users are reporting.
+    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
+  </p>
 
   <div class="releases" id="releases">
     <div class="state">Loading…</div>
@@ -365,11 +369,6 @@ function renderReleases() {
   const rows   = showBeta
     ? allReleases.slice(0, uiLimits.stableReleases + uiLimits.betaReleases)
     : stable.slice(0, uiLimits.stableReleases);
-
-  const countEl = document.getElementById('releaseCount');
-  countEl.textContent = showBeta
-    ? `${rows.length} releases`
-    : `${rows.length} stable releases`;
 
   const root = document.getElementById('releases');
 
