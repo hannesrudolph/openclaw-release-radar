@@ -195,10 +195,6 @@ main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
   line-height:1.45;
 }
 .issue__title:hover{color:var(--link)}
-.issue__rationale{
-  margin-top:2px;
-  font-size:var(--text-xs);color:var(--muted);line-height:1.5;
-}
 
 /* ── loading / empty states ───────────────────────────────────────────── */
 .state{
@@ -269,7 +265,6 @@ footer a:hover{color:var(--text)}
 <nav class="topbar">
   <a class="topbar__brand" href="https://iclaw.digital" target="_blank" rel="noopener">
     <img src="/iclaw-logo.png" alt="iClaw" class="topbar__logo-img" />
-    iClaw
   </a>
   <div class="topbar__spacer"></div>
   <div class="topbar__updated" id="topbarUpdated">
@@ -284,7 +279,7 @@ footer a:hover{color:var(--text)}
   <p class="page-sub">
     Automatically tracks GitHub issues for each release and scores stability
     from 0 to 10. Click any version to see what users are reporting.
-    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>.
+    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
   </p>
 
   <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-6)">
@@ -301,7 +296,7 @@ footer a:hover{color:var(--text)}
 </main>
 
 <footer>
-  Scores update every 30 minutes · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a>
+  Scores update every 30 minutes · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
 </footer>
 
 <script>
@@ -375,7 +370,7 @@ function renderReleases() {
   const root = document.getElementById('releases');
 
   if (!rows.length) {
-    root.innerHTML = '<div class="state">No releases yet — first refresh in progress.</div>';
+    root.innerHTML = '<div class="state">No releases yet — first refresh in progress</div>';
     return;
   }
 
@@ -447,7 +442,7 @@ async function toggleRelease(row, det, tag) {
 
 function renderIssues(det, issues) {
   if (!issues.length) {
-    det.innerHTML = '<div class="details__empty">No reported issues for this version yet.</div>';
+    det.innerHTML = '<div class="details__empty">No reported issues for this version yet</div>';
     return;
   }
 
@@ -461,14 +456,12 @@ function renderIssues(det, issues) {
 
   det.innerHTML = sorted.map(i => {
     const dotClass = i.sentiment === 'positive' ? 'positive' : (i.severity ?? 'low');
-    const rationale = i.rationale ? `<p class="issue__rationale">${esc(i.rationale)}</p>` : '';
     return `
       <div class="issue">
         <span class="sev-dot ${esc(dotClass)}"></span>
         <div class="issue__body">
           <a class="issue__title" href="${esc(i.htmlUrl)}" target="_blank"
              rel="noopener" title="${esc(i.title)}">${esc(i.title)}</a>
-          ${rationale}
         </div>
       </div>`;
   }).join('');

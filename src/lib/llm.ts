@@ -18,7 +18,7 @@ export interface IssueClassification {
   duplicateCluster: string | null; // short label like "ollama-timeout" — same label across dupes
   affectsVersion: string | null;   // best-effort tag this issue likely affects
   confidence: number;              // 0..1
-  rationale: string;               // 1 sentence
+  rationale: string;               // kept for DB compat, no longer generated
 }
 
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
@@ -33,8 +33,7 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "hasWorkaround":   true | false,
   "duplicateCluster": "<kebab-slug>" | null,
   "affectsVersion":  "<tag>" | null,
-  "confidence":      0.0..1.0,
-  "rationale":       "<one sentence>"
+  "confidence":      0.0..1.0
 }
 
 Be conservative. Critical rules:
