@@ -3,214 +3,518 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="/favicon.ico" sizes="any" />
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <title>OpenClaw Release Radar</title>
 <style>
+/* ── design tokens (iClaw subset) ─────────────────────────────────────── */
+:root {
+  --space-1:2px; --space-2:4px; --space-3:6px; --space-4:8px;
+  --space-5:10px; --space-6:12px; --space-7:16px; --space-8:20px;
+  --space-9:24px; --space-10:32px;
+  --radius-sm:6px; --radius-md:8px; --radius-lg:12px; --radius-pill:999px;
+  --text-xs:.75rem; --text-sm:.85rem; --text-base:.95rem; --text-md:1rem;
+  --shadow-sm:0 1px 2px rgba(0,0,0,.04);
+  --shadow-md:0 2px 6px rgba(0,0,0,.06);
+
+  --bg:#f9f9f9; --surface:#fff; --surface-2:#f4f4f4;
+  --border:#e4e4e7; --border-soft:rgba(0,0,0,.09);
+  --text:#18181b; --muted:#71717a; --hover:#ececec;
+  --btn-bg:#18181b; --btn-fg:#fff; --btn-bg-hover:#000;
+  --ok:#16a34a; --warn:#c47a00; --danger:#dc2626;
+  --link:#2962ff; --link-hover:#1e54e5;
+  --focus-ring:0 0 0 3px color-mix(in srgb,var(--text) 12%,transparent);
+}
+@media (prefers-color-scheme:dark) {
   :root {
-    --bg: #0e0e0e;
-    --fg: #e8e8e8;
-    --muted: #888;
-    --line: #222;
-    --accent: #e8e8e8;
-    --good: #6dd28e;
-    --warn: #e2c14a;
-    --bad: #e26d6d;
+    --bg:#1a1a1a; --surface:#232323; --surface-2:#141414;
+    --border:#424242; --border-soft:rgba(255,255,255,.10);
+    --text:#ececec; --muted:#9ca3af; --hover:#2a2a2a;
+    --btn-bg:#ececec; --btn-fg:#18181b; --btn-bg-hover:#fff;
+    --ok:#4ade80; --warn:#fbbf24; --danger:#fca5a5;
+    --link:#7ab7ff; --link-hover:#a8d0ff;
+    --shadow-sm:0 1px 2px rgba(0,0,0,.25);
+    --shadow-md:0 2px 8px rgba(0,0,0,.35);
   }
-  * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; background: var(--bg); color: var(--fg);
-    font: 14px/1.5 ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
-  a { color: var(--fg); text-decoration: none; border-bottom: 1px solid var(--line); }
-  a:hover { border-bottom-color: var(--accent); }
-  main { max-width: 760px; margin: 0 auto; padding: 48px 24px 96px; }
-  header { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 32px; }
-  header h1 { font-size: 16px; font-weight: 500; margin: 0; letter-spacing: 0.5px; }
-  header .meta { font-size: 12px; color: var(--muted); }
-  .repo { color: var(--muted); font-size: 12px; margin-bottom: 24px; }
-  table { width: 100%; border-collapse: collapse; }
-  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--line); }
-  th { font-weight: 500; color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
-  td.score { font-variant-numeric: tabular-nums; }
-  .score-bar { display: inline-block; width: 56px; height: 4px; background: var(--line); margin-left: 8px; vertical-align: middle; }
-  .score-bar > span { display: block; height: 100%; background: var(--accent); }
-  .pre { color: var(--muted); font-size: 11px; margin-left: 6px; }
-  .row { cursor: pointer; }
-  .row:hover td { background: #161616; }
-  .details { display: none; background: #111; }
-  .details.open { display: table-row; }
-  .details td { padding: 16px 12px; border-bottom: 1px solid var(--line); }
-  .issue { display: grid; grid-template-columns: 80px 1fr auto; gap: 12px; padding: 8px 0; border-bottom: 1px dashed #1c1c1c; }
-  .issue:last-child { border-bottom: none; }
-  .issue .num { color: var(--muted); }
-  .issue .title { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .issue .badges { color: var(--muted); font-size: 11px; }
-  .b { display: inline-block; padding: 1px 6px; margin-left: 4px; border: 1px solid var(--line); border-radius: 2px; }
-  .b.neg { color: var(--bad); border-color: #3a1818; }
-  .b.pos { color: var(--good); border-color: #183a1f; }
-  .b.crit { color: var(--bad); }
-  .b.high { color: var(--warn); }
-  .b.core { color: var(--warn); }
-  .summary { font-size: 12px; color: var(--muted); margin-bottom: 8px; }
-  button { background: transparent; color: var(--fg); border: 1px solid var(--line); padding: 4px 10px;
-    font: inherit; cursor: pointer; }
-  button:hover { border-color: var(--accent); }
-  .empty { color: var(--muted); padding: 16px 0; text-align: center; }
-  .footer { color: var(--muted); font-size: 11px; margin-top: 48px; padding-top: 16px; border-top: 1px solid var(--line); }
+}
+
+/* ── reset ────────────────────────────────────────────────────────────── */
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{
+  font-family:ui-sans-serif,-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,
+    "Helvetica Neue",Arial,sans-serif;
+  font-size:16px; -webkit-font-smoothing:antialiased;
+  color:var(--text); background:var(--bg);
+}
+a{color:var(--link);text-decoration:none}
+a:hover{color:var(--link-hover)}
+
+/* ── topbar ───────────────────────────────────────────────────────────── */
+.topbar{
+  position:sticky;top:0;z-index:10;
+  height:52px; background:var(--bg);
+  border-bottom:1px solid var(--border-soft);
+  display:flex;align-items:center;
+  padding:0 var(--space-9);
+  gap:var(--space-5);
+}
+.topbar__brand{
+  display:flex;align-items:center;gap:var(--space-5);
+  font-weight:600;font-size:var(--text-md);letter-spacing:-.01em;
+}
+.topbar__logo{
+  width:24px;height:24px;border-radius:var(--radius-sm);
+  background:var(--btn-bg);color:var(--btn-fg);
+  display:inline-flex;align-items:center;justify-content:center;flex-shrink:0;
+}
+.topbar__logo svg{width:16px;height:16px}
+.topbar__spacer{flex:1}
+.topbar__updated{
+  font-size:var(--text-xs);color:var(--muted);
+  display:flex;align-items:center;gap:var(--space-3);
+}
+.pulse{
+  width:6px;height:6px;border-radius:50%;
+  background:var(--ok);flex-shrink:0;
+  box-shadow:0 0 0 2px color-mix(in srgb,var(--ok) 25%,transparent);
+}
+.pulse.stale{background:var(--muted);box-shadow:none}
+
+/* ── main ─────────────────────────────────────────────────────────────── */
+main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
+
+.page-title{
+  font-size:1.5rem;font-weight:600;letter-spacing:-.02em;
+  margin-bottom:var(--space-3);
+}
+.page-sub{
+  color:var(--muted);font-size:var(--text-sm);line-height:1.55;
+  margin-bottom:var(--space-10);
+}
+.page-sub a{color:var(--muted);border-bottom:1px dotted var(--border)}
+.page-sub a:hover{color:var(--text)}
+
+/* ── release list ─────────────────────────────────────────────────────── */
+.releases{
+  background:var(--surface);
+  border:1px solid var(--border);
+  border-radius:var(--radius-lg);
+  overflow:hidden;
+  box-shadow:var(--shadow-sm);
+}
+
+.release{
+  display:flex;align-items:center;justify-content:space-between;
+  padding:var(--space-7) var(--space-8);
+  border-bottom:1px solid var(--border);
+  cursor:pointer;gap:var(--space-6);
+  transition:background .12s ease;
+}
+.release:last-of-type{border-bottom:none}
+.release:hover{background:color-mix(in srgb,var(--text) 3%,transparent)}
+.release.open{background:color-mix(in srgb,var(--text) 2%,transparent)}
+
+.release__left{display:flex;align-items:center;gap:var(--space-5);min-width:0}
+.release__tag{
+  font-weight:600;font-size:var(--text-base);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  white-space:nowrap;
+}
+.release__date{color:var(--muted);font-size:var(--text-sm);white-space:nowrap}
+.chip--beta{
+  font-size:11px;font-weight:500;white-space:nowrap;
+  color:var(--warn);
+}
+.chip--latest{
+  font-size:11px;font-weight:500;white-space:nowrap;
+  color:var(--ok);
+}
+
+.release__right{
+  display:flex;align-items:center;gap:var(--space-4);flex-shrink:0;
+}
+.score-dot{
+  width:10px;height:10px;border-radius:50%;flex-shrink:0;
+  background:var(--score-color,var(--muted));
+}
+.score-num{
+  font-variant-numeric:tabular-nums;font-weight:600;
+  font-size:var(--text-base);color:var(--score-color,var(--muted));
+  white-space:nowrap;
+}
+.score-label{
+  font-size:var(--text-sm);color:var(--muted);white-space:nowrap;
+}
+@media(max-width:480px){.score-label{display:none}}
+
+/* ── chevron ──────────────────────────────────────────────────────────── */
+.chevron{
+  width:16px;height:16px;flex-shrink:0;color:var(--muted);
+  transition:transform .2s ease;
+}
+.release.open .chevron{transform:rotate(90deg)}
+
+/* ── expanded details ─────────────────────────────────────────────────── */
+.details{
+  display:none;
+  background:var(--surface-2);
+  border-top:1px solid var(--border);
+  padding:var(--space-7) var(--space-8);
+}
+.release.open + .details{display:block}
+
+.details__empty{
+  color:var(--muted);font-size:var(--text-sm);
+  padding:var(--space-6) 0;
+  text-align:center;
+}
+
+.issue{
+  display:flex;gap:var(--space-5);align-items:flex-start;
+  padding:var(--space-5) 0;
+  border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+}
+.issue:last-child{border-bottom:none}
+
+.sev-dot{
+  width:8px;height:8px;border-radius:50%;flex-shrink:0;
+  margin-top:5px;
+}
+.sev-dot.critical{background:var(--danger)}
+.sev-dot.high{background:var(--warn)}
+.sev-dot.medium,.sev-dot.low,.sev-dot.positive{
+  background:color-mix(in srgb,var(--muted) 40%,transparent);
+}
+.sev-dot.positive{background:color-mix(in srgb,var(--ok) 50%,transparent)}
+
+.issue__body{min-width:0;flex:1}
+.issue__title{
+  display:block;
+  font-size:var(--text-sm);font-weight:500;color:var(--text);
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  line-height:1.45;
+}
+.issue__title:hover{color:var(--link)}
+.issue__rationale{
+  margin-top:2px;
+  font-size:var(--text-xs);color:var(--muted);line-height:1.5;
+}
+
+/* ── loading / empty states ───────────────────────────────────────────── */
+.state{
+  padding:var(--space-10) var(--space-8);
+  text-align:center;color:var(--muted);font-size:var(--text-sm);
+}
+
+/* ── footer ───────────────────────────────────────────────────────────── */
+footer{
+  max-width:720px;margin:0 auto;
+  padding:var(--space-8) var(--space-9);
+  color:var(--muted);font-size:var(--text-xs);
+  text-align:center;
+}
+footer a{color:var(--muted);border-bottom:1px dotted var(--border)}
+footer a:hover{color:var(--text)}
+
+/* ── api link ─────────────────────────────────────────────────────────── */
+.api-link{
+  flex-shrink:0;
+  display:inline-flex;align-items:center;
+  padding:var(--space-4) var(--space-6);
+  border-radius:var(--radius-md);
+  font-size:.8125rem;font-weight:500;letter-spacing:.01em;
+  color:var(--muted);
+  background:color-mix(in srgb,var(--text) 5%,var(--bg));
+  border:1px solid color-mix(in srgb,var(--border) 70%,transparent);
+  transition:color .15s,background .15s,border-color .15s;
+  white-space:nowrap;
+}
+.api-link:hover{
+  color:var(--text);
+  background:color-mix(in srgb,var(--text) 8%,var(--bg));
+  border-color:color-mix(in srgb,var(--muted) 35%,var(--border));
+}
+
+/* ── beta toggle ──────────────────────────────────────────────────────── */
+.beta-toggle{
+  display:inline-flex;align-items:center;gap:var(--space-3);
+  cursor:pointer;user-select:none;
+  color:var(--muted);font-size:var(--text-xs);
+  padding:var(--space-2) 0;
+}
+.beta-toggle input{
+  appearance:none;-webkit-appearance:none;
+  width:28px;height:16px;border-radius:var(--radius-pill);
+  background:color-mix(in srgb,var(--muted) 25%,var(--surface));
+  border:1px solid var(--border);
+  cursor:pointer;position:relative;flex-shrink:0;
+  transition:background .15s ease,border-color .15s ease;
+}
+.beta-toggle input::after{
+  content:'';position:absolute;
+  top:2px;left:2px;
+  width:10px;height:10px;border-radius:50%;
+  background:#fff;
+  transition:transform .15s ease;
+  box-shadow:0 1px 2px rgba(0,0,0,.2);
+}
+.beta-toggle input:checked{
+  background:var(--text);border-color:var(--text);
+}
+.beta-toggle input:checked::after{transform:translateX(12px)}
 </style>
 </head>
 <body>
+
+<nav class="topbar">
+  <div class="topbar__brand">
+    <span class="topbar__logo" aria-hidden="true">
+      <svg viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <circle cx="8" cy="8" r="6.25" stroke="currentColor" stroke-width="1.25" opacity=".5"/>
+        <circle cx="8" cy="8" r="3"    stroke="currentColor" stroke-width="1.25" opacity=".8"/>
+        <circle cx="8" cy="8" r="1.25" fill="currentColor"/>
+      </svg>
+    </span>
+    OpenClaw
+  </div>
+  <div class="topbar__spacer"></div>
+  <div class="topbar__updated" id="topbarUpdated">
+    <span class="pulse stale" id="pulse"></span>
+    <span id="updatedLabel">checking…</span>
+  </div>
+  <a class="api-link" href="/api/public" target="_blank" rel="noopener">API</a>
+</nav>
+
 <main>
-  <header>
-    <h1>openclaw / release radar</h1>
-    <div class="meta">
-      <span id="status">loading…</span>
-      <button id="refresh">refresh</button>
-    </div>
-  </header>
-  <div class="repo" id="repo"></div>
+  <h1 class="page-title">Release stability</h1>
+  <p class="page-sub">
+    Automatically tracks GitHub issues for each release and scores stability
+    from 0 to 10. Click any version to see what users are reporting.
+    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>.
+  </p>
 
-  <table>
-    <thead>
-      <tr>
-        <th style="width:30%">version</th>
-        <th>published</th>
-        <th>issues</th>
-        <th style="width:30%; text-align:right">stability</th>
-      </tr>
-    </thead>
-    <tbody id="releases">
-      <tr><td colspan="4" class="empty">loading…</td></tr>
-    </tbody>
-  </table>
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:var(--space-6)">
+    <span style="font-size:var(--text-sm);color:var(--muted)" id="releaseCount"></span>
+    <label class="beta-toggle">
+      <input type="checkbox" id="showBeta" />
+      show beta
+    </label>
+  </div>
 
-  <div class="footer">
-    polled every 20 min · LLM-classified bug reports weighted by severity, scope, recency &amp; duplicates · 10 = stable, 0 = on fire
+  <div class="releases" id="releases">
+    <div class="state">Loading…</div>
   </div>
 </main>
 
+<footer>
+  Scores update every 30 minutes · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a>
+</footer>
+
 <script>
-const $ = (sel) => document.querySelector(sel);
-
-function fmt(d) {
-  if (!d) return '—';
-  const t = new Date(d);
-  return t.toISOString().slice(0, 10);
+/* ── helpers ──────────────────────────────────────────────────────────── */
+function esc(s) {
+  return String(s ?? '').replace(/[&<>"']/g, c =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 
-function scoreColor(s) {
-  if (s == null) return 'var(--muted)';
-  if (s >= 7.5) return 'var(--good)';
-  if (s >= 5) return 'var(--warn)';
-  return 'var(--bad)';
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(diff / 60000);
+  if (m < 2)  return 'just now';
+  if (m < 60) return `${m} min ago`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h ago`;
+  const d = Math.floor(h / 24);
+  if (d === 1) return 'yesterday';
+  if (d < 7)  return `${d} days ago`;
+  const w = Math.floor(d / 7);
+  if (w < 5)  return `${w} week${w > 1 ? 's' : ''} ago`;
+  const mo = Math.floor(d / 30);
+  if (mo < 12) return `${mo} month${mo > 1 ? 's' : ''} ago`;
+  return `${Math.floor(d / 365)}y ago`;
 }
 
+function scoreInfo(s) {
+  if (s == null) return { color: 'var(--muted)',   label: 'Analyzing…',      num: '—'  };
+  if (s >= 8.0)  return { color: 'var(--ok)',      label: 'Stable',          num: s.toFixed(1) };
+  if (s >= 6.0)  return { color: 'var(--warn)',    label: 'Mostly stable',   num: s.toFixed(1) };
+  if (s >= 4.0)  return { color: '#f97316',        label: 'Issues reported', num: s.toFixed(1) };
+  return           { color: 'var(--danger)', label: 'Unstable',        num: s.toFixed(1) };
+}
+
+function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+
+/* ── api ──────────────────────────────────────────────────────────────── */
 async function api(path, opts) {
   const r = await fetch('/api' + path, opts);
-  if (!r.ok) throw new Error(r.status + ' ' + (await r.text()));
+  if (!r.ok) throw new Error(r.status + ' ' + await r.text().catch(() => ''));
   return r.json();
 }
 
+/* ── render releases ──────────────────────────────────────────────────── */
+let allReleases = [];
+
 async function loadReleases() {
-  const rows = await api('/releases');
-  const tbody = $('#releases');
-  if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="4" class="empty">no releases yet — waiting for first refresh</td></tr>';
+  try { allReleases = await api('/releases'); }
+  catch (e) {
+    document.getElementById('releases').innerHTML =
+      `<div class="state">Could not load releases — ${esc(e.message)}</div>`;
     return;
   }
-  tbody.innerHTML = '';
-  for (const r of rows) {
-    const tr = document.createElement('tr');
-    tr.className = 'row';
-    tr.dataset.tag = r.tag;
-    const score = r.finalScore;
-    const pct = score == null ? 0 : Math.min(100, (score / 10) * 100);
-    tr.innerHTML = `
-      <td>${escapeHtml(r.tag)}${r.prerelease ? '<span class="pre">pre</span>' : ''}</td>
-      <td>${fmt(r.publishedAt)}</td>
-      <td>${(r.negativeIssues ?? 0)} neg · ${(r.positiveIssues ?? 0)} pos</td>
-      <td class="score" style="text-align:right; color:${scoreColor(score)}">
-        ${score == null ? '—' : score.toFixed(1)}
-        <span class="score-bar"><span style="width:${pct}%; background:${scoreColor(score)}"></span></span>
-      </td>`;
-    tbody.appendChild(tr);
-
-    const det = document.createElement('tr');
-    det.className = 'details';
-    det.innerHTML = `<td colspan="4"><div class="summary" id="sum-${escapeHtml(r.tag)}">loading…</div><div id="iss-${escapeHtml(r.tag)}"></div></td>`;
-    tbody.appendChild(det);
-
-    tr.addEventListener('click', () => toggle(r.tag, det));
-  }
+  renderReleases();
 }
 
-async function toggle(tag, detRow) {
-  const open = detRow.classList.toggle('open');
-  if (!open) return;
+function renderReleases() {
+  const showBeta = document.getElementById('showBeta').checked;
+
+  const stable = allReleases.filter(r => !r.prerelease);
+  const rows   = showBeta
+    ? allReleases.slice(0, uiLimits.stableReleases + uiLimits.betaReleases)
+    : stable.slice(0, uiLimits.stableReleases);
+
+  const countEl = document.getElementById('releaseCount');
+  countEl.textContent = showBeta
+    ? `${rows.length} releases`
+    : `${rows.length} stable releases`;
+
+  const root = document.getElementById('releases');
+
+  if (!rows.length) {
+    root.innerHTML = '<div class="state">No releases yet — first refresh in progress.</div>';
+    return;
+  }
+
+  root.innerHTML = '';
+
+  // "latest" = first stable release
+  const latestStableTag = stable[0]?.tag;
+
+  rows.forEach(r => {
+    const si  = scoreInfo(r.finalScore);
+    const id  = cssId(r.tag);
+    const isLatest = r.tag === latestStableTag && !r.prerelease;
+
+    const row = document.createElement('div');
+    row.className = 'release';
+    row.dataset.tag = r.tag;
+    row.style.setProperty('--score-color', si.color);
+    row.innerHTML = `
+      <div class="release__left">
+        <span class="release__tag">${esc(r.tag)}</span>
+        <span class="release__date">${timeAgo(r.publishedAt)}</span>
+        ${r.prerelease ? '<span class="chip--beta">beta</span>' : ''}
+        ${isLatest ? '<span class="chip--latest">latest</span>' : ''}
+      </div>
+      <div class="release__right">
+        <span class="score-dot"></span>
+        <span class="score-num">${esc(si.num)}</span>
+        <span class="score-label">${esc(si.label)}</span>
+        <svg class="chevron" viewBox="0 0 16 16" fill="none">
+          <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5"
+                stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>`;
+
+    const det = document.createElement('div');
+    det.className = 'details';
+    det.id = `det-${id}`;
+    det.innerHTML = '<div class="state" style="padding:var(--space-7) 0">Loading…</div>';
+
+    row.addEventListener('click', () => toggleRelease(row, det, r.tag));
+    root.appendChild(row);
+    root.appendChild(det);
+  });
+}
+
+document.getElementById('showBeta').addEventListener('change', renderReleases);
+
+/* ── toggle release row ───────────────────────────────────────────────── */
+async function toggleRelease(row, det, tag) {
+  const opening = !row.classList.contains('open');
+
+  // close all
+  document.querySelectorAll('.release.open').forEach(r => r.classList.remove('open'));
+
+  if (!opening) return;
+  row.classList.add('open');
+
+  // already loaded?
+  if (det.dataset.loaded) return;
+  det.dataset.loaded = '1';
+
   try {
     const data = await api('/release/' + encodeURIComponent(tag));
-    const sum = document.getElementById('sum-' + tag);
-    sum.innerHTML = `<a href="${data.htmlUrl}" target="_blank" rel="noopener">release notes ↗</a> · risk index ${data.riskIndex ?? 0}`;
-    const iss = document.getElementById('iss-' + tag);
-    if (!data.issues.length) {
-      iss.innerHTML = '<div class="empty">no classified issues for this version</div>';
-      return;
-    }
-    iss.innerHTML = data.issues.map(renderIssue).join('');
+    renderIssues(det, data.issues ?? []);
   } catch (e) {
-    document.getElementById('sum-' + tag).textContent = 'failed: ' + e.message;
+    det.innerHTML = `<div class="details__empty">Failed to load: ${esc(e.message)}</div>`;
   }
 }
 
-function renderIssue(i) {
-  const sentBadge = i.sentiment === 'negative' ? 'neg' : i.sentiment === 'positive' ? 'pos' : '';
-  const sevClass = i.severity === 'critical' ? 'crit' : i.severity === 'high' ? 'high' : '';
-  const coreClass = i.functionality === 'core' ? 'core' : '';
-  return `
-    <div class="issue">
-      <span class="num">#${i.number}</span>
-      <a class="title" href="${i.htmlUrl}" target="_blank" rel="noopener" title="${escapeHtml(i.title)}">${escapeHtml(i.title)}</a>
-      <span class="badges">
-        <span class="b ${sentBadge}">${i.sentiment}</span>
-        <span class="b ${sevClass}">${i.severity}</span>
-        <span class="b ${coreClass}">${i.functionality}</span>
-        ${i.hasWorkaround ? '<span class="b">workaround</span>' : ''}
-      </span>
-    </div>`;
+function renderIssues(det, issues) {
+  if (!issues.length) {
+    det.innerHTML = '<div class="details__empty">No reported issues for this version yet.</div>';
+    return;
+  }
+
+  // show negatives first, then positives, skip neutral without rationale
+  const sorted = [...issues].sort((a, b) => {
+    const sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
+    const sentOrder = { negative: 0, positive: 1, neutral: 2 };
+    if (a.sentiment !== b.sentiment) return sentOrder[a.sentiment] - sentOrder[b.sentiment];
+    return (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9);
+  });
+
+  det.innerHTML = sorted.map(i => {
+    const dotClass = i.sentiment === 'positive' ? 'positive' : (i.severity ?? 'low');
+    const rationale = i.rationale ? `<p class="issue__rationale">${esc(i.rationale)}</p>` : '';
+    return `
+      <div class="issue">
+        <span class="sev-dot ${esc(dotClass)}"></span>
+        <div class="issue__body">
+          <a class="issue__title" href="${esc(i.htmlUrl)}" target="_blank"
+             rel="noopener" title="${esc(i.title)}">${esc(i.title)}</a>
+          ${rationale}
+        </div>
+      </div>`;
+  }).join('');
 }
 
-function escapeHtml(s) {
-  return String(s ?? '').replace(/[&<>"']/g, (c) =>
-    ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-}
 
+/* ── status dot ───────────────────────────────────────────────────────── */
 async function loadStatus() {
   try {
-    const h = await api('/health');
-    $('#repo').textContent = h.repo;
     const s = await api('/status');
-    $('#status').textContent = s.refreshing
-      ? 'refreshing…'
-      : s.lastRefreshAt
-      ? 'updated ' + new Date(s.lastRefreshAt).toLocaleString()
-      : 'never refreshed';
-  } catch (e) {
-    $('#status').textContent = 'offline';
+    const pulse = document.getElementById('pulse');
+    const label = document.getElementById('updatedLabel');
+    if (s.refreshing) {
+      pulse.className = 'pulse stale';
+      label.textContent = 'Refreshing…';
+    } else if (s.lastRefreshAt) {
+      pulse.className = 'pulse';
+      label.textContent = 'Updated ' + timeAgo(s.lastRefreshAt);
+    } else {
+      pulse.className = 'pulse stale';
+      label.textContent = 'Not yet refreshed';
+    }
+  } catch {
+    document.getElementById('pulse').className = 'pulse stale';
+    document.getElementById('updatedLabel').textContent = 'Offline';
   }
 }
 
-$('#refresh').addEventListener('click', async (e) => {
-  e.preventDefault();
-  $('#status').textContent = 'refreshing…';
-  try {
-    await api('/refresh', { method: 'POST' });
-    await loadStatus();
-    await loadReleases();
-  } catch (err) {
-    $('#status').textContent = 'failed: ' + err.message;
-  }
-});
+/* ── init ─────────────────────────────────────────────────────────────── */
+let uiLimits = { stableReleases: 5, betaReleases: 5 };
 
-loadStatus();
-loadReleases();
-setInterval(loadStatus, 30_000);
+(async () => {
+  try { uiLimits = await api('/config'); } catch { /* use defaults */ }
+  loadStatus();
+  loadReleases();
+  setInterval(loadStatus, 30_000);
+})();
 </script>
 </body>
 </html>

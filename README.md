@@ -36,6 +36,8 @@ Unversioned negative issues are charged against the latest release.
 
 ## Setup
 
+Requires **Node ≥ 22.5** (uses the built-in `node:sqlite` module — no native build, no prebuilds, zero compile steps).
+
 ```bash
 cp .env.example .env
 # fill in OPENAI_API_KEY; optionally GITHUB_TOKEN to raise rate limits

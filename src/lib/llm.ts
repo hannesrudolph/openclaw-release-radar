@@ -22,20 +22,30 @@ export interface IssueClassification {
 }
 
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
-For each issue return strict JSON matching the schema. Be conservative.
+Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
 
-Critical rule: an issue is "core" + "critical" + "broad" ONLY if it breaks the main functionality
-for ALL users without specific conditions. A bug that needs a niche config, an exotic provider,
-or a specific OS edition is NOT broad/critical.
+{
+  "sentiment":       "negative" | "positive" | "neutral",
+  "severity":        "critical" | "high" | "medium" | "low",
+  "scope":           "broad" | "moderate" | "niche",
+  "functionality":   "core" | "integration" | "provider" | "docs",
+  "affected_users":  "many" | "some" | "few" | "unknown",
+  "hasWorkaround":   true | false,
+  "duplicateCluster": "<kebab-slug>" | null,
+  "affectsVersion":  "<tag>" | null,
+  "confidence":      0.0..1.0,
+  "rationale":       "<one sentence>"
+}
 
-If an issue is a feature request or a question (not a bug) → sentiment "neutral".
-If users explicitly say something works well → sentiment "positive".
-Otherwise for bug reports → sentiment "negative".
-
-duplicateCluster: invent a short kebab-case tag describing the underlying bug (e.g. "ollama-timeout",
-"mcp-windows-path"). Use the SAME tag for clearly duplicate issues. Return null if unique.
-
-affectsVersion: best guess of the release tag the user is on (from body/comments). Return null if unclear.`;
+Be conservative. Critical rules:
+- An issue is "core" + "critical" + "broad" ONLY if it breaks main functionality for ALL users
+  without specific conditions. A bug requiring a niche provider, OS, or config is NOT broad/critical.
+- Feature requests and questions → sentiment "neutral".
+- Users saying something works well → sentiment "positive".
+- Bug reports → sentiment "negative".
+- duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-timeout").
+  Use the SAME tag for clearly duplicate issues. null if unique.
+- affectsVersion: best guess of the release tag from body/comments. null if unclear.`;
 
 interface OpenAIResp {
   choices: { message: { content: string } }[];
@@ -125,7 +135,7 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     severity: oneOf(r.severity, severities, 'low'),
     scope: oneOf(r.scope, scopes, 'niche'),
     functionality: oneOf(r.functionality, funcs, 'integration'),
-    affectedUsers: oneOf(r.affectedUsers, users, 'unknown'),
+    affectedUsers: oneOf((r as any).affected_users ?? r.affectedUsers, users, 'unknown'),
     hasWorkaround: Boolean(r.hasWorkaround),
     duplicateCluster:
       typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()

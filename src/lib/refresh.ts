@@ -1,9 +1,11 @@
 import { config } from '../config';
+import { invalidateCache } from './cache';
 import { listIssueComments, listIssues, listReleases } from './github';
 import { classifyIssue, type IssueClassification } from './llm';
 import { scoreRelease, type IssueInput } from './score';
 import {
   getClassification,
+  getLastScoredAt,
   getRelease,
   issuesForVersion,
   issuesWithoutVersion,
@@ -15,7 +17,8 @@ import {
 } from './db';
 
 let refreshing = false;
-let lastRefreshAt: string | null = null;
+// Seed from DB so "Not yet refreshed" doesn't show after a restart.
+let lastRefreshAt: string | null = getLastScoredAt();
 let lastError: string | null = null;
 
 export function getRefreshState() {
@@ -34,7 +37,10 @@ export async function refresh(): Promise<{
 
   try {
     // 1. Pull releases.
-    const releases = await listReleases(config.limits.releases);
+    // Fetch with a buffer: betas often outnumber stable releases significantly,
+    // so we need more than (stable + beta) to guarantee we collect enough of each.
+    const fetchLimit = Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6);
+    const releases = await listReleases(fetchLimit);
     for (const r of releases) {
       upsertRelease({
         tag: r.tag_name,
@@ -81,7 +87,7 @@ export async function refresh(): Promise<{
     }
 
     // 4. Recompute scores per release (treat unversioned negative issues as latest-release tax).
-    const allReleases = listReleasesDb(config.limits.releases);
+    const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
     const unversioned = issuesWithoutVersion();
     const latestTag = allReleases[0]?.tag;
 
@@ -105,6 +111,7 @@ export async function refresh(): Promise<{
     }
 
     lastRefreshAt = new Date().toISOString();
+    invalidateCache();
     return {
       classifiedCount,
       releaseCount: allReleases.length,
