@@ -16,7 +16,6 @@ export interface IssueClassification {
   affectedUsers: AffectedUsers;
   hasWorkaround: boolean;
   duplicateCluster: string | null; // short label like "ollama-timeout" — same label across dupes
-  affectsVersion: string | null;   // best-effort tag this issue likely affects
   confidence: number;              // 0..1
   rationale: string;               // kept for DB compat, no longer generated
 }
@@ -32,7 +31,6 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "affected_users":  "many" | "some" | "few" | "unknown",
   "hasWorkaround":   true | false,
   "duplicateCluster": "<kebab-slug>" | null,
-  "affectsVersion":  "<tag>" | null,
   "confidence":      0.0..1.0
 }
 
@@ -43,26 +41,19 @@ Be conservative. Critical rules:
 - Users saying something works well → sentiment "positive".
 - Bug reports → sentiment "negative".
 - duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-timeout").
-  Use the SAME tag for clearly duplicate issues. null if unique.
-- affectsVersion: best guess of the release tag from body/comments. null if unclear.`;
+  Use the SAME tag for clearly duplicate issues. null if unique.`;
 
 interface OpenAIResp {
   choices: { message: { content: string } }[];
 }
 
-function buildUserMessage(
-  issue: GhIssue,
-  comments: GhComment[],
-  knownTags: string[],
-): string {
+function buildUserMessage(issue: GhIssue, comments: GhComment[]): string {
   const body = (issue.body ?? '').slice(0, 3000);
   const recentComments = comments
     .slice(-10)
     .map((c) => `@${c.user?.login ?? 'unknown'}: ${(c.body ?? '').slice(0, 800)}`)
     .join('\n---\n');
   return [
-    `Known release tags (most recent first): ${knownTags.slice(0, 15).join(', ') || '(none)'}`,
-    '',
     `Issue #${issue.number} (${issue.state})`,
     `Title: ${issue.title}`,
     `Author: @${issue.user?.login ?? 'unknown'}`,
@@ -81,7 +72,6 @@ function buildUserMessage(
 export async function classifyIssue(
   issue: GhIssue,
   comments: GhComment[],
-  knownTags: string[],
 ): Promise<IssueClassification> {
   if (!config.openai.apiKey) throw new Error('OPENAI_API_KEY is not set');
 
@@ -97,7 +87,7 @@ export async function classifyIssue(
       response_format: { type: 'json_object' },
       messages: [
         { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserMessage(issue, comments, knownTags) },
+        { role: 'user', content: buildUserMessage(issue, comments) },
       ],
     }),
   });
@@ -139,10 +129,6 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     duplicateCluster:
       typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()
         ? r.duplicateCluster.trim().toLowerCase()
-        : null,
-    affectsVersion:
-      typeof r.affectsVersion === 'string' && r.affectsVersion.trim()
-        ? r.affectsVersion.trim()
         : null,
     confidence: clamp01(typeof r.confidence === 'number' ? r.confidence : 0.5),
     rationale: typeof r.rationale === 'string' ? r.rationale.slice(0, 400) : '',
