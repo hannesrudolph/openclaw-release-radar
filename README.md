@@ -102,11 +102,37 @@ average-or-better release from looking catastrophic on the absolute scale.
   (Without this guard, "no negatives" would score a perfect 10, which would
   conflate "good release" with "we don't have evidence".)
 
-### Attribution
+### Attribution (window-based / carry-forward)
 
-Only issues with an explicit, LLM-extracted `affectsVersion` count toward
-that version's score. Unattributed negative issues are deliberately dropped
-rather than charged against the latest release — same model as `agent-watch`.
+An issue affects release `R` iff its existence window overlaps `R`'s reign:
+
+* `R` reigns from `R.published_at` until the next release is published
+  (or forever, if `R` is the latest).
+* The issue exists from `created_at` until `closed_at` (or forever if still open).
+
+In practice:
+
+* A bug filed during `v5.4`'s reign and **still open today** affects every
+  release from `v5.4` through latest — because the bug actually still exists
+  in all of them.
+* A bug closed before a release was published does **not** affect that
+  release — the fix already shipped.
+* A bug filed during `R`'s reign and closed during the same reign **does**
+  affect `R` — someone hit it before it was fixed.
+
+LLM's `affectsVersion` is retained on the row for display purposes
+("user explicitly said this is about v5.18") but no longer drives scoring.
+
+### Why this means latest releases score near the floor
+
+Latest accumulates every open bug from the project's history (because they
+all still exist in it). The absolute 0–10 score therefore floors at the
+bottom for any actively-developed project. The UI surfaces a
+**recommendation view** as the primary read — "should I install this right
+now?" answered by comparing each release's bug-load to the project's typical
+baseline. The 0–10 score is retained for API consumers and historical
+retrospective ("was v5.6 actually solid at the time? as bugs are closed
+this number rises").
 
 ## Setup
 

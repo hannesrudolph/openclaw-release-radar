@@ -363,10 +363,7 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     functionality: oneOf(r.functionality, funcs, 'integration'),
     affectedUsers: oneOf((r as any).affected_users ?? r.affectedUsers, users, 'unknown'),
     workaroundStatus: oneOf(wsRaw, workarounds, 'unknown'),
-    duplicateCluster:
-      typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()
-        ? r.duplicateCluster.trim().toLowerCase()
-        : null,
+    duplicateCluster: normalizeCluster(r.duplicateCluster),
     affectsVersion:
       typeof r.affectsVersion === 'string' && r.affectsVersion.trim()
         ? r.affectsVersion.trim()
@@ -374,6 +371,24 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     confidence: clamp01(typeof r.confidence === 'number' ? r.confidence : 0.5),
     rationale: typeof r.rationale === 'string' ? r.rationale.slice(0, 400) : '',
   };
+}
+
+// LLMs sometimes return the *word* "none" / "null" / "unique" instead of an
+// actual JSON null when an issue has no duplicate cluster. The previous
+// normaliser preserved those as valid cluster IDs, causing all such issues
+// to be grouped into a fake "none" cluster and silently inflate via the
+// duplicate boost. Treat these placeholders as null.
+const CLUSTER_PLACEHOLDERS = new Set([
+  'none', 'null', 'n/a', 'na', 'unique', 'no-cluster', 'no cluster',
+  'no-duplicate', 'no duplicate', 'undefined', 'unknown',
+]);
+
+function normalizeCluster(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().toLowerCase();
+  if (!cleaned) return null;
+  if (CLUSTER_PLACEHOLDERS.has(cleaned)) return null;
+  return cleaned;
 }
 
 function clamp01(x: number): number {

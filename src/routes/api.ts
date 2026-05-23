@@ -87,36 +87,53 @@ api.get('/release/:tag', (req, res) => {
 // Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
 // score was computed for this specific release.
 
+// Under window-based attribution one issue often affects multiple releases, so
+// returning every attributed issue per release inflates the payload (we observed
+// 5 MB for openclaw with ~1100 negs × 10 releases). For the public-API surface
+// we cap to the most relevant issues per release: negatives first, sorted by
+// severity, then positives. Full per-release issue lists remain available via
+// /api/release/:tag for callers that actually want them.
+const PUBLIC_ISSUES_PER_RELEASE = 25;
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
+
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
   const allReleases = listReleasesDb(config.limits.releases);
 
   const releases = allReleases.map((r) => {
-    const issues = issuesForVersion(r.tag).map((i) => ({
-      number:         i.number,
-      title:          i.title,
-      url:            i.html_url,
-      state:          i.state,
-      sentiment:      i.sentiment,
-      severity:       i.severity,
-      scope:          i.scope,
-      hasWorkaround:  i.has_workaround === 1,
-      confidence:     i.confidence,
-      rationale:      i.rationale,
+    const all = issuesForVersion(r.tag);
+    const sorted = [...all].sort((a, b) => {
+      const s = (SENTIMENT_RANK[a.sentiment] ?? 9) - (SENTIMENT_RANK[b.sentiment] ?? 9);
+      if (s !== 0) return s;
+      return (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
+    });
+    const topIssues = sorted.slice(0, PUBLIC_ISSUES_PER_RELEASE).map((i) => ({
+      number:        i.number,
+      title:         i.title,
+      url:           i.html_url,
+      state:         i.state,
+      sentiment:     i.sentiment,
+      severity:      i.severity,
+      scope:         i.scope,
+      hasWorkaround: i.has_workaround === 1,
+      confidence:    i.confidence,
+      rationale:     i.rationale,
     }));
 
     return {
-      tag:            r.tag,
-      publishedAt:    r.published_at,
-      url:            r.html_url,
-      score:          r.final_score,
-      grade:          scoreToGrade(r.final_score, r.state),
-      riskIndex:      r.risk_index,
-      negativeIssues: r.negative_issues ?? 0,
-      positiveIssues: r.positive_issues ?? 0,
-      state:          r.state,
-      scoredAt:       r.scored_at,
-      issues,
+      tag:               r.tag,
+      publishedAt:       r.published_at,
+      url:               r.html_url,
+      score:             r.final_score,
+      grade:             scoreToGrade(r.final_score, r.state),
+      riskIndex:         r.risk_index,
+      negativeIssues:    r.negative_issues ?? 0,
+      positiveIssues:    r.positive_issues ?? 0,
+      state:             r.state,
+      scoredAt:          r.scored_at,
+      totalAttributedIssues: all.length,
+      issues:            topIssues,
     };
   });
 
