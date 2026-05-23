@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS releases (
   risk_index REAL,
   negative_issues INTEGER,
   positive_issues INTEGER,
-  scored_at TEXT
+  scored_at TEXT,
+  state TEXT
 );
 
 CREATE TABLE IF NOT EXISTS issues (
@@ -80,6 +81,7 @@ for (const sql of [
   `ALTER TABLE issues ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
   `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN state TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -112,6 +114,9 @@ export interface ReleaseRow {
   negative_issues: number | null;
   positive_issues: number | null;
   scored_at: string | null;
+  // 'analyzing' (<3h grace), 'insufficient' (no negative signal), 'rated', or null
+  // for pre-migration rows that haven't been re-scored yet.
+  state: string | null;
 }
 
 const upsertReleaseStmt = db.prepare(`
@@ -136,7 +141,8 @@ export function upsertRelease(r: {
 
 const updateScoreStmt = db.prepare(`
 UPDATE releases SET final_score=:final_score, risk_index=:risk_index,
-  negative_issues=:negative_issues, positive_issues=:positive_issues, scored_at=:scored_at
+  negative_issues=:negative_issues, positive_issues=:positive_issues,
+  state=:state, scored_at=:scored_at
 WHERE tag=:tag
 `);
 
@@ -146,6 +152,7 @@ export function updateReleaseScore(args: {
   risk_index: number;
   negative_issues: number;
   positive_issues: number;
+  state: string;
 }): void {
   updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
 }

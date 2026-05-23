@@ -215,6 +215,7 @@ export async function refresh(): Promise<{
         risk_index: score.riskIndex,
         negative_issues: score.negativeIssues,
         positive_issues: score.positiveIssues,
+        state: score.state,
       });
     }
 

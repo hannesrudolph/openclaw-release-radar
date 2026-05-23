@@ -38,6 +38,7 @@ api.get('/releases', (_req, res) => {
       riskIndex: r.risk_index,
       negativeIssues: r.negative_issues,
       positiveIssues: r.positive_issues,
+      state: r.state,
       scoredAt: r.scored_at,
     })),
   );
@@ -59,6 +60,7 @@ api.get('/release/:tag', (req, res) => {
     riskIndex: rel.risk_index,
     negativeIssues: rel.negative_issues,
     positiveIssues: rel.positive_issues,
+    state: rel.state,
     scoredAt: rel.scored_at,
     issues,
   });
@@ -108,10 +110,11 @@ function buildPublicPayload() {
       publishedAt:    r.published_at,
       url:            r.html_url,
       score:          r.final_score,
-      grade:          scoreToGrade(r.final_score),
+      grade:          scoreToGrade(r.final_score, r.state),
       riskIndex:      r.risk_index,
       negativeIssues: r.negative_issues ?? 0,
       positiveIssues: r.positive_issues ?? 0,
+      state:          r.state,
       scoredAt:       r.scored_at,
       issues,
     };
@@ -132,16 +135,19 @@ api.get('/public', (_req, res) => {
   res.json(data);
 });
 
-// Grade thresholds ported from agent-watch. Note the asymmetric "insufficient" band
-// (4.9–5.1): a release with no attributed issues sits at the 5.0 neutral baseline
-// and should not be labelled "mixed".
-function scoreToGrade(score: number | null): string {
-  if (score == null) return 'pending';
-  if (score >= 8.2) return 'stable';
-  if (score >= 6.8) return 'mostly-stable';
-  if (score > 5.1)  return 'mixed';
-  if (score >= 4.9) return 'insufficient';
-  if (score >= 3.5) return 'risky';
+// Grade thresholds ported from agent-watch. We prefer the explicit `state` written
+// by the scorer when present — that's the authoritative answer to "do we have signal
+// for this release?". The numeric fallback band (4.9–5.1) catches legacy rows scored
+// before `state` existed.
+function scoreToGrade(score: number | null, state: string | null): string {
+  if (state === 'analyzing')    return 'analyzing';
+  if (state === 'insufficient') return 'insufficient';
+  if (score == null)            return 'pending';
+  if (score >= 8.2)             return 'stable';
+  if (score >= 6.8)             return 'mostly-stable';
+  if (score > 5.1)              return 'mixed';
+  if (score >= 4.9)             return 'insufficient';
+  if (score >= 3.5)             return 'risky';
   return 'unstable';
 }
 
