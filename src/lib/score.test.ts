@@ -36,7 +36,6 @@ function mkIssue(
     number: num,
     updatedAt: opts.updatedAt ?? '2024-06-30T00:00:00Z', // fresh by default
     commentCount: opts.comments ?? 0,
-    publishedAt: RELEASE_PUB,
     isBot: opts.isBot ?? false,
     classification: cls,
   };

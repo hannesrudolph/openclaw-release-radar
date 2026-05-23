@@ -77,7 +77,6 @@ export interface IssueInput {
   number: number;
   updatedAt: string;
   commentCount: number;
-  publishedAt: string | null; // release published_at, used for age-based grace + signal age
   isBot: boolean;             // true → contribution multiplied by BOT_WEIGHT_MULTIPLIER
   classification: IssueClassification;
 }
@@ -100,8 +99,10 @@ export interface ScoreBreakdown {
   state: 'analyzing' | 'rated' | 'insufficient';
 }
 
-function recencyFactor(createdAt: string, now: number): number {
-  const ageDays = Math.max(0, now - Date.parse(createdAt)) / DAY_MS;
+function recencyFactor(updatedAt: string, now: number): number {
+  // Activity recency: comments / edits bump the clock. A bug that was filed 6 months
+  // ago but is still getting comments today is fresh signal, not stale signal.
+  const ageDays = Math.max(0, now - Date.parse(updatedAt)) / DAY_MS;
   return 0.55 + 0.45 * Math.exp(-ageDays / HALF_LIFE_DAYS);
 }
 

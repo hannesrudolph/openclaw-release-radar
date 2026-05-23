@@ -8,6 +8,12 @@ import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 // staying well under GitHub's secondary rate limit and OpenAI's per-minute token caps.
 const CLASSIFY_CONCURRENCY = 5;
 
+function computeMedian(sorted: number[]): number | undefined {
+  if (sorted.length < 3) return undefined;
+  const mid = sorted.length >> 1;
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 async function runWithConcurrency<T>(
   items: T[],
   limit: number,
@@ -189,7 +195,6 @@ export async function refresh(): Promise<{
         number: r.number,
         updatedAt: r.updated_at,
         commentCount: r.comments,
-        publishedAt: rel.published_at,
         isBot: r.is_bot === 1,
         classification: rowToClassification(r),
       }));
@@ -198,11 +203,13 @@ export async function refresh(): Promise<{
 
     // Median weightedNegSum across rated releases that actually have negative signal.
     // Need at least 3 such releases — otherwise the median is meaningless noise.
+    // For even-sized lists, take the mean of the two central values rather than the
+    // upper one — the floor lift is sensitive to this for small N.
     const negSums = pass1
       .filter((p) => p.score.state === 'rated' && p.score.negativeIssues > 0)
       .map((p) => p.score.weightedNegSum)
       .sort((a, b) => a - b);
-    const peerMedian = negSums.length >= 3 ? negSums[Math.floor(negSums.length / 2)] : undefined;
+    const peerMedian = computeMedian(negSums);
 
     for (const { rel, inputs, score: firstScore } of pass1) {
       const score =
