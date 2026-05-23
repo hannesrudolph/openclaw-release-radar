@@ -34,6 +34,15 @@ const HALF_LIFE_DAYS = 45;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ median
+// Peer-relative scoring constants. PEER_BASELINE_SCORE is what an "at-median"
+// release scores — chose 7 so typical openclaw releases land in the
+// "Mostly stable" band rather than "Mixed", reflecting that being typical for
+// an actively-developed project is fine (not a problem). PEER_LOG_FACTOR controls
+// how quickly the score drops as ratio grows past 1:
+//   factor=2 → ratio=2x → score -2 (= 5, Mixed); ratio=4x → score -4 (= 3, Risky);
+//   ratio=8x → score -6 (= 1, Unstable). Felt about right for the openclaw spread.
+const PEER_BASELINE_SCORE = 7.0;
+const PEER_LOG_FACTOR = 2.0;
 // Bot-generated issues still get counted, but their contribution is dampened. They tend
 // to over-report (one human bug → 20 bot reports), so weighting prevents volume bias
 // while preserving the underlying signal.
@@ -259,17 +268,52 @@ export function scoreRelease(
   const effectiveCore = Math.max(0, weightedNegCoreSerious - coreCancel);
   const effectiveOther = Math.max(0, weightedNegOther - otherCancel);
 
-  // Core drives the score; other issues drop it by at most OTHER_DROP_MAX.
-  const coreScore = scoreFromRiskIndex(effectiveCore);
-  const otherDrop = OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
+  const weightedNegSum = weightedNegCoreSerious + weightedNegOther;
+  const totalRisk = effectiveCore + effectiveOther;
+
+  // Score mode A: peer-relative (used when we have a peer median to compare against).
+  // Under window-based attribution every release carries a large open-bug debt
+  // (often 700+ weighted risk points for an actively-developed project like
+  // openclaw), so an absolute "10 - log2(risk)" curve floors every release.
+  // The question users actually care about is "is this release worse than a
+  // typical release of this project?". We answer that by comparing this
+  // release's risk to the project's median.
+  //
+  //   ratio = totalRisk / peerMedian
+  //   ratio ≤ 1 (at or below typical)  →  PEER_BASELINE_SCORE (7)
+  //   ratio = 2 (twice as bad)          →  PEER_BASELINE_SCORE − 2  = 5
+  //   ratio = 4                         →  3
+  //   ratio = 8                         →  1
+  //
+  // Score mode B: absolute (used only when no peer median is available — e.g.,
+  // first release ever, or no rated peers). Keeps the old log2 curve as a
+  // sensible fallback.
+  let coreScore: number;
+  if (
+    peerMedianWeightedNeg !== undefined &&
+    Number.isFinite(peerMedianWeightedNeg) &&
+    peerMedianWeightedNeg > 0
+  ) {
+    const ratio = totalRisk / peerMedianWeightedNeg;
+    coreScore = ratio <= 1
+      ? PEER_BASELINE_SCORE
+      : PEER_BASELINE_SCORE - Math.log2(ratio) * PEER_LOG_FACTOR;
+  } else {
+    coreScore = scoreFromRiskIndex(effectiveCore);
+  }
+
+  // Core drives the score; in peer-relative mode, otherDrop is already implicit
+  // in totalRisk so we skip the extra penalty. In absolute mode it still helps
+  // distinguish "1 core-serious bug" from "1 core-serious + 50 nicies".
+  const otherDrop = peerMedianWeightedNeg !== undefined
+    ? 0
+    : OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
   let finalScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
   const baseScore = finalScore;
 
-  // Peer median floor: if this release's total negative signal is at or below the median
-  // across all rated releases in this project, and our score fell below 5.5, lift it
-  // to 5.5. Prevents an unusually-buggy project from making every average release look
-  // catastrophic.
-  const weightedNegSum = weightedNegCoreSerious + weightedNegOther;
+  // Floor lift kept from the old model. With peer-relative scoring it rarely
+  // fires (releases at/below median already score PEER_BASELINE_SCORE which is
+  // above the floor), but it remains a safety net for absolute-mode edge cases.
   if (
     peerMedianWeightedNeg !== undefined &&
     Number.isFinite(peerMedianWeightedNeg) &&

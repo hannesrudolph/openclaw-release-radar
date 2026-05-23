@@ -132,29 +132,53 @@ describe('scoreRelease', () => {
     assert.ok(bot < human * 0.5, `bot weight should be substantially below human`);
   });
 
-  it('peer median floor lifts at-median rated releases below 5.5 up to 5.5', () => {
-    // Build a release with enough negative signal that the baseline lands below 5.5.
-    // 4 critical+broad+core+many issues → riskIndex ≈ 16, score ≈ 3.1.
+  it('peer-relative: at-median release scores ~PEER_BASELINE_SCORE (7)', () => {
+    // Under window-based attribution every release carries a large open-bug debt.
+    // What matters is "is this release worse than typical for this project?".
+    // A release whose risk equals the project median should be the baseline.
     const issues = Array.from({ length: 4 }, (_, i) =>
       mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
     );
-    const baseline = scoreRelease(issues, RELEASE_PUB, NOW).finalScore;
-    assert.ok(baseline < 5.5, `baseline must be < 5.5 for this test to mean anything (got ${baseline})`);
-
-    // Median exactly equal to this release's signal → at-or-below condition holds → floor applies.
     const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    const floored = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
-    assert.equal(floored.finalScore, 5.5, `at-median release should be lifted to 5.5, got ${floored.finalScore}`);
+    // Pass exactly this release's signal as the median → ratio = 1 → baseline.
+    const atMedian = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
+    assert.ok(atMedian.finalScore >= 6.5 && atMedian.finalScore <= 7.5,
+      `at-median release should score ~7, got ${atMedian.finalScore}`);
   });
 
-  it('peer median floor does NOT apply when signal exceeds the median', () => {
+  it('peer-relative: worse-than-median release scores below baseline', () => {
     const issues = Array.from({ length: 4 }, (_, i) =>
       mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
     );
-    const { weightedNegSum, finalScore } = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Median lower than this release's signal → release is above-average-bad → no floor.
-    const noFloor = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 0.5);
-    assert.equal(noFloor.finalScore, finalScore, 'above-median signal should not get the peer floor');
+    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
+    // Median half of this release's signal → ratio = 2 → score ≈ baseline − log2(2)·2 = 5.
+    const above = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 0.5);
+    assert.ok(above.finalScore < 7 && above.finalScore >= 4,
+      `2× worse than median should land around 5, got ${above.finalScore}`);
+  });
+
+  it('peer-relative: much-worse release lands near the floor', () => {
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
+    // Median 1/8 of this release's signal → ratio = 8 → score ≈ 7 − log2(8)·2 = 1.
+    const muchWorse = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum / 8);
+    assert.ok(muchWorse.finalScore <= 2,
+      `8× worse than median should be near floor, got ${muchWorse.finalScore}`);
+  });
+
+  it('peer-relative: below-median release stays at baseline (does NOT exceed it)', () => {
+    // ratio < 1 caps the score at PEER_BASELINE_SCORE — we don't want quiet
+    // releases scoring 10 (perfect) when the project itself has high baseline noise.
+    const issues = Array.from({ length: 2 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
+    // Median 10× this release's signal → ratio = 0.1 → baseline (capped).
+    const belowMedian = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 10);
+    assert.ok(belowMedian.finalScore >= 6.5 && belowMedian.finalScore <= 7.5,
+      `below-median release should stay at ~baseline, got ${belowMedian.finalScore}`);
   });
 
   it('floor: finalScore never drops below 1 under heavy load', () => {
