@@ -103,10 +103,12 @@ function chooseFunctionality(
 // anti-inflation examples in the prompt. Heuristic safety net: if the title
 // names a channel or provider, route the bug to integration/provider — channel
 // adapters and provider quirks do NOT break OpenClaw's core engine.
-const CHANNEL_RE = /\b(telegram|discord|slack|feishu|whatsapp|mattermost|imessage|tiktok|lark)\b/i;
+const CHANNEL_RE = /\b(telegram|discord|slack|feishu|whatsapp|mattermost|imessage|tiktok|lark|wechat|weixin|kakao|kakaotalk|line bot|signal)\b/i;
 const PROVIDER_RE = /\b(ollama|openai|anthropic|claude|llama\.cpp|llama\b|codex|deepseek|xai|minimax|bedrock|gemini|mistral|qwen)\b/i;
-// Plugin / subagent / MCP — they're extension surfaces, not the core engine.
-const EXTENSION_RE = /\b(plugin|subagent|mcp)\b/i;
+// Plugin / subagent / MCP + control-UI / dashboard / webchat — extension and UI
+// surfaces, not the core engine. A broken dashboard or WebChat channel adapter
+// doesn't break OpenClaw's gateway/CLI itself.
+const EXTENSION_RE = /\b(plugin|subagent|mcp|control[- ]ui|dashboard|webchat|skills?[- ]ui)\b/i;
 
 export function inferFunctionalityFromTitle(title: string): Functionality | undefined {
   if (CHANNEL_RE.test(title))   return 'integration';
