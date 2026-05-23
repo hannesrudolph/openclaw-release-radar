@@ -1,5 +1,6 @@
 import { config } from '../config';
 import type { GhComment, GhIssue } from './github';
+import { applyLabelOverrides } from './labelOverrides';
 
 // 7-dimension classification, matches agent-watch taxonomy.
 export type Sentiment = 'negative' | 'positive' | 'neutral';
@@ -25,7 +26,7 @@ export interface IssueClassification {
 // Bumped whenever SYSTEM_PROMPT (or extraction logic) changes shape. Stored alongside each
 // classification — refresh.ts re-classifies anything written under an older version, so a
 // prompt fix automatically reshapes the whole dataset on the next cron tick.
-export const PROMPT_VERSION = 3;
+export const PROMPT_VERSION = 4;
 
 // Attribution philosophy (mirrors agent-watch):
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -166,6 +167,44 @@ ANTI-INFLATION EXAMPLES (study these — they describe patterns small models get
     AND drop severity by one rung (a critical bug with workaround is at most high;
     a high bug with workaround is at most medium).
 
+LABEL GUIDE — what to actually trust on this repo:
+
+SEVERITY-SIGNAL labels (treat as strong evidence of the named impact):
+- impact:data-loss      → severity should be critical, functionality "core".
+- impact:security       → severity at least "high", functionality "core".
+- impact:crash-loop     → severity at least "high".
+- impact:session-state  → severity at least "high".
+- impact:message-loss   → severity at least "high".
+- impact:auth-provider  → severity at least "high".
+- regression            → bump severity one rung (something that worked is now broken).
+- P0                    → severity "critical" (emergency).
+- beta-blocker          → severity "critical".
+
+SENTIMENT-SIGNAL labels (trust over title prefix):
+- enhancement           → sentiment "neutral" (feature request, NOT a bug).
+- bug / bug:behavior / bug:crash → sentiment "negative" if body confirms.
+- stale                 → sentiment "neutral" (no longer actionable signal).
+- clawsweeper:not-repro-on-main → sentiment "neutral" (the bug is gone).
+
+CONFIDENCE-SIGNAL labels:
+- clawsweeper:source-repro / clawsweeper:current-main-repro → confidence ≥ 0.9.
+- clawsweeper:needs-info / clawsweeper:needs-live-repro     → confidence ≤ 0.5.
+
+FUNCTIONALITY HINTS:
+- "channel: <name>" (telegram/feishu/discord/...) → integration, not core.
+- "extensions: <name>" (ollama/openai/anthropic/...) → provider, not core.
+- "gateway" / "cli" / "commands" / "agents" → core.
+- "docs" / "tui" alone → likely docs/integration.
+
+PURE NOISE (ignore — these are PR/workflow routing, NOT severity signal):
+- P1, P2, P3 (priority, attached automatically — DON'T inflate severity).
+- clawsweeper:no-new-fix-pr / :needs-maintainer-review / :needs-product-decision
+  / :fix-shape-clear / :linked-pr-open / :queueable-fix / :automerge / :autofix.
+- issue-rating: 🦞 / 🐚 / 🦀 / 🧂 / 🦐 / 🦪 / 🌊 (maintainer-internal quality
+  rating, NOT real-world severity).
+- merge-risk:*, triage:*, status:*, size:*, proof:*, mantis:*, rating:* — these
+  apply to PRs, not issues.
+
 DEFAULTS WHEN GENUINELY UNCERTAIN (no clear signal in body/comments):
 - severity: "medium"
 - scope: "moderate"
@@ -270,7 +309,11 @@ export async function classifyIssue(
 
   const normalized = normalize(parsed);
   normalized.affectsVersion = resolveAffectsVersion(normalized.affectsVersion, knownTags);
-  return normalized;
+  // Deterministic safety net on top of LLM output — maintainers' impact:* labels
+  // and explicit signals (regression, P0, enhancement, stale, ClawSweeper repro
+  // verdicts) override what the LLM came up with. See lib/labelOverrides.ts.
+  const labelNames = issue.labels.map((l) => l.name);
+  return applyLabelOverrides(normalized, labelNames);
 }
 
 function normalize(r: Partial<IssueClassification>): IssueClassification {
