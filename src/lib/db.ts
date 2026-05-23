@@ -298,18 +298,39 @@ export interface JoinedIssue extends IssueRow, ClassificationRow {}
 // extracted an explicit version mention from the issue. Issues with affects_version=null
 // are intentionally dropped from scoring rather than dumped onto the latest release —
 // this avoids polluting every release with the long tail of unattributed open bugs.
+//
+// Timing sanity filter: issues created BEFORE the release was published cannot logically
+// affect it. Without this guard, a small LLM systematically bins ambiguously-worded
+// issues into the most recent tag — we observed 87% bogus attribution on the youngest
+// release (557/639 issues, all dated before the release). The filter is on read because
+// it's the only way to retroactively unstick legacy classifications that won't be
+// re-paginated; future write paths can be wrong in either direction but read-side stays
+// honest. Issues with no release row for the attributed tag fall through and are kept.
 const issuesForVersionStmt = db.prepare(`
 SELECT i.*, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version, c.confidence,
        c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
+LEFT JOIN releases r ON r.tag = c.affects_version
 WHERE c.affects_version = ?
+  AND (r.published_at IS NULL OR i.created_at >= r.published_at)
 ORDER BY i.updated_at DESC
 `);
 
 export function issuesForVersion(tag: string): JoinedIssue[] {
   return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
+}
+
+// Count classifications written under a prompt version older than the current one.
+// Used by refresh.ts to detect "a prompt bump happened — we have legacy rows that
+// the pagination shortcut would skip" and disable the early-stop for one run.
+const countStaleClsStmt = db.prepare(
+  `SELECT COUNT(*) AS n FROM classifications WHERE prompt_version < ?`,
+);
+export function countStaleClassifications(currentPromptVersion: number): number {
+  const row = countStaleClsStmt.get(currentPromptVersion) as { n: number };
+  return row?.n ?? 0;
 }
 
 // ---------- meta ----------
