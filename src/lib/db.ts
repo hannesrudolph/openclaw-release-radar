@@ -294,27 +294,57 @@ export function getClassification(issueNumber: number): ClassificationRow | unde
 // Joined view for scoring + UI
 export interface JoinedIssue extends IssueRow, ClassificationRow {}
 
-// LLM-based attribution (agent-watch model): an issue affects a release ONLY if the LLM
-// extracted an explicit version mention from the issue. Issues with affects_version=null
-// are intentionally dropped from scoring rather than dumped onto the latest release —
-// this avoids polluting every release with the long tail of unattributed open bugs.
+// Window-based attribution (carry-forward model).
 //
-// Timing sanity filter: issues created BEFORE the release was published cannot logically
-// affect it. Without this guard, a small LLM systematically bins ambiguously-worded
-// issues into the most recent tag — we observed 87% bogus attribution on the youngest
-// release (557/639 issues, all dated before the release). The filter is on read because
-// it's the only way to retroactively unstick legacy classifications that won't be
-// re-paginated; future write paths can be wrong in either direction but read-side stays
-// honest. Issues with no release row for the attributed tag fall through and are kept.
+// An issue affects release R if its existence window overlaps R's reign:
+//   - R reigns from R.published_at until the NEXT release is published
+//     (or forever, if R is the latest).
+//   - The issue exists from issue.created_at until issue.closed_at
+//     (or forever, if still open).
+// These two windows must overlap.
+//
+// Why this model, not the previous LLM-mention-only approach:
+//   * A bug filed during v5.4's reign and still open today AFFECTS v5.20 too —
+//     it's not been fixed. The old model attributed it to v5.4 only (via the
+//     LLM's explicit mention) or dropped it (no mention). Either way, v5.20
+//     missed a real bug that exists in it.
+//   * A bug closed before R was even published does NOT affect R — the fix
+//     was already in by R's release date.
+//   * A bug filed during R's reign and closed during R's reign DOES affect R
+//     (someone hit it before it was fixed) — overlap captures this naturally.
+//
+// Properties:
+//   - latest release accumulates EVERY currently-open bug from project history.
+//     This is structurally correct: those bugs DO exist in latest. The release
+//     will look worst-by-construction because it has the longest open-bug
+//     debt. The dashboard layer (recommendation view) handles this via
+//     age-normalised comparison.
+//   - As bugs get closed over time, historical release scores improve —
+//     stored data tells a more honest story of which past releases were
+//     actually solid.
+//
+// LLM's `affects_version` is no longer used for attribution. It's kept in the
+// row for display purposes only (UI can show "user explicitly said v5.18").
 const issuesForVersionStmt = db.prepare(`
-SELECT i.*, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
-       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version, c.confidence,
-       c.rationale, c.classified_at, c.classified_updated_at
+SELECT i.*,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
-LEFT JOIN releases r ON r.tag = c.affects_version
-WHERE c.affects_version = ?
-  AND (r.published_at IS NULL OR i.created_at >= r.published_at)
+JOIN releases target ON target.tag = ?
+WHERE
+  target.published_at IS NOT NULL
+  -- Issue was filed before target's reign ended (next release published).
+  -- For the latest release there is no "next", so we use a sentinel far future.
+  AND i.created_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at),
+        '9999-12-31T23:59:59Z'
+      )
+  -- Issue was not closed before target's reign started — i.e., the bug was
+  -- still live when the user installed target, or was filed during R's reign.
+  AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
 ORDER BY i.updated_at DESC
 `);
 
