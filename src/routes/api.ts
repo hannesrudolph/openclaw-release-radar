@@ -152,20 +152,22 @@ api.get('/public', (_req, res) => {
   res.json(data);
 });
 
-// Grade thresholds ported from agent-watch. We prefer the explicit `state` written
-// by the scorer when present — that's the authoritative answer to "do we have signal
-// for this release?". The numeric fallback band (4.9–5.1) catches legacy rows scored
-// before `state` existed.
+// Grade describes maintenance-activity signal, NOT install advice. A release
+// labelled "active" doesn't mean "install me"; it means "the team is actively
+// fixing things in this release". Install advice comes from the recommendation
+// view, which is age- and peer-aware. Decoupling the two prevents the previous
+// contradiction where a quiet old release showed "Stable" but the recommendation
+// said "Old — don't downgrade".
 function scoreToGrade(score: number | null, state: string | null): string {
   if (state === 'analyzing')    return 'analyzing';
   if (state === 'insufficient') return 'insufficient';
   if (score == null)            return 'pending';
-  if (score >= 8.2)             return 'stable';
-  if (score >= 6.8)             return 'mostly-stable';
-  if (score > 5.1)              return 'mixed';
+  if (score >= 8.2)             return 'active';           // high fix-rate
+  if (score >= 6.8)             return 'typical';          // baseline for this project
+  if (score > 5.1)              return 'quiet';            // below typical
   if (score >= 4.9)             return 'insufficient';
-  if (score >= 3.5)             return 'risky';
-  return 'unstable';
+  if (score >= 3.5)             return 'falling-behind';
+  return 'lagging';
 }
 
 function serializeIssue(r: {

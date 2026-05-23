@@ -390,22 +390,21 @@ function timeAgo(iso) {
 
 function scoreInfo(r) {
   const s = r.finalScore;
-  // The scorer writes an explicit state — prefer that over guessing from the number.
-  //   analyzing    → release is <3h old, no useful signal yet
-  //   insufficient → no negative signal at all (empty / only positive / only neutral)
-  //   rated        → score reflects real evidence; show a number
+  // The label describes maintenance-activity signal — high score means the
+  // release is actively shipping fixes, NOT "install me". Install advice
+  // lives in the recommendation view above; this is the technical signal.
   if (r.state === 'analyzing')    return { color: 'var(--muted)',   label: 'Analyzing…',    num: '—' };
   if (r.state === 'insufficient') return { color: 'var(--muted)',   label: 'No signal yet', num: '—' };
-  // Fallback for legacy rows written before `state` existed — same logic as before.
+  // Fallback for legacy rows written before `state` existed.
   const hasSignal = (r.negativeIssues ?? 0) > 0 || (r.positiveIssues ?? 0) > 0;
-  if (s == null)                  return { color: 'var(--muted)',   label: 'Analyzing…',    num: '—' };
-  if (!hasSignal)                 return { color: 'var(--muted)',   label: 'No signal yet', num: '—' };
-  if (s >= 8.2)                   return { color: 'var(--ok)',      label: 'Stable',        num: s.toFixed(1) };
-  if (s >= 6.8)                   return { color: 'var(--warn)',    label: 'Mostly stable', num: s.toFixed(1) };
-  if (s >  5.1)                   return { color: '#f97316',        label: 'Mixed',         num: s.toFixed(1) };
-  if (s >= 4.9)                   return { color: 'var(--muted)',   label: 'No signal yet', num: '—' };
-  if (s >= 3.5)                   return { color: '#f97316',        label: 'Risky',         num: s.toFixed(1) };
-  return                            { color: 'var(--danger)', label: 'Unstable',      num: s.toFixed(1) };
+  if (s == null)                  return { color: 'var(--muted)',   label: 'Analyzing…',      num: '—' };
+  if (!hasSignal)                 return { color: 'var(--muted)',   label: 'No signal yet',   num: '—' };
+  if (s >= 8.2)                   return { color: 'var(--ok)',      label: 'Active',          num: s.toFixed(1) };
+  if (s >= 6.8)                   return { color: 'var(--warn)',    label: 'Typical',         num: s.toFixed(1) };
+  if (s >  5.1)                   return { color: '#f97316',        label: 'Quiet',           num: s.toFixed(1) };
+  if (s >= 4.9)                   return { color: 'var(--muted)',   label: 'No signal yet',   num: '—' };
+  if (s >= 3.5)                   return { color: '#f97316',        label: 'Falling behind',  num: s.toFixed(1) };
+  return                            { color: 'var(--danger)', label: 'Lagging',         num: s.toFixed(1) };
 }
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
