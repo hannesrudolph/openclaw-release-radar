@@ -26,7 +26,7 @@ export interface IssueClassification {
 // Bumped whenever SYSTEM_PROMPT (or extraction logic) changes shape. Stored alongside each
 // classification — refresh.ts re-classifies anything written under an older version, so a
 // prompt fix automatically reshapes the whole dataset on the next cron tick.
-export const PROMPT_VERSION = 4;
+export const PROMPT_VERSION = 6;
 
 // Attribution philosophy (mirrors agent-watch):
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -167,41 +167,63 @@ ANTI-INFLATION EXAMPLES (study these — they describe patterns small models get
     AND drop severity by one rung (a critical bug with workaround is at most high;
     a high bug with workaround is at most medium).
 
-LABEL GUIDE — what to actually trust on this repo:
+LABEL GUIDE — labels carry DIFFERENT KINDS of signal. Do NOT conflate them.
 
-SEVERITY-SIGNAL labels (treat as strong evidence of the named impact):
-- impact:data-loss      → severity should be critical, functionality "core".
-- impact:security       → severity at least "high", functionality "core".
-- impact:crash-loop     → severity at least "high".
-- impact:session-state  → severity at least "high".
-- impact:message-loss   → severity at least "high".
-- impact:auth-provider  → severity at least "high".
-- regression            → bump severity one rung (something that worked is now broken).
-- P0                    → severity "critical" (emergency).
-- beta-blocker          → severity "critical".
+The openclaw repo uses an automation bot (ClawSweeper) that keyword-stamps
+"impact:*" labels onto almost every issue based on whether the body mentions
+"session", "message", "auth", "crash", etc. THESE LABELS ARE CATEGORIZATION,
+NOT SEVERITY. A bug labelled "impact:session-state" tells you the bug TOUCHES
+session handling, not that the bug is severe. Read the body and judge severity
+from THERE.
+
+CATEGORIZATION-SIGNAL labels — TRUST LEVELS DIFFER:
+
+Trusted (event-based, set by maintainers OR triggered by rare specific keywords):
+- impact:data-loss      → functionality "core" (data persistence event).
+- impact:message-loss   → functionality "integration" (channel delivery).
+- impact:auth-provider  → functionality "provider" (auth/model providers).
+
+UNTRUSTED for functionality (keyword-stamped on ANY mention of the word —
+massively over-applied; observed on ~60% of all issues including routine
+UI nits that mention "session" or "crash"). Treat as NO signal — pick
+functionality from the BODY anchors above, ignore these labels:
+- impact:session-state  → IGNORE for functionality
+- impact:crash-loop     → IGNORE for functionality
+- impact:security       → IGNORE for functionality (BUT: if body actually
+   describes a CVE, vulnerability, or auth-bypass, set functionality core
+   on the BODY's evidence, not on this label)
+
+Other label families (judge from body, but useful confirmation):
+- "channel: telegram/feishu/discord/slack/whatsapp-web/..." → integration.
+- "extensions: ollama/openai/anthropic/deepseek/..." → provider.
+- "gateway" / "cli" / "commands" / "agents" → core.
+- "docs" / "tui" alone → docs/integration.
+
+For severity — ALWAYS judge from BODY regardless of impact:* labels:
+critical only on confirmed showstopper, high on common-config break,
+medium for routine bugs, low for edge cases.
+
+SEVERITY-SIGNAL labels (rare, explicit human-set or fact-based — DO trust):
+- impact:data-loss → severity "critical" (event: data has been/can be lost).
+- P0               → severity "critical" (maintainer-declared emergency).
+- beta-blocker     → severity "critical" (release-blocker).
+- regression       → bump severity one rung (something that worked is broken).
 
 SENTIMENT-SIGNAL labels (trust over title prefix):
-- enhancement           → sentiment "neutral" (feature request, NOT a bug).
-- bug / bug:behavior / bug:crash → sentiment "negative" if body confirms.
-- stale                 → sentiment "neutral" (no longer actionable signal).
-- clawsweeper:not-repro-on-main → sentiment "neutral" (the bug is gone).
+- enhancement                       → sentiment "neutral" (feature request).
+- bug / bug:behavior / bug:crash    → sentiment "negative" if body confirms.
+- stale                             → sentiment "neutral" (stale).
+- clawsweeper:not-repro-on-main     → sentiment "neutral" (bug gone on main).
 
-CONFIDENCE-SIGNAL labels:
+CONFIDENCE-SIGNAL labels (verification status):
 - clawsweeper:source-repro / clawsweeper:current-main-repro → confidence ≥ 0.9.
 - clawsweeper:needs-info / clawsweeper:needs-live-repro     → confidence ≤ 0.5.
 
-FUNCTIONALITY HINTS:
-- "channel: <name>" (telegram/feishu/discord/...) → integration, not core.
-- "extensions: <name>" (ollama/openai/anthropic/...) → provider, not core.
-- "gateway" / "cli" / "commands" / "agents" → core.
-- "docs" / "tui" alone → likely docs/integration.
-
-PURE NOISE (ignore — these are PR/workflow routing, NOT severity signal):
-- P1, P2, P3 (priority, attached automatically — DON'T inflate severity).
+PURE NOISE (workflow routing, NO impact on classification):
+- P1, P2, P3 (priority, attached automatically — DO NOT inflate severity).
 - clawsweeper:no-new-fix-pr / :needs-maintainer-review / :needs-product-decision
   / :fix-shape-clear / :linked-pr-open / :queueable-fix / :automerge / :autofix.
-- issue-rating: 🦞 / 🐚 / 🦀 / 🧂 / 🦐 / 🦪 / 🌊 (maintainer-internal quality
-  rating, NOT real-world severity).
+- issue-rating: 🦞 / 🐚 / 🦀 / 🧂 / 🦐 / 🦪 / 🌊 (maintainer-internal quality).
 - merge-risk:*, triage:*, status:*, size:*, proof:*, mantis:*, rating:* — these
   apply to PRs, not issues.
 

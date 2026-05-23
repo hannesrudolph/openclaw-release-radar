@@ -3,7 +3,7 @@ import { strict as assert } from 'node:assert';
 import { applyLabelOverrides } from './labelOverrides.ts';
 import type { IssueClassification } from './llm.ts';
 
-// Baseline classification — represents typical "LLM said: medium moderate integration".
+// Baseline classification — represents typical LLM output: "medium, moderate, integration".
 function mk(overrides: Partial<IssueClassification> = {}): IssueClassification {
   return {
     sentiment: 'negative',
@@ -21,45 +21,51 @@ function mk(overrides: Partial<IssueClassification> = {}): IssueClassification {
 }
 
 describe('applyLabelOverrides', () => {
+  // ── Identity / noise ───────────────────────────────────────────────────
   it('no labels → identity', () => {
     const base = mk();
-    const out = applyLabelOverrides(base, []);
-    assert.deepEqual(out, base);
+    assert.deepEqual(applyLabelOverrides(base, []), base);
   });
 
-  it('unrelated routing labels → identity', () => {
+  it('unrelated routing labels (P2, clawsweeper noise) → identity', () => {
     const base = mk();
-    const out = applyLabelOverrides(base, ['P2', 'clawsweeper:fix-shape-clear', 'size: M']);
+    const out = applyLabelOverrides(base, [
+      'P2',
+      'P3',
+      'clawsweeper:fix-shape-clear',
+      'clawsweeper:no-new-fix-pr',
+      'clawsweeper:needs-maintainer-review',
+      'size: M',
+      'issue-rating: 🦞 diamond lobster',
+    ]);
     assert.deepEqual(out, base);
   });
 
-  it('enhancement → sentiment forced to neutral', () => {
+  // ── Sentiment overrides (factual state) ────────────────────────────────
+  it('enhancement → sentiment neutral', () => {
     const out = applyLabelOverrides(mk(), ['enhancement']);
     assert.equal(out.sentiment, 'neutral');
   });
 
-  it('stale → sentiment neutral + confidence capped at 0.5', () => {
+  it('stale → sentiment neutral + confidence ≤ 0.5', () => {
     const out = applyLabelOverrides(mk({ confidence: 0.9 }), ['stale']);
     assert.equal(out.sentiment, 'neutral');
     assert.ok(out.confidence <= 0.5);
   });
 
-  it('not-repro-on-main → sentiment neutral + confidence capped at 0.6', () => {
+  it('clawsweeper:not-repro-on-main → sentiment neutral + confidence ≤ 0.6', () => {
     const out = applyLabelOverrides(mk({ confidence: 1.0 }), ['clawsweeper:not-repro-on-main']);
     assert.equal(out.sentiment, 'neutral');
     assert.ok(out.confidence <= 0.6);
   });
 
-  it('impact:data-loss → severity critical AND functionality core', () => {
-    const out = applyLabelOverrides(
-      mk({ severity: 'medium', functionality: 'integration' }),
-      ['impact:data-loss'],
-    );
+  // ── Severity: event-based + human-prioritization ───────────────────────
+  it('impact:data-loss → severity critical (event-based)', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:data-loss']);
     assert.equal(out.severity, 'critical');
-    assert.equal(out.functionality, 'core');
   });
 
-  it('impact:data-loss does NOT downgrade severity already at critical', () => {
+  it('impact:data-loss does NOT downgrade existing critical', () => {
     const out = applyLabelOverrides(mk({ severity: 'critical' }), ['impact:data-loss']);
     assert.equal(out.severity, 'critical');
   });
@@ -74,38 +80,6 @@ describe('applyLabelOverrides', () => {
     assert.equal(out.severity, 'critical');
   });
 
-  it('impact:security raises medium → high; keeps critical at critical', () => {
-    const out1 = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:security']);
-    assert.equal(out1.severity, 'high');
-    const out2 = applyLabelOverrides(mk({ severity: 'critical' }), ['impact:security']);
-    assert.equal(out2.severity, 'critical');
-  });
-
-  it('impact:security: docs functionality → core', () => {
-    const out = applyLabelOverrides(mk({ functionality: 'docs' }), ['impact:security']);
-    assert.equal(out.functionality, 'core');
-  });
-
-  it('impact:crash-loop raises low → high', () => {
-    const out = applyLabelOverrides(mk({ severity: 'low' }), ['impact:crash-loop']);
-    assert.equal(out.severity, 'high');
-  });
-
-  it('impact:session-state raises medium → high', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:session-state']);
-    assert.equal(out.severity, 'high');
-  });
-
-  it('impact:message-loss raises medium → high', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:message-loss']);
-    assert.equal(out.severity, 'high');
-  });
-
-  it('impact:auth-provider raises medium → high', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:auth-provider']);
-    assert.equal(out.severity, 'high');
-  });
-
   it('regression bumps severity one rung', () => {
     assert.equal(applyLabelOverrides(mk({ severity: 'low' }), ['regression']).severity, 'medium');
     assert.equal(applyLabelOverrides(mk({ severity: 'medium' }), ['regression']).severity, 'high');
@@ -113,11 +87,84 @@ describe('applyLabelOverrides', () => {
     assert.equal(applyLabelOverrides(mk({ severity: 'critical' }), ['regression']).severity, 'critical');
   });
 
-  it('regression + impact:crash-loop compounds: medium → high (impact) → critical (regression)', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['regression', 'impact:crash-loop']);
-    assert.equal(out.severity, 'critical');
+  // ── impact:* are NOT severity floors anymore (the big shift) ───────────
+  it('impact:session-state does NOT raise severity (it is a categorization, not severity)', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:session-state']);
+    assert.equal(out.severity, 'medium', 'LLM-chosen medium must be preserved');
   });
 
+  it('impact:message-loss does NOT raise severity', () => {
+    const out = applyLabelOverrides(mk({ severity: 'low' }), ['impact:message-loss']);
+    assert.equal(out.severity, 'low');
+  });
+
+  it('impact:auth-provider does NOT raise severity', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:auth-provider']);
+    assert.equal(out.severity, 'medium');
+  });
+
+  it('impact:crash-loop does NOT raise severity', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:crash-loop']);
+    assert.equal(out.severity, 'medium');
+  });
+
+  it('impact:security does NOT raise severity', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:security']);
+    assert.equal(out.severity, 'medium');
+  });
+
+  // ── impact:* hints for functionality (event-based only) ─────────────────
+  // Keyword-stamped labels (session-state, crash-loop, security) intentionally do
+  // NOT change functionality — they fire on ~60% of issues from substring matches
+  // and used to mass-route routine bugs into "core", inflating core-serious counts.
+  it('impact:session-state does NOT change functionality (keyword-stamped, untrusted)', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'integration' }), ['impact:session-state']);
+    assert.equal(out.functionality, 'integration', 'LLM choice must be preserved');
+  });
+
+  it('impact:crash-loop does NOT change functionality', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'integration' }), ['impact:crash-loop']);
+    assert.equal(out.functionality, 'integration');
+  });
+
+  it('impact:security does NOT change functionality', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'docs' }), ['impact:security']);
+    assert.equal(out.functionality, 'docs');
+  });
+
+  it('impact:data-loss → functionality core (event-based, trusted)', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'integration' }), ['impact:data-loss']);
+    assert.equal(out.functionality, 'core');
+  });
+
+  it('impact:message-loss → functionality integration (channel delivery)', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'docs' }), ['impact:message-loss']);
+    assert.equal(out.functionality, 'integration');
+  });
+
+  it('impact:auth-provider → functionality provider', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'docs' }), ['impact:auth-provider']);
+    assert.equal(out.functionality, 'provider');
+  });
+
+  it('multiple impact labels: message-loss + auth-provider → provider (more core than integration)', () => {
+    const out = applyLabelOverrides(mk({ functionality: 'docs' }), [
+      'impact:message-loss',
+      'impact:auth-provider',
+    ]);
+    assert.equal(out.functionality, 'provider');
+  });
+
+  it('trusted hint OVERRIDES LLM, including down-casting core → integration', () => {
+    // LLM says core, label says message-loss (channel-delivery). Trust the label —
+    // gpt-4o-mini systematically over-classifies as core (we observed ~92% of
+    // attributed negatives ending up core+high/critical), and `impact:message-loss`
+    // is event-based, so the label is the stronger signal.
+    const out = applyLabelOverrides(mk({ functionality: 'core' }), ['impact:message-loss']);
+    assert.equal(out.functionality, 'integration');
+  });
+
+  // ── Confidence overrides (verification status) ──────────────────────────
   it('clawsweeper:source-repro → confidence ≥ 0.9', () => {
     const out = applyLabelOverrides(mk({ confidence: 0.5 }), ['clawsweeper:source-repro']);
     assert.ok(out.confidence >= 0.9);
@@ -138,6 +185,7 @@ describe('applyLabelOverrides', () => {
     assert.ok(out.confidence <= 0.5);
   });
 
+  // ── Passthrough & compound ──────────────────────────────────────────────
   it('passthrough fields are preserved', () => {
     const base = mk({
       duplicateCluster: 'ollama-timeout',
@@ -154,12 +202,14 @@ describe('applyLabelOverrides', () => {
     assert.equal(out.scope, 'broad');
   });
 
-  it('multiple overrides at once: enhancement + impact:data-loss → critical neutral', () => {
-    // Edge case: maintainer mistakenly tagged a critical feature request.
-    // Our rules apply both — sentiment becomes neutral (no bug claim) AND severity
-    // hardens, because if it ever IS a bug we want it correctly weighted.
+  it('enhancement + impact:data-loss → neutral + critical (mistagged feature request)', () => {
     const out = applyLabelOverrides(mk(), ['enhancement', 'impact:data-loss']);
     assert.equal(out.sentiment, 'neutral');
+    assert.equal(out.severity, 'critical');
+  });
+
+  it('regression + impact:data-loss → critical (regression bump caps at critical)', () => {
+    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['regression', 'impact:data-loss']);
     assert.equal(out.severity, 'critical');
   });
 });

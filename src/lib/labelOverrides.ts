@@ -8,16 +8,35 @@ import type {
   WorkaroundStatus,
 } from './llm';
 
-// Deterministic post-processing on top of LLM output. The LLM still drives most of
-// the classification — these overrides are a safety net for labels that openclaw
-// maintainers attach with explicit semantic meaning. A maintainer who attaches
-// `impact:data-loss` is asserting the bug can lose data; we should not let the LLM
-// downgrade that to medium.
+// Deterministic post-processing on top of LLM output.
 //
-// Rules are intentionally one-directional: severity is only ever raised, never
-// lowered. The exceptions are sentiment (→ neutral) and confidence (→ down) when
-// the labels explicitly signal "this isn't actually a confirmed bug" (stale,
-// not-repro-on-main, enhancement).
+// CORE MODEL: labels carry one of three kinds of signal — categorization, severity,
+// or factual state — and we must NOT conflate them.
+//
+//   * `impact:*` labels = CATEGORIZATION ONLY.
+//     ClawSweeper bot stamps these via keyword-matching on the issue body. They
+//     correctly identify WHICH surface is touched ("message delivery", "session
+//     state", "auth providers") but say NOTHING about how bad the bug is. We
+//     translate them into `functionality` only. The single exception is
+//     `impact:data-loss`, which is event-based ("data has been lost") rather
+//     than category-based, and warrants a severity floor.
+//
+//   * `P0`, `beta-blocker`, `regression` = MAINTAINER PRIORITIZATION.
+//     A human maintainer deciding "this is critical" or "this regressed". These
+//     DO override severity (raise only, never lower).
+//
+//   * `enhancement`, `stale`, `clawsweeper:not-repro-on-main` = FACTUAL STATE.
+//     Override sentiment to neutral — they assert "this isn't actually an open
+//     actionable bug right now."
+//
+//   * `clawsweeper:*-repro` / `needs-info` / `needs-live-repro` = VERIFICATION.
+//     Override confidence based on how well the issue is reproduced.
+//
+// Severity is otherwise the LLM's job — it reads the body + comments and judges
+// the actual badness. Previously we floored severity to "high" on every
+// `impact:session-state` / `impact:message-loss` / `impact:auth-provider` label,
+// which produced ~93% high+core classifications because ClawSweeper attaches
+// those to nearly every issue. This file no longer does that.
 
 const SEVERITY_BY_RANK: Severity[] = ['low', 'medium', 'high', 'critical'];
 const SEVERITY_RANK: Record<Severity, number> = {
@@ -26,10 +45,6 @@ const SEVERITY_RANK: Record<Severity, number> = {
   high: 2,
   critical: 3,
 };
-
-function raiseSeverity(current: Severity, atLeast: Severity): Severity {
-  return SEVERITY_RANK[current] >= SEVERITY_RANK[atLeast] ? current : atLeast;
-}
 
 function bumpSeverity(s: Severity): Severity {
   return SEVERITY_BY_RANK[Math.min(3, SEVERITY_RANK[s] + 1)];
@@ -40,6 +55,78 @@ function clamp01(x: number): number {
   return Math.max(0, Math.min(1, x));
 }
 
+// `impact:*` labels map to a functionality area. We only trust hints that are
+// event-based and rare — i.e., where a false positive is unlikely. ClawSweeper
+// keyword-stamps `impact:session-state`, `impact:crash-loop`, `impact:security`
+// on anything mentioning "session", "crash", "security" — these labels touch
+// ~60% of issues, and routing all of them to `core` produced ~76% core-serious
+// classification (real number was likely ~15%), which crashed every recent
+// release to the 1.0 floor. We now leave functionality to the LLM for those
+// keyword-based labels and only override on:
+//   - `impact:data-loss` — event-based ("data has been lost"), rare, severe
+//   - `impact:message-loss` / `impact:auth-provider` — refine docs/unknown toward
+//      the right surface but never elevate to core
+// `impact:data-loss` is *also* a severity floor (handled separately below).
+const FUNCTIONALITY_HINTS: Readonly<Record<string, Functionality>> = Object.freeze({
+  'impact:data-loss':     'core',
+  'impact:message-loss':  'integration',
+  'impact:auth-provider': 'provider',
+});
+
+const FUNCTIONALITY_PRIORITY: Functionality[] = ['core', 'provider', 'integration', 'docs'];
+
+function chooseFunctionality(
+  current: Functionality,
+  labelNames: string[],
+): Functionality {
+  const hinted: Functionality[] = [];
+  for (const name of labelNames) {
+    const hint = FUNCTIONALITY_HINTS[name];
+    if (hint) hinted.push(hint);
+  }
+  if (hinted.length === 0) return current;
+  // Pick the most-core hint among the labels present. The hints we keep here
+  // are all trustworthy (event-based / explicit), so they OVERRIDE the LLM
+  // — including when they would route DOWN from core to integration/provider.
+  // The previous "up-cast only" rule preserved LLM bias on core: gpt-4o-mini
+  // marks any chat/Discord/Telegram issue as core, and the override silently
+  // accepted that. Now an `impact:message-loss` issue resolves to integration
+  // even if the LLM said core.
+  hinted.sort(
+    (a, b) => FUNCTIONALITY_PRIORITY.indexOf(a) - FUNCTIONALITY_PRIORITY.indexOf(b),
+  );
+  return hinted[0];
+}
+
+// Title-based functionality inference. gpt-4o-mini systematically marks any bug
+// touching a third-party channel/provider name as `core`, even with explicit
+// anti-inflation examples in the prompt. Heuristic safety net: if the title
+// names a channel or provider, route the bug to integration/provider — channel
+// adapters and provider quirks do NOT break OpenClaw's core engine.
+const CHANNEL_RE = /\b(telegram|discord|slack|feishu|whatsapp|mattermost|imessage|tiktok|lark)\b/i;
+const PROVIDER_RE = /\b(ollama|openai|anthropic|claude|llama\.cpp|llama\b|codex|deepseek|xai|minimax|bedrock|gemini|mistral|qwen)\b/i;
+// Plugin / subagent / MCP — they're extension surfaces, not the core engine.
+const EXTENSION_RE = /\b(plugin|subagent|mcp)\b/i;
+
+export function inferFunctionalityFromTitle(title: string): Functionality | undefined {
+  if (CHANNEL_RE.test(title))   return 'integration';
+  if (PROVIDER_RE.test(title))  return 'provider';
+  if (EXTENSION_RE.test(title)) return 'integration';
+  return undefined;
+}
+
+// Apply only when LLM picked `core` — otherwise trust the LLM (it might have
+// correctly identified that, e.g., "Telegram session-storage corruption" is
+// genuinely a core/session bug that mentions Telegram incidentally).
+export function applyTitleFunctionalityHint(
+  c: IssueClassification,
+  title: string,
+): IssueClassification {
+  if (c.functionality !== 'core') return c;
+  const hint = inferFunctionalityFromTitle(title);
+  return hint ? { ...c, functionality: hint } : c;
+}
+
 export function applyLabelOverrides(
   c: IssueClassification,
   labelNames: string[],
@@ -47,7 +134,6 @@ export function applyLabelOverrides(
   const has = (name: string): boolean => labelNames.includes(name);
   const hasAny = (...names: string[]): boolean => names.some((n) => labelNames.includes(n));
 
-  // Snapshot — overrides only widen severity / change sentiment, never shrink.
   let sentiment: Sentiment = c.sentiment;
   let severity: Severity = c.severity;
   const scope: Scope = c.scope;
@@ -56,65 +142,40 @@ export function applyLabelOverrides(
   const workaroundStatus: WorkaroundStatus = c.workaroundStatus;
   let confidence = c.confidence;
 
-  // --- Sentiment overrides -------------------------------------------------
-  // enhancement = feature request, even if title says "[Bug]".
+  // --- Sentiment overrides (factual state) --------------------------------
   if (has('enhancement')) {
     sentiment = 'neutral';
   }
-  // stale issues are no longer actionable signal.
   if (has('stale')) {
     sentiment = 'neutral';
     confidence = Math.min(confidence, 0.5);
   }
-  // ClawSweeper explicitly verified the issue no longer reproduces on main.
   if (has('clawsweeper:not-repro-on-main')) {
     sentiment = 'neutral';
     confidence = Math.min(confidence, 0.6);
   }
 
-  // --- Severity floors (impact:* and explicit priority labels) ------------
-  // impact:data-loss → critical. Maintainer asserts data can be lost/corrupted.
+  // --- Functionality hints (impact:* categorization) ----------------------
+  functionality = chooseFunctionality(functionality, labelNames);
+
+  // --- Severity overrides (event-based + maintainer prioritization) -------
+  // impact:data-loss is event-based — the maintainer is asserting data CAN be
+  // lost or corrupted. This is not a category; it's a fact about consequence.
   if (has('impact:data-loss')) {
     severity = 'critical';
-    if (functionality === 'docs' || functionality === 'integration') {
-      functionality = 'core';
-    }
   }
-  // P0 / beta-blocker = explicit emergency priority.
+  // P0 / beta-blocker = explicit emergency from a human.
   if (hasAny('P0', 'beta-blocker')) {
     severity = 'critical';
   }
-  // impact:security = at minimum high (often critical), and it's a core concern.
-  if (has('impact:security')) {
-    severity = raiseSeverity(severity, 'high');
-    if (functionality === 'docs') functionality = 'core';
-  }
-  // impact:crash-loop = process-level availability failure → at minimum high.
-  if (has('impact:crash-loop')) {
-    severity = raiseSeverity(severity, 'high');
-  }
-  // impact:session-state = state corruption/drift → at minimum high.
-  if (has('impact:session-state')) {
-    severity = raiseSeverity(severity, 'high');
-  }
-  // impact:message-loss = delivery failure → at minimum high.
-  if (has('impact:message-loss')) {
-    severity = raiseSeverity(severity, 'high');
-  }
-  // impact:auth-provider = auth/provider breakage → at minimum high.
-  if (has('impact:auth-provider')) {
-    severity = raiseSeverity(severity, 'high');
-  }
-
-  // --- Regression: bump severity one rung (capped at critical) -------------
-  // A regression of a "low" bug becomes medium, medium becomes high, etc.
-  // Combined with impact:* floors this can compound (high → critical when both
-  // regression AND impact:crash-loop apply, which is correct).
+  // Regression = "something that used to work no longer works." This deserves
+  // a bump because regressions are categorically worse than fresh bugs at the
+  // same surface (users were relying on it).
   if (has('regression')) {
     severity = bumpSeverity(severity);
   }
 
-  // --- Confidence boosts / drops from ClawSweeper repro signals -----------
+  // --- Confidence overrides (verification status) -------------------------
   if (hasAny('clawsweeper:source-repro', 'clawsweeper:current-main-repro')) {
     confidence = Math.max(confidence, 0.9);
   }
