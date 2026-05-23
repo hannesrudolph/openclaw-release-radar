@@ -216,6 +216,33 @@ describe('scoreRelease', () => {
     assert.ok(s.finalScore >= 5, `single capped issue shouldn't drop below ~5, got ${s.finalScore}`);
   });
 
+  it('fix-bonus: a release that closed many core-serious bugs scores higher', () => {
+    // Same negative load on both releases, but one closed 30 core-serious bugs
+    // during its reign — should clearly outscore the one that closed nothing.
+    const negs = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const closed = Array.from({ length: 30 }, (_, i) =>
+      mkIssue(100 + i, mkClass({ severity: 'high', functionality: 'core' })),
+    );
+    const noFixes  = scoreRelease(negs, RELEASE_PUB, NOW).finalScore;
+    const withFixes = scoreRelease(negs, RELEASE_PUB, NOW, undefined, closed).finalScore;
+    assert.ok(withFixes > noFixes + 1.5,
+      `30 fixes should add ~4 points; got ${noFixes} → ${withFixes}`);
+  });
+
+  it('fix-bonus: only core-serious closures count, not random closures', () => {
+    const negs = [mkIssue(1, mkClass({ severity: 'high', functionality: 'core' }))];
+    const trivialClosed = Array.from({ length: 30 }, (_, i) =>
+      // neutral / docs / low severity — should NOT credit the release
+      mkIssue(100 + i, mkClass({ sentiment: 'neutral', severity: 'low', functionality: 'docs' })),
+    );
+    const base = scoreRelease(negs, RELEASE_PUB, NOW).finalScore;
+    const withTrivialClosures = scoreRelease(negs, RELEASE_PUB, NOW, undefined, trivialClosed).finalScore;
+    assert.equal(base, withTrivialClosures,
+      'closures of non-core-serious or non-negative issues must not affect the score');
+  });
+
   it('older issues still register but with reduced weight (recency floor 0.55)', () => {
     const fresh = scoreRelease(
       [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { updatedAt: '2024-06-30T00:00:00Z' })],

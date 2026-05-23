@@ -38,11 +38,20 @@ export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ me
 // release scores — chose 7 so typical openclaw releases land in the
 // "Mostly stable" band rather than "Mixed", reflecting that being typical for
 // an actively-developed project is fine (not a problem). PEER_LOG_FACTOR controls
-// how quickly the score drops as ratio grows past 1:
-//   factor=2 → ratio=2x → score -2 (= 5, Mixed); ratio=4x → score -4 (= 3, Risky);
-//   ratio=8x → score -6 (= 1, Unstable). Felt about right for the openclaw spread.
+// how quickly the score drops as ratio grows past 1.
 const PEER_BASELINE_SCORE = 7.0;
 const PEER_LOG_FACTOR = 2.0;
+// Fix-bonus credits each release for the bugs it closed during its reign.
+// A release that resolved 100 core-serious bugs deserves a higher score than
+// one that closed zero, even if their inherited debt is similar. Without this,
+// active maintenance is invisible to the score and inactive releases ("stable
+// because nobody touched them") look the same as well-tended ones.
+//   closed=1   → +0.55    closed=10  → +1.92
+//   closed=30  → +2.73    closed=100 → +3.69
+//   closed=300 → +4.62
+// Calibrated so a "great fix release" (~50 closures) lands around +3.0 above
+// baseline, and heroes don't all collapse into the 10.0 ceiling.
+const FIX_BONUS_FACTOR = 0.55;
 // Bot-generated issues still get counted, but their contribution is dampened. They tend
 // to over-report (one human bug → 20 bot reports), so weighting prevents volume bias
 // while preserving the underlying signal.
@@ -104,6 +113,8 @@ export interface ScoreBreakdown {
   weightedNegSum: number;     // total negative signal pre-cancellation, used for peer median
   negativeIssues: number;
   positiveIssues: number;
+  closedSeriousFixed: number; // core-serious bugs closed during this release's reign
+  fixBonus: number;           // score points added for those fixes
   perIssue: ScoredIssue[];
   state: 'analyzing' | 'rated' | 'insufficient';
 }
@@ -170,7 +181,21 @@ export function scoreRelease(
   releasePublishedAt: string | null,
   now = Date.now(),
   peerMedianWeightedNeg?: number,
+  closedIssues: IssueInput[] = [],
 ): ScoreBreakdown {
+  // Count core-serious negatives closed during this release's reign — these are
+  // the "fixes" we credit. Closed neutrals (stale-bot, duplicates) and positives
+  // don't count.
+  const closedSeriousFixed = closedIssues.reduce((n, ci) => {
+    const c = ci.classification;
+    if (c.sentiment !== 'negative') return n;
+    if (c.functionality !== 'core') return n;
+    if (c.severity !== 'critical' && c.severity !== 'high') return n;
+    return n + 1;
+  }, 0);
+  const fixBonus = closedSeriousFixed > 0
+    ? Math.log2(1 + closedSeriousFixed) * FIX_BONUS_FACTOR
+    : 0;
   // 3-hour grace period for fresh releases — no useful signal yet.
   if (releasePublishedAt) {
     const ageMs = now - Date.parse(releasePublishedAt);
@@ -182,21 +207,27 @@ export function scoreRelease(
         weightedNegSum: 0,
         negativeIssues: 0,
         positiveIssues: 0,
+        closedSeriousFixed,
+        fixBonus: 0,
         perIssue: [],
         state: 'analyzing',
       };
     }
   }
 
-  // No attributed issues → neutral baseline. Score reflects absence of signal, not "perfect".
+  // No attributed issues → neutral baseline + fix-bonus if any. A short-lived
+  // release with no attribution but real closures still deserves credit.
   if (issues.length === 0) {
+    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
     return {
-      finalScore: NEUTRAL_SCORE,
+      finalScore: round1(fs),
       baseScore: NEUTRAL_SCORE,
       riskIndex: 0,
       weightedNegSum: 0,
       negativeIssues: 0,
       positiveIssues: 0,
+      closedSeriousFixed,
+      fixBonus: round2(fixBonus),
       perIssue: [],
       state: 'insufficient',
     };
@@ -249,13 +280,16 @@ export function scoreRelease(
   // bug reports" is "we don't know yet", not "perfect 10". Without this guard the latter
   // would mislead anyone using the dashboard to decide whether to upgrade.
   if (neg === 0) {
+    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
     return {
-      finalScore: NEUTRAL_SCORE,
+      finalScore: round1(fs),
       baseScore: NEUTRAL_SCORE,
       riskIndex: 0,
       weightedNegSum: 0,
       negativeIssues: 0,
       positiveIssues: 0,
+      closedSeriousFixed,
+      fixBonus: round2(fixBonus),
       perIssue,
       state: 'insufficient',
     };
@@ -308,8 +342,10 @@ export function scoreRelease(
   const otherDrop = peerMedianWeightedNeg !== undefined
     ? 0
     : OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
-  let finalScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
-  const baseScore = finalScore;
+  const baseScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
+  // Apply fix-bonus on top of the peer-relative / absolute base. A release
+  // that closed 100 serious bugs during its reign gets +5.4 above its base.
+  let finalScore = clamp(baseScore + fixBonus, MIN_SCORE, 10);
 
   // Floor lift kept from the old model. With peer-relative scoring it rarely
   // fires (releases at/below median already score PEER_BASELINE_SCORE which is
@@ -331,6 +367,8 @@ export function scoreRelease(
     weightedNegSum: round2(weightedNegSum),
     negativeIssues: neg,
     positiveIssues: pos,
+    closedSeriousFixed,
+    fixBonus: round2(fixBonus),
     perIssue,
     state: 'rated',
   };

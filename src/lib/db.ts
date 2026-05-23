@@ -30,7 +30,9 @@ CREATE TABLE IF NOT EXISTS releases (
   negative_issues INTEGER,
   positive_issues INTEGER,
   scored_at TEXT,
-  state TEXT
+  state TEXT,
+  closed_serious_fixed INTEGER NOT NULL DEFAULT 0,
+  fix_bonus REAL NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS issues (
@@ -82,6 +84,8 @@ for (const sql of [
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
   `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN state TEXT`,
+  `ALTER TABLE releases ADD COLUMN closed_serious_fixed INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN fix_bonus REAL NOT NULL DEFAULT 0`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -117,6 +121,10 @@ export interface ReleaseRow {
   // 'analyzing' (<3h grace), 'insufficient' (no negative signal), 'rated', or null
   // for pre-migration rows that haven't been re-scored yet.
   state: string | null;
+  // Core-serious bugs closed during this release's reign — the "fixes credit".
+  closed_serious_fixed: number;
+  // Score points added by those fixes (already included in final_score).
+  fix_bonus: number;
 }
 
 const upsertReleaseStmt = db.prepare(`
@@ -142,7 +150,8 @@ export function upsertRelease(r: {
 const updateScoreStmt = db.prepare(`
 UPDATE releases SET final_score=:final_score, risk_index=:risk_index,
   negative_issues=:negative_issues, positive_issues=:positive_issues,
-  state=:state, scored_at=:scored_at
+  state=:state, closed_serious_fixed=:closed_serious_fixed, fix_bonus=:fix_bonus,
+  scored_at=:scored_at
 WHERE tag=:tag
 `);
 
@@ -153,6 +162,8 @@ export function updateReleaseScore(args: {
   negative_issues: number;
   positive_issues: number;
   state: string;
+  closed_serious_fixed: number;
+  fix_bonus: number;
 }): void {
   updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
 }
@@ -350,6 +361,36 @@ ORDER BY i.updated_at DESC
 
 export function issuesForVersion(tag: string): JoinedIssue[] {
   return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
+}
+
+// Issues CLOSED during a release's reign — the "fixes credit" for that release.
+// An issue counts as fixed-by-R if its closed_at falls inside R's reign window
+// [R.published_at, next_release.published_at). This is what the release shipped
+// in terms of resolved bugs. Used by scoring to give credit for active maintenance:
+// a release that closes 100 core-serious issues during its reign should score
+// noticeably higher than one that closes zero, even if its inherited debt is similar.
+const closedDuringReignStmt = db.prepare(`
+SELECT i.*,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+FROM issues i
+JOIN classifications c ON c.issue_number = i.number
+JOIN releases target ON target.tag = ?
+WHERE
+  target.published_at IS NOT NULL
+  AND i.closed_at IS NOT NULL
+  AND i.closed_at >= target.published_at
+  AND i.closed_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at),
+        '9999-12-31T23:59:59Z'
+      )
+ORDER BY i.closed_at DESC
+`);
+
+export function closedDuringReign(tag: string): JoinedIssue[] {
+  return closedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
 }
 
 // Count classifications written under a prompt version older than the current one.

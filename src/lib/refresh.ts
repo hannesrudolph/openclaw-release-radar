@@ -32,6 +32,7 @@ async function runWithConcurrency<T>(
 }
 import { scoreRelease, type IssueInput } from './score';
 import {
+  closedDuringReign,
   countStaleClassifications,
   detectBot,
   getClassification,
@@ -204,27 +205,29 @@ export async function refresh(): Promise<{
     // average-or-better releases get lifted to PEER_MEDIAN_FLOOR (5.5) if they fell below.
     const allReleases = listReleasesDb(config.limits.releases);
 
+    const buildInput = (r: ReturnType<typeof issuesForVersion>[number]): IssueInput => {
+      const labelNames = safeParseLabels(r.labels);
+      let classification = rowToClassification(r);
+      classification = applyTitleFunctionalityHint(classification, r.title);
+      classification = applyLabelOverrides(classification, labelNames);
+      return {
+        number: r.number,
+        updatedAt: r.updated_at,
+        commentCount: r.comments,
+        isBot: r.is_bot === 1,
+        classification,
+      };
+    };
+
     const pass1 = allReleases.map((rel) => {
-      const versioned = issuesForVersion(rel.tag);
-      const inputs: IssueInput[] = versioned.map((r) => {
-        // Re-apply label overrides at read-time. labelOverrides logic evolves faster
-        // than we want to pay for re-classification, and the operation is idempotent
-        // (re-applying produces the same output), so doing it on every score pass is
-        // safe and lets us tune overrides without an LLM re-run.
-        const labelNames = safeParseLabels(r.labels);
-        // Order: LLM → title hint (weak) → label overrides (strong, explicit).
-        let classification = rowToClassification(r);
-        classification = applyTitleFunctionalityHint(classification, r.title);
-        classification = applyLabelOverrides(classification, labelNames);
-        return {
-          number: r.number,
-          updatedAt: r.updated_at,
-          commentCount: r.comments,
-          isBot: r.is_bot === 1,
-          classification,
-        };
-      });
-      return { rel, inputs, score: scoreRelease(inputs, rel.published_at) };
+      const inputs = issuesForVersion(rel.tag).map(buildInput);
+      const closedInputs = closedDuringReign(rel.tag).map(buildInput);
+      return {
+        rel,
+        inputs,
+        closedInputs,
+        score: scoreRelease(inputs, rel.published_at, undefined, undefined, closedInputs),
+      };
     });
 
     // Median weightedNegSum across rated releases that actually have negative signal.
@@ -237,10 +240,10 @@ export async function refresh(): Promise<{
       .sort((a, b) => a - b);
     const peerMedian = computeMedian(negSums);
 
-    for (const { rel, inputs, score: firstScore } of pass1) {
+    for (const { rel, inputs, closedInputs, score: firstScore } of pass1) {
       const score =
         peerMedian !== undefined && firstScore.state === 'rated'
-          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian)
+          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian, closedInputs)
           : firstScore;
       updateReleaseScore({
         tag: rel.tag,
@@ -249,6 +252,8 @@ export async function refresh(): Promise<{
         negative_issues: score.negativeIssues,
         positive_issues: score.positiveIssues,
         state: score.state,
+        closed_serious_fixed: score.closedSeriousFixed,
+        fix_bonus: score.fixBonus,
       });
     }
 
