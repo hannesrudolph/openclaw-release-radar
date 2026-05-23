@@ -67,6 +67,11 @@ CREATE TABLE IF NOT EXISTS classifications (
 
 CREATE INDEX IF NOT EXISTS idx_classifications_version ON classifications(affects_version);
 CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at);
+
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -298,4 +303,20 @@ ORDER BY i.updated_at DESC
 
 export function issuesForVersion(tag: string): JoinedIssue[] {
   return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
+}
+
+// ---------- meta ----------
+// Key/value scratchpad for one-shot flags (e.g. "have we done the full back-fill yet").
+const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);
+const setMetaStmt = db.prepare(
+  `INSERT INTO meta(key, value) VALUES(?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+);
+
+export function getMeta(key: string): string | null {
+  const row = getMetaStmt.get(key) as { value: string } | undefined;
+  return row?.value ?? null;
+}
+
+export function setMeta(key: string, value: string): void {
+  setMetaStmt.run(key, value);
 }

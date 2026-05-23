@@ -1,20 +1,45 @@
 import { config } from '../config';
 import { invalidateCache } from './cache';
-import { listIssueComments, listReleases, paginateIssues } from './github';
+import { GhIssue, listIssueComments, listReleases, paginateIssues } from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
+
+// Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
+// back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
+// staying well under GitHub's secondary rate limit and OpenAI's per-minute token caps.
+const CLASSIFY_CONCURRENCY = 5;
+
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  worker: (item: T) => Promise<void>,
+): Promise<void> {
+  let cursor = 0;
+  const pool = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const idx = cursor++;
+      if (idx >= items.length) return;
+      await worker(items[idx]);
+    }
+  });
+  await Promise.all(pool);
+}
 import { scoreRelease, type IssueInput } from './score';
 import {
   detectBot,
   getClassification,
   getLastScoredAt,
+  getMeta,
   getRelease,
   issuesForVersion,
   listReleasesDb,
+  setMeta,
   updateReleaseScore,
   upsertClassification,
   upsertIssue,
   upsertRelease,
 } from './db';
+
+const BACKFILL_FLAG = 'backfill_completed_at';
 
 let refreshing = false;
 // Seed from DB so "Not yet refreshed" doesn't show after a restart.
@@ -56,19 +81,24 @@ export async function refresh(): Promise<{
     //        can't affect a release we display on the dashboard;
     //    (c) hit MAX_PAGES as a safety belt against pathological data.
     //
-    // First cold-cache run will paginate deep (≤ MAX_PAGES) to back-fill every release
-    // on the dashboard. Warm runs typically stop on the first page once everything is
-    // known and unchanged.
+    // First run (no backfill flag yet) IGNORES condition (a). Otherwise a fresh deploy
+    // on top of an existing DB stops on page 1 the moment every visible issue is "known
+    // unchanged" — never reaching the older issues that older releases need. Once we've
+    // crossed the oldest release published_at at least once, the flag is set and future
+    // runs use the cheap (a)+(b)+(c) stop logic. No tokens are spent re-classifying
+    // unchanged issues — only fetched + upserted.
     const publishedAts = releases
       .map((r) => r.published_at)
       .filter((p): p is string => !!p)
       .map((p) => Date.parse(p))
       .filter((ms) => Number.isFinite(ms));
     const oldestMonitoredMs = publishedAts.length > 0 ? Math.min(...publishedAts) : -Infinity;
+    const backfillDone = getMeta(BACKFILL_FLAG) !== null;
 
     const MAX_PAGES = 50; // 50 × 100 raw items ≈ several months of openclaw history
     let pagesFetched = 0;
     let classifiedCount = 0;
+    let crossedOldestEver = false;
 
     paginate: for await (const page of paginateIssues(100)) {
       pagesFetched++;
@@ -77,7 +107,9 @@ export async function refresh(): Promise<{
       // or run out of pages.
       let allUnchanged = page.length > 0;
       let crossedOldest = false;
+      const toClassify: GhIssue[] = [];
 
+      // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
       for (const issue of page) {
         const author = issue.user?.login ?? null;
         const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
@@ -98,15 +130,22 @@ export async function refresh(): Promise<{
         if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
 
         const existing = getClassification(issue.number);
-        if (
-          existing &&
-          existing.classified_updated_at === issue.updated_at &&
-          existing.prompt_version === PROMPT_VERSION
-        ) {
-          continue; // unchanged since last classification AND scored under the current prompt
-        }
+        const skip = existing && (
+          // Back-fill mode: preserve tokens — anything already classified is left as-is,
+          // even if updated_at moved on or prompt_version is stale. The next normal run
+          // (once the back-fill flag is set) will pick up those rows incrementally.
+          !backfillDone ||
+          // Normal mode: only skip when the row is fully current.
+          (existing.classified_updated_at === issue.updated_at && existing.prompt_version === PROMPT_VERSION)
+        );
+        if (skip) continue;
         allUnchanged = false;
+        toClassify.push(issue);
+      }
 
+      // Pass 2: classify pending issues in parallel. Per-issue failures are isolated
+      // — one issue erroring out doesn't kill the rest of the page or the back-fill.
+      await runWithConcurrency(toClassify, CLASSIFY_CONCURRENCY, async (issue) => {
         try {
           const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
           const cls: IssueClassification = await classifyIssue(issue, comments, tags);
@@ -115,10 +154,22 @@ export async function refresh(): Promise<{
         } catch (e) {
           console.error(`[classify] issue #${issue.number} failed:`, (e as Error).message);
         }
-      }
+      });
 
-      if (allUnchanged || crossedOldest) break paginate;
+      if (crossedOldest) crossedOldestEver = true;
+
+      // During the initial back-fill we ignore the "all unchanged" shortcut so we
+      // actually reach older releases that pre-existing DB rows wouldn't cover.
+      const canEarlyStop = backfillDone && allUnchanged;
+      if (canEarlyStop || crossedOldest) break paginate;
       if (pagesFetched >= MAX_PAGES) break paginate;
+    }
+
+    // Mark back-fill complete the first time we actually paginated past the oldest
+    // monitored release (or hit MAX_PAGES). After this, the "all unchanged" early
+    // stop kicks in on subsequent runs.
+    if (!backfillDone && (crossedOldestEver || pagesFetched >= MAX_PAGES)) {
+      setMeta(BACKFILL_FLAG, new Date().toISOString());
     }
 
     // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
