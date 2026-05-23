@@ -2,6 +2,7 @@ import { config } from '../config';
 import { invalidateCache } from './cache';
 import { GhIssue, listIssueComments, listReleases, paginateIssues } from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
+import { applyLabelOverrides, applyTitleFunctionalityHint } from './labelOverrides';
 
 // Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
 // back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
@@ -31,6 +32,7 @@ async function runWithConcurrency<T>(
 }
 import { scoreRelease, type IssueInput } from './score';
 import {
+  countStaleClassifications,
   detectBot,
   getClassification,
   getLastScoredAt,
@@ -101,6 +103,16 @@ export async function refresh(): Promise<{
     const oldestMonitoredMs = publishedAts.length > 0 ? Math.min(...publishedAts) : -Infinity;
     const backfillDone = getMeta(BACKFILL_FLAG) !== null;
 
+    // After a PROMPT_VERSION bump, rows written under the old prompt are stale but
+    // sit behind the oldest-monitored cutoff — the normal early-stop would skip
+    // them forever. Detect this once and do a full sweep this run so the bump
+    // actually propagates. Worst case: ~25 pages (~$1) once per prompt change.
+    const staleRows = countStaleClassifications(PROMPT_VERSION);
+    const promptSweep = backfillDone && staleRows > 0;
+    if (promptSweep) {
+      console.log(`[refresh] prompt-sweep: ${staleRows} stale classifications, ignoring early-stop this run`);
+    }
+
     const MAX_PAGES = 50; // 50 × 100 raw items ≈ several months of openclaw history
     let pagesFetched = 0;
     let classifiedCount = 0;
@@ -164,10 +176,13 @@ export async function refresh(): Promise<{
 
       if (crossedOldest) crossedOldestEver = true;
 
-      // During the initial back-fill we ignore the "all unchanged" shortcut so we
-      // actually reach older releases that pre-existing DB rows wouldn't cover.
-      const canEarlyStop = backfillDone && allUnchanged;
-      if (canEarlyStop || crossedOldest) break paginate;
+      // During the initial back-fill (or after a PROMPT_VERSION bump that left
+      // stale rows behind the oldest-monitored cutoff) we ignore the early-stop
+      // shortcuts and walk the full pagination up to MAX_PAGES, so we actually
+      // reach older issues that would otherwise stay frozen on the old prompt.
+      const canEarlyStop = backfillDone && !promptSweep && allUnchanged;
+      const canCrossedOldestStop = !promptSweep && crossedOldest;
+      if (canEarlyStop || canCrossedOldestStop) break paginate;
       if (pagesFetched >= MAX_PAGES) break paginate;
     }
 
@@ -191,13 +206,24 @@ export async function refresh(): Promise<{
 
     const pass1 = allReleases.map((rel) => {
       const versioned = issuesForVersion(rel.tag);
-      const inputs: IssueInput[] = versioned.map((r) => ({
-        number: r.number,
-        updatedAt: r.updated_at,
-        commentCount: r.comments,
-        isBot: r.is_bot === 1,
-        classification: rowToClassification(r),
-      }));
+      const inputs: IssueInput[] = versioned.map((r) => {
+        // Re-apply label overrides at read-time. labelOverrides logic evolves faster
+        // than we want to pay for re-classification, and the operation is idempotent
+        // (re-applying produces the same output), so doing it on every score pass is
+        // safe and lets us tune overrides without an LLM re-run.
+        const labelNames = safeParseLabels(r.labels);
+        // Order: LLM → title hint (weak) → label overrides (strong, explicit).
+        let classification = rowToClassification(r);
+        classification = applyTitleFunctionalityHint(classification, r.title);
+        classification = applyLabelOverrides(classification, labelNames);
+        return {
+          number: r.number,
+          updatedAt: r.updated_at,
+          commentCount: r.comments,
+          isBot: r.is_bot === 1,
+          classification,
+        };
+      });
       return { rel, inputs, score: scoreRelease(inputs, rel.published_at) };
     });
 
@@ -238,6 +264,15 @@ export async function refresh(): Promise<{
     throw e;
   } finally {
     refreshing = false;
+  }
+}
+
+function safeParseLabels(json: string): string[] {
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
   }
 }
 
