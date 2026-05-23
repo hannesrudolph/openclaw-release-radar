@@ -34,7 +34,6 @@ export const config = {
     schedule: env('REFRESH_CRON', '*/20 * * * *'),
   },
   limits: {
-    issues: num('ISSUES_LIMIT', 80),
     releases: num('RELEASES_LIMIT', 10),
   },
   // If set, POST /api/refresh requires X-Admin-Token header.

@@ -63,27 +63,21 @@ export async function listReleases(limit = 10): Promise<GhRelease[]> {
   return data.filter((r) => !r.draft && !r.prerelease).slice(0, limit);
 }
 
-export async function listIssues(limit = 80): Promise<GhIssue[]> {
-  // The /issues endpoint returns BOTH issues and PRs (GitHub treats PRs as a kind of issue).
-  // On active repos like openclaw/openclaw, the first page is dominated by PRs (~80%) and
-  // a single 100-item page yields only ~20 real issues. We paginate until we either:
-  //   - collect `limit` non-PR issues, or
-  //   - exhaust MAX_PAGES (safety cap against runaway fetches), or
-  //   - GitHub returns a short page (end of dataset).
+// Stream issues sorted by updated_at descending, one page at a time. PRs are stripped
+// at the source so consumers only see real issues. The caller decides when to stop —
+// typically when it has seen a full page of already-known issues, or paginated past the
+// oldest release it cares about. Yields an empty array if a page was 100% PRs (caller
+// should keep iterating in that case).
+export async function* paginateIssues(perPage = 100): AsyncGenerator<GhIssue[], void, void> {
   const { owner, repo } = config.github;
-  const MAX_PAGES = 10; // 10 × 100 = up to ~1000 raw items, plenty even with heavy PR traffic
-  const out: GhIssue[] = [];
-  for (let page = 1; page <= MAX_PAGES && out.length < limit; page++) {
+  for (let page = 1; ; page++) {
     const data = await gh<GhIssue[]>(
-      `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+      `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`,
     );
-    for (const i of data) {
-      if (!i.pull_request) out.push(i);
-      if (out.length >= limit) break;
-    }
-    if (data.length < 100) break; // last page
+    if (data.length === 0) return; // dataset exhausted
+    yield data.filter((i) => !i.pull_request);
+    if (data.length < perPage) return; // short page → no more after this
   }
-  return out.slice(0, limit);
 }
 
 export async function listIssueComments(issueNumber: number): Promise<GhComment[]> {

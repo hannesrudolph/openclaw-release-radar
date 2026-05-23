@@ -1,6 +1,6 @@
 import { config } from '../config';
 import { invalidateCache } from './cache';
-import { listIssueComments, listIssues, listReleases } from './github';
+import { listIssueComments, listReleases, paginateIssues } from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 import { scoreRelease, type IssueInput } from './score';
 import {
@@ -49,45 +49,76 @@ export async function refresh(): Promise<{
     }
     const tags = releases.map((r) => r.tag_name);
 
-    // 2. Pull issues sorted by updated desc.
-    const issues = await listIssues(config.limits.issues);
+    // 2. Stream issues sorted by updated_at desc, paginating until we either:
+    //    (a) see a full page where every issue is already classified at its current
+    //        updated_at and prompt version — nothing newer below this point;
+    //    (b) cross the published_at of the oldest monitored release — anything older
+    //        can't affect a release we display on the dashboard;
+    //    (c) hit MAX_PAGES as a safety belt against pathological data.
+    //
+    // First cold-cache run will paginate deep (≤ MAX_PAGES) to back-fill every release
+    // on the dashboard. Warm runs typically stop on the first page once everything is
+    // known and unchanged.
+    const publishedAts = releases
+      .map((r) => r.published_at)
+      .filter((p): p is string => !!p)
+      .map((p) => Date.parse(p))
+      .filter((ms) => Number.isFinite(ms));
+    const oldestMonitoredMs = publishedAts.length > 0 ? Math.min(...publishedAts) : -Infinity;
 
-    // 3. Classify only new/changed issues.
+    const MAX_PAGES = 50; // 50 × 100 raw items ≈ several months of openclaw history
+    let pagesFetched = 0;
     let classifiedCount = 0;
-    for (const issue of issues) {
-      const author = issue.user?.login ?? null;
-      const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
-      upsertIssue({
-        number: issue.number,
-        state: issue.state,
-        title: issue.title,
-        author,
-        html_url: issue.html_url,
-        created_at: issue.created_at,
-        updated_at: issue.updated_at,
-        closed_at: issue.closed_at,
-        comments: issue.comments,
-        labels: labelsJson,
-        is_bot: detectBot(author, labelsJson) ? 1 : 0,
-      });
 
-      const existing = getClassification(issue.number);
-      if (
-        existing &&
-        existing.classified_updated_at === issue.updated_at &&
-        existing.prompt_version === PROMPT_VERSION
-      ) {
-        continue; // unchanged since last classification AND scored under the current prompt
+    paginate: for await (const page of paginateIssues(100)) {
+      pagesFetched++;
+
+      // Page can be empty after PR filtering — keep going until we hit a real signal
+      // or run out of pages.
+      let allUnchanged = page.length > 0;
+      let crossedOldest = false;
+
+      for (const issue of page) {
+        const author = issue.user?.login ?? null;
+        const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
+        upsertIssue({
+          number: issue.number,
+          state: issue.state,
+          title: issue.title,
+          author,
+          html_url: issue.html_url,
+          created_at: issue.created_at,
+          updated_at: issue.updated_at,
+          closed_at: issue.closed_at,
+          comments: issue.comments,
+          labels: labelsJson,
+          is_bot: detectBot(author, labelsJson) ? 1 : 0,
+        });
+
+        if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
+
+        const existing = getClassification(issue.number);
+        if (
+          existing &&
+          existing.classified_updated_at === issue.updated_at &&
+          existing.prompt_version === PROMPT_VERSION
+        ) {
+          continue; // unchanged since last classification AND scored under the current prompt
+        }
+        allUnchanged = false;
+
+        try {
+          const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
+          const cls: IssueClassification = await classifyIssue(issue, comments, tags);
+          upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
+          classifiedCount++;
+        } catch (e) {
+          console.error(`[classify] issue #${issue.number} failed:`, (e as Error).message);
+        }
       }
 
-      try {
-        const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
-        const cls: IssueClassification = await classifyIssue(issue, comments, tags);
-        upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
-        classifiedCount++;
-      } catch (e) {
-        console.error(`[classify] issue #${issue.number} failed:`, (e as Error).message);
-      }
+      if (allUnchanged || crossedOldest) break paginate;
+      if (pagesFetched >= MAX_PAGES) break paginate;
     }
 
     // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
