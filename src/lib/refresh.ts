@@ -41,6 +41,7 @@ import {
   getRelease,
   issuesForVersion,
   listReleasesDb,
+  openedDuringReign,
   setMeta,
   updateReleaseScore,
   upsertClassification,
@@ -222,11 +223,13 @@ export async function refresh(): Promise<{
     const pass1 = allReleases.map((rel) => {
       const inputs = issuesForVersion(rel.tag).map(buildInput);
       const closedInputs = closedDuringReign(rel.tag).map(buildInput);
+      const openedInputs = openedDuringReign(rel.tag).map(buildInput);
       return {
         rel,
         inputs,
         closedInputs,
-        score: scoreRelease(inputs, rel.published_at, undefined, undefined, closedInputs),
+        openedInputs,
+        score: scoreRelease(inputs, rel.published_at, undefined, undefined, closedInputs, openedInputs),
       };
     });
 
@@ -240,10 +243,10 @@ export async function refresh(): Promise<{
       .sort((a, b) => a - b);
     const peerMedian = computeMedian(negSums);
 
-    for (const { rel, inputs, closedInputs, score: firstScore } of pass1) {
+    for (const { rel, inputs, closedInputs, openedInputs, score: firstScore } of pass1) {
       const score =
         peerMedian !== undefined && firstScore.state === 'rated'
-          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian, closedInputs)
+          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian, closedInputs, openedInputs)
           : firstScore;
       updateReleaseScore({
         tag: rel.tag,
@@ -254,6 +257,7 @@ export async function refresh(): Promise<{
         state: score.state,
         closed_serious_fixed: score.closedSeriousFixed,
         fix_bonus: score.fixBonus,
+        opened_serious_during_reign: score.openedSeriousDuringReign,
       });
     }
 

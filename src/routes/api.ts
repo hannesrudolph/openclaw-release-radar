@@ -39,6 +39,8 @@ api.get('/releases', (_req, res) => {
       negativeIssues: r.negative_issues,
       positiveIssues: r.positive_issues,
       state: r.state,
+      closedSeriousFixed: r.closed_serious_fixed,
+      openedSeriousDuringReign: r.opened_serious_during_reign,
       scoredAt: r.scored_at,
     })),
   );
@@ -61,6 +63,8 @@ api.get('/release/:tag', (req, res) => {
     negativeIssues: rel.negative_issues,
     positiveIssues: rel.positive_issues,
     state: rel.state,
+    closedSeriousFixed: rel.closed_serious_fixed,
+    openedSeriousDuringReign: rel.opened_serious_during_reign,
     scoredAt: rel.scored_at,
     issues,
   });

@@ -32,7 +32,8 @@ CREATE TABLE IF NOT EXISTS releases (
   scored_at TEXT,
   state TEXT,
   closed_serious_fixed INTEGER NOT NULL DEFAULT 0,
-  fix_bonus REAL NOT NULL DEFAULT 0
+  fix_bonus REAL NOT NULL DEFAULT 0,
+  opened_serious_during_reign INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS issues (
@@ -86,6 +87,7 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN state TEXT`,
   `ALTER TABLE releases ADD COLUMN closed_serious_fixed INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN fix_bonus REAL NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN opened_serious_during_reign INTEGER NOT NULL DEFAULT 0`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -125,6 +127,10 @@ export interface ReleaseRow {
   closed_serious_fixed: number;
   // Score points added by those fixes (already included in final_score).
   fix_bonus: number;
+  // Core-serious bugs OPENED during this release's reign — informational only,
+  // surfaces "this release shipped fixes but also brought regressions" without
+  // penalising the score (would create a fight with the recommendation block).
+  opened_serious_during_reign: number;
 }
 
 const upsertReleaseStmt = db.prepare(`
@@ -151,6 +157,7 @@ const updateScoreStmt = db.prepare(`
 UPDATE releases SET final_score=:final_score, risk_index=:risk_index,
   negative_issues=:negative_issues, positive_issues=:positive_issues,
   state=:state, closed_serious_fixed=:closed_serious_fixed, fix_bonus=:fix_bonus,
+  opened_serious_during_reign=:opened_serious_during_reign,
   scored_at=:scored_at
 WHERE tag=:tag
 `);
@@ -164,6 +171,7 @@ export function updateReleaseScore(args: {
   state: string;
   closed_serious_fixed: number;
   fix_bonus: number;
+  opened_serious_during_reign: number;
 }): void {
   updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
 }
@@ -391,6 +399,35 @@ ORDER BY i.closed_at DESC
 
 export function closedDuringReign(tag: string): JoinedIssue[] {
   return closedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
+}
+
+// Issues OPENED during a release's reign — the "regressions introduced" signal.
+// An issue counts as opened-during-R if its created_at falls inside R's reign
+// window. Mirror of closedDuringReign. We don't currently penalise the score
+// for this (would create new contradictions with the recommendation block),
+// but we surface the count so users can see "this release closed 50 critical
+// bugs and opened 150 during the same window" and judge for themselves.
+const openedDuringReignStmt = db.prepare(`
+SELECT i.*,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+FROM issues i
+JOIN classifications c ON c.issue_number = i.number
+JOIN releases target ON target.tag = ?
+WHERE
+  target.published_at IS NOT NULL
+  AND i.created_at >= target.published_at
+  AND i.created_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at),
+        '9999-12-31T23:59:59Z'
+      )
+ORDER BY i.created_at DESC
+`);
+
+export function openedDuringReign(tag: string): JoinedIssue[] {
+  return openedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
 }
 
 // Count classifications written under a prompt version older than the current one.

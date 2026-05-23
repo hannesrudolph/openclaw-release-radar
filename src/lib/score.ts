@@ -115,6 +115,7 @@ export interface ScoreBreakdown {
   positiveIssues: number;
   closedSeriousFixed: number; // core-serious bugs closed during this release's reign
   fixBonus: number;           // score points added for those fixes
+  openedSeriousDuringReign: number; // core-serious bugs OPENED in same window — informational
   perIssue: ScoredIssue[];
   state: 'analyzing' | 'rated' | 'insufficient';
 }
@@ -182,17 +183,21 @@ export function scoreRelease(
   now = Date.now(),
   peerMedianWeightedNeg?: number,
   closedIssues: IssueInput[] = [],
+  openedIssues: IssueInput[] = [],
 ): ScoreBreakdown {
   // Count core-serious negatives closed during this release's reign — these are
   // the "fixes" we credit. Closed neutrals (stale-bot, duplicates) and positives
   // don't count.
-  const closedSeriousFixed = closedIssues.reduce((n, ci) => {
-    const c = ci.classification;
-    if (c.sentiment !== 'negative') return n;
-    if (c.functionality !== 'core') return n;
-    if (c.severity !== 'critical' && c.severity !== 'high') return n;
-    return n + 1;
-  }, 0);
+  const countCoreSerious = (issues: IssueInput[]): number =>
+    issues.reduce((n, ci) => {
+      const c = ci.classification;
+      if (c.sentiment !== 'negative') return n;
+      if (c.functionality !== 'core') return n;
+      if (c.severity !== 'critical' && c.severity !== 'high') return n;
+      return n + 1;
+    }, 0);
+  const closedSeriousFixed = countCoreSerious(closedIssues);
+  const openedSeriousDuringReign = countCoreSerious(openedIssues);
   const fixBonus = closedSeriousFixed > 0
     ? Math.log2(1 + closedSeriousFixed) * FIX_BONUS_FACTOR
     : 0;
@@ -209,6 +214,7 @@ export function scoreRelease(
         positiveIssues: 0,
         closedSeriousFixed,
         fixBonus: 0,
+        openedSeriousDuringReign,
         perIssue: [],
         state: 'analyzing',
       };
@@ -228,6 +234,7 @@ export function scoreRelease(
       positiveIssues: 0,
       closedSeriousFixed,
       fixBonus: round2(fixBonus),
+      openedSeriousDuringReign,
       perIssue: [],
       state: 'insufficient',
     };
@@ -290,6 +297,7 @@ export function scoreRelease(
       positiveIssues: 0,
       closedSeriousFixed,
       fixBonus: round2(fixBonus),
+      openedSeriousDuringReign,
       perIssue,
       state: 'insufficient',
     };
@@ -369,6 +377,7 @@ export function scoreRelease(
     positiveIssues: pos,
     closedSeriousFixed,
     fixBonus: round2(fixBonus),
+    openedSeriousDuringReign,
     perIssue,
     state: 'rated',
   };
