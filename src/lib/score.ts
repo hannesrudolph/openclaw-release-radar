@@ -232,10 +232,13 @@ export function scoreRelease(
     }
   }
 
-  // No actionable signal (only neutral mentions, or nothing at all) → insufficient.
-  // Without this guard, a release with one "How do I configure X?" question attributed
-  // to it would score 10.0 (no risk = perfect) instead of "we don't have evidence".
-  if (neg === 0 && pos === 0) {
+  // No negative signal → insufficient. Includes "no issues at all", "only neutral mentions"
+  // and — importantly — "only positive mentions". A few users saying "works for me" is
+  // not enough to declare a release stable for everyone else; the product question is
+  // "should I install this?", and the honest answer to "we have one thumbs-up and no
+  // bug reports" is "we don't know yet", not "perfect 10". Without this guard the latter
+  // would mislead anyone using the dashboard to decide whether to upgrade.
+  if (neg === 0) {
     return {
       finalScore: NEUTRAL_SCORE,
       baseScore: NEUTRAL_SCORE,

@@ -60,15 +60,18 @@ describe('scoreRelease', () => {
     assert.equal(s.state, 'analyzing');
   });
 
-  it('only neutral/positive issues → coreScore stays at 10, no other-drop → 10', () => {
+  it('only neutral/positive issues → insufficient (5), not a perfect 10', () => {
+    // Product framing: the dashboard answers "should I install this release?". A
+    // handful of "works for me" comments is not enough to declare a release stable —
+    // it just means we have no negative signal yet. Treat the same as empty input.
     const issues = [
       mkIssue(1, mkClass({ sentiment: 'neutral' })),
       mkIssue(2, mkClass({ sentiment: 'positive' })),
     ];
     const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    assert.equal(s.finalScore, 10);
+    assert.equal(s.finalScore, 5);
     assert.equal(s.riskIndex, 0);
-    assert.equal(s.state, 'rated');
+    assert.equal(s.state, 'insufficient');
   });
 
   it('single fresh core+critical bug → score in Risky/Mixed range, not 0', () => {
