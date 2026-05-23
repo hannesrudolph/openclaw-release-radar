@@ -1,7 +1,7 @@
 import { config } from '../config';
 import { invalidateCache } from './cache';
 import { listIssueComments, listIssues, listReleases } from './github';
-import { classifyIssue, type IssueClassification } from './llm';
+import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 import { scoreRelease, type IssueInput } from './score';
 import {
   detectBot,
@@ -36,11 +36,8 @@ export async function refresh(): Promise<{
   const t0 = Date.now();
 
   try {
-    // 1. Pull releases.
-    // Fetch with a buffer: betas often outnumber stable releases significantly,
-    // so we need more than (stable + beta) to guarantee we collect enough of each.
-    const fetchLimit = Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6);
-    const releases = await listReleases(fetchLimit);
+    // 1. Pull releases. listReleases handles the prerelease filtering and over-fetch buffer.
+    const releases = await listReleases(config.limits.releases);
     for (const r of releases) {
       upsertRelease({
         tag: r.tag_name,
@@ -75,14 +72,18 @@ export async function refresh(): Promise<{
       });
 
       const existing = getClassification(issue.number);
-      if (existing && existing.classified_updated_at === issue.updated_at) {
-        continue; // unchanged since last classification
+      if (
+        existing &&
+        existing.classified_updated_at === issue.updated_at &&
+        existing.prompt_version === PROMPT_VERSION
+      ) {
+        continue; // unchanged since last classification AND scored under the current prompt
       }
 
       try {
         const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
         const cls: IssueClassification = await classifyIssue(issue, comments, tags);
-        upsertClassification(issue.number, cls, issue.updated_at);
+        upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
         classifiedCount++;
       } catch (e) {
         console.error(`[classify] issue #${issue.number} failed:`, (e as Error).message);
@@ -98,7 +99,7 @@ export async function refresh(): Promise<{
     // Two passes: pass 1 scores without peer floor to collect each release's
     // weightedNegSum; pass 2 re-scores rated releases with the median injected, so
     // average-or-better releases get lifted to PEER_MEDIAN_FLOOR (5.5) if they fell below.
-    const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
+    const allReleases = listReleasesDb(config.limits.releases);
 
     const pass1 = allReleases.map((rel) => {
       const versioned = issuesForVersion(rel.tag);

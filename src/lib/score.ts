@@ -10,9 +10,22 @@ import type { IssueClassification } from './llm';
 // - Hard floor at 1.0 so unstable releases stay distinguishable from "grey".
 // - Recency decay floors at 0.55 — old issues still matter but less.
 
-const PER_ISSUE_CAP = 5;
-const OTHER_DROP_MAX = 2.0;
-const OTHER_DROP_TAU = 3.0;
+// Calibration target. Mapping under the log-based curve below:
+//   risk  →  score
+//     0   →  10
+//     2.5 →   7.3   (one isolated high+core bug — MOSTLY STABLE)
+//     6   →   5.8   (a couple core-serious bugs — MIXED)
+//     12  →   4.5   (RISKY)
+//     20  →   3.4   (RISKY/UNSTABLE boundary)
+//     30  →   2.6   (UNSTABLE, clearly worse than 20)
+//     50  →   1.5   (very bad, still > MIN_SCORE)
+// The earlier sigmoid (10/(1+(r/8)^1.2)) collapsed everything above ~15 risk into the
+// 1.0 floor — two releases with risk=25 vs 27 looked identical. log2 retains separation
+// at the heavy end so users can tell a worsening release from a stable-bad one.
+const PER_ISSUE_CAP = 4;
+const RISK_LOG_FACTOR = 1.5;
+const OTHER_DROP_MAX = 1.5;
+const OTHER_DROP_TAU = 3.5;
 const MIN_SCORE = 1.0;
 const NEUTRAL_SCORE = 5.0;
 const POS_OFFSET = 0.7;
@@ -27,30 +40,30 @@ export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ me
 const BOT_WEIGHT_MULTIPLIER = 0.3;
 
 const SEVERITY: Record<IssueClassification['severity'], number> = {
-  critical: 2.8,
-  high: 1.9,
-  medium: 1.0,
-  low: 0.35,
+  critical: 2.2,
+  high: 1.4,
+  medium: 0.7,
+  low: 0.25,
 };
 
 const SCOPE: Record<IssueClassification['scope'], number> = {
-  broad: 1.75,
+  broad: 1.5,
   moderate: 1.0,
-  niche: 0.3,
+  niche: 0.4,
 };
 
 const FUNCTIONALITY: Record<IssueClassification['functionality'], number> = {
-  core: 1.65,
-  provider: 0.75,
-  integration: 0.45,
-  docs: 0.15,
+  core: 1.3,
+  provider: 0.65,
+  integration: 0.4,
+  docs: 0.1,
 };
 
 const USER_SHARE: Record<IssueClassification['affectedUsers'], number> = {
-  many: 1.45,
-  some: 0.9,
+  many: 1.3,
+  some: 0.85,
   few: 0.35,
-  unknown: 0.75,
+  unknown: 0.65,
 };
 
 const WORKAROUND: Record<IssueClassification['workaroundStatus'], number> = {
@@ -127,7 +140,7 @@ function positiveEvidenceWeight(i: IssueInput, now: number): number {
 }
 
 function scoreFromRiskIndex(riskIndex: number): number {
-  return 10 / (1 + Math.pow(Math.max(0, riskIndex) / 4.2, 1.35));
+  return 10 - Math.log2(1 + Math.max(0, riskIndex)) * RISK_LOG_FACTOR;
 }
 
 function round1(x: number): number {
@@ -217,6 +230,22 @@ export function scoreRelease(
     } else {
       perIssue.push({ number: i.number, weight: 0, isCoreSerious: false, classification: c });
     }
+  }
+
+  // No actionable signal (only neutral mentions, or nothing at all) → insufficient.
+  // Without this guard, a release with one "How do I configure X?" question attributed
+  // to it would score 10.0 (no risk = perfect) instead of "we don't have evidence".
+  if (neg === 0 && pos === 0) {
+    return {
+      finalScore: NEUTRAL_SCORE,
+      baseScore: NEUTRAL_SCORE,
+      riskIndex: 0,
+      weightedNegSum: 0,
+      negativeIssues: 0,
+      positiveIssues: 0,
+      perIssue,
+      state: 'insufficient',
+    };
   }
 
   // Positives cancel non-core-serious negatives first, then residual budget eats core-serious.

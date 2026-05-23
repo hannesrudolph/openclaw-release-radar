@@ -53,9 +53,14 @@ async function gh<T>(path: string): Promise<T> {
 }
 
 export async function listReleases(limit = 10): Promise<GhRelease[]> {
+  // We fetch a wider page than `limit` because GitHub returns prereleases interleaved
+  // with stable; on openclaw, betas outnumber stables ~3:1, so a 10-item page can
+  // contain only 2-3 actual stable releases. Cap at 100 (GitHub's per_page max) and
+  // trim to `limit` after filtering.
   const { owner, repo } = config.github;
-  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${limit}`);
-  return data.filter((r) => !r.draft);
+  const fetchSize = Math.min(100, limit * 6);
+  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${fetchSize}`);
+  return data.filter((r) => !r.draft && !r.prerelease).slice(0, limit);
 }
 
 export async function listIssues(limit = 80): Promise<GhIssue[]> {

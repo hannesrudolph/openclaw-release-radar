@@ -35,10 +35,7 @@ export const config = {
   },
   limits: {
     issues: num('ISSUES_LIMIT', 80),
-    // How many stable (non-prerelease) releases to show in the UI.
-    stableReleases: num('STABLE_RELEASES', 5),
-    // How many prerelease/beta releases to show when the beta toggle is on.
-    betaReleases: num('BETA_RELEASES', 5),
+    releases: num('RELEASES_LIMIT', 10),
   },
   // If set, POST /api/refresh requires X-Admin-Token header.
   adminToken: process.env.ADMIN_TOKEN || '',

@@ -61,6 +61,7 @@ CREATE TABLE IF NOT EXISTS classifications (
   rationale TEXT,
   classified_at TEXT NOT NULL,
   classified_updated_at TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL DEFAULT 0,
   FOREIGN KEY (issue_number) REFERENCES issues(number) ON DELETE CASCADE
 );
 
@@ -73,6 +74,7 @@ CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at);
 for (const sql of [
   `ALTER TABLE issues ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
+  `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -80,15 +82,16 @@ for (const sql of [
 // Bot detection. Cheap, deterministic, no extra LLM tokens.
 // Markers we consider bot-generated:
 //   - login ends with [bot] (GitHub's convention for app installations)
-//   - login matches a known sweeper/automation pattern
-//   - any label hints at bot origin
+//   - login matches a known automation pattern (dependabot, renovate, …)
+// Maintainer triage tools (e.g. `clawsweeper:*` labels) describe workflow stage on issues
+// filed by real humans — they MUST NOT trigger bot detection. Earlier the regex looked at
+// labels and treated `clawsweeper:needs-live-repro` as evidence of bot authorship, which
+// dampened 91% of real bug reports and made every release look stable-by-mistake.
 // Marked issues are NOT excluded from scoring — they're down-weighted in score.ts.
-const BOT_AUTHOR_RE = /\[bot\]$|^(github-actions|dependabot|renovate|stale|clawsweeper|claw-sweeper)$/i;
-const BOT_LABEL_RE = /\b(bot|automated|ai-generated|sweeper|clawsweeper)\b/i;
+const BOT_AUTHOR_RE = /\[bot\]$|^(github-actions|dependabot|renovate(-bot)?|mergify|stale)$/i;
 
-export function detectBot(author: string | null, labelsJson: string): boolean {
+export function detectBot(author: string | null, _labelsJson: string): boolean {
   if (author && BOT_AUTHOR_RE.test(author)) return true;
-  if (BOT_LABEL_RE.test(labelsJson)) return true;
   return false;
 }
 
@@ -207,10 +210,10 @@ export function getIssue(number: number): IssueRow | undefined {
 const upsertClassificationStmt = db.prepare(`
 INSERT INTO classifications (issue_number, sentiment, severity, scope, functionality, affected_users,
   has_workaround, workaround_status, duplicate_cluster, affects_version, confidence, rationale,
-  classified_at, classified_updated_at)
+  classified_at, classified_updated_at, prompt_version)
 VALUES (:issue_number, :sentiment, :severity, :scope, :functionality, :affected_users,
   :has_workaround, :workaround_status, :duplicate_cluster, :affects_version, :confidence, :rationale,
-  :classified_at, :classified_updated_at)
+  :classified_at, :classified_updated_at, :prompt_version)
 ON CONFLICT(issue_number) DO UPDATE SET
   sentiment=excluded.sentiment,
   severity=excluded.severity,
@@ -224,10 +227,16 @@ ON CONFLICT(issue_number) DO UPDATE SET
   confidence=excluded.confidence,
   rationale=excluded.rationale,
   classified_at=excluded.classified_at,
-  classified_updated_at=excluded.classified_updated_at
+  classified_updated_at=excluded.classified_updated_at,
+  prompt_version=excluded.prompt_version
 `);
 
-export function upsertClassification(issueNumber: number, c: IssueClassification, issueUpdatedAt: string): void {
+export function upsertClassification(
+  issueNumber: number,
+  c: IssueClassification,
+  issueUpdatedAt: string,
+  promptVersion: number,
+): void {
   upsertClassificationStmt.run({
     issue_number: issueNumber,
     sentiment: c.sentiment,
@@ -243,6 +252,7 @@ export function upsertClassification(issueNumber: number, c: IssueClassification
     rationale: c.rationale,
     classified_at: new Date().toISOString(),
     classified_updated_at: issueUpdatedAt,
+    prompt_version: promptVersion,
   });
 }
 
@@ -261,6 +271,7 @@ export interface ClassificationRow {
   rationale: string | null;
   classified_at: string;
   classified_updated_at: string;
+  prompt_version: number;
 }
 
 const getClassificationStmt = db.prepare(`SELECT * FROM classifications WHERE issue_number=?`);

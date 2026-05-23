@@ -22,11 +22,21 @@ export interface IssueClassification {
   rationale: string;               // kept for DB compat, no longer generated
 }
 
+// Bumped whenever SYSTEM_PROMPT (or extraction logic) changes shape. Stored alongside each
+// classification — refresh.ts re-classifies anything written under an older version, so a
+// prompt fix automatically reshapes the whole dataset on the next cron tick.
+export const PROMPT_VERSION = 2;
+
 // Attribution philosophy (mirrors agent-watch):
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
 //   mentions one, or it's obvious from a stack trace / log / "I'm running vX.Y.Z" line.
 // - When unclear, return null. Unattributed issues are intentionally ignored by scoring
 //   so that long-running open bugs don't drag down every release.
+//
+// Bias correction (v2): gpt-4o-mini systematically picked the maximum on every axis —
+// 78% high/broad/many, 97% core — because openclaw triage labels (P1, impact:crash-loop,
+// impact:message-loss) read as panic to the model. The anchors below pull the default
+// toward the middle and reserve the top of each scale for genuine showstoppers.
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
 Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
 
@@ -42,29 +52,76 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "confidence":      0.0..1.0
 }
 
-Be conservative. Critical rules:
-- An issue is "core" + "critical" + "broad" ONLY if it breaks main functionality for ALL users
-  without specific conditions. A bug requiring a niche provider, OS, or config is NOT broad/critical.
-- Feature requests and questions → sentiment "neutral".
-- Users saying something works well → sentiment "positive".
-- Bug reports → sentiment "negative".
-- duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-timeout").
-  Use the SAME tag for clearly duplicate issues. null if unique.
-- workaroundStatus: "confirmed" when an explicit fix or successful workaround is described
-  in the issue/comments; "partial" when a workaround helps but isn't reliable
-  ("most of the time", "until restart", "for some users"); "none" when explicitly stated
-  none exists; "unknown" when there's no signal either way.
-- affectsVersion: set when the issue body, title, or comments mention a specific release
-  version. The mention can be in ANY of these forms — treat them all as equivalent:
-    * "v2026.5.18", "2026.5.18", "OpenClaw 2026.5.18", "version 2026.5.18"
-    * stack traces with the version
-    * "Observed on X.Y.Z", "running X.Y.Z", "since X.Y.Z", "in X.Y.Z-beta.N"
-  Return the value as it appears in the known-tags list (e.g. always with the "v" prefix
-  if the canonical tag uses one). If the version mentioned doesn't match ANY known tag,
-  pick the closest one only if you're highly confident — otherwise return null.
-  Return null when no version is mentioned at all (e.g. "X is broken" with no version
-  context). Unattributed issues are dropped from scoring rather than dumped on the latest
-  release, so it's safe to be aggressive about matching when a version IS mentioned.`;
+Default toward the middle of each scale. Reserve the top rungs for issues where the
+evidence is unambiguous. Triage labels alone (P1, impact:*, clawsweeper:*) are NOT
+evidence — they are routing tags maintainers attach to almost every new bug, often
+before reproduction. Look at the body and comments to judge the real impact.
+
+SEVERITY anchors:
+- "critical": confirmed data loss, security CVE, total outage of the gateway/CLI for
+  users on default config. Do NOT use just because the title says "crash" — most crashes
+  are condition-specific.
+- "high": main flow broken under a common configuration; user-visible regression with
+  no workaround. Default for confirmed bugs touching install/auth/chat/exec.
+- "medium": bug under a specific setup, cosmetic regression, broken edge case, or
+  any bug where a workaround is documented. THIS IS THE DEFAULT for routine bug reports.
+- "low": typo, doc nit, log noise, very-niche edge case.
+
+SCOPE anchors:
+- "broad": affects users across multiple OSes / multiple providers / both CLI and UI.
+- "moderate": affects one OS family, one major provider, or one surface (CLI-only,
+  UI-only, gateway-only). DEFAULT for most bugs.
+- "niche": one provider + one OS + one config combination, or behind a non-default flag.
+
+FUNCTIONALITY anchors:
+- "core": install, gateway boot, chat send/receive, session storage, auth, exec approval,
+  the doctor command. The things that break "OpenClaw" itself.
+- "integration": third-party surfaces — Telegram, Feishu, WebChat, Slack, IDE plugins,
+  control UI. The chat works locally but a delivery channel is broken.
+- "provider": specific model providers — Ollama, OpenAI, Anthropic, Codex, embeddings.
+  The gateway works but one provider misbehaves.
+- "docs": only documentation or examples.
+
+AFFECTED_USERS anchors:
+- "many": clearly reported by multiple distinct users in comments, OR default config on
+  the most common platforms (macOS + Linux + Windows out of the box).
+- "some": one OS family, one provider, one common config. DEFAULT when the reporter
+  describes a real bug but you can't tell how widespread.
+- "few": specific hardware, specific corporate proxy, specific exotic config.
+- "unknown": no signal at all (issue is one line, no setup info, no comments).
+
+SENTIMENT rules:
+- Bug reports describing breakage → "negative".
+- Feature requests, enhancements, "would be nice if…" → "neutral", EVEN IF the title
+  says "[Bug]". Read the body. \`enhancement\` label or "Proposed solution" / "Alternatives
+  considered" sections are strong signals of a feature request.
+- Questions, support requests, "how do I…" → "neutral".
+- Users explicitly saying something works well or thanking maintainers → "positive".
+
+WORKAROUND:
+- "confirmed": explicit working workaround or merged fix mentioned in the thread.
+- "partial": workaround exists but is fragile, manual, or only works sometimes.
+- "none": comments explicitly say no workaround is known.
+- "unknown": no discussion of workaround either way. Use this freely.
+
+duplicateCluster: short kebab-case tag for the underlying bug (e.g. "ollama-proxy-loopback").
+Use the SAME tag for clearly duplicate issues. null if unique.
+
+affectsVersion: set when the issue body, title, or comments mention a specific release
+version. The mention can be in ANY of these forms — treat them all as equivalent:
+  * "v2026.5.18", "2026.5.18", "OpenClaw 2026.5.18", "version 2026.5.18"
+  * stack traces with the version
+  * "Observed on X.Y.Z", "running X.Y.Z", "since X.Y.Z", "in X.Y.Z-beta.N"
+Return the value as it appears in the known-tags list (e.g. always with the "v" prefix
+if the canonical tag uses one). If the version mentioned doesn't match ANY known tag,
+pick the closest one only if you're highly confident — otherwise return null.
+Return null when no version is mentioned at all (e.g. "X is broken" with no version
+context). Unattributed issues are dropped from scoring rather than dumped on the latest
+release, so it's safe to be aggressive about matching when a version IS mentioned.
+
+confidence: lower (≤0.6) when the issue body is empty/one-liner, when labels and body
+disagree, or when you had to guess scope/users from setup hints. Higher (≥0.8) only when
+the body unambiguously describes impact, surface, and reproduction.`;
 
 interface OpenAIResp {
   choices: { message: { content: string } }[];
