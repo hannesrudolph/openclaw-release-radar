@@ -132,7 +132,7 @@ Open <http://localhost:8787>.
 | `OPENAI_MODEL` | `gpt-4o-mini` | |
 | `PORT` | `8787` | |
 | `DB_PATH` | `./data/radar.db` | SQLite file |
-| `REFRESH_CRON` | `*/20 * * * *` | every 20 minutes |
+| `REFRESH_MINUTES` | `30` | minutes between refreshes (allowed range: 1–600) |
 | `RELEASES_LIMIT` | `10` | how many releases to score |
 
 ## API
@@ -144,7 +144,11 @@ Open <http://localhost:8787>.
 | `GET`  | `/api/releases` | scored releases |
 | `GET`  | `/api/release/:tag` | release + classified issues |
 | `GET`  | `/api/unversioned` | issues with no detected version |
-| `POST` | `/api/refresh` | force a refresh (blocks if one is running) |
+
+Refresh is driven exclusively by the internal cron (and a one-off `refresh()`
+on process start). There is no manual trigger endpoint by design — a public
+POST that kicks off GitHub API + LLM calls would be a free DDoS / token-burn
+vector on an open-source deploy.
 
 ## Production
 

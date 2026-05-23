@@ -25,7 +25,7 @@ export interface IssueClassification {
 // Bumped whenever SYSTEM_PROMPT (or extraction logic) changes shape. Stored alongside each
 // classification — refresh.ts re-classifies anything written under an older version, so a
 // prompt fix automatically reshapes the whole dataset on the next cron tick.
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 3;
 
 // Attribution philosophy (mirrors agent-watch):
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -33,10 +33,12 @@ export const PROMPT_VERSION = 2;
 // - When unclear, return null. Unattributed issues are intentionally ignored by scoring
 //   so that long-running open bugs don't drag down every release.
 //
-// Bias correction (v2): gpt-4o-mini systematically picked the maximum on every axis —
-// 78% high/broad/many, 97% core — because openclaw triage labels (P1, impact:crash-loop,
-// impact:message-loss) read as panic to the model. The anchors below pull the default
-// toward the middle and reserve the top of each scale for genuine showstoppers.
+// Bias correction (v3): gpt-4o-mini still leaned hard on high+broad+core after v2
+// (~55% of negatives ended up high+core, ~30% as broad). The model treats any bug
+// touching a familiar word ("session", "gateway", "exec") as core, and any bug
+// mentioning more than one platform name as broad. v3 adds explicit anti-inflation
+// EXAMPLES with the correct labels — concrete patterns beat abstract anchors for
+// small models. Also tightens the lead-in: "conservative by default, top rungs are RARE".
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
 Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
 
@@ -52,10 +54,13 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "confidence":      0.0..1.0
 }
 
-Default toward the middle of each scale. Reserve the top rungs for issues where the
-evidence is unambiguous. Triage labels alone (P1, impact:*, clawsweeper:*) are NOT
-evidence — they are routing tags maintainers attach to almost every new bug, often
-before reproduction. Look at the body and comments to judge the real impact.
+BE CONSERVATIVE. When in doubt, pick the MIDDLE of each scale. The top rungs
+(critical, high, broad, core, many) are RARE — they describe genuine showstoppers,
+not "this looks bad." Most real-world bugs are medium/moderate/integration/some.
+
+Triage labels alone (P1, impact:*, clawsweeper:*) are NOT evidence — they are
+routing tags maintainers attach to almost every new bug, often before reproduction.
+Look at the body and comments to judge the real impact.
 
 SEVERITY anchors:
 - "critical": confirmed data loss, security CVE, total outage of the gateway/CLI for
@@ -118,6 +123,57 @@ pick the closest one only if you're highly confident — otherwise return null.
 Return null when no version is mentioned at all (e.g. "X is broken" with no version
 context). Unattributed issues are dropped from scoring rather than dumped on the latest
 release, so it's safe to be aggressive about matching when a version IS mentioned.
+
+ANTI-INFLATION EXAMPLES (study these — they describe patterns small models get wrong):
+
+1. "Discord / Telegram / Feishu / Slack / Mattermost / WhatsApp / iMessage X is broken"
+   → functionality="integration" (NOT core), scope="moderate" at most (often "niche"
+   if it's also platform- or config-specific). A channel adapter failing does NOT
+   break OpenClaw's core gateway/CLI.
+
+2. "Ollama / OpenAI / Anthropic / DeepSeek / MiniMax / xAI / Bedrock X returns Y"
+   → functionality="provider" (NOT core), scope="moderate". One provider
+   misbehaving doesn't break the gateway itself.
+
+3. "Bug on macOS only" (or Windows-only, or Ubuntu-only) with no confirmation that
+   other OSes are affected → scope="moderate" (NOT broad). "broad" requires
+   EXPLICIT evidence of multi-OS or multi-provider impact in the body/comments.
+
+4. "Happens with --experimental-X flag" / "when foo.bar=true" / "after running the
+   alpha build" / "only in container with custom seccomp" → scope="niche" by
+   definition. Non-default configurations are niche.
+
+5. "Race condition / timing-dependent / intermittent / reproduces 1 in 20" →
+   severity="medium" at most. Genuinely critical issues reproduce reliably.
+
+6. "TypeScript type error in module X" / "ESLint warning" / "wrong return type
+   in JSDoc" → severity="low", functionality usually "docs" or "integration".
+
+7. "[Bug]: <feature title>" with body that has "Proposed solution" / "Alternatives
+   considered" / "Why" sections → sentiment="neutral" (feature request mislabeled).
+   Trust the BODY over the title prefix.
+
+8. A single user describing a single setup, no "+1" or "me too" comments →
+   affected_users="some" (NOT many). "many" requires multiple distinct reporters
+   OR the breakage being in default config of macOS/Linux/Windows simultaneously.
+
+9. "openclaw update / install / auth / gateway boot / chat send / session storage
+   / exec approval is broken on default config" with reproducible steps and no
+   workaround → THIS is the kind of bug that warrants high+core+broad. Not "Discord
+   notifications duplicate". The former is a showstopper; the latter is annoying.
+
+10. Bug that has a documented workaround in comments → workaroundStatus="confirmed",
+    AND drop severity by one rung (a critical bug with workaround is at most high;
+    a high bug with workaround is at most medium).
+
+DEFAULTS WHEN GENUINELY UNCERTAIN (no clear signal in body/comments):
+- severity: "medium"
+- scope: "moderate"
+- functionality: "integration" (unless the issue is explicitly about install / auth /
+  gateway / chat / exec / session / doctor — those are core)
+- affected_users: "some"
+- workaroundStatus: "unknown"
+- confidence: ≤ 0.6
 
 confidence: lower (≤0.6) when the issue body is empty/one-liner, when labels and body
 disagree, or when you had to guess scope/users from setup hints. Higher (≥0.8) only when

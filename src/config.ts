@@ -14,6 +14,14 @@ function num(key: string, fallback: number): number {
   return n;
 }
 
+function intInRange(key: string, fallback: number, min: number, max: number): number {
+  const n = num(key, fallback);
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`${key} must be an integer in [${min}, ${max}], got ${n}`);
+  }
+  return n;
+}
+
 export const config = {
   github: {
     owner: env('GITHUB_OWNER', 'openclaw'),
@@ -30,12 +38,13 @@ export const config = {
   db: {
     path: env('DB_PATH', './data/radar.db'),
   },
-  cron: {
-    schedule: env('REFRESH_CRON', '*/20 * * * *'),
+  refresh: {
+    // Minutes between automatic refreshes. Hard-bounded 1..600 so an env-var typo
+    // can't accidentally hammer GitHub / OpenAI every second, and can't silently
+    // stop refreshes by being set to 0.
+    intervalMinutes: intInRange('REFRESH_MINUTES', 30, 1, 600),
   },
   limits: {
     releases: num('RELEASES_LIMIT', 10),
   },
-  // If set, POST /api/refresh requires X-Admin-Token header.
-  adminToken: process.env.ADMIN_TOKEN || '',
 } as const;

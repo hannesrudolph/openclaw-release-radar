@@ -264,7 +264,7 @@ footer a:hover{color:var(--text)}
 </main>
 
 <footer>
-  Scores update every 30 minutes · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
+  <span id="refresh-cadence">Scores update on a fixed cadence</span> · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
 </footer>
 
 <script>
@@ -446,10 +446,20 @@ async function loadStatus() {
 }
 
 /* ── init ─────────────────────────────────────────────────────────────── */
-let uiLimits = { releases: 10 };
+let uiLimits = { releases: 10, refreshMinutes: 30 };
+
+function renderRefreshCadence(minutes) {
+  const el = document.getElementById('refresh-cadence');
+  if (!el) return;
+  const m = Number(minutes);
+  if (!Number.isFinite(m) || m <= 0) return;
+  el.textContent =
+    m === 1 ? 'Scores update every minute' : `Scores update every ${m} minutes`;
+}
 
 (async () => {
   try { uiLimits = await api('/config'); } catch { /* use defaults */ }
+  renderRefreshCadence(uiLimits.refreshMinutes);
   loadStatus();
   loadReleases();
   setInterval(loadStatus, 30_000);

@@ -6,7 +6,6 @@ import {
   getRelease,
   issuesForVersion,
   listReleasesDb,
-  refresh,
 } from '../lib/refresh';
 
 export const api = Router();
@@ -19,6 +18,7 @@ api.get('/health', (_req, res) => {
 api.get('/config', (_req, res) => {
   res.json({
     releases: config.limits.releases,
+    refreshMinutes: config.refresh.intervalMinutes,
   });
 });
 
@@ -82,7 +82,8 @@ api.get('/release/:tag', (req, res) => {
 // release). A release with no attributed issues scores 5 (neutral baseline),
 // not 10 — absence of signal is not evidence of stability.
 //
-// Data refreshes every 30 min via cron. scoredAt = last time score was computed.
+// Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
+// score was computed for this specific release.
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
@@ -143,23 +144,6 @@ function scoreToGrade(score: number | null): string {
   if (score >= 3.5) return 'risky';
   return 'unstable';
 }
-
-api.post('/refresh', async (req, res) => {
-  const adminToken = config.adminToken;
-  if (adminToken) {
-    const provided = req.headers['x-admin-token'];
-    if (provided !== adminToken) {
-      res.status(403).json({ ok: false, error: 'forbidden' });
-      return;
-    }
-  }
-  try {
-    const result = await refresh();
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: (e as Error).message });
-  }
-});
 
 function serializeIssue(r: {
   number: number;
