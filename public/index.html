@@ -120,22 +120,13 @@ main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
 .release:hover{background:color-mix(in srgb,var(--text) 3%,transparent)}
 .release.open{background:color-mix(in srgb,var(--text) 2%,transparent)}
 
-.release__left{display:flex;align-items:center;gap:var(--space-5);min-width:0}
+.release__left{display:flex;align-items:center;gap:var(--space-5);min-width:0;flex-wrap:wrap;row-gap:var(--space-3)}
 .release__tag{
   font-weight:600;font-size:var(--text-base);
   font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   white-space:nowrap;
 }
 .release__date{color:var(--muted);font-size:var(--text-sm);white-space:nowrap}
-.chip--beta{
-  font-size:11px;font-weight:500;white-space:nowrap;
-  color:var(--warn);
-}
-.chip--latest{
-  font-size:11px;font-weight:500;white-space:nowrap;
-  color:var(--ok);
-}
-
 .release__right{
   display:flex;align-items:center;gap:var(--space-4);flex-shrink:0;
 }
@@ -151,7 +142,10 @@ main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
 .score-label{
   font-size:var(--text-sm);color:var(--muted);white-space:nowrap;
 }
-@media(max-width:480px){.score-label{display:none}}
+@media(max-width:480px){
+  .score-label{display:none}
+  .release__date{display:none}
+}
 
 /* ── chevron ──────────────────────────────────────────────────────────── */
 .chevron{
@@ -237,33 +231,6 @@ footer a:hover{color:var(--text)}
   border-color:color-mix(in srgb,var(--muted) 35%,var(--border));
 }
 
-/* ── beta toggle ──────────────────────────────────────────────────────── */
-.beta-toggle{
-  display:inline-flex;align-items:center;gap:var(--space-3);
-  cursor:pointer;user-select:none;
-  color:var(--muted);font-size:var(--text-xs);
-  padding:var(--space-2) 0;
-}
-.beta-toggle input{
-  appearance:none;-webkit-appearance:none;
-  width:28px;height:16px;border-radius:var(--radius-pill);
-  background:color-mix(in srgb,var(--muted) 25%,var(--surface));
-  border:1px solid var(--border);
-  cursor:pointer;position:relative;flex-shrink:0;
-  transition:background .15s ease,border-color .15s ease;
-}
-.beta-toggle input::after{
-  content:'';position:absolute;
-  top:2px;left:2px;
-  width:10px;height:10px;border-radius:50%;
-  background:#fff;
-  transition:transform .15s ease;
-  box-shadow:0 1px 2px rgba(0,0,0,.2);
-}
-.beta-toggle input:checked{
-  background:var(--text);border-color:var(--text);
-}
-.beta-toggle input:checked::after{transform:translateX(12px)}
 </style>
 </head>
 <body>
@@ -284,10 +251,6 @@ footer a:hover{color:var(--text)}
 <main>
   <div class="page-title-row">
     <h1 class="page-title">Release stability</h1>
-    <label class="beta-toggle">
-      <input type="checkbox" id="showBeta" />
-      show beta
-    </label>
   </div>
   <p class="page-sub">
     Automatically tracks GitHub issues for each release and scores stability
@@ -363,13 +326,7 @@ async function loadReleases() {
 }
 
 function renderReleases() {
-  const showBeta = document.getElementById('showBeta').checked;
-
-  const stable = allReleases.filter(r => !r.prerelease);
-  const rows   = showBeta
-    ? allReleases.slice(0, uiLimits.stableReleases + uiLimits.betaReleases)
-    : stable.slice(0, uiLimits.stableReleases);
-
+  const rows = allReleases.slice(0, uiLimits.releases);
   const root = document.getElementById('releases');
 
   if (!rows.length) {
@@ -379,13 +336,9 @@ function renderReleases() {
 
   root.innerHTML = '';
 
-  // "latest" = first stable release
-  const latestStableTag = stable[0]?.tag;
-
   rows.forEach(r => {
     const si  = scoreInfo(r.finalScore);
     const id  = cssId(r.tag);
-    const isLatest = r.tag === latestStableTag && !r.prerelease;
 
     const row = document.createElement('div');
     row.className = 'release';
@@ -395,8 +348,6 @@ function renderReleases() {
       <div class="release__left">
         <span class="release__tag">${esc(r.tag)}</span>
         <span class="release__date">${timeAgo(r.publishedAt)}</span>
-        ${r.prerelease ? '<span class="chip--beta">beta</span>' : ''}
-        ${isLatest ? '<span class="chip--latest">latest</span>' : ''}
       </div>
       <div class="release__right">
         <span class="score-dot"></span>
@@ -418,8 +369,6 @@ function renderReleases() {
     root.appendChild(det);
   });
 }
-
-document.getElementById('showBeta').addEventListener('change', renderReleases);
 
 /* ── toggle release row ───────────────────────────────────────────────── */
 async function toggleRelease(row, det, tag) {
@@ -493,7 +442,7 @@ async function loadStatus() {
 }
 
 /* ── init ─────────────────────────────────────────────────────────────── */
-let uiLimits = { stableReleases: 5, betaReleases: 5 };
+let uiLimits = { releases: 10 };
 
 (async () => {
   try { uiLimits = await api('/config'); } catch { /* use defaults */ }

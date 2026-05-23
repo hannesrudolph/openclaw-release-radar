@@ -18,8 +18,7 @@ api.get('/health', (_req, res) => {
 // UI config — lets the frontend respect server-side limits without hardcoding.
 api.get('/config', (_req, res) => {
   res.json({
-    stableReleases: config.limits.stableReleases,
-    betaReleases:   config.limits.betaReleases,
+    releases: config.limits.releases,
   });
 });
 
@@ -28,14 +27,13 @@ api.get('/status', (_req, res) => {
 });
 
 api.get('/releases', (_req, res) => {
-  const rows = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
+  const rows = listReleasesDb(config.limits.releases);
   res.json(
     rows.map((r) => ({
       tag: r.tag,
       name: r.name,
       publishedAt: r.published_at,
       htmlUrl: r.html_url,
-      prerelease: r.prerelease === 1,
       finalScore: r.final_score,
       riskIndex: r.risk_index,
       negativeIssues: r.negative_issues,
@@ -57,7 +55,6 @@ api.get('/release/:tag', (req, res) => {
     name: rel.name,
     publishedAt: rel.published_at,
     htmlUrl: rel.html_url,
-    prerelease: rel.prerelease === 1,
     finalScore: rel.final_score,
     riskIndex: rel.risk_index,
     negativeIssues: rel.negative_issues,
@@ -89,7 +86,7 @@ api.get('/release/:tag', (req, res) => {
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
-  const allReleases = listReleasesDb(Math.min(100, (config.limits.stableReleases + config.limits.betaReleases) * 6));
+  const allReleases = listReleasesDb(config.limits.releases);
 
   const releases = allReleases.map((r) => {
     const issues = issuesForVersion(r.tag).map((i) => ({
@@ -109,7 +106,6 @@ function buildPublicPayload() {
       tag:            r.tag,
       publishedAt:    r.published_at,
       url:            r.html_url,
-      prerelease:     r.prerelease === 1,
       score:          r.final_score,
       grade:          scoreToGrade(r.final_score),
       riskIndex:      r.risk_index,

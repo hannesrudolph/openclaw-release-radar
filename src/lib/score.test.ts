@@ -131,7 +131,11 @@ describe('scoreRelease', () => {
   });
 
   it('peer median floor lifts at-median rated releases below 5.5 up to 5.5', () => {
-    const issues = [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }))];
+    // Build a release with enough negative signal that the baseline lands below 5.5.
+    // 4 critical+broad+core+many issues → riskIndex ≈ 16, score ≈ 3.1.
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
     const baseline = scoreRelease(issues, RELEASE_PUB, NOW).finalScore;
     assert.ok(baseline < 5.5, `baseline must be < 5.5 for this test to mean anything (got ${baseline})`);
 
@@ -142,7 +146,9 @@ describe('scoreRelease', () => {
   });
 
   it('peer median floor does NOT apply when signal exceeds the median', () => {
-    const issues = [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }))];
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
     const { weightedNegSum, finalScore } = scoreRelease(issues, RELEASE_PUB, NOW);
     // Median lower than this release's signal → release is above-average-bad → no floor.
     const noFloor = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 0.5);
@@ -180,8 +186,8 @@ describe('scoreRelease', () => {
       }),
     ];
     const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Per-issue cap = 5, so coreRiskIndex <= 5. scoreFromRiskIndex(5) ≈ 4.45.
-    assert.ok(s.finalScore >= 3, `single capped issue shouldn't drop below ~3, got ${s.finalScore}`);
+    // Per-issue cap = 4, scoreFromRiskIndex(4) with new formula ≈ 7.
+    assert.ok(s.finalScore >= 5, `single capped issue shouldn't drop below ~5, got ${s.finalScore}`);
   });
 
   it('older issues still register but with reduced weight (recency floor 0.55)', () => {
