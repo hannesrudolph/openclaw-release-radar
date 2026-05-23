@@ -232,6 +232,22 @@ export function scoreRelease(
     }
   }
 
+  // No actionable signal (only neutral mentions, or nothing at all) → insufficient.
+  // Without this guard, a release with one "How do I configure X?" question attributed
+  // to it would score 10.0 (no risk = perfect) instead of "we don't have evidence".
+  if (neg === 0 && pos === 0) {
+    return {
+      finalScore: NEUTRAL_SCORE,
+      baseScore: NEUTRAL_SCORE,
+      riskIndex: 0,
+      weightedNegSum: 0,
+      negativeIssues: 0,
+      positiveIssues: 0,
+      perIssue,
+      state: 'insufficient',
+    };
+  }
+
   // Positives cancel non-core-serious negatives first, then residual budget eats core-serious.
   const posBudget = POS_OFFSET * weightedPos;
   const otherCancel = Math.min(weightedNegOther, posBudget);

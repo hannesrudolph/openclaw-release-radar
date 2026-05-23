@@ -292,15 +292,19 @@ function timeAgo(iso) {
   return `${Math.floor(d / 365)}y ago`;
 }
 
-function scoreInfo(s) {
-  if (s == null) return { color: 'var(--muted)',   label: 'Analyzing…',     num: '—'  };
-  if (s >= 8.2)  return { color: 'var(--ok)',      label: 'Stable',         num: s.toFixed(1) };
-  if (s >= 6.8)  return { color: 'var(--warn)',    label: 'Mostly stable',  num: s.toFixed(1) };
-  if (s >  5.1)  return { color: '#f97316',        label: 'Mixed',          num: s.toFixed(1) };
-  // 4.9–5.1 is the neutral "no attributed issues yet" baseline.
-  if (s >= 4.9)  return { color: 'var(--muted)',   label: 'No signal yet',  num: s.toFixed(1) };
-  if (s >= 3.5)  return { color: '#f97316',        label: 'Risky',          num: s.toFixed(1) };
-  return           { color: 'var(--danger)', label: 'Unstable',       num: s.toFixed(1) };
+function scoreInfo(r) {
+  const s = r.finalScore;
+  // No attributed signal — score is a placeholder neutral 5.0 but we don't show a number
+  // for it, because the 5.0 reflects "we don't know" not "we measured a mixed release".
+  const hasSignal = (r.negativeIssues ?? 0) > 0 || (r.positiveIssues ?? 0) > 0;
+  if (s == null)        return { color: 'var(--muted)',   label: 'Analyzing…',     num: '—' };
+  if (!hasSignal)       return { color: 'var(--muted)',   label: 'No signal yet',  num: '—' };
+  if (s >= 8.2)         return { color: 'var(--ok)',      label: 'Stable',         num: s.toFixed(1) };
+  if (s >= 6.8)         return { color: 'var(--warn)',    label: 'Mostly stable',  num: s.toFixed(1) };
+  if (s >  5.1)         return { color: '#f97316',        label: 'Mixed',          num: s.toFixed(1) };
+  if (s >= 4.9)         return { color: 'var(--muted)',   label: 'No signal yet',  num: '—' };
+  if (s >= 3.5)         return { color: '#f97316',        label: 'Risky',          num: s.toFixed(1) };
+  return                  { color: 'var(--danger)', label: 'Unstable',       num: s.toFixed(1) };
 }
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
@@ -337,7 +341,7 @@ function renderReleases() {
   root.innerHTML = '';
 
   rows.forEach(r => {
-    const si  = scoreInfo(r.finalScore);
+    const si  = scoreInfo(r);
     const id  = cssId(r.tag);
 
     const row = document.createElement('div');
