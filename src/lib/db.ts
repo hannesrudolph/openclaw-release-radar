@@ -441,6 +441,20 @@ export function countStaleClassifications(currentPromptVersion: number): number 
   return row?.n ?? 0;
 }
 
+// Drop classification rows older than the current prompt version. Used by
+// refresh.ts after a full sweep — issues with updated_at far enough in the
+// past that GitHub pagination never returns them will otherwise keep their
+// stale prompt_version forever and force the (expensive) prompt-sweep mode
+// every refresh. Dropping the row is safe: if the issue ever resurfaces in
+// pagination (e.g. a new comment lands), it will be re-classified fresh.
+const deleteStaleClsStmt = db.prepare(
+  `DELETE FROM classifications WHERE prompt_version < ?`,
+);
+export function deleteStaleClassifications(currentPromptVersion: number): number {
+  const res = deleteStaleClsStmt.run(currentPromptVersion);
+  return Number(res.changes ?? 0);
+}
+
 // ---------- meta ----------
 // Key/value scratchpad for one-shot flags (e.g. "have we done the full back-fill yet").
 const getMetaStmt = db.prepare(`SELECT value FROM meta WHERE key = ?`);

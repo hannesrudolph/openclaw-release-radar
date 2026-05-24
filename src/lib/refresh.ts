@@ -34,6 +34,7 @@ import { scoreRelease, type IssueInput } from './score';
 import {
   closedDuringReign,
   countStaleClassifications,
+  deleteStaleClassifications,
   detectBot,
   getClassification,
   getLastScoredAt,
@@ -193,6 +194,20 @@ export async function refresh(): Promise<{
     // stop kicks in on subsequent runs.
     if (!backfillDone && (crossedOldestEver || pagesFetched >= MAX_PAGES)) {
       setMeta(BACKFILL_FLAG, new Date().toISOString());
+    }
+
+    // After a prompt-sweep that walked the full pagination: if any rows are
+    // STILL on the old prompt version, they're issues whose updated_at is too
+    // old for GitHub pagination to reach within MAX_PAGES — they will keep
+    // forcing the (expensive) sweep on every refresh forever. Drop them. If
+    // GitHub ever surfaces those issues again (new comment), refresh will
+    // re-classify them fresh on the next pass.
+    if (promptSweep) {
+      const leftover = countStaleClassifications(PROMPT_VERSION);
+      if (leftover > 0) {
+        const dropped = deleteStaleClassifications(PROMPT_VERSION);
+        console.log(`[refresh] dropped ${dropped} unreachable stale rows after sweep`);
+      }
     }
 
     // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
