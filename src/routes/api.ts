@@ -7,8 +7,60 @@ import {
   issuesForVersion,
   listReleasesDb,
 } from '../lib/refresh';
+import { listAdvisories, type AdvisoryRow } from '../lib/db';
+import { matchesRange } from '../lib/versionMatch';
 
 export const api = Router();
+
+// Extract the FIRST release that shipped a fix, given GHSA `patched_versions`.
+// Examples:
+//   "2026.4.23"             → "2026.4.23"
+//   ">= 2026.4.14"          → "2026.4.14"
+//   ">= 2026.4.10 < 2026.5" → "2026.4.10"
+// Returns null if we can't parse.
+function firstPatchedTag(patchedVersions: string | null | undefined): string | null {
+  if (!patchedVersions) return null;
+  const v = patchedVersions.trim();
+  if (!v) return null;
+  // Singular tag (no comparison operators)
+  if (!/[<>=]/.test(v)) return v;
+  // Take the value of the first `>=` clause (the earliest version that has the fix)
+  const ge = v.match(/>=\s*([0-9A-Za-z.\-+]+)/);
+  return ge ? ge[1] : null;
+}
+
+// Cross-reference each release tag against cached advisories. Returns the
+// CVEs the release is vulnerable to (vuln_range matches its tag) and the
+// CVEs it patches (its tag is the FIRST release containing the fix). A
+// release that simply "happens to be newer than the patch" is NOT credited
+// as patching — only the release that actually shipped the fix is.
+function advisoryStatusFor(tag: string, all: AdvisoryRow[]) {
+  const norm = tag.replace(/^v/i, '');
+  const affected: AdvisoryRow[] = [];
+  const patched: AdvisoryRow[] = [];
+  for (const a of all) {
+    if (matchesRange(tag, a.vulnerable_version_range)) affected.push(a);
+    const first = firstPatchedTag(a.patched_versions);
+    if (first && (first === tag || first.replace(/^v/i, '') === norm)) patched.push(a);
+  }
+  return { affected, patched };
+}
+
+function summarizeAdvisories(list: AdvisoryRow[]) {
+  const by = { critical: 0, high: 0, medium: 0, low: 0 } as Record<string, number>;
+  for (const a of list) by[a.severity] = (by[a.severity] ?? 0) + 1;
+  return {
+    total: list.length,
+    bySeverity: by,
+    items: list.map((a) => ({
+      ghsaId: a.ghsa_id,
+      cveId: a.cve_id,
+      severity: a.severity,
+      summary: a.summary,
+      url: a.html_url,
+    })),
+  };
+}
 
 api.get('/health', (_req, res) => {
   res.json({ ok: true, repo: `${config.github.owner}/${config.github.repo}` });
@@ -28,21 +80,29 @@ api.get('/status', (_req, res) => {
 
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
+  const advisories = listAdvisories();
   res.json(
-    rows.map((r) => ({
-      tag: r.tag,
-      name: r.name,
-      publishedAt: r.published_at,
-      htmlUrl: r.html_url,
-      finalScore: r.final_score,
-      riskIndex: r.risk_index,
-      negativeIssues: r.negative_issues,
-      positiveIssues: r.positive_issues,
-      state: r.state,
-      closedSeriousFixed: r.closed_serious_fixed,
-      openedSeriousDuringReign: r.opened_serious_during_reign,
-      scoredAt: r.scored_at,
-    })),
+    rows.map((r) => {
+      const status = advisoryStatusFor(r.tag, advisories);
+      return {
+        tag: r.tag,
+        name: r.name,
+        publishedAt: r.published_at,
+        htmlUrl: r.html_url,
+        finalScore: r.final_score,
+        riskIndex: r.risk_index,
+        negativeIssues: r.negative_issues,
+        positiveIssues: r.positive_issues,
+        state: r.state,
+        closedSeriousFixed: r.closed_serious_fixed,
+        openedSeriousDuringReign: r.opened_serious_during_reign,
+        scoredAt: r.scored_at,
+        advisories: {
+          affected: summarizeAdvisories(status.affected),
+          patched: summarizeAdvisories(status.patched),
+        },
+      };
+    }),
   );
 });
 
@@ -53,6 +113,7 @@ api.get('/release/:tag', (req, res) => {
     return;
   }
   const issues = issuesForVersion(rel.tag).map(serializeIssue);
+  const status = advisoryStatusFor(rel.tag, listAdvisories());
   res.json({
     tag: rel.tag,
     name: rel.name,
@@ -66,6 +127,10 @@ api.get('/release/:tag', (req, res) => {
     closedSeriousFixed: rel.closed_serious_fixed,
     openedSeriousDuringReign: rel.opened_serious_during_reign,
     scoredAt: rel.scored_at,
+    advisories: {
+      affected: summarizeAdvisories(status.affected),
+      patched: summarizeAdvisories(status.patched),
+    },
     issues,
   });
 });

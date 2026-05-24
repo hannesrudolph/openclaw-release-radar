@@ -76,6 +76,21 @@ CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- GitHub Security Advisories cached for the repo. Refreshed on each cycle.
+-- vulnerable_version_range / patched_versions are stored verbatim as GitHub
+-- returns them; the matching logic lives in lib/versionMatch.ts.
+CREATE TABLE IF NOT EXISTS advisories (
+  ghsa_id TEXT PRIMARY KEY,
+  cve_id TEXT,
+  summary TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  html_url TEXT NOT NULL,
+  published_at TEXT,
+  vulnerable_version_range TEXT,
+  patched_versions TEXT,
+  fetched_at TEXT NOT NULL
+);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -453,6 +468,44 @@ const deleteStaleClsStmt = db.prepare(
 export function deleteStaleClassifications(currentPromptVersion: number): number {
   const res = deleteStaleClsStmt.run(currentPromptVersion);
   return Number(res.changes ?? 0);
+}
+
+// ---------- advisories ----------
+export interface AdvisoryRow {
+  ghsa_id: string;
+  cve_id: string | null;
+  summary: string;
+  severity: string;
+  html_url: string;
+  published_at: string | null;
+  vulnerable_version_range: string | null;
+  patched_versions: string | null;
+  fetched_at: string;
+}
+
+const upsertAdvisoryStmt = db.prepare(`
+INSERT INTO advisories (ghsa_id, cve_id, summary, severity, html_url, published_at,
+  vulnerable_version_range, patched_versions, fetched_at)
+VALUES (:ghsa_id, :cve_id, :summary, :severity, :html_url, :published_at,
+  :vulnerable_version_range, :patched_versions, :fetched_at)
+ON CONFLICT(ghsa_id) DO UPDATE SET
+  cve_id=excluded.cve_id,
+  summary=excluded.summary,
+  severity=excluded.severity,
+  html_url=excluded.html_url,
+  published_at=excluded.published_at,
+  vulnerable_version_range=excluded.vulnerable_version_range,
+  patched_versions=excluded.patched_versions,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertAdvisory(a: Omit<AdvisoryRow, 'fetched_at'>): void {
+  upsertAdvisoryStmt.run({ ...a, fetched_at: new Date().toISOString() });
+}
+
+const listAdvisoriesStmt = db.prepare(`SELECT * FROM advisories ORDER BY published_at DESC NULLS LAST`);
+export function listAdvisories(): AdvisoryRow[] {
+  return listAdvisoriesStmt.all() as unknown as AdvisoryRow[];
 }
 
 // ---------- meta ----------

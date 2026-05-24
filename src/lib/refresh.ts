@@ -1,6 +1,12 @@
 import { config } from '../config';
 import { invalidateCache } from './cache';
-import { GhIssue, listIssueComments, listReleases, paginateIssues } from './github';
+import {
+  GhIssue,
+  listIssueComments,
+  listReleases,
+  listSecurityAdvisories,
+  paginateIssues,
+} from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 import { applyLabelOverrides, applyTitleFunctionalityHint } from './labelOverrides';
 
@@ -45,6 +51,7 @@ import {
   openedDuringReign,
   setMeta,
   updateReleaseScore,
+  upsertAdvisory,
   upsertClassification,
   upsertIssue,
   upsertRelease,
@@ -84,6 +91,32 @@ export async function refresh(): Promise<{
       });
     }
     const tags = releases.map((r) => r.tag_name);
+
+    // 1b. Pull all security advisories for the repo. One cheap call, backfills
+    // historical CVEs automatically. Failure here must not abort the whole
+    // refresh — security data is additive; if the endpoint is down or the repo
+    // has none, we still want issue/release data to update.
+    try {
+      const advisories = await listSecurityAdvisories();
+      for (const adv of advisories) {
+        // Take the first vulnerability entry referring to this repo's package.
+        // openclaw advisories all have exactly one; if a future one had multiple,
+        // we'd pick the one matching ecosystem === 'npm' (or fallback).
+        const v = adv.vulnerabilities[0];
+        upsertAdvisory({
+          ghsa_id: adv.ghsa_id,
+          cve_id: adv.cve_id,
+          summary: adv.summary,
+          severity: adv.severity,
+          html_url: adv.html_url,
+          published_at: adv.published_at,
+          vulnerable_version_range: v?.vulnerable_version_range ?? null,
+          patched_versions: v?.patched_versions ?? null,
+        });
+      }
+    } catch (e) {
+      console.warn(`[advisories] fetch failed (continuing): ${(e as Error).message}`);
+    }
 
     // 2. Stream issues sorted by updated_at desc, paginating until we either:
     //    (a) see a full page where every issue is already classified at its current
