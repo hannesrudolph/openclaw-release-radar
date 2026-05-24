@@ -33,7 +33,24 @@ CREATE TABLE IF NOT EXISTS releases (
   state TEXT,
   closed_serious_fixed INTEGER NOT NULL DEFAULT 0,
   fix_bonus REAL NOT NULL DEFAULT 0,
-  opened_serious_during_reign INTEGER NOT NULL DEFAULT 0
+  opened_serious_during_reign INTEGER NOT NULL DEFAULT 0,
+  -- Raw release-notes body. Stored verbatim so we can re-mine if the parser grows new signals.
+  body TEXT,
+  -- Maintainer-signal counts parsed from body by lib/releaseNotes.ts.
+  -- breaking_count: bullets under "### Breaking" — explicit API/config breakage.
+  -- fixes_count:    bullets under "### Fixes" — bugs the team owned and closed.
+  -- changes_count:  bullets under "### Changes" — features/refactors shipped.
+  -- highlights_count: bullets under "### Highlights" — items the team called out.
+  -- pr_refs_count:  distinct #NNNNN PR refs across the entire body.
+  -- beta_count:     prereleases between this stable and the previous stable (shake-out depth).
+  -- hours_to_next_release: hours until the next release of any kind (a tight gap = hotfix pattern).
+  breaking_count INTEGER NOT NULL DEFAULT 0,
+  fixes_count INTEGER NOT NULL DEFAULT 0,
+  changes_count INTEGER NOT NULL DEFAULT 0,
+  highlights_count INTEGER NOT NULL DEFAULT 0,
+  pr_refs_count INTEGER NOT NULL DEFAULT 0,
+  beta_count INTEGER NOT NULL DEFAULT 0,
+  hours_to_next_release REAL
 );
 
 CREATE TABLE IF NOT EXISTS issues (
@@ -103,6 +120,14 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN closed_serious_fixed INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN fix_bonus REAL NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN opened_serious_during_reign INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN body TEXT`,
+  `ALTER TABLE releases ADD COLUMN breaking_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN fixes_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN changes_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN highlights_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN pr_refs_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN beta_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN hours_to_next_release REAL`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -146,16 +171,29 @@ export interface ReleaseRow {
   // surfaces "this release shipped fixes but also brought regressions" without
   // penalising the score (would create a fight with the recommendation block).
   opened_serious_during_reign: number;
+  // Raw release-notes body (markdown). Kept so we can re-mine if the parser
+  // grows new signals without re-fetching from GitHub.
+  body: string | null;
+  // Maintainer-signal counts. See db.ts CREATE TABLE comment block for what
+  // each one means.
+  breaking_count: number;
+  fixes_count: number;
+  changes_count: number;
+  highlights_count: number;
+  pr_refs_count: number;
+  beta_count: number;
+  hours_to_next_release: number | null;
 }
 
 const upsertReleaseStmt = db.prepare(`
-INSERT INTO releases (tag, name, published_at, html_url, prerelease)
-VALUES (:tag, :name, :published_at, :html_url, :prerelease)
+INSERT INTO releases (tag, name, published_at, html_url, prerelease, body)
+VALUES (:tag, :name, :published_at, :html_url, :prerelease, :body)
 ON CONFLICT(tag) DO UPDATE SET
   name=excluded.name,
   published_at=excluded.published_at,
   html_url=excluded.html_url,
-  prerelease=excluded.prerelease
+  prerelease=excluded.prerelease,
+  body=excluded.body
 `);
 
 export function upsertRelease(r: {
@@ -164,8 +202,34 @@ export function upsertRelease(r: {
   published_at: string | null;
   html_url: string;
   prerelease: boolean;
+  body: string | null;
 }): void {
   upsertReleaseStmt.run({ ...r, prerelease: r.prerelease ? 1 : 0 });
+}
+
+const updateReleaseDerivedStatsStmt = db.prepare(`
+UPDATE releases SET
+  breaking_count=:breaking_count,
+  fixes_count=:fixes_count,
+  changes_count=:changes_count,
+  highlights_count=:highlights_count,
+  pr_refs_count=:pr_refs_count,
+  beta_count=:beta_count,
+  hours_to_next_release=:hours_to_next_release
+WHERE tag=:tag
+`);
+
+export function updateReleaseDerivedStats(args: {
+  tag: string;
+  breaking_count: number;
+  fixes_count: number;
+  changes_count: number;
+  highlights_count: number;
+  pr_refs_count: number;
+  beta_count: number;
+  hours_to_next_release: number | null;
+}): void {
+  updateReleaseDerivedStatsStmt.run(args);
 }
 
 const updateScoreStmt = db.prepare(`
@@ -191,8 +255,12 @@ export function updateReleaseScore(args: {
   updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
 }
 
+// Stable-only view. Prereleases live in the DB for derived-stat computation
+// (beta_count, hours_to_next_release) but are not surfaced to scoring or the
+// API — the UI is "should I install this stable release?", betas don't get
+// installed individually by end users.
 const listReleasesStmt = db.prepare(`
-SELECT * FROM releases ORDER BY published_at IS NULL, published_at DESC LIMIT ?
+SELECT * FROM releases WHERE prerelease = 0 ORDER BY published_at IS NULL, published_at DESC LIMIT ?
 `);
 
 export function listReleasesDb(limit = 20): ReleaseRow[] {

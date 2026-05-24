@@ -9,6 +9,9 @@ export interface GhRelease {
   html_url: string;
   prerelease: boolean;
   draft: boolean;
+  // Release-notes markdown. Mined for maintainer-signal counts
+  // (### Breaking / ### Fixes / etc.) — see lib/releaseNotes.ts.
+  body: string | null;
 }
 
 export interface GhIssue {
@@ -52,15 +55,16 @@ async function gh<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function listReleases(limit = 10): Promise<GhRelease[]> {
-  // We fetch a wider page than `limit` because GitHub returns prereleases interleaved
-  // with stable; on openclaw, betas outnumber stables ~3:1, so a 10-item page can
-  // contain only 2-3 actual stable releases. Cap at 100 (GitHub's per_page max) and
-  // trim to `limit` after filtering.
+// Fetch up to `fetchSize` releases (capped at GitHub's 100/page max), drafts
+// filtered out. Prereleases are RETAINED — callers can filter them when they
+// only care about stables (e.g. the monitoring window), but prereleases are
+// also a signal: counting how many betas preceded a stable tells us how much
+// shake-out time a release got. See computeBetaCount in lib/releaseNotes.ts.
+export async function listReleases(fetchSize = 60): Promise<GhRelease[]> {
   const { owner, repo } = config.github;
-  const fetchSize = Math.min(100, limit * 6);
-  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${fetchSize}`);
-  return data.filter((r) => !r.draft && !r.prerelease).slice(0, limit);
+  const perPage = Math.min(100, Math.max(1, fetchSize));
+  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${perPage}`);
+  return data.filter((r) => !r.draft);
 }
 
 // Stream issues sorted by updated_at descending, one page at a time. PRs are stripped

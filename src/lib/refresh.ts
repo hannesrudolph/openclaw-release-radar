@@ -9,6 +9,11 @@ import {
 } from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 import { applyLabelOverrides, applyTitleFunctionalityHint } from './labelOverrides';
+import {
+  computeBetaCount,
+  computeHoursToNextRelease,
+  parseReleaseNotes,
+} from './releaseNotes';
 
 // Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
 // back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
@@ -50,6 +55,7 @@ import {
   listReleasesDb,
   openedDuringReign,
   setMeta,
+  updateReleaseDerivedStats,
   updateReleaseScore,
   upsertAdvisory,
   upsertClassification,
@@ -79,8 +85,13 @@ export async function refresh(): Promise<{
   const t0 = Date.now();
 
   try {
-    // 1. Pull releases. listReleases handles the prerelease filtering and over-fetch buffer.
-    const releases = await listReleases(config.limits.releases);
+    // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
+    // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
+    // computation (betaCount, hoursToNextRelease) but only score the latest
+    // `releases` stable ones. Prereleases are not scored — they signal shake-out
+    // time around the stable that ships next.
+    const fetched = await listReleases(config.limits.releases * 6);
+    const releases = fetched.filter((r) => !r.prerelease).slice(0, config.limits.releases);
     for (const r of releases) {
       upsertRelease({
         tag: r.tag_name,
@@ -88,9 +99,33 @@ export async function refresh(): Promise<{
         published_at: r.published_at,
         html_url: r.html_url,
         prerelease: r.prerelease,
+        body: r.body ?? null,
       });
     }
     const tags = releases.map((r) => r.tag_name);
+
+    // Derived stats per stable: parse maintainer-signal counts from the body,
+    // count preceding prereleases and time-to-next-release. No new API calls —
+    // all data comes from `fetched`. Failure here is a code bug, not a network
+    // issue, so we don't try/catch — let it surface during dev.
+    const releasesForCalc = fetched.map((r) => ({
+      tag: r.tag_name,
+      published_at: r.published_at,
+      prerelease: r.prerelease,
+    }));
+    for (const r of releases) {
+      const stats = parseReleaseNotes(r.body);
+      updateReleaseDerivedStats({
+        tag: r.tag_name,
+        breaking_count: stats.breakingCount,
+        fixes_count: stats.fixesCount,
+        changes_count: stats.changesCount,
+        highlights_count: stats.highlightsCount,
+        pr_refs_count: stats.prRefsCount,
+        beta_count: computeBetaCount(releasesForCalc, r.tag_name),
+        hours_to_next_release: computeHoursToNextRelease(releasesForCalc, r.tag_name),
+      });
+    }
 
     // 1b. Pull all security advisories for the repo. One cheap call, backfills
     // historical CVEs automatically. Failure here must not abort the whole

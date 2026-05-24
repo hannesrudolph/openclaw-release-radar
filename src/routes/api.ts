@@ -78,6 +78,30 @@ api.get('/status', (_req, res) => {
   res.json(getRefreshState());
 });
 
+// Maintainer-signal counts mined from the release-notes body + neighbouring releases.
+// See lib/releaseNotes.ts. These are exposed for the UI to render without further
+// computation, but the UI is intentionally NOT consuming them yet — we want to watch
+// the numbers settle across a few refresh cycles before deciding how to surface them.
+function maintainerSignals(r: {
+  breaking_count: number;
+  fixes_count: number;
+  changes_count: number;
+  highlights_count: number;
+  pr_refs_count: number;
+  beta_count: number;
+  hours_to_next_release: number | null;
+}) {
+  return {
+    breakingCount:      r.breaking_count,
+    fixesCount:         r.fixes_count,
+    changesCount:       r.changes_count,
+    highlightsCount:    r.highlights_count,
+    prRefsCount:        r.pr_refs_count,
+    betaCount:          r.beta_count,
+    hoursToNextRelease: r.hours_to_next_release,
+  };
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
@@ -101,6 +125,7 @@ api.get('/releases', (_req, res) => {
           affected: summarizeAdvisories(status.affected),
           patched: summarizeAdvisories(status.patched),
         },
+        maintainerSignals: maintainerSignals(r),
       };
     }),
   );
@@ -131,6 +156,7 @@ api.get('/release/:tag', (req, res) => {
       affected: summarizeAdvisories(status.affected),
       patched: summarizeAdvisories(status.patched),
     },
+    maintainerSignals: maintainerSignals(rel),
     issues,
   });
 });
