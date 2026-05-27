@@ -76,12 +76,7 @@ a:hover{color:var(--link-hover)}
   font-size:var(--text-xs);color:var(--muted);
   display:flex;align-items:center;gap:var(--space-3);
 }
-.pulse{
-  width:6px;height:6px;border-radius:50%;
-  background:var(--ok);flex-shrink:0;
-  box-shadow:0 0 0 2px color-mix(in srgb,var(--ok) 25%,transparent);
-}
-.pulse.stale{background:var(--muted);box-shadow:none}
+.topbar__updated{color:var(--warn)}
 
 /* ── main ─────────────────────────────────────────────────────────────── */
 main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--space-10)}
@@ -311,9 +306,8 @@ footer a:hover{color:var(--text)}
     iClaw
   </a>
   <div class="topbar__spacer"></div>
-  <div class="topbar__updated" id="topbarUpdated">
-    <span class="pulse stale" id="pulse"></span>
-    <span id="updatedLabel">checking…</span>
+  <div class="topbar__updated" id="topbarUpdated" hidden>
+    <span id="updatedLabel"></span>
   </div>
   <a class="api-link" href="/api/public" target="_blank" rel="noopener">API</a>
 </nav>
@@ -324,7 +318,7 @@ footer a:hover{color:var(--text)}
   </div>
   <p class="page-sub">
     Flags which release to install <em>right now</em>, judged against this
-    project's typical bug-load.
+    project's typical bug-load<br>
     Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
   </p>
 
@@ -335,7 +329,7 @@ footer a:hover{color:var(--text)}
 </main>
 
 <footer>
-  <span id="refresh-cadence">Scores update on a fixed cadence</span> · Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
+  Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
 </footer>
 
 <script>
@@ -641,42 +635,39 @@ function renderIssues(det, issues) {
 }
 
 /* ── status dot ───────────────────────────────────────────────────────── */
+// Freshness is a silent guard: users don't care how often we refresh, so we
+// show nothing while data is current. We only surface an indicator when the
+// last successful refresh is older than STALE_AFTER_MS — i.e. the install
+// advice on screen might no longer reflect reality.
+const STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
+
 async function loadStatus() {
+  const box = document.getElementById('topbarUpdated');
+  const label = document.getElementById('updatedLabel');
   try {
     const s = await api('/status');
-    const pulse = document.getElementById('pulse');
-    const label = document.getElementById('updatedLabel');
-    if (s.refreshing) {
-      pulse.className = 'pulse stale';
-      label.textContent = 'Refreshing…';
-    } else if (s.lastRefreshAt) {
-      pulse.className = 'pulse';
-      label.textContent = 'Updated ' + timeAgo(s.lastRefreshAt);
-    } else {
-      pulse.className = 'pulse stale';
-      label.textContent = 'Not yet refreshed';
+    const last = s.lastRefreshAt ? Date.parse(s.lastRefreshAt) : NaN;
+    const age = Number.isFinite(last) ? Date.now() - last : Infinity;
+    if (age <= STALE_AFTER_MS) {
+      box.hidden = true; // fresh enough — stay quiet
+      return;
     }
+    box.hidden = false;
+    label.textContent = Number.isFinite(last)
+      ? 'Data may be stale — last updated ' + timeAgo(s.lastRefreshAt)
+      : 'Data not yet refreshed';
   } catch {
-    document.getElementById('pulse').className = 'pulse stale';
-    document.getElementById('updatedLabel').textContent = 'Offline';
+    // Can't reach the status endpoint — treat as a staleness warning.
+    box.hidden = false;
+    label.textContent = 'Status unavailable';
   }
 }
 
 /* ── init ─────────────────────────────────────────────────────────────── */
 let uiLimits = { releases: 10, refreshMinutes: 30 };
 
-function renderRefreshCadence(minutes) {
-  const el = document.getElementById('refresh-cadence');
-  if (!el) return;
-  const m = Number(minutes);
-  if (!Number.isFinite(m) || m <= 0) return;
-  el.textContent =
-    m === 1 ? 'Scores update every minute' : `Scores update every ${m} minutes`;
-}
-
 (async () => {
   try { uiLimits = await api('/config'); } catch { /* use defaults */ }
-  renderRefreshCadence(uiLimits.refreshMinutes);
   loadStatus();
   loadReleases();
   setInterval(loadStatus, 30_000);
