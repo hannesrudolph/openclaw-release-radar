@@ -243,6 +243,53 @@ describe('scoreRelease', () => {
       'closures of non-core-serious or non-negative issues must not affect the score');
   });
 
+  it('tie-breaker: no signals → score unchanged (contract preserved)', () => {
+    // Two at-median releases with no release-notes signals must still be identical.
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
+    const withoutSignals = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
+    assert.equal(withoutSignals.tieBreaker, 0);
+  });
+
+  it('tie-breaker: more fixes/PR activity nudges an at-median release up', () => {
+    // The real-world case: three releases the peer curve flattens to 7.0 should
+    // separate by how much maintenance shipped.
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const { weightedNegSum: med } = scoreRelease(issues, RELEASE_PUB, NOW);
+    const quiet = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
+      breakingCount: 0, fixesCount: 4, prRefsCount: 3,
+    });
+    const busy = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
+      breakingCount: 0, fixesCount: 227, prRefsCount: 119,
+    });
+    assert.ok(busy.finalScore > quiet.finalScore,
+      `busy (${busy.finalScore}) should outrank quiet (${quiet.finalScore})`);
+    assert.ok(busy.tieBreaker > quiet.tieBreaker && quiet.tieBreaker > 0);
+  });
+
+  it('tie-breaker: breaking changes nudge down, and net is bounded to ±0.6', () => {
+    const issues = Array.from({ length: 4 }, (_, i) =>
+      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+    );
+    const { weightedNegSum: med } = scoreRelease(issues, RELEASE_PUB, NOW);
+    const clean = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
+      breakingCount: 0, fixesCount: 50, prRefsCount: 50,
+    });
+    const breaking = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
+      breakingCount: 8, fixesCount: 50, prRefsCount: 50,
+    });
+    assert.ok(breaking.finalScore < clean.finalScore, 'breaking changes should pull the score down');
+    // Bound check: even an extreme changelog can't move more than ±0.6.
+    const huge = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
+      breakingCount: 0, fixesCount: 9999, prRefsCount: 9999,
+    });
+    assert.ok(Math.abs(huge.tieBreaker) <= 0.6 + 1e-9, `tie-breaker must stay within ±0.6, got ${huge.tieBreaker}`);
+  });
+
   it('older issues still register but with reduced weight (recency floor 0.55)', () => {
     const fresh = scoreRelease(
       [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { updatedAt: '2024-06-30T00:00:00Z' })],

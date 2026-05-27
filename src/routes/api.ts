@@ -82,6 +82,14 @@ api.get('/status', (_req, res) => {
 // See lib/releaseNotes.ts. These are exposed for the UI to render without further
 // computation, but the UI is intentionally NOT consuming them yet — we want to watch
 // the numbers settle across a few refresh cycles before deciding how to surface them.
+//
+// `breakingCount` semantics: for a stable release, this is the AGGREGATE of its
+// own `### Breaking` bullets plus those in every beta in the chain back to the
+// previous stable. The maintainer typically lists a breaking change in the beta
+// that introduced it and does NOT repeat the bullet when the stable promotes —
+// so the stable's own body alone undercounts breakage that ships in it. See
+// `computeAggregateBreaking` in lib/releaseNotes.ts. `fixesCount` / `changesCount`
+// stay own-only because changelog generators DO re-list those at promotion.
 function maintainerSignals(r: {
   breaking_count: number;
   fixes_count: number;

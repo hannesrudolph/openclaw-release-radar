@@ -115,6 +115,48 @@ export function computeBetaCount(
   return count;
 }
 
+// Aggregate breaking-count across a stable's preceding beta chain.
+//
+// Background: a beta can introduce a breaking change (e.g. removing a channel
+// adapter) that its body documents under `### Breaking`. The stable that ships
+// AFTER that beta inherits the breakage — anyone installing the stable hits the
+// same incompatibility. But the stable's own body usually doesn't repeat the
+// `### Breaking` section verbatim, so its own `breakingCount` is 0.
+//
+// This function sums the breakingCount of all prereleases sitting between THIS
+// stable and the previous stable in the same release lineage, plus the stable's
+// own breakingCount. Result: "how many breaking-change bullets will a user
+// installing THIS release encounter, including those rolled in via betas".
+//
+// For a prerelease target the function returns just its own breakingCount —
+// we don't attempt to track breakage that propagates further back than the
+// previous stable boundary (that's a different question, "delta since
+// last stable" vs "what's in the chain up to this point").
+export function computeAggregateBreaking(
+  allReleasesDescByDate: Array<{
+    tag: string;
+    published_at: string | null;
+    prerelease: boolean;
+    breakingCount: number;
+  }>,
+  targetTag: string,
+): number {
+  const idx = allReleasesDescByDate.findIndex((r) => r.tag === targetTag);
+  if (idx === -1) return 0;
+  const target = allReleasesDescByDate[idx];
+  // Prerelease: just its own count. Nothing to aggregate forward.
+  if (target.prerelease) return target.breakingCount;
+
+  let total = target.breakingCount;
+  // Walk older entries; stop at the next stable.
+  for (let i = idx + 1; i < allReleasesDescByDate.length; i++) {
+    const r = allReleasesDescByDate[i];
+    if (!r.prerelease) break;
+    total += r.breakingCount;
+  }
+  return total;
+}
+
 // Hours from a release's publish time to the NEXT (newer) release in the list.
 // Useful as a hotfix signal: if 2026.5.4 was superseded by 2026.5.5 four hours
 // later, something probably broke in 5.4. Returns null for the latest release

@@ -84,7 +84,7 @@ a:hover{color:var(--link-hover)}
 .pulse.stale{background:var(--muted);box-shadow:none}
 
 /* ── main ─────────────────────────────────────────────────────────────── */
-main{max-width:720px;margin:0 auto;padding:var(--space-10) var(--space-9) 80px}
+main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--space-10)}
 
 .page-title{
   font-size:1.9rem;font-weight:700;letter-spacing:-.03em;
@@ -552,11 +552,12 @@ function categorizeReleases(rows) {
       const ratio = peerMedian > 0 ? Math.round(negs / peerMedian) : 0;
       reason = `${negs} reports — ${ratio}× more than typical for this project`;
     } else if (!recommendedFound) {
+      // The "Recommended" pill + green row already say everything; a
+      // "1291 reports — at or below median" line next to it only undermines
+      // confidence, so the recommended row carries no reason text.
       category = 'recommended';
       recommendedFound = true;
-      reason = negs === 0
-        ? `No reported issues — at or below project median (${peerMedian})`
-        : `${negs} reports — at or below project median (${peerMedian})`;
+      reason = '';
     } else {
       // Past the recommended target: shown as a normal scored row, no
       // downgrade nudge — its score speaks for itself.

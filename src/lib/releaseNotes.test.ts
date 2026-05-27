@@ -4,6 +4,7 @@ import {
   parseReleaseNotes,
   computeBetaCount,
   computeHoursToNextRelease,
+  computeAggregateBreaking,
 } from './releaseNotes.ts';
 
 describe('parseReleaseNotes', () => {
@@ -216,5 +217,82 @@ describe('computeHoursToNextRelease', () => {
       { tag: 'b', published_at: '2026-01-01T00:00:00Z' },
     ];
     assert.equal(computeHoursToNextRelease(r, 'b'), null);
+  });
+});
+
+describe('computeAggregateBreaking', () => {
+  // Fixture mirrors a realistic openclaw window: two stables, each preceded by a
+  // beta chain of varying length. breakingCount per row simulates the post-parse
+  // state (some bullets in betas, none in stables — the exact blind spot we
+  // close).
+  //
+  //  newest                              older
+  //  ┌──────────── v5.19 chain ─────────┐  ┌────── v5.18 chain ─────┐
+  //  v5.19    beta.2    beta.1    alpha.1    v5.18    beta.1
+  //  own=0    own=2     own=0     own=1      own=0    own=0
+  //
+  // Expected aggregate for v5.19 = 0 (own) + 2 + 0 + 1 = 3
+  // Expected aggregate for v5.18 = 0 (own) + 0 = 0
+  const releases = [
+    { tag: 'v2026.5.19',         published_at: '2026-05-20T20:20:53Z', prerelease: false, breakingCount: 0 },
+    { tag: 'v2026.5.19-beta.2',  published_at: '2026-05-19T21:12:37Z', prerelease: true,  breakingCount: 2 },
+    { tag: 'v2026.5.19-alpha.1', published_at: '2026-05-20T00:50:52Z', prerelease: true,  breakingCount: 0 },
+    { tag: 'v2026.5.19-beta.1',  published_at: '2026-05-18T22:58:13Z', prerelease: true,  breakingCount: 1 },
+    { tag: 'v2026.5.18',         published_at: '2026-05-18T18:54:22Z', prerelease: false, breakingCount: 0 },
+    { tag: 'v2026.5.18-beta.1',  published_at: '2026-05-18T16:13:00Z', prerelease: true,  breakingCount: 0 },
+  ];
+
+  it('sums own + every preceding beta until the next stable boundary', () => {
+    // The exact "BlueBubbles" scenario: stable's own body says nothing, but its
+    // beta chain documents the breaking change.
+    assert.equal(computeAggregateBreaking(releases, 'v2026.5.19'), 3);
+  });
+
+  it('returns just own count when the preceding chain has no breaking bullets', () => {
+    assert.equal(computeAggregateBreaking(releases, 'v2026.5.18'), 0);
+  });
+
+  it('stops at the next stable boundary — does not bleed into older chains', () => {
+    // Inject a fresh stable with own=0 followed by a single beta=4, then the
+    // already-defined v5.18 chain. Aggregate for the new stable must be 4,
+    // NOT 4 + everything below.
+    const r = [
+      { tag: 'fresh',         published_at: '2026-05-25T00:00:00Z', prerelease: false, breakingCount: 0 },
+      { tag: 'fresh-beta.1',  published_at: '2026-05-24T23:00:00Z', prerelease: true,  breakingCount: 4 },
+      ...releases, // v5.19 chain with breaking=3 underneath
+    ];
+    assert.equal(computeAggregateBreaking(r, 'fresh'), 4);
+  });
+
+  it('returns own breakingCount for a prerelease target (no forward walk)', () => {
+    // Policy is symmetric with computeBetaCount: prerelease aggregates are not
+    // meaningful — the prerelease IS one of the bullets, not the rollup. We
+    // return its own count so callers can still distinguish "this beta had a
+    // breaking change" from "this beta had none".
+    assert.equal(computeAggregateBreaking(releases, 'v2026.5.19-beta.2'), 2);
+    assert.equal(computeAggregateBreaking(releases, 'v2026.5.19-alpha.1'), 0);
+  });
+
+  it('returns 0 when the target tag is not in the list', () => {
+    assert.equal(computeAggregateBreaking(releases, 'v9999.0.0'), 0);
+  });
+
+  it('handles multiple stables each with their own chain — only nearest chain counts per target', () => {
+    // Three stables each preceded by two betas. Each stable should report only
+    // its own chain's sum, no cross-contamination.
+    const r = [
+      { tag: 'S3',  published_at: '2026-06-03T00:00:00Z', prerelease: false, breakingCount: 1 },
+      { tag: 'b3a', published_at: '2026-06-02T00:00:00Z', prerelease: true,  breakingCount: 2 },
+      { tag: 'b3b', published_at: '2026-06-01T00:00:00Z', prerelease: true,  breakingCount: 0 },
+      { tag: 'S2',  published_at: '2026-05-30T00:00:00Z', prerelease: false, breakingCount: 0 },
+      { tag: 'b2a', published_at: '2026-05-29T00:00:00Z', prerelease: true,  breakingCount: 5 },
+      { tag: 'b2b', published_at: '2026-05-28T00:00:00Z', prerelease: true,  breakingCount: 0 },
+      { tag: 'S1',  published_at: '2026-05-25T00:00:00Z', prerelease: false, breakingCount: 7 },
+      { tag: 'b1a', published_at: '2026-05-24T00:00:00Z', prerelease: true,  breakingCount: 3 },
+      { tag: 'b1b', published_at: '2026-05-23T00:00:00Z', prerelease: true,  breakingCount: 0 },
+    ];
+    assert.equal(computeAggregateBreaking(r, 'S3'), 1 + 2 + 0);  // own + b3a + b3b
+    assert.equal(computeAggregateBreaking(r, 'S2'), 0 + 5 + 0);  // own + b2a + b2b
+    assert.equal(computeAggregateBreaking(r, 'S1'), 7 + 3 + 0);  // own + b1a + b1b
   });
 });

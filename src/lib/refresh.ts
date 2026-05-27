@@ -10,6 +10,7 @@ import {
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
 import { applyLabelOverrides, applyTitleFunctionalityHint } from './labelOverrides';
 import {
+  computeAggregateBreaking,
   computeBetaCount,
   computeHoursToNextRelease,
   parseReleaseNotes,
@@ -87,9 +88,15 @@ export async function refresh(): Promise<{
   try {
     // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
     // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
-    // computation (betaCount, hoursToNextRelease) but only score the latest
-    // `releases` stable ones. Prereleases are not scored — they signal shake-out
-    // time around the stable that ships next.
+    // computation (betaCount, hoursToNextRelease, aggregate breaking) but only
+    // score the latest `releases` stable ones. Prereleases are not scored — they
+    // signal shake-out time around the stable that ships next.
+    //
+    // The ×6 multiplier also bounds how far back `computeAggregateBreaking` can
+    // look: a stable's beta chain must be inside this fetched window for its
+    // breaking bullets to be counted. At openclaw's 3:1 beta:stable ratio,
+    // ×6 → ~10 stables of headroom past the monitored count. If that ratio ever
+    // inverts (more betas per stable), bump the multiplier.
     const fetched = await listReleases(config.limits.releases * 6);
     const releases = fetched.filter((r) => !r.prerelease).slice(0, config.limits.releases);
     for (const r of releases) {
@@ -108,16 +115,28 @@ export async function refresh(): Promise<{
     // count preceding prereleases and time-to-next-release. No new API calls —
     // all data comes from `fetched`. Failure here is a code bug, not a network
     // issue, so we don't try/catch — let it surface during dev.
+    //
+    // releasesForCalc carries `breakingCount` from each fetched body (including
+    // prereleases) so `computeAggregateBreaking` can roll a stable's preceding
+    // beta chain into its stored `breaking_count`. Without this, a `### Breaking`
+    // bullet that only appears in a beta body (and is not repeated in the stable
+    // body at promotion time) would be invisible — see comment on
+    // computeAggregateBreaking in releaseNotes.ts.
     const releasesForCalc = fetched.map((r) => ({
       tag: r.tag_name,
       published_at: r.published_at,
       prerelease: r.prerelease,
+      breakingCount: parseReleaseNotes(r.body).breakingCount,
     }));
     for (const r of releases) {
       const stats = parseReleaseNotes(r.body);
       updateReleaseDerivedStats({
         tag: r.tag_name,
-        breaking_count: stats.breakingCount,
+        // Aggregated: own + breaking bullets from each preceding beta until the
+        // previous stable. Other counts (fixes/changes/highlights) are NOT
+        // aggregated — the changelog generator re-lists them in the stable body
+        // at promotion time, so they're already counted once.
+        breaking_count: computeAggregateBreaking(releasesForCalc, r.tag_name),
         fixes_count: stats.fixesCount,
         changes_count: stats.changesCount,
         highlights_count: stats.highlightsCount,
@@ -303,6 +322,12 @@ export async function refresh(): Promise<{
       };
     };
 
+    const relSignals = (rel: (typeof allReleases)[number]) => ({
+      breakingCount: rel.breaking_count,
+      fixesCount: rel.fixes_count,
+      prRefsCount: rel.pr_refs_count,
+    });
+
     const pass1 = allReleases.map((rel) => {
       const inputs = issuesForVersion(rel.tag).map(buildInput);
       const closedInputs = closedDuringReign(rel.tag).map(buildInput);
@@ -312,7 +337,9 @@ export async function refresh(): Promise<{
         inputs,
         closedInputs,
         openedInputs,
-        score: scoreRelease(inputs, rel.published_at, undefined, undefined, closedInputs, openedInputs),
+        score: scoreRelease(
+          inputs, rel.published_at, undefined, undefined, closedInputs, openedInputs, relSignals(rel),
+        ),
       };
     });
 
@@ -329,7 +356,9 @@ export async function refresh(): Promise<{
     for (const { rel, inputs, closedInputs, openedInputs, score: firstScore } of pass1) {
       const score =
         peerMedian !== undefined && firstScore.state === 'rated'
-          ? scoreRelease(inputs, rel.published_at, undefined, peerMedian, closedInputs, openedInputs)
+          ? scoreRelease(
+              inputs, rel.published_at, undefined, peerMedian, closedInputs, openedInputs, relSignals(rel),
+            )
           : firstScore;
       updateReleaseScore({
         tag: rel.tag,

@@ -57,6 +57,23 @@ const FIX_BONUS_FACTOR = 0.55;
 // while preserving the underlying signal.
 const BOT_WEIGHT_MULTIPLIER = 0.3;
 
+// Tie-breaker — a small ± nudge from release-notes signals. The peer-relative
+// curve flattens every at/below-median release onto PEER_BASELINE_SCORE (7),
+// so three "fine" releases with very different changelogs all read 7.0. This
+// breaks those ties by how much the release actually shipped vs. how much it
+// might break:
+//   activity = fixesCount + prRefsCount  →  nudge UP   (well-tended)
+//   breakingCount                        →  nudge DOWN (riskier to adopt)
+// Both are log-scaled and the net is clamped to ±TIE_BREAKER_MAX, so this can
+// only break ties — it never overrides the peer-relative signal or fix-bonus.
+// Crucially these are release-notes counts, NOT raw issue volume, so unlike
+// `negativeIssues` they are not confounded by how long the release sat as the
+// latest version — a fair differentiator. Example nudges (breaking=0):
+//   activity 7   → +0.25    activity 89  → +0.54    activity 346 → +0.60 (cap)
+const TIE_BREAKER_MAX = 0.6;
+const TIE_ACTIVITY_FACTOR = 0.12;
+const TIE_BREAKING_FACTOR = 0.35;
+
 const SEVERITY: Record<IssueClassification['severity'], number> = {
   critical: 2.2,
   high: 1.4,
@@ -106,6 +123,13 @@ export interface ScoredIssue {
   classification: IssueClassification;
 }
 
+// Release-notes-derived signals used only for the bounded tie-breaker.
+export interface ReleaseSignals {
+  breakingCount: number;
+  fixesCount: number;
+  prRefsCount: number;
+}
+
 export interface ScoreBreakdown {
   finalScore: number;
   baseScore: number;
@@ -116,6 +140,7 @@ export interface ScoreBreakdown {
   closedSeriousFixed: number; // core-serious bugs closed during this release's reign
   fixBonus: number;           // score points added for those fixes
   openedSeriousDuringReign: number; // core-serious bugs OPENED in same window — informational
+  tieBreaker: number;         // ± nudge from release-notes signals (rated only)
   perIssue: ScoredIssue[];
   state: 'analyzing' | 'rated' | 'insufficient';
 }
@@ -165,6 +190,18 @@ function scoreFromRiskIndex(riskIndex: number): number {
   return 10 - Math.log2(1 + Math.max(0, riskIndex)) * RISK_LOG_FACTOR;
 }
 
+// Bounded ± nudge from release-notes signals — see TIE_BREAKER_MAX comment.
+// Returns 0 when no signals are supplied, so the scoring contract is unchanged
+// for callers (and tests) that don't pass them.
+function tieBreaker(signals?: ReleaseSignals): number {
+  if (!signals) return 0;
+  const activity = Math.max(0, signals.fixesCount) + Math.max(0, signals.prRefsCount);
+  const breaking = Math.max(0, signals.breakingCount);
+  const up = Math.log1p(activity) * TIE_ACTIVITY_FACTOR;
+  const down = Math.log1p(breaking) * TIE_BREAKING_FACTOR;
+  return clamp(up - down, -TIE_BREAKER_MAX, TIE_BREAKER_MAX);
+}
+
 function round1(x: number): number {
   return Math.round(x * 10) / 10;
 }
@@ -184,6 +221,7 @@ export function scoreRelease(
   peerMedianWeightedNeg?: number,
   closedIssues: IssueInput[] = [],
   openedIssues: IssueInput[] = [],
+  signals?: ReleaseSignals,
 ): ScoreBreakdown {
   // Count core-serious negatives closed during this release's reign — these are
   // the "fixes" we credit. Closed neutrals (stale-bot, duplicates) and positives
@@ -215,6 +253,7 @@ export function scoreRelease(
         closedSeriousFixed,
         fixBonus: 0,
         openedSeriousDuringReign,
+        tieBreaker: 0,
         perIssue: [],
         state: 'analyzing',
       };
@@ -235,6 +274,7 @@ export function scoreRelease(
       closedSeriousFixed,
       fixBonus: round2(fixBonus),
       openedSeriousDuringReign,
+      tieBreaker: 0,
       perIssue: [],
       state: 'insufficient',
     };
@@ -298,6 +338,7 @@ export function scoreRelease(
       closedSeriousFixed,
       fixBonus: round2(fixBonus),
       openedSeriousDuringReign,
+      tieBreaker: 0,
       perIssue,
       state: 'insufficient',
     };
@@ -351,9 +392,12 @@ export function scoreRelease(
     ? 0
     : OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
   const baseScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
-  // Apply fix-bonus on top of the peer-relative / absolute base. A release
-  // that closed 100 serious bugs during its reign gets +5.4 above its base.
-  let finalScore = clamp(baseScore + fixBonus, MIN_SCORE, 10);
+  // Apply fix-bonus + the bounded release-notes tie-breaker on top of the
+  // peer-relative / absolute base. fix-bonus can lift a heavy-fix release ~5
+  // points; the tie-breaker only nudges ±0.6 to separate otherwise-identical
+  // baseline releases.
+  const tb = tieBreaker(signals);
+  let finalScore = clamp(baseScore + fixBonus + tb, MIN_SCORE, 10);
 
   // Floor lift kept from the old model. With peer-relative scoring it rarely
   // fires (releases at/below median already score PEER_BASELINE_SCORE which is
@@ -378,6 +422,7 @@ export function scoreRelease(
     closedSeriousFixed,
     fixBonus: round2(fixBonus),
     openedSeriousDuringReign,
+    tieBreaker: round2(tb),
     perIssue,
     state: 'rated',
   };
