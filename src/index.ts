@@ -1,5 +1,4 @@
 import express from 'express';
-import cron from 'node-cron';
 import { join } from 'node:path';
 import { config } from './config';
 import { api } from './routes/api';
@@ -15,21 +14,19 @@ app.listen(config.server.port, '127.0.0.1', () => {
   console.log(`[radar] watching ${config.github.owner}/${config.github.repo}`);
 });
 
-// Cron — fire and forget; refresh() guards against overlap.
-if (cron.validate(config.cron.schedule)) {
-  cron.schedule(config.cron.schedule, () => {
-    refresh()
-      .then((r) =>
-        console.log(
-          `[cron] refreshed: ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
-        ),
-      )
-      .catch((e) => console.error('[cron] refresh failed:', (e as Error).message));
-  });
-  console.log(`[cron] schedule: ${config.cron.schedule}`);
-} else {
-  console.warn(`[cron] invalid schedule, skipping: ${config.cron.schedule}`);
-}
+// Periodic refresh — fire and forget; refresh() guards against overlap so a slow
+// run won't be re-entered by the next tick.
+const intervalMs = config.refresh.intervalMinutes * 60_000;
+setInterval(() => {
+  refresh()
+    .then((r) =>
+      console.log(
+        `[refresh] ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
+      ),
+    )
+    .catch((e) => console.error('[refresh] failed:', (e as Error).message));
+}, intervalMs);
+console.log(`[refresh] every ${config.refresh.intervalMinutes} min`);
 
 // Initial refresh on startup (non-blocking).
 refresh()

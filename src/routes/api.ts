@@ -6,10 +6,61 @@ import {
   getRelease,
   issuesForVersion,
   listReleasesDb,
-  refresh,
 } from '../lib/refresh';
+import { listAdvisories, type AdvisoryRow } from '../lib/db';
+import { matchesRange } from '../lib/versionMatch';
 
 export const api = Router();
+
+// Extract the FIRST release that shipped a fix, given GHSA `patched_versions`.
+// Examples:
+//   "2026.4.23"             → "2026.4.23"
+//   ">= 2026.4.14"          → "2026.4.14"
+//   ">= 2026.4.10 < 2026.5" → "2026.4.10"
+// Returns null if we can't parse.
+function firstPatchedTag(patchedVersions: string | null | undefined): string | null {
+  if (!patchedVersions) return null;
+  const v = patchedVersions.trim();
+  if (!v) return null;
+  // Singular tag (no comparison operators)
+  if (!/[<>=]/.test(v)) return v;
+  // Take the value of the first `>=` clause (the earliest version that has the fix)
+  const ge = v.match(/>=\s*([0-9A-Za-z.\-+]+)/);
+  return ge ? ge[1] : null;
+}
+
+// Cross-reference each release tag against cached advisories. Returns the
+// CVEs the release is vulnerable to (vuln_range matches its tag) and the
+// CVEs it patches (its tag is the FIRST release containing the fix). A
+// release that simply "happens to be newer than the patch" is NOT credited
+// as patching — only the release that actually shipped the fix is.
+function advisoryStatusFor(tag: string, all: AdvisoryRow[]) {
+  const norm = tag.replace(/^v/i, '');
+  const affected: AdvisoryRow[] = [];
+  const patched: AdvisoryRow[] = [];
+  for (const a of all) {
+    if (matchesRange(tag, a.vulnerable_version_range)) affected.push(a);
+    const first = firstPatchedTag(a.patched_versions);
+    if (first && (first === tag || first.replace(/^v/i, '') === norm)) patched.push(a);
+  }
+  return { affected, patched };
+}
+
+function summarizeAdvisories(list: AdvisoryRow[]) {
+  const by = { critical: 0, high: 0, medium: 0, low: 0 } as Record<string, number>;
+  for (const a of list) by[a.severity] = (by[a.severity] ?? 0) + 1;
+  return {
+    total: list.length,
+    bySeverity: by,
+    items: list.map((a) => ({
+      ghsaId: a.ghsa_id,
+      cveId: a.cve_id,
+      severity: a.severity,
+      summary: a.summary,
+      url: a.html_url,
+    })),
+  };
+}
 
 api.get('/health', (_req, res) => {
   res.json({ ok: true, repo: `${config.github.owner}/${config.github.repo}` });
@@ -19,6 +70,7 @@ api.get('/health', (_req, res) => {
 api.get('/config', (_req, res) => {
   res.json({
     releases: config.limits.releases,
+    refreshMinutes: config.refresh.intervalMinutes,
   });
 });
 
@@ -26,20 +78,64 @@ api.get('/status', (_req, res) => {
   res.json(getRefreshState());
 });
 
+// Maintainer-signal counts mined from the release-notes body + neighbouring releases.
+// See lib/releaseNotes.ts. These are exposed for the UI to render without further
+// computation, but the UI is intentionally NOT consuming them yet — we want to watch
+// the numbers settle across a few refresh cycles before deciding how to surface them.
+//
+// `breakingCount` semantics: for a stable release, this is the AGGREGATE of its
+// own `### Breaking` bullets plus those in every beta in the chain back to the
+// previous stable. The maintainer typically lists a breaking change in the beta
+// that introduced it and does NOT repeat the bullet when the stable promotes —
+// so the stable's own body alone undercounts breakage that ships in it. See
+// `computeAggregateBreaking` in lib/releaseNotes.ts. `fixesCount` / `changesCount`
+// stay own-only because changelog generators DO re-list those at promotion.
+function maintainerSignals(r: {
+  breaking_count: number;
+  fixes_count: number;
+  changes_count: number;
+  highlights_count: number;
+  pr_refs_count: number;
+  beta_count: number;
+  hours_to_next_release: number | null;
+}) {
+  return {
+    breakingCount:      r.breaking_count,
+    fixesCount:         r.fixes_count,
+    changesCount:       r.changes_count,
+    highlightsCount:    r.highlights_count,
+    prRefsCount:        r.pr_refs_count,
+    betaCount:          r.beta_count,
+    hoursToNextRelease: r.hours_to_next_release,
+  };
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
+  const advisories = listAdvisories();
   res.json(
-    rows.map((r) => ({
-      tag: r.tag,
-      name: r.name,
-      publishedAt: r.published_at,
-      htmlUrl: r.html_url,
-      finalScore: r.final_score,
-      riskIndex: r.risk_index,
-      negativeIssues: r.negative_issues,
-      positiveIssues: r.positive_issues,
-      scoredAt: r.scored_at,
-    })),
+    rows.map((r) => {
+      const status = advisoryStatusFor(r.tag, advisories);
+      return {
+        tag: r.tag,
+        name: r.name,
+        publishedAt: r.published_at,
+        htmlUrl: r.html_url,
+        finalScore: r.final_score,
+        riskIndex: r.risk_index,
+        negativeIssues: r.negative_issues,
+        positiveIssues: r.positive_issues,
+        state: r.state,
+        closedSeriousFixed: r.closed_serious_fixed,
+        openedSeriousDuringReign: r.opened_serious_during_reign,
+        scoredAt: r.scored_at,
+        advisories: {
+          affected: summarizeAdvisories(status.affected),
+          patched: summarizeAdvisories(status.patched),
+        },
+        maintainerSignals: maintainerSignals(r),
+      };
+    }),
   );
 });
 
@@ -50,6 +146,7 @@ api.get('/release/:tag', (req, res) => {
     return;
   }
   const issues = issuesForVersion(rel.tag).map(serializeIssue);
+  const status = advisoryStatusFor(rel.tag, listAdvisories());
   res.json({
     tag: rel.tag,
     name: rel.name,
@@ -59,7 +156,15 @@ api.get('/release/:tag', (req, res) => {
     riskIndex: rel.risk_index,
     negativeIssues: rel.negative_issues,
     positiveIssues: rel.positive_issues,
+    state: rel.state,
+    closedSeriousFixed: rel.closed_serious_fixed,
+    openedSeriousDuringReign: rel.opened_serious_during_reign,
     scoredAt: rel.scored_at,
+    advisories: {
+      affected: summarizeAdvisories(status.affected),
+      patched: summarizeAdvisories(status.patched),
+    },
+    maintainerSignals: maintainerSignals(rel),
     issues,
   });
 });
@@ -82,37 +187,56 @@ api.get('/release/:tag', (req, res) => {
 // release). A release with no attributed issues scores 5 (neutral baseline),
 // not 10 — absence of signal is not evidence of stability.
 //
-// Data refreshes every 30 min via cron. scoredAt = last time score was computed.
+// Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
+// score was computed for this specific release.
+
+// Under window-based attribution one issue often affects multiple releases, so
+// returning every attributed issue per release inflates the payload (we observed
+// 5 MB for openclaw with ~1100 negs × 10 releases). For the public-API surface
+// we cap to the most relevant issues per release: negatives first, sorted by
+// severity, then positives. Full per-release issue lists remain available via
+// /api/release/:tag for callers that actually want them.
+const PUBLIC_ISSUES_PER_RELEASE = 25;
+const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
+const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
   const allReleases = listReleasesDb(config.limits.releases);
 
   const releases = allReleases.map((r) => {
-    const issues = issuesForVersion(r.tag).map((i) => ({
-      number:         i.number,
-      title:          i.title,
-      url:            i.html_url,
-      state:          i.state,
-      sentiment:      i.sentiment,
-      severity:       i.severity,
-      scope:          i.scope,
-      hasWorkaround:  i.has_workaround === 1,
-      confidence:     i.confidence,
-      rationale:      i.rationale,
+    const all = issuesForVersion(r.tag);
+    const sorted = [...all].sort((a, b) => {
+      const s = (SENTIMENT_RANK[a.sentiment] ?? 9) - (SENTIMENT_RANK[b.sentiment] ?? 9);
+      if (s !== 0) return s;
+      return (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
+    });
+    const topIssues = sorted.slice(0, PUBLIC_ISSUES_PER_RELEASE).map((i) => ({
+      number:        i.number,
+      title:         i.title,
+      url:           i.html_url,
+      state:         i.state,
+      sentiment:     i.sentiment,
+      severity:      i.severity,
+      scope:         i.scope,
+      hasWorkaround: i.has_workaround === 1,
+      confidence:    i.confidence,
+      rationale:     i.rationale,
     }));
 
     return {
-      tag:            r.tag,
-      publishedAt:    r.published_at,
-      url:            r.html_url,
-      score:          r.final_score,
-      grade:          scoreToGrade(r.final_score),
-      riskIndex:      r.risk_index,
-      negativeIssues: r.negative_issues ?? 0,
-      positiveIssues: r.positive_issues ?? 0,
-      scoredAt:       r.scored_at,
-      issues,
+      tag:               r.tag,
+      publishedAt:       r.published_at,
+      url:               r.html_url,
+      score:             r.final_score,
+      grade:             scoreToGrade(r.final_score, r.state),
+      riskIndex:         r.risk_index,
+      negativeIssues:    r.negative_issues ?? 0,
+      positiveIssues:    r.positive_issues ?? 0,
+      state:             r.state,
+      scoredAt:          r.scored_at,
+      totalAttributedIssues: all.length,
+      issues:            topIssues,
     };
   });
 
@@ -131,35 +255,23 @@ api.get('/public', (_req, res) => {
   res.json(data);
 });
 
-// Grade thresholds ported from agent-watch. Note the asymmetric "insufficient" band
-// (4.9–5.1): a release with no attributed issues sits at the 5.0 neutral baseline
-// and should not be labelled "mixed".
-function scoreToGrade(score: number | null): string {
-  if (score == null) return 'pending';
-  if (score >= 8.2) return 'stable';
-  if (score >= 6.8) return 'mostly-stable';
-  if (score > 5.1)  return 'mixed';
-  if (score >= 4.9) return 'insufficient';
-  if (score >= 3.5) return 'risky';
-  return 'unstable';
+// Grade describes maintenance-activity signal, NOT install advice. A release
+// labelled "active" doesn't mean "install me"; it means "the team is actively
+// fixing things in this release". Install advice comes from the recommendation
+// view, which is age- and peer-aware. Decoupling the two prevents the previous
+// contradiction where a quiet old release showed "Stable" but the recommendation
+// said "Old — don't downgrade".
+function scoreToGrade(score: number | null, state: string | null): string {
+  if (state === 'analyzing')    return 'analyzing';
+  if (state === 'insufficient') return 'insufficient';
+  if (score == null)            return 'pending';
+  if (score >= 8.2)             return 'active';           // high fix-rate
+  if (score >= 6.8)             return 'typical';          // baseline for this project
+  if (score > 5.1)              return 'quiet';            // below typical
+  if (score >= 4.9)             return 'insufficient';
+  if (score >= 3.5)             return 'falling-behind';
+  return 'lagging';
 }
-
-api.post('/refresh', async (req, res) => {
-  const adminToken = config.adminToken;
-  if (adminToken) {
-    const provided = req.headers['x-admin-token'];
-    if (provided !== adminToken) {
-      res.status(403).json({ ok: false, error: 'forbidden' });
-      return;
-    }
-  }
-  try {
-    const result = await refresh();
-    res.json({ ok: true, ...result });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: (e as Error).message });
-  }
-});
 
 function serializeIssue(r: {
   number: number;

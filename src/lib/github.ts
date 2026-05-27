@@ -9,6 +9,9 @@ export interface GhRelease {
   html_url: string;
   prerelease: boolean;
   draft: boolean;
+  // Release-notes markdown. Mined for maintainer-signal counts
+  // (### Breaking / ### Fixes / etc.) — see lib/releaseNotes.ts.
+  body: string | null;
 }
 
 export interface GhIssue {
@@ -52,41 +55,64 @@ async function gh<T>(path: string): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export async function listReleases(limit = 10): Promise<GhRelease[]> {
-  // We fetch a wider page than `limit` because GitHub returns prereleases interleaved
-  // with stable; on openclaw, betas outnumber stables ~3:1, so a 10-item page can
-  // contain only 2-3 actual stable releases. Cap at 100 (GitHub's per_page max) and
-  // trim to `limit` after filtering.
+// Fetch up to `fetchSize` releases (capped at GitHub's 100/page max), drafts
+// filtered out. Prereleases are RETAINED — callers can filter them when they
+// only care about stables (e.g. the monitoring window), but prereleases are
+// also a signal: counting how many betas preceded a stable tells us how much
+// shake-out time a release got. See computeBetaCount in lib/releaseNotes.ts.
+export async function listReleases(fetchSize = 60): Promise<GhRelease[]> {
   const { owner, repo } = config.github;
-  const fetchSize = Math.min(100, limit * 6);
-  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${fetchSize}`);
-  return data.filter((r) => !r.draft && !r.prerelease).slice(0, limit);
+  const perPage = Math.min(100, Math.max(1, fetchSize));
+  const data = await gh<GhRelease[]>(`/repos/${owner}/${repo}/releases?per_page=${perPage}`);
+  return data.filter((r) => !r.draft);
 }
 
-export async function listIssues(limit = 80): Promise<GhIssue[]> {
-  // The /issues endpoint returns BOTH issues and PRs (GitHub treats PRs as a kind of issue).
-  // On active repos like openclaw/openclaw, the first page is dominated by PRs (~80%) and
-  // a single 100-item page yields only ~20 real issues. We paginate until we either:
-  //   - collect `limit` non-PR issues, or
-  //   - exhaust MAX_PAGES (safety cap against runaway fetches), or
-  //   - GitHub returns a short page (end of dataset).
+// Stream issues sorted by updated_at descending, one page at a time. PRs are stripped
+// at the source so consumers only see real issues. The caller decides when to stop —
+// typically when it has seen a full page of already-known issues, or paginated past the
+// oldest release it cares about. Yields an empty array if a page was 100% PRs (caller
+// should keep iterating in that case).
+export async function* paginateIssues(perPage = 100): AsyncGenerator<GhIssue[], void, void> {
   const { owner, repo } = config.github;
-  const MAX_PAGES = 10; // 10 × 100 = up to ~1000 raw items, plenty even with heavy PR traffic
-  const out: GhIssue[] = [];
-  for (let page = 1; page <= MAX_PAGES && out.length < limit; page++) {
+  for (let page = 1; ; page++) {
     const data = await gh<GhIssue[]>(
-      `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=100&page=${page}`,
+      `/repos/${owner}/${repo}/issues?state=all&sort=updated&direction=desc&per_page=${perPage}&page=${page}`,
     );
-    for (const i of data) {
-      if (!i.pull_request) out.push(i);
-      if (out.length >= limit) break;
-    }
-    if (data.length < 100) break; // last page
+    if (data.length === 0) return; // dataset exhausted
+    yield data.filter((i) => !i.pull_request);
+    if (data.length < perPage) return; // short page → no more after this
   }
-  return out.slice(0, limit);
 }
 
 export async function listIssueComments(issueNumber: number): Promise<GhComment[]> {
   const { owner, repo } = config.github;
   return gh<GhComment[]>(`/repos/${owner}/${repo}/issues/${issueNumber}/comments?per_page=100`);
+}
+
+// GitHub Security Advisories. Maintainer-filed CVEs with structured version
+// ranges — we use these as the authoritative "which release patches/is
+// vulnerable to which CVE" signal. No LLM, no body parsing, no guessing.
+export interface GhAdvisory {
+  ghsa_id: string;
+  cve_id: string | null;
+  summary: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  state: 'published' | 'closed' | 'withdrawn' | 'triage' | 'draft';
+  published_at: string | null;
+  html_url: string;
+  vulnerabilities: Array<{
+    package: { ecosystem: string; name: string | null } | null;
+    vulnerable_version_range: string | null;
+    patched_versions: string | null;
+  }>;
+}
+
+export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
+  const { owner, repo } = config.github;
+  // Single endpoint returns ALL advisories for the repo — backfill comes free.
+  // per_page max is 100; openclaw currently has ~30, plenty of headroom.
+  const data = await gh<GhAdvisory[]>(
+    `/repos/${owner}/${repo}/security-advisories?per_page=100&state=published`,
+  );
+  return data.filter((a) => a.state === 'published');
 }

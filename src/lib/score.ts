@@ -34,10 +34,45 @@ const HALF_LIFE_DAYS = 45;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ median
+// Peer-relative scoring constants. PEER_BASELINE_SCORE is what an "at-median"
+// release scores — chose 7 so typical openclaw releases land in the
+// "Mostly stable" band rather than "Mixed", reflecting that being typical for
+// an actively-developed project is fine (not a problem). PEER_LOG_FACTOR controls
+// how quickly the score drops as ratio grows past 1.
+const PEER_BASELINE_SCORE = 7.0;
+const PEER_LOG_FACTOR = 2.0;
+// Fix-bonus credits each release for the bugs it closed during its reign.
+// A release that resolved 100 core-serious bugs deserves a higher score than
+// one that closed zero, even if their inherited debt is similar. Without this,
+// active maintenance is invisible to the score and inactive releases ("stable
+// because nobody touched them") look the same as well-tended ones.
+//   closed=1   → +0.55    closed=10  → +1.92
+//   closed=30  → +2.73    closed=100 → +3.69
+//   closed=300 → +4.62
+// Calibrated so a "great fix release" (~50 closures) lands around +3.0 above
+// baseline, and heroes don't all collapse into the 10.0 ceiling.
+const FIX_BONUS_FACTOR = 0.55;
 // Bot-generated issues still get counted, but their contribution is dampened. They tend
 // to over-report (one human bug → 20 bot reports), so weighting prevents volume bias
 // while preserving the underlying signal.
 const BOT_WEIGHT_MULTIPLIER = 0.3;
+
+// Tie-breaker — a small ± nudge from release-notes signals. The peer-relative
+// curve flattens every at/below-median release onto PEER_BASELINE_SCORE (7),
+// so three "fine" releases with very different changelogs all read 7.0. This
+// breaks those ties by how much the release actually shipped vs. how much it
+// might break:
+//   activity = fixesCount + prRefsCount  →  nudge UP   (well-tended)
+//   breakingCount                        →  nudge DOWN (riskier to adopt)
+// Both are log-scaled and the net is clamped to ±TIE_BREAKER_MAX, so this can
+// only break ties — it never overrides the peer-relative signal or fix-bonus.
+// Crucially these are release-notes counts, NOT raw issue volume, so unlike
+// `negativeIssues` they are not confounded by how long the release sat as the
+// latest version — a fair differentiator. Example nudges (breaking=0):
+//   activity 7   → +0.25    activity 89  → +0.54    activity 346 → +0.60 (cap)
+const TIE_BREAKER_MAX = 0.6;
+const TIE_ACTIVITY_FACTOR = 0.12;
+const TIE_BREAKING_FACTOR = 0.35;
 
 const SEVERITY: Record<IssueClassification['severity'], number> = {
   critical: 2.2,
@@ -77,7 +112,6 @@ export interface IssueInput {
   number: number;
   updatedAt: string;
   commentCount: number;
-  publishedAt: string | null; // release published_at, used for age-based grace + signal age
   isBot: boolean;             // true → contribution multiplied by BOT_WEIGHT_MULTIPLIER
   classification: IssueClassification;
 }
@@ -89,6 +123,13 @@ export interface ScoredIssue {
   classification: IssueClassification;
 }
 
+// Release-notes-derived signals used only for the bounded tie-breaker.
+export interface ReleaseSignals {
+  breakingCount: number;
+  fixesCount: number;
+  prRefsCount: number;
+}
+
 export interface ScoreBreakdown {
   finalScore: number;
   baseScore: number;
@@ -96,12 +137,18 @@ export interface ScoreBreakdown {
   weightedNegSum: number;     // total negative signal pre-cancellation, used for peer median
   negativeIssues: number;
   positiveIssues: number;
+  closedSeriousFixed: number; // core-serious bugs closed during this release's reign
+  fixBonus: number;           // score points added for those fixes
+  openedSeriousDuringReign: number; // core-serious bugs OPENED in same window — informational
+  tieBreaker: number;         // ± nudge from release-notes signals (rated only)
   perIssue: ScoredIssue[];
   state: 'analyzing' | 'rated' | 'insufficient';
 }
 
-function recencyFactor(createdAt: string, now: number): number {
-  const ageDays = Math.max(0, now - Date.parse(createdAt)) / DAY_MS;
+function recencyFactor(updatedAt: string, now: number): number {
+  // Activity recency: comments / edits bump the clock. A bug that was filed 6 months
+  // ago but is still getting comments today is fresh signal, not stale signal.
+  const ageDays = Math.max(0, now - Date.parse(updatedAt)) / DAY_MS;
   return 0.55 + 0.45 * Math.exp(-ageDays / HALF_LIFE_DAYS);
 }
 
@@ -143,6 +190,18 @@ function scoreFromRiskIndex(riskIndex: number): number {
   return 10 - Math.log2(1 + Math.max(0, riskIndex)) * RISK_LOG_FACTOR;
 }
 
+// Bounded ± nudge from release-notes signals — see TIE_BREAKER_MAX comment.
+// Returns 0 when no signals are supplied, so the scoring contract is unchanged
+// for callers (and tests) that don't pass them.
+function tieBreaker(signals?: ReleaseSignals): number {
+  if (!signals) return 0;
+  const activity = Math.max(0, signals.fixesCount) + Math.max(0, signals.prRefsCount);
+  const breaking = Math.max(0, signals.breakingCount);
+  const up = Math.log1p(activity) * TIE_ACTIVITY_FACTOR;
+  const down = Math.log1p(breaking) * TIE_BREAKING_FACTOR;
+  return clamp(up - down, -TIE_BREAKER_MAX, TIE_BREAKER_MAX);
+}
+
 function round1(x: number): number {
   return Math.round(x * 10) / 10;
 }
@@ -160,7 +219,26 @@ export function scoreRelease(
   releasePublishedAt: string | null,
   now = Date.now(),
   peerMedianWeightedNeg?: number,
+  closedIssues: IssueInput[] = [],
+  openedIssues: IssueInput[] = [],
+  signals?: ReleaseSignals,
 ): ScoreBreakdown {
+  // Count core-serious negatives closed during this release's reign — these are
+  // the "fixes" we credit. Closed neutrals (stale-bot, duplicates) and positives
+  // don't count.
+  const countCoreSerious = (issues: IssueInput[]): number =>
+    issues.reduce((n, ci) => {
+      const c = ci.classification;
+      if (c.sentiment !== 'negative') return n;
+      if (c.functionality !== 'core') return n;
+      if (c.severity !== 'critical' && c.severity !== 'high') return n;
+      return n + 1;
+    }, 0);
+  const closedSeriousFixed = countCoreSerious(closedIssues);
+  const openedSeriousDuringReign = countCoreSerious(openedIssues);
+  const fixBonus = closedSeriousFixed > 0
+    ? Math.log2(1 + closedSeriousFixed) * FIX_BONUS_FACTOR
+    : 0;
   // 3-hour grace period for fresh releases — no useful signal yet.
   if (releasePublishedAt) {
     const ageMs = now - Date.parse(releasePublishedAt);
@@ -172,21 +250,31 @@ export function scoreRelease(
         weightedNegSum: 0,
         negativeIssues: 0,
         positiveIssues: 0,
+        closedSeriousFixed,
+        fixBonus: 0,
+        openedSeriousDuringReign,
+        tieBreaker: 0,
         perIssue: [],
         state: 'analyzing',
       };
     }
   }
 
-  // No attributed issues → neutral baseline. Score reflects absence of signal, not "perfect".
+  // No attributed issues → neutral baseline + fix-bonus if any. A short-lived
+  // release with no attribution but real closures still deserves credit.
   if (issues.length === 0) {
+    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
     return {
-      finalScore: NEUTRAL_SCORE,
+      finalScore: round1(fs),
       baseScore: NEUTRAL_SCORE,
       riskIndex: 0,
       weightedNegSum: 0,
       negativeIssues: 0,
       positiveIssues: 0,
+      closedSeriousFixed,
+      fixBonus: round2(fixBonus),
+      openedSeriousDuringReign,
+      tieBreaker: 0,
       perIssue: [],
       state: 'insufficient',
     };
@@ -232,17 +320,25 @@ export function scoreRelease(
     }
   }
 
-  // No actionable signal (only neutral mentions, or nothing at all) → insufficient.
-  // Without this guard, a release with one "How do I configure X?" question attributed
-  // to it would score 10.0 (no risk = perfect) instead of "we don't have evidence".
-  if (neg === 0 && pos === 0) {
+  // No negative signal → insufficient. Includes "no issues at all", "only neutral mentions"
+  // and — importantly — "only positive mentions". A few users saying "works for me" is
+  // not enough to declare a release stable for everyone else; the product question is
+  // "should I install this?", and the honest answer to "we have one thumbs-up and no
+  // bug reports" is "we don't know yet", not "perfect 10". Without this guard the latter
+  // would mislead anyone using the dashboard to decide whether to upgrade.
+  if (neg === 0) {
+    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
     return {
-      finalScore: NEUTRAL_SCORE,
+      finalScore: round1(fs),
       baseScore: NEUTRAL_SCORE,
       riskIndex: 0,
       weightedNegSum: 0,
       negativeIssues: 0,
       positiveIssues: 0,
+      closedSeriousFixed,
+      fixBonus: round2(fixBonus),
+      openedSeriousDuringReign,
+      tieBreaker: 0,
       perIssue,
       state: 'insufficient',
     };
@@ -255,17 +351,57 @@ export function scoreRelease(
   const effectiveCore = Math.max(0, weightedNegCoreSerious - coreCancel);
   const effectiveOther = Math.max(0, weightedNegOther - otherCancel);
 
-  // Core drives the score; other issues drop it by at most OTHER_DROP_MAX.
-  const coreScore = scoreFromRiskIndex(effectiveCore);
-  const otherDrop = OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
-  let finalScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
-  const baseScore = finalScore;
-
-  // Peer median floor: if this release's total negative signal is at or below the median
-  // across all rated releases in this project, and our score fell below 5.5, lift it
-  // to 5.5. Prevents an unusually-buggy project from making every average release look
-  // catastrophic.
   const weightedNegSum = weightedNegCoreSerious + weightedNegOther;
+  const totalRisk = effectiveCore + effectiveOther;
+
+  // Score mode A: peer-relative (used when we have a peer median to compare against).
+  // Under window-based attribution every release carries a large open-bug debt
+  // (often 700+ weighted risk points for an actively-developed project like
+  // openclaw), so an absolute "10 - log2(risk)" curve floors every release.
+  // The question users actually care about is "is this release worse than a
+  // typical release of this project?". We answer that by comparing this
+  // release's risk to the project's median.
+  //
+  //   ratio = totalRisk / peerMedian
+  //   ratio ≤ 1 (at or below typical)  →  PEER_BASELINE_SCORE (7)
+  //   ratio = 2 (twice as bad)          →  PEER_BASELINE_SCORE − 2  = 5
+  //   ratio = 4                         →  3
+  //   ratio = 8                         →  1
+  //
+  // Score mode B: absolute (used only when no peer median is available — e.g.,
+  // first release ever, or no rated peers). Keeps the old log2 curve as a
+  // sensible fallback.
+  let coreScore: number;
+  if (
+    peerMedianWeightedNeg !== undefined &&
+    Number.isFinite(peerMedianWeightedNeg) &&
+    peerMedianWeightedNeg > 0
+  ) {
+    const ratio = totalRisk / peerMedianWeightedNeg;
+    coreScore = ratio <= 1
+      ? PEER_BASELINE_SCORE
+      : PEER_BASELINE_SCORE - Math.log2(ratio) * PEER_LOG_FACTOR;
+  } else {
+    coreScore = scoreFromRiskIndex(effectiveCore);
+  }
+
+  // Core drives the score; in peer-relative mode, otherDrop is already implicit
+  // in totalRisk so we skip the extra penalty. In absolute mode it still helps
+  // distinguish "1 core-serious bug" from "1 core-serious + 50 nicies".
+  const otherDrop = peerMedianWeightedNeg !== undefined
+    ? 0
+    : OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
+  const baseScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
+  // Apply fix-bonus + the bounded release-notes tie-breaker on top of the
+  // peer-relative / absolute base. fix-bonus can lift a heavy-fix release ~5
+  // points; the tie-breaker only nudges ±0.6 to separate otherwise-identical
+  // baseline releases.
+  const tb = tieBreaker(signals);
+  let finalScore = clamp(baseScore + fixBonus + tb, MIN_SCORE, 10);
+
+  // Floor lift kept from the old model. With peer-relative scoring it rarely
+  // fires (releases at/below median already score PEER_BASELINE_SCORE which is
+  // above the floor), but it remains a safety net for absolute-mode edge cases.
   if (
     peerMedianWeightedNeg !== undefined &&
     Number.isFinite(peerMedianWeightedNeg) &&
@@ -283,6 +419,10 @@ export function scoreRelease(
     weightedNegSum: round2(weightedNegSum),
     negativeIssues: neg,
     positiveIssues: pos,
+    closedSeriousFixed,
+    fixBonus: round2(fixBonus),
+    openedSeriousDuringReign,
+    tieBreaker: round2(tb),
     perIssue,
     state: 'rated',
   };

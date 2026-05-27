@@ -1,5 +1,6 @@
 import { config } from '../config';
 import type { GhComment, GhIssue } from './github';
+import { applyLabelOverrides } from './labelOverrides';
 
 // 7-dimension classification, matches agent-watch taxonomy.
 export type Sentiment = 'negative' | 'positive' | 'neutral';
@@ -25,7 +26,7 @@ export interface IssueClassification {
 // Bumped whenever SYSTEM_PROMPT (or extraction logic) changes shape. Stored alongside each
 // classification — refresh.ts re-classifies anything written under an older version, so a
 // prompt fix automatically reshapes the whole dataset on the next cron tick.
-export const PROMPT_VERSION = 2;
+export const PROMPT_VERSION = 6;
 
 // Attribution philosophy (mirrors agent-watch):
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -33,10 +34,12 @@ export const PROMPT_VERSION = 2;
 // - When unclear, return null. Unattributed issues are intentionally ignored by scoring
 //   so that long-running open bugs don't drag down every release.
 //
-// Bias correction (v2): gpt-4o-mini systematically picked the maximum on every axis —
-// 78% high/broad/many, 97% core — because openclaw triage labels (P1, impact:crash-loop,
-// impact:message-loss) read as panic to the model. The anchors below pull the default
-// toward the middle and reserve the top of each scale for genuine showstoppers.
+// Bias correction (v3): gpt-4o-mini still leaned hard on high+broad+core after v2
+// (~55% of negatives ended up high+core, ~30% as broad). The model treats any bug
+// touching a familiar word ("session", "gateway", "exec") as core, and any bug
+// mentioning more than one platform name as broad. v3 adds explicit anti-inflation
+// EXAMPLES with the correct labels — concrete patterns beat abstract anchors for
+// small models. Also tightens the lead-in: "conservative by default, top rungs are RARE".
 const SYSTEM_PROMPT = `You classify GitHub issues for the OpenClaw open-source project to estimate release stability.
 Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
 
@@ -52,10 +55,13 @@ Return ONLY a JSON object with these exact keys (no extra fields, no markdown):
   "confidence":      0.0..1.0
 }
 
-Default toward the middle of each scale. Reserve the top rungs for issues where the
-evidence is unambiguous. Triage labels alone (P1, impact:*, clawsweeper:*) are NOT
-evidence — they are routing tags maintainers attach to almost every new bug, often
-before reproduction. Look at the body and comments to judge the real impact.
+BE CONSERVATIVE. When in doubt, pick the MIDDLE of each scale. The top rungs
+(critical, high, broad, core, many) are RARE — they describe genuine showstoppers,
+not "this looks bad." Most real-world bugs are medium/moderate/integration/some.
+
+Triage labels alone (P1, impact:*, clawsweeper:*) are NOT evidence — they are
+routing tags maintainers attach to almost every new bug, often before reproduction.
+Look at the body and comments to judge the real impact.
 
 SEVERITY anchors:
 - "critical": confirmed data loss, security CVE, total outage of the gateway/CLI for
@@ -118,6 +124,117 @@ pick the closest one only if you're highly confident — otherwise return null.
 Return null when no version is mentioned at all (e.g. "X is broken" with no version
 context). Unattributed issues are dropped from scoring rather than dumped on the latest
 release, so it's safe to be aggressive about matching when a version IS mentioned.
+
+ANTI-INFLATION EXAMPLES (study these — they describe patterns small models get wrong):
+
+1. "Discord / Telegram / Feishu / Slack / Mattermost / WhatsApp / iMessage X is broken"
+   → functionality="integration" (NOT core), scope="moderate" at most (often "niche"
+   if it's also platform- or config-specific). A channel adapter failing does NOT
+   break OpenClaw's core gateway/CLI.
+
+2. "Ollama / OpenAI / Anthropic / DeepSeek / MiniMax / xAI / Bedrock X returns Y"
+   → functionality="provider" (NOT core), scope="moderate". One provider
+   misbehaving doesn't break the gateway itself.
+
+3. "Bug on macOS only" (or Windows-only, or Ubuntu-only) with no confirmation that
+   other OSes are affected → scope="moderate" (NOT broad). "broad" requires
+   EXPLICIT evidence of multi-OS or multi-provider impact in the body/comments.
+
+4. "Happens with --experimental-X flag" / "when foo.bar=true" / "after running the
+   alpha build" / "only in container with custom seccomp" → scope="niche" by
+   definition. Non-default configurations are niche.
+
+5. "Race condition / timing-dependent / intermittent / reproduces 1 in 20" →
+   severity="medium" at most. Genuinely critical issues reproduce reliably.
+
+6. "TypeScript type error in module X" / "ESLint warning" / "wrong return type
+   in JSDoc" → severity="low", functionality usually "docs" or "integration".
+
+7. "[Bug]: <feature title>" with body that has "Proposed solution" / "Alternatives
+   considered" / "Why" sections → sentiment="neutral" (feature request mislabeled).
+   Trust the BODY over the title prefix.
+
+8. A single user describing a single setup, no "+1" or "me too" comments →
+   affected_users="some" (NOT many). "many" requires multiple distinct reporters
+   OR the breakage being in default config of macOS/Linux/Windows simultaneously.
+
+9. "openclaw update / install / auth / gateway boot / chat send / session storage
+   / exec approval is broken on default config" with reproducible steps and no
+   workaround → THIS is the kind of bug that warrants high+core+broad. Not "Discord
+   notifications duplicate". The former is a showstopper; the latter is annoying.
+
+10. Bug that has a documented workaround in comments → workaroundStatus="confirmed",
+    AND drop severity by one rung (a critical bug with workaround is at most high;
+    a high bug with workaround is at most medium).
+
+LABEL GUIDE — labels carry DIFFERENT KINDS of signal. Do NOT conflate them.
+
+The openclaw repo uses an automation bot (ClawSweeper) that keyword-stamps
+"impact:*" labels onto almost every issue based on whether the body mentions
+"session", "message", "auth", "crash", etc. THESE LABELS ARE CATEGORIZATION,
+NOT SEVERITY. A bug labelled "impact:session-state" tells you the bug TOUCHES
+session handling, not that the bug is severe. Read the body and judge severity
+from THERE.
+
+CATEGORIZATION-SIGNAL labels — TRUST LEVELS DIFFER:
+
+Trusted (event-based, set by maintainers OR triggered by rare specific keywords):
+- impact:data-loss      → functionality "core" (data persistence event).
+- impact:message-loss   → functionality "integration" (channel delivery).
+- impact:auth-provider  → functionality "provider" (auth/model providers).
+
+UNTRUSTED for functionality (keyword-stamped on ANY mention of the word —
+massively over-applied; observed on ~60% of all issues including routine
+UI nits that mention "session" or "crash"). Treat as NO signal — pick
+functionality from the BODY anchors above, ignore these labels:
+- impact:session-state  → IGNORE for functionality
+- impact:crash-loop     → IGNORE for functionality
+- impact:security       → IGNORE for functionality (BUT: if body actually
+   describes a CVE, vulnerability, or auth-bypass, set functionality core
+   on the BODY's evidence, not on this label)
+
+Other label families (judge from body, but useful confirmation):
+- "channel: telegram/feishu/discord/slack/whatsapp-web/..." → integration.
+- "extensions: ollama/openai/anthropic/deepseek/..." → provider.
+- "gateway" / "cli" / "commands" / "agents" → core.
+- "docs" / "tui" alone → docs/integration.
+
+For severity — ALWAYS judge from BODY regardless of impact:* labels:
+critical only on confirmed showstopper, high on common-config break,
+medium for routine bugs, low for edge cases.
+
+SEVERITY-SIGNAL labels (rare, explicit human-set or fact-based — DO trust):
+- impact:data-loss → severity "critical" (event: data has been/can be lost).
+- P0               → severity "critical" (maintainer-declared emergency).
+- beta-blocker     → severity "critical" (release-blocker).
+- regression       → bump severity one rung (something that worked is broken).
+
+SENTIMENT-SIGNAL labels (trust over title prefix):
+- enhancement                       → sentiment "neutral" (feature request).
+- bug / bug:behavior / bug:crash    → sentiment "negative" if body confirms.
+- stale                             → sentiment "neutral" (stale).
+- clawsweeper:not-repro-on-main     → sentiment "neutral" (bug gone on main).
+
+CONFIDENCE-SIGNAL labels (verification status):
+- clawsweeper:source-repro / clawsweeper:current-main-repro → confidence ≥ 0.9.
+- clawsweeper:needs-info / clawsweeper:needs-live-repro     → confidence ≤ 0.5.
+
+PURE NOISE (workflow routing, NO impact on classification):
+- P1, P2, P3 (priority, attached automatically — DO NOT inflate severity).
+- clawsweeper:no-new-fix-pr / :needs-maintainer-review / :needs-product-decision
+  / :fix-shape-clear / :linked-pr-open / :queueable-fix / :automerge / :autofix.
+- issue-rating: 🦞 / 🐚 / 🦀 / 🧂 / 🦐 / 🦪 / 🌊 (maintainer-internal quality).
+- merge-risk:*, triage:*, status:*, size:*, proof:*, mantis:*, rating:* — these
+  apply to PRs, not issues.
+
+DEFAULTS WHEN GENUINELY UNCERTAIN (no clear signal in body/comments):
+- severity: "medium"
+- scope: "moderate"
+- functionality: "integration" (unless the issue is explicitly about install / auth /
+  gateway / chat / exec / session / doctor — those are core)
+- affected_users: "some"
+- workaroundStatus: "unknown"
+- confidence: ≤ 0.6
 
 confidence: lower (≤0.6) when the issue body is empty/one-liner, when labels and body
 disagree, or when you had to guess scope/users from setup hints. Higher (≥0.8) only when
@@ -214,7 +331,11 @@ export async function classifyIssue(
 
   const normalized = normalize(parsed);
   normalized.affectsVersion = resolveAffectsVersion(normalized.affectsVersion, knownTags);
-  return normalized;
+  // Deterministic safety net on top of LLM output — maintainers' impact:* labels
+  // and explicit signals (regression, P0, enhancement, stale, ClawSweeper repro
+  // verdicts) override what the LLM came up with. See lib/labelOverrides.ts.
+  const labelNames = issue.labels.map((l) => l.name);
+  return applyLabelOverrides(normalized, labelNames);
 }
 
 function normalize(r: Partial<IssueClassification>): IssueClassification {
@@ -242,10 +363,7 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     functionality: oneOf(r.functionality, funcs, 'integration'),
     affectedUsers: oneOf((r as any).affected_users ?? r.affectedUsers, users, 'unknown'),
     workaroundStatus: oneOf(wsRaw, workarounds, 'unknown'),
-    duplicateCluster:
-      typeof r.duplicateCluster === 'string' && r.duplicateCluster.trim()
-        ? r.duplicateCluster.trim().toLowerCase()
-        : null,
+    duplicateCluster: normalizeCluster(r.duplicateCluster),
     affectsVersion:
       typeof r.affectsVersion === 'string' && r.affectsVersion.trim()
         ? r.affectsVersion.trim()
@@ -253,6 +371,24 @@ function normalize(r: Partial<IssueClassification>): IssueClassification {
     confidence: clamp01(typeof r.confidence === 'number' ? r.confidence : 0.5),
     rationale: typeof r.rationale === 'string' ? r.rationale.slice(0, 400) : '',
   };
+}
+
+// LLMs sometimes return the *word* "none" / "null" / "unique" instead of an
+// actual JSON null when an issue has no duplicate cluster. The previous
+// normaliser preserved those as valid cluster IDs, causing all such issues
+// to be grouped into a fake "none" cluster and silently inflate via the
+// duplicate boost. Treat these placeholders as null.
+const CLUSTER_PLACEHOLDERS = new Set([
+  'none', 'null', 'n/a', 'na', 'unique', 'no-cluster', 'no cluster',
+  'no-duplicate', 'no duplicate', 'undefined', 'unknown',
+]);
+
+function normalizeCluster(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const cleaned = raw.trim().toLowerCase();
+  if (!cleaned) return null;
+  if (CLUSTER_PLACEHOLDERS.has(cleaned)) return null;
+  return cleaned;
 }
 
 function clamp01(x: number): number {
