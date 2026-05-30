@@ -8,42 +8,51 @@ import {
   listReleasesDb,
 } from '../lib/refresh';
 import { listAdvisories, type AdvisoryRow } from '../lib/db';
-import { matchesRange } from '../lib/versionMatch';
+import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
+import { bandFor, type InstallStatus } from '../lib/score';
 
 export const api = Router();
 
-// Extract the FIRST release that shipped a fix, given GHSA `patched_versions`.
-// Examples:
-//   "2026.4.23"             → "2026.4.23"
-//   ">= 2026.4.14"          → "2026.4.14"
-//   ">= 2026.4.10 < 2026.5" → "2026.4.10"
-// Returns null if we can't parse.
-function firstPatchedTag(patchedVersions: string | null | undefined): string | null {
-  if (!patchedVersions) return null;
-  const v = patchedVersions.trim();
-  if (!v) return null;
-  // Singular tag (no comparison operators)
-  if (!/[<>=]/.test(v)) return v;
-  // Take the value of the first `>=` clause (the earliest version that has the fix)
-  const ge = v.match(/>=\s*([0-9A-Za-z.\-+]+)/);
-  return ge ? ge[1] : null;
-}
+// How many stables after a version we still count its CVEs for the BADGE. 0 =
+// only CVEs patched in the very next stable — i.e. "this version's own disclosed
+// vulnerabilities". This deliberately differs from the cumulative `< X` match:
+// GitHub ranges have no lower bound, so the raw count grows with age (the oldest
+// release showed "42 CVE", which looks alarming and falsely flatters the newest).
+// The windowed count is age-fair (reflects how leaky THIS version was, not how old
+// it is) and matches what the decayed score actually weighs. NOTE: this is display
+// only — the skip-cve STATUS still trips on ANY medium+ match (security ≠ decay).
+const CVE_BADGE_WINDOW = 0;
 
-// Cross-reference each release tag against cached advisories. Returns the
-// CVEs the release is vulnerable to (vuln_range matches its tag) and the
-// CVEs it patches (its tag is the FIRST release containing the fix). A
-// release that simply "happens to be newer than the patch" is NOT credited
-// as patching — only the release that actually shipped the fix is.
-function advisoryStatusFor(tag: string, all: AdvisoryRow[]) {
+// Cross-reference each release tag against cached advisories. `affected` = CVEs in
+// this version's own window (see CVE_BADGE_WINDOW); `patched` = CVEs whose fix first
+// shipped in this exact release. A release that's merely "newer than the patch" is
+// NOT credited as patching.
+function advisoryStatusFor(tag: string, all: AdvisoryRow[], stableTags: string[]) {
   const norm = tag.replace(/^v/i, '');
   const affected: AdvisoryRow[] = [];
   const patched: AdvisoryRow[] = [];
   for (const a of all) {
-    if (matchesRange(tag, a.vulnerable_version_range)) affected.push(a);
-    const first = firstPatchedTag(a.patched_versions);
+    if (
+      matchesRange(tag, a.vulnerable_version_range) &&
+      stableDistance(tag, a.patched_versions, stableTags) <= CVE_BADGE_WINDOW
+    ) {
+      affected.push(a);
+    }
+    const first = firstPatchedVersion(a.patched_versions);
     if (first && (first === tag || first.replace(/^v/i, '') === norm)) patched.push(a);
   }
   return { affected, patched };
+}
+
+// Parse the stored broken-surfaces JSON (see lib/surfaces.ts) defensively.
+function parseBrokenSurfaces(json: string | null): Array<{ label: string; icon: string; count: number }> {
+  if (!json) return [];
+  try {
+    const v = JSON.parse(json);
+    return Array.isArray(v) ? v : [];
+  } catch {
+    return [];
+  }
 }
 
 function summarizeAdvisories(list: AdvisoryRow[]) {
@@ -98,6 +107,7 @@ function maintainerSignals(r: {
   pr_refs_count: number;
   beta_count: number;
   hours_to_next_release: number | null;
+  hours_to_next_stable: number | null;
 }) {
   return {
     breakingCount:      r.breaking_count,
@@ -107,25 +117,30 @@ function maintainerSignals(r: {
     prRefsCount:        r.pr_refs_count,
     betaCount:          r.beta_count,
     hoursToNextRelease: r.hours_to_next_release,
+    hoursToNextStable:  r.hours_to_next_stable,
   };
 }
 
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
+  const stableTags = rows.map((r) => r.tag); // newest-first; used for CVE recency window
   res.json(
     rows.map((r) => {
-      const status = advisoryStatusFor(r.tag, advisories);
+      const status = advisoryStatusFor(r.tag, advisories, stableTags);
       return {
         tag: r.tag,
         name: r.name,
         publishedAt: r.published_at,
         htmlUrl: r.html_url,
-        finalScore: r.final_score,
-        riskIndex: r.risk_index,
+        finalScore: r.final_score,                 // Install Confidence 0–10 (null when 'wait')
+        band: bandFor(r.final_score, (r.state ?? 'eligible') as InstallStatus),
+        status: r.state,                           // wait | skip-cve | skip-hotfix | eligible
+        recommended: r.recommended === 1,
+        reason: r.score_reason,
+        brokenSurfaces: parseBrokenSurfaces(r.broken_surfaces),
         negativeIssues: r.negative_issues,
         positiveIssues: r.positive_issues,
-        state: r.state,
         closedSeriousFixed: r.closed_serious_fixed,
         openedSeriousDuringReign: r.opened_serious_during_reign,
         scoredAt: r.scored_at,
@@ -146,17 +161,21 @@ api.get('/release/:tag', (req, res) => {
     return;
   }
   const issues = issuesForVersion(rel.tag).map(serializeIssue);
-  const status = advisoryStatusFor(rel.tag, listAdvisories());
+  const stableTags = listReleasesDb(config.limits.releases).map((r) => r.tag);
+  const status = advisoryStatusFor(rel.tag, listAdvisories(), stableTags);
   res.json({
     tag: rel.tag,
     name: rel.name,
     publishedAt: rel.published_at,
     htmlUrl: rel.html_url,
     finalScore: rel.final_score,
-    riskIndex: rel.risk_index,
+    band: bandFor(rel.final_score, (rel.state ?? 'eligible') as InstallStatus),
+    status: rel.state,
+    recommended: rel.recommended === 1,
+    reason: rel.score_reason,
+    brokenSurfaces: parseBrokenSurfaces(rel.broken_surfaces),
     negativeIssues: rel.negative_issues,
     positiveIssues: rel.positive_issues,
-    state: rel.state,
     closedSeriousFixed: rel.closed_serious_fixed,
     openedSeriousDuringReign: rel.opened_serious_during_reign,
     scoredAt: rel.scored_at,
@@ -170,25 +189,23 @@ api.get('/release/:tag', (req, res) => {
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────
-// Single endpoint with everything needed to understand release stability.
+// Single endpoint answering "which stable should I install right now?".
 //
-// score:      1–10 (10 = stable, 5 = neutral/insufficient signal, 1 = unstable floor)
-// grade:      stable | mostly-stable | mixed | risky | unstable | insufficient
-// riskIndex:  effective core-risk after positive cancellation (higher = worse)
-// sentiment:  negative | positive | neutral
-// severity:   critical | high | medium | low
-// scope:      broad (most users) | moderate | niche (specific config/OS)
-// hasWorkaround: true if a known workaround exists for the issue
-// confidence: 0–1, how confident the LLM is in its classification
+// score:       Install Confidence 0–10 (higher = safer to install). null when 'wait'.
+// band:        solid | ok | caution | weak | skip | wait
+// status:      eligible | skip-cve | skip-hotfix | wait
+// recommended: true for the single newest release that passed all gates and scores
+//              at or above the recommendation threshold.
+// reason:      short human explanation of the verdict.
+// sentiment / severity / scope / hasWorkaround / confidence: per-issue LLM context.
 //
-// Attribution: only issues where the LLM extracted an explicit version mention
-// from the issue body/comments are counted toward a release. Unattributed bugs
-// are intentionally dropped (the "long tail of open bugs" doesn't pollute every
-// release). A release with no attributed issues scores 5 (neutral baseline),
-// not 10 — absence of signal is not evidence of stability.
+// The score is NOT issue-volume based (that is confounded by how long/popular a
+// release was). It comes from age/cadence-invariant signals: known CVEs, settle
+// age, hotfix succession, stable-to-stable survival, beta shakeout depth, and the
+// serious-bug close/open balance during the release's reign. See lib/score.ts.
 //
 // Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
-// score was computed for this specific release.
+// the score was computed for this specific release.
 
 // Under window-based attribution one issue often affects multiple releases, so
 // returning every attributed issue per release inflates the payload (we observed
@@ -229,11 +246,12 @@ function buildPublicPayload() {
       publishedAt:       r.published_at,
       url:               r.html_url,
       score:             r.final_score,
-      grade:             scoreToGrade(r.final_score, r.state),
-      riskIndex:         r.risk_index,
+      band:              bandFor(r.final_score, (r.state ?? 'eligible') as InstallStatus),
+      status:            r.state,
+      recommended:       r.recommended === 1,
+      reason:            r.score_reason,
       negativeIssues:    r.negative_issues ?? 0,
       positiveIssues:    r.positive_issues ?? 0,
-      state:             r.state,
       scoredAt:          r.scored_at,
       totalAttributedIssues: all.length,
       issues:            topIssues,
@@ -254,24 +272,6 @@ api.get('/public', (_req, res) => {
   setCached(data);
   res.json(data);
 });
-
-// Grade describes maintenance-activity signal, NOT install advice. A release
-// labelled "active" doesn't mean "install me"; it means "the team is actively
-// fixing things in this release". Install advice comes from the recommendation
-// view, which is age- and peer-aware. Decoupling the two prevents the previous
-// contradiction where a quiet old release showed "Stable" but the recommendation
-// said "Old — don't downgrade".
-function scoreToGrade(score: number | null, state: string | null): string {
-  if (state === 'analyzing')    return 'analyzing';
-  if (state === 'insufficient') return 'insufficient';
-  if (score == null)            return 'pending';
-  if (score >= 8.2)             return 'active';           // high fix-rate
-  if (score >= 6.8)             return 'typical';          // baseline for this project
-  if (score > 5.1)              return 'quiet';            // below typical
-  if (score >= 4.9)             return 'insufficient';
-  if (score >= 3.5)             return 'falling-behind';
-  return 'lagging';
-}
 
 function serializeIssue(r: {
   number: number;

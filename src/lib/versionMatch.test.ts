@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { compareVersions, matchesRange } from './versionMatch.ts';
+import { compareVersions, matchesRange, firstPatchedVersion, stableDistance } from './versionMatch.ts';
 
 describe('compareVersions', () => {
   it('component-wise numeric compare', () => {
@@ -95,5 +95,41 @@ describe('matchesRange', () => {
   it('returns false on malformed range (safer than guessing)', () => {
     assert.equal(matchesRange('1.2.3', '^1.0.0'), false);
     assert.equal(matchesRange('1.2.3', '~1.2.0'), false);
+  });
+});
+
+describe('firstPatchedVersion', () => {
+  it('bare version', () => {
+    assert.equal(firstPatchedVersion('2026.4.23'), '2026.4.23');
+  });
+  it('takes the >= clause', () => {
+    assert.equal(firstPatchedVersion('>= 2026.4.14'), '2026.4.14');
+    assert.equal(firstPatchedVersion('>= 2026.4.10 < 2026.5'), '2026.4.10');
+  });
+  it('null / empty → null', () => {
+    assert.equal(firstPatchedVersion(null), null);
+    assert.equal(firstPatchedVersion(''), null);
+  });
+});
+
+describe('stableDistance', () => {
+  const stables = ['v2026.5.27', 'v2026.5.26', 'v2026.5.22', 'v2026.5.20']; // newest first
+
+  it('0 for the newest still-affected version (right before the patch)', () => {
+    // patched in 5.27 → nothing sits between 5.26 and the patch
+    assert.equal(stableDistance('v2026.5.26', '2026.5.27', stables), 0);
+  });
+
+  it('counts stables between the version and the patch', () => {
+    assert.equal(stableDistance('v2026.5.22', '2026.5.27', stables), 1); // 5.26 between
+    assert.equal(stableDistance('v2026.5.20', '2026.5.27', stables), 2); // 5.22, 5.26 between
+  });
+
+  it('uses the patch from a >= range', () => {
+    assert.equal(stableDistance('v2026.5.22', '>= 2026.5.27', stables), 1);
+  });
+
+  it('0 when the patch is unparseable (conservative full weight)', () => {
+    assert.equal(stableDistance('v2026.5.20', null, stables), 0);
   });
 });

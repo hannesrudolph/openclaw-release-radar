@@ -76,6 +76,41 @@ function parseClause(raw: string): { op: string; target: string } | null {
   return { op: m[1] ?? '=', target: m[2] };
 }
 
+// Extract the FIRST version that shipped a fix, from a GHSA `patched_versions`
+// string. Examples:
+//   "2026.4.23"             → "2026.4.23"
+//   ">= 2026.4.14"          → "2026.4.14"
+//   ">= 2026.4.10 < 2026.5" → "2026.4.10"
+// Returns null when nothing parseable is found.
+export function firstPatchedVersion(patched: string | null | undefined): string | null {
+  if (!patched) return null;
+  const v = patched.trim();
+  if (!v) return null;
+  if (!/[<>=]/.test(v)) return v;                    // bare version, no operators
+  const ge = v.match(/>=\s*([0-9A-Za-z.\-+]+)/);     // earliest version with the fix
+  if (ge) return ge[1];
+  return v.match(/([0-9][0-9A-Za-z.\-+]*)/)?.[1] ?? null;
+}
+
+// Number of STABLE releases strictly between `version` and the version that
+// patched a vulnerability — i.e. how many releases sit closer to the fix than this
+// one. Returns 0 when `version` is the newest still-affected release, or when the
+// patch string can't be parsed (conservative: treat as "right here", full weight).
+// Used to decay CVE blame backward from each patch (see score.cveDecayLoad).
+export function stableDistance(
+  version: string,
+  patchedVersions: string | null | undefined,
+  stableTagsNewestFirst: string[],
+): number {
+  const patch = firstPatchedVersion(patchedVersions);
+  if (!patch) return 0;
+  let d = 0;
+  for (const s of stableTagsNewestFirst) {
+    if (compareVersions(version, s) < 0 && compareVersions(s, patch) < 0) d++;
+  }
+  return d;
+}
+
 // Match a version against a range string. Range can contain multiple
 // clauses joined by comma or whitespace; all must hold (AND semantics).
 // Returns `false` for malformed input — safer than guessing.

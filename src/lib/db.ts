@@ -43,14 +43,24 @@ CREATE TABLE IF NOT EXISTS releases (
   -- highlights_count: bullets under "### Highlights" — items the team called out.
   -- pr_refs_count:  distinct #NNNNN PR refs across the entire body.
   -- beta_count:     prereleases between this stable and the previous stable (shake-out depth).
-  -- hours_to_next_release: hours until the next release of any kind (a tight gap = hotfix pattern).
+  -- hours_to_next_release: hours until the next release of ANY kind (incl. betas).
+  -- hours_to_next_stable:  hours until the next STABLE — the install-relevant "how long
+  --                        did this stay the current version" signal (betas ignored).
+  -- recommended:    1 for the single release the Install Confidence model recommends.
   breaking_count INTEGER NOT NULL DEFAULT 0,
   fixes_count INTEGER NOT NULL DEFAULT 0,
   changes_count INTEGER NOT NULL DEFAULT 0,
   highlights_count INTEGER NOT NULL DEFAULT 0,
   pr_refs_count INTEGER NOT NULL DEFAULT 0,
   beta_count INTEGER NOT NULL DEFAULT 0,
-  hours_to_next_release REAL
+  hours_to_next_release REAL,
+  hours_to_next_stable REAL,
+  recommended INTEGER NOT NULL DEFAULT 0,
+  -- Short human explanation of the Install Confidence verdict, from lib/score.ts.
+  score_reason TEXT,
+  -- JSON array of the top product surfaces this release breaks (visible regressions),
+  -- e.g. [{"label":"Discord","icon":"discord","count":11}]. See lib/surfaces.ts.
+  broken_surfaces TEXT
 );
 
 CREATE TABLE IF NOT EXISTS issues (
@@ -128,6 +138,10 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN pr_refs_count INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN beta_count INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN hours_to_next_release REAL`,
+  `ALTER TABLE releases ADD COLUMN hours_to_next_stable REAL`,
+  `ALTER TABLE releases ADD COLUMN recommended INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN score_reason TEXT`,
+  `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -183,6 +197,10 @@ export interface ReleaseRow {
   pr_refs_count: number;
   beta_count: number;
   hours_to_next_release: number | null;
+  hours_to_next_stable: number | null;
+  recommended: number;
+  score_reason: string | null;
+  broken_surfaces: string | null;
 }
 
 const upsertReleaseStmt = db.prepare(`
@@ -215,7 +233,8 @@ UPDATE releases SET
   highlights_count=:highlights_count,
   pr_refs_count=:pr_refs_count,
   beta_count=:beta_count,
-  hours_to_next_release=:hours_to_next_release
+  hours_to_next_release=:hours_to_next_release,
+  hours_to_next_stable=:hours_to_next_stable
 WHERE tag=:tag
 `);
 
@@ -228,14 +247,20 @@ export function updateReleaseDerivedStats(args: {
   pr_refs_count: number;
   beta_count: number;
   hours_to_next_release: number | null;
+  hours_to_next_stable: number | null;
 }): void {
   updateReleaseDerivedStatsStmt.run(args);
 }
 
+// Install Confidence score writer. final_score is the 0–10 IC (NULL when 'wait').
+// `state` carries the install status: 'wait' | 'skip-cve' | 'skip-hotfix' | 'eligible'.
+// risk_index / fix_bonus are legacy columns from the old model — left untouched here.
 const updateScoreStmt = db.prepare(`
-UPDATE releases SET final_score=:final_score, risk_index=:risk_index,
+UPDATE releases SET final_score=:final_score,
   negative_issues=:negative_issues, positive_issues=:positive_issues,
-  state=:state, closed_serious_fixed=:closed_serious_fixed, fix_bonus=:fix_bonus,
+  state=:state, recommended=:recommended, score_reason=:score_reason,
+  broken_surfaces=:broken_surfaces,
+  closed_serious_fixed=:closed_serious_fixed,
   opened_serious_during_reign=:opened_serious_during_reign,
   scored_at=:scored_at
 WHERE tag=:tag
@@ -243,13 +268,14 @@ WHERE tag=:tag
 
 export function updateReleaseScore(args: {
   tag: string;
-  final_score: number;
-  risk_index: number;
+  final_score: number | null;
   negative_issues: number;
   positive_issues: number;
   state: string;
+  recommended: number;
+  score_reason: string;
+  broken_surfaces: string;
   closed_serious_fixed: number;
-  fix_bonus: number;
   opened_serious_during_reign: number;
 }): void {
   updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
@@ -474,7 +500,7 @@ WHERE
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at),
+         WHERE next.published_at > target.published_at AND next.prerelease = 0),
         '9999-12-31T23:59:59Z'
       )
 ORDER BY i.closed_at DESC
@@ -503,7 +529,7 @@ WHERE
   AND i.created_at >= target.published_at
   AND i.created_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at),
+         WHERE next.published_at > target.published_at AND next.prerelease = 0),
         '9999-12-31T23:59:59Z'
       )
 ORDER BY i.created_at DESC
