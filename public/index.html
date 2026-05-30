@@ -130,18 +130,21 @@ main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--s
 }
 .release--skip .release__reason{color:var(--danger)}
 /* ── "what it breaks" surface chips ─────────────────────────────────────── */
-/* vertical list of what this release breaks — one surface per line, no background */
-.surfaces{display:flex;flex-direction:column;gap:3px;margin-top:5px}
+/* vertical list — caption and items share the same text colour; icons stay muted */
+.surfaces{
+  display:flex;flex-direction:column;gap:4px;margin-top:6px;
+  font-size:var(--text-sm);color:var(--text);
+}
+.surf-label{font-weight:600;margin-bottom:1px}
 .surf{
-  display:flex;align-items:center;gap:6px;
-  font-size:var(--text-xs);color:var(--danger);white-space:nowrap;
+  display:flex;align-items:center;gap:6px;white-space:nowrap;
 }
 /* the rest fold into a native <details> disclosure (top 3 always shown) */
-.surf-rest{display:flex;flex-direction:column;gap:3px}
-.surf-rest-items{display:flex;flex-direction:column;gap:3px}
+.surf-rest{display:flex;flex-direction:column;gap:4px}
+.surf-rest-items{display:flex;flex-direction:column;gap:4px}
 .surf-more{
-  font-size:var(--text-xs);color:var(--muted);cursor:pointer;
-  list-style:none;padding-left:18px;width:fit-content;
+  font-size:var(--text-sm);color:var(--muted);cursor:pointer;
+  list-style:none;padding-left:19px;width:fit-content;
   border-bottom:1px dotted var(--border);
 }
 .surf-more:hover{color:var(--text)}
@@ -149,9 +152,9 @@ main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--s
 .surf-more::marker{content:"";font-size:0}
 details[open] > .surf-more{display:none}
 .surf-more::after{content:" ▾"}
-/* brand SVG recoloured red via CSS mask (mask = shape, background = colour) */
+/* brand glyph via CSS mask — muted so it matches the list tone */
 .surf-ico{
-  width:12px;height:12px;flex-shrink:0;background:currentColor;opacity:.85;
+  width:13px;height:13px;flex-shrink:0;background:var(--muted);opacity:.85;
   -webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat;
 }
 .rec-pill{
@@ -471,6 +474,7 @@ function renderReleases() {
     const rest = surfaces.slice(SURF_TOP);
     const surfacesLine = surfaces.length
       ? `<div class="surfaces" title="Visible regressions this version introduced (still open)">`
+        + `<span class="surf-label">Breaks:</span>`
         + surfaces.slice(0, SURF_TOP).map(surfChip).join('')
         + (rest.length
             ? `<details class="surf-rest"><summary class="surf-more">+${rest.length} more</summary>`
