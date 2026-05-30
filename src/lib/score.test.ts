@@ -1,308 +1,225 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { scoreRelease, type IssueInput } from './score.ts';
-import type { IssueClassification } from './llm.ts';
+import {
+  installConfidence,
+  pickRecommended,
+  bandFor,
+  cveDecayLoad,
+  feltLoad,
+  REC_THRESHOLD,
+  type InstallInput,
+} from './score.ts';
 
-// Tests for the pure scoring function. Pins down the agent-watch-derived contract:
-// - Empty input → neutral 5, not perfect 10 (no signal ≠ stable).
-// - Score floor at 1.0 (Unstable still distinguishable from "grey").
-// - Per-issue cap and other-drop cap prevent any one signal from dominating.
+// Install Confidence contract — answers "should I install this stable?".
+// Gates (CVE / too-new / hotfix) override; otherwise a graded 0–10 from
+// age/cadence-invariant signals (survival, shakeout, regression balance, breaking).
 
-const NOW = Date.parse('2024-07-01T00:00:00Z');
-const RELEASE_PUB = '2024-06-15T00:00:00Z'; // ~16 days before NOW, well past 3h grace
+const NOW = Date.parse('2026-05-30T00:00:00Z');
+const daysAgo = (d: number) => new Date(NOW - d * 86_400_000).toISOString();
+const hoursAgo = (h: number) => new Date(NOW - h * 3_600_000).toISOString();
 
-function mkClass(overrides: Partial<IssueClassification> = {}): IssueClassification {
+function mk(over: Partial<InstallInput> = {}): InstallInput {
   return {
-    sentiment: 'negative',
-    severity: 'medium',
-    scope: 'moderate',
-    functionality: 'integration',
-    affectedUsers: 'some',
-    workaroundStatus: 'none',
-    duplicateCluster: null,
-    affectsVersion: 'v1.0.0',
-    confidence: 1.0,
-    rationale: '',
-    ...overrides,
+    publishedAt: daysAgo(10),
+    isLatest: false,
+    hoursToNextStable: 24, // a "typical" stable lifetime → neutral survival
+    hasHotfixSuccessor: false,
+    betaCount: 0,
+    breakingCount: 0,
+    feltOpenedWeight: 0,
+    feltClosedWeight: 0,
+    cveAffected: false,
+    cveLoad: 0,
+    ...over,
   };
 }
+const score = (over: Partial<InstallInput> = {}) => installConfidence(mk(over), NOW).score!;
 
-function mkIssue(
-  num: number,
-  cls: IssueClassification,
-  opts: { updatedAt?: string; comments?: number; isBot?: boolean } = {},
-): IssueInput {
-  return {
-    number: num,
-    updatedAt: opts.updatedAt ?? '2024-06-30T00:00:00Z', // fresh by default
-    commentCount: opts.comments ?? 0,
-    isBot: opts.isBot ?? false,
-    classification: cls,
-  };
-}
-
-describe('scoreRelease', () => {
-  it('empty input → neutral 5 baseline (insufficient signal)', () => {
-    const s = scoreRelease([], RELEASE_PUB, NOW);
-    assert.equal(s.finalScore, 5);
-    assert.equal(s.riskIndex, 0);
-    assert.equal(s.negativeIssues, 0);
-    assert.equal(s.positiveIssues, 0);
-    assert.equal(s.state, 'insufficient');
+describe('installConfidence — gates', () => {
+  it('CVE-affected → skip-cve status, scored below any install', () => {
+    const clean = installConfidence(mk(), NOW).score!;
+    const r = installConfidence(mk({ cveAffected: true, cveLoad: 20 }), NOW);
+    assert.equal(r.status, 'skip-cve');
+    assert.equal(r.band, 'skip');                 // status drives band → never recommended
+    assert.ok(r.score! < clean, `CVE should score below the clean baseline (${r.score} vs ${clean})`);
   });
 
-  it('release younger than 3h → analyzing, neutral 5', () => {
-    const justPublished = new Date(NOW - 60 * 60 * 1000).toISOString(); // 1h ago
-    const issues = [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }))];
-    const s = scoreRelease(issues, justPublished, NOW);
-    assert.equal(s.finalScore, 5);
-    assert.equal(s.state, 'analyzing');
+  it('skip-cve ranks by own-CVE severity: heavier load scores lower', () => {
+    const light = installConfidence(mk({ cveAffected: true, cveLoad: 4 }), NOW).score!;
+    const heavy = installConfidence(mk({ cveAffected: true, cveLoad: 27 }), NOW).score!;
+    assert.ok(heavy < light, `heavier load should score lower (${heavy} vs ${light})`);
   });
 
-  it('only neutral/positive issues → insufficient (5), not a perfect 10', () => {
-    // Product framing: the dashboard answers "should I install this release?". A
-    // handful of "works for me" comments is not enough to declare a release stable —
-    // it just means we have no negative signal yet. Treat the same as empty input.
-    const issues = [
-      mkIssue(1, mkClass({ sentiment: 'neutral' })),
-      mkIssue(2, mkClass({ sentiment: 'positive' })),
-    ];
-    const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    assert.equal(s.finalScore, 5);
-    assert.equal(s.riskIndex, 0);
-    assert.equal(s.state, 'insufficient');
+  it('skip-cve does NOT inherit the maintenance base (a Skip never outranks an install)', () => {
+    // Two CVE-affected releases with the SAME CVE load but very different maintenance
+    // quality must score the SAME — maintenance is irrelevant once it is don't-install.
+    const wellTended = mk({ cveAffected: true, cveLoad: 10, betaCount: 14, hoursToNextStable: 96 });
+    const shortLived = mk({ cveAffected: true, cveLoad: 10, betaCount: 0, hoursToNextStable: 9 });
+    assert.equal(installConfidence(wellTended, NOW).score, installConfidence(shortLived, NOW).score);
+    // And both stay below 5 (never above an installable release).
+    assert.ok(installConfidence(wellTended, NOW).score! < 5);
   });
 
-  it('single fresh core+critical bug → score in Risky/Mixed range, not 0', () => {
-    const issues = [mkIssue(1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core' }))];
-    const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    assert.ok(s.finalScore < 10, `expected < 10, got ${s.finalScore}`);
-    assert.ok(s.finalScore >= 1, `expected >= floor 1, got ${s.finalScore}`);
-    assert.ok(s.riskIndex > 0);
-    assert.equal(s.negativeIssues, 1);
+  it('a distant-only CVE (load ≈ 0) is the mildest skip but still below 5', () => {
+    const r = installConfidence(mk({ cveAffected: true, cveLoad: 0 }), NOW);
+    assert.equal(r.status, 'skip-cve');
+    assert.ok(r.score != null && r.score < 5, `skip-cve must read < 5, got ${r.score}`);
   });
 
-  it('severity escalates core risk: critical > high > medium', () => {
-    // Use core+critical/high to land in the "core-serious" bucket so weight maps to riskIndex.
-    const mk = (sev: IssueClassification['severity']) =>
-      scoreRelease(
-        [mkIssue(1, mkClass({ severity: sev, functionality: 'core' }))],
-        RELEASE_PUB,
-        NOW,
-      ).riskIndex;
-    assert.ok(mk('critical') > mk('high'), `critical (${mk('critical')}) > high (${mk('high')})`);
-    // medium isn't "core-serious" so it goes to other-drop, riskIndex (= effectiveCore) = 0.
-    assert.equal(mk('medium'), 0);
+  it('younger than the settle window → wait, no score', () => {
+    const r = installConfidence(mk({ publishedAt: hoursAgo(5) }), NOW);
+    assert.equal(r.status, 'wait');
+    assert.equal(r.score, null);
+    assert.equal(r.band, 'wait');
   });
 
-  it('positive offsets the other-drop bucket first', () => {
-    // A medium severity bug lands in "other" (not core-serious). Positive evidence should
-    // cancel it before nibbling at core.
-    const neg = mkIssue(1, mkClass({ sentiment: 'negative', severity: 'medium' }));
-    const pos = mkIssue(2, mkClass({ sentiment: 'positive' }));
-    const withPos = scoreRelease([neg, pos], RELEASE_PUB, NOW).finalScore;
-    const withoutPos = scoreRelease([neg], RELEASE_PUB, NOW).finalScore;
-    assert.ok(withPos > withoutPos, `pos should soften: with=${withPos}, without=${withoutPos}`);
+  it('a `-N` hotfix successor → skip-hotfix, reads below 5', () => {
+    const r = installConfidence(mk({ hasHotfixSuccessor: true }), NOW);
+    assert.equal(r.status, 'skip-hotfix');
+    assert.equal(r.band, 'skip');
+    assert.ok(r.score != null && r.score < 5, `expected <5, got ${r.score}`);
   });
 
-  it('workaroundStatus dampens severity progressively (none > partial > confirmed)', () => {
-    const ri = (ws: IssueClassification['workaroundStatus']) =>
-      scoreRelease(
-        [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core', workaroundStatus: ws }))],
-        RELEASE_PUB,
-        NOW,
-      ).riskIndex;
-    assert.ok(ri('none') > ri('partial'), `none (${ri('none')}) should hit harder than partial (${ri('partial')})`);
-    assert.ok(ri('partial') > ri('confirmed'), `partial > confirmed`);
+  it('replaced by next stable within the emergency window → skip-hotfix', () => {
+    const r = installConfidence(mk({ hoursToNextStable: 3 }), NOW);
+    assert.equal(r.status, 'skip-hotfix');
+    assert.ok(r.score != null && r.score < 5);
   });
 
-  it('bot-generated issues are down-weighted', () => {
-    const human = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { isBot: false })],
-      RELEASE_PUB,
-      NOW,
-    ).riskIndex;
-    const bot = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { isBot: true })],
-      RELEASE_PUB,
-      NOW,
-    ).riskIndex;
-    assert.ok(bot < human, `bot (${bot}) should weigh less than human (${human})`);
-    // Bot multiplier is 0.3, so expect a roughly ~70% reduction.
-    assert.ok(bot < human * 0.5, `bot weight should be substantially below human`);
+  it('the latest (no successor) is still scored once past the settle window', () => {
+    const r = installConfidence(mk({ isLatest: true, hoursToNextStable: null, publishedAt: daysAgo(3) }), NOW);
+    assert.equal(r.status, 'eligible');
+    assert.ok(typeof r.score === 'number');
+  });
+});
+
+describe('installConfidence — graded signals', () => {
+  it('eligible baseline (typical lifetime, no other signal) sits at neutral ~6', () => {
+    const r = installConfidence(mk(), NOW);
+    assert.equal(r.status, 'eligible');
+    assert.ok(Math.abs(r.score! - 6) < 0.3, `expected ~6, got ${r.score}`);
   });
 
-  it('peer-relative: at-median release scores ~PEER_BASELINE_SCORE (7)', () => {
-    // Under window-based attribution every release carries a large open-bug debt.
-    // What matters is "is this release worse than typical for this project?".
-    // A release whose risk equals the project median should be the baseline.
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+  it('longer survival before the next stable scores higher', () => {
+    assert.ok(score({ hoursToNextStable: 96 }) > score({ hoursToNextStable: 24 }));
+    assert.ok(score({ hoursToNextStable: 24 }) > score({ hoursToNextStable: 8 }));
+  });
+
+  it('more beta shakeout raises confidence', () => {
+    assert.ok(score({ betaCount: 10 }) > score({ betaCount: 0 }));
+  });
+
+  it('net-fixing visible bugs beats net-breaking', () => {
+    const fixing = score({ feltClosedWeight: 40, feltOpenedWeight: 10 });
+    const breaking = score({ feltClosedWeight: 10, feltOpenedWeight: 40 });
+    assert.ok(fixing > breaking, `fixing ${fixing} should beat breaking ${breaking}`);
+  });
+
+  it('visible-bug balance is shrunk toward neutral on low volume', () => {
+    // A couple of visible bugs barely moves the score (no noisy 0%-fixed slam).
+    const tiny = score({ feltOpenedWeight: 2, feltClosedWeight: 0 });
+    assert.ok(Math.abs(tiny - score()) < 0.6, `low volume should barely move (${tiny} vs ${score()})`);
+  });
+
+  it('breaking changes lower the score', () => {
+    assert.ok(score({ breakingCount: 3 }) < score({ breakingCount: 0 }));
+  });
+
+  it('score never leaves [0,10] under extreme inputs', () => {
+    const lo = installConfidence(mk({ hoursToNextStable: 1, breakingCount: 99, feltOpenedWeight: 500, feltClosedWeight: 0 }), NOW).score!;
+    const hi = installConfidence(mk({ hoursToNextStable: 100000, betaCount: 999, feltClosedWeight: 999, feltOpenedWeight: 0 }), NOW).score!;
+    assert.ok(lo >= 0 && lo <= 10 && hi >= 0 && hi <= 10);
+  });
+});
+
+describe('bandFor — number and label agree', () => {
+  it('maps rounded score to band at the documented cutoffs', () => {
+    assert.equal(bandFor(8.0, 'eligible'), 'solid');
+    assert.equal(bandFor(7.0, 'eligible'), 'ok');
+    assert.equal(bandFor(6.9, 'eligible'), 'caution');
+    assert.equal(bandFor(5.4, 'eligible'), 'weak');
+    assert.equal(bandFor(9.9, 'skip-hotfix'), 'skip');
+    assert.equal(bandFor(null, 'wait'), 'wait');
+  });
+});
+
+describe('cveDecayLoad — geometric decay by distance', () => {
+  it('full weight (×1.0) at distance 0 (severity = the weight)', () => {
+    assert.equal(cveDecayLoad([{ severity: 'medium', distance: 0 }]), 2);
+  });
+
+  it('decays ×0.3 per step back', () => {
+    assert.ok(Math.abs(cveDecayLoad([{ severity: 'medium', distance: 1 }]) - 0.6) < 1e-9);  // 2×0.3
+    assert.ok(Math.abs(cveDecayLoad([{ severity: 'medium', distance: 2 }]) - 0.18) < 1e-9); // 2×0.09
+  });
+
+  it('severity scales the load (critical 4× a low)', () => {
+    assert.equal(
+      cveDecayLoad([{ severity: 'critical', distance: 0 }]) / cveDecayLoad([{ severity: 'low', distance: 0 }]),
+      4,
     );
-    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Pass exactly this release's signal as the median → ratio = 1 → baseline.
-    const atMedian = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
-    assert.ok(atMedian.finalScore >= 6.5 && atMedian.finalScore <= 7.5,
-      `at-median release should score ~7, got ${atMedian.finalScore}`);
   });
 
-  it('peer-relative: worse-than-median release scores below baseline', () => {
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
+  it('zero weight beyond the 10-release window', () => {
+    assert.equal(cveDecayLoad([{ severity: 'high', distance: 10 }]), 0);
+  });
+
+  it('load sums across advisories', () => {
+    assert.ok(Math.abs(cveDecayLoad([
+      { severity: 'medium', distance: 0 }, { severity: 'high', distance: 0 },
+    ]) - 5) < 1e-9); // 2 + 3
+  });
+});
+
+describe('feltLoad — reach-weighted visible bugs', () => {
+  const fc = (over = {}) => ({ sentiment: 'negative', severity: 'high', functionality: 'integration', scope: 'moderate', affectedUsers: 'some', ...over });
+
+  it('counts core / integration / provider high+critical negatives', () => {
+    assert.ok(feltLoad([fc({ functionality: 'integration' })]) > 0);
+    assert.ok(feltLoad([fc({ functionality: 'provider' })]) > 0);
+    assert.ok(feltLoad([fc({ functionality: 'core' })]) > 0);
+  });
+
+  it('ignores docs, medium/low severity, and non-negative', () => {
+    assert.equal(feltLoad([fc({ functionality: 'docs' })]), 0);
+    assert.equal(feltLoad([fc({ severity: 'medium' })]), 0);
+    assert.equal(feltLoad([fc({ sentiment: 'positive' })]), 0);
+  });
+
+  it('weights by reach: a broad bug hitting many dwarfs a niche one hitting few', () => {
+    const broad = feltLoad([fc({ scope: 'broad', affectedUsers: 'many' })]);
+    const niche = feltLoad([fc({ scope: 'niche', affectedUsers: 'few' })]);
+    assert.ok(broad > niche * 3, `broad ${broad} should be >3× niche ${niche}`);
+  });
+});
+
+describe('pickRecommended — newest eligible at or above threshold', () => {
+  it('picks the newest eligible release scoring ≥ threshold', () => {
+    const tag = pickRecommended([
+      { tag: 'v3', status: 'wait', score: null },          // too new
+      { tag: 'v2', status: 'eligible', score: REC_THRESHOLD }, // newest qualifying
+      { tag: 'v1', status: 'eligible', score: 9.0 },        // higher but older
+    ]);
+    assert.equal(tag, 'v2');
+  });
+
+  it('skips hotfixed / gated / weak releases below the threshold', () => {
+    const tag = pickRecommended([
+      { tag: 'v4', status: 'skip-hotfix', score: 4.9 },
+      { tag: 'v3', status: 'skip-cve', score: 1.5 },
+      { tag: 'v2', status: 'eligible', score: 5.0 }, // eligible but "weak" (< 5.5)
+      { tag: 'v1', status: 'eligible', score: 8.0 }, // first that qualifies
+    ]);
+    assert.equal(tag, 'v1');
+  });
+
+  it('returns null when nothing qualifies', () => {
+    assert.equal(
+      pickRecommended([
+        { tag: 'v2', status: 'wait', score: null },
+        { tag: 'v1', status: 'skip-hotfix', score: 4.0 },
+      ]),
+      null,
     );
-    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Median half of this release's signal → ratio = 2 → score ≈ baseline − log2(2)·2 = 5.
-    const above = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 0.5);
-    assert.ok(above.finalScore < 7 && above.finalScore >= 4,
-      `2× worse than median should land around 5, got ${above.finalScore}`);
-  });
-
-  it('peer-relative: much-worse release lands near the floor', () => {
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Median 1/8 of this release's signal → ratio = 8 → score ≈ 7 − log2(8)·2 = 1.
-    const muchWorse = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum / 8);
-    assert.ok(muchWorse.finalScore <= 2,
-      `8× worse than median should be near floor, got ${muchWorse.finalScore}`);
-  });
-
-  it('peer-relative: below-median release stays at baseline (does NOT exceed it)', () => {
-    // ratio < 1 caps the score at PEER_BASELINE_SCORE — we don't want quiet
-    // releases scoring 10 (perfect) when the project itself has high baseline noise.
-    const issues = Array.from({ length: 2 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Median 10× this release's signal → ratio = 0.1 → baseline (capped).
-    const belowMedian = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum * 10);
-    assert.ok(belowMedian.finalScore >= 6.5 && belowMedian.finalScore <= 7.5,
-      `below-median release should stay at ~baseline, got ${belowMedian.finalScore}`);
-  });
-
-  it('floor: finalScore never drops below 1 under heavy load', () => {
-    const issues = Array.from({ length: 20 }, (_, i) =>
-      mkIssue(
-        i + 1,
-        mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' }),
-      ),
-    );
-    const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    assert.ok(s.finalScore >= 1 && s.finalScore <= 10, `out of range: ${s.finalScore}`);
-    assert.equal(s.finalScore, 1, `expected floor=1 under saturation, got ${s.finalScore}`);
-  });
-
-  it('other-drop is capped at ~2 points regardless of niche count', () => {
-    // 50 niche/integration bugs — would crash the score in the old model. New model caps at -2.
-    const issues = Array.from({ length: 50 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'medium', scope: 'niche', functionality: 'integration' })),
-    );
-    const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    // coreRisk is 0 (none are core-serious), so coreScore=10. otherDrop maxes at 2.
-    // Expect finalScore around 10 - 2 = 8, with some slack.
-    assert.ok(s.finalScore >= 7.5 && s.finalScore <= 10, `50 niche bugs should cap drop near 2, got ${s.finalScore}`);
-  });
-
-  it('per-issue cap: a pathological single issue cannot single-handedly crash the score', () => {
-    // Single core+critical with 1000 comments — discussion boost would blow up uncapped.
-    const issues = [
-      mkIssue(1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' }), {
-        comments: 1000,
-      }),
-    ];
-    const s = scoreRelease(issues, RELEASE_PUB, NOW);
-    // Per-issue cap = 4, scoreFromRiskIndex(4) with new formula ≈ 7.
-    assert.ok(s.finalScore >= 5, `single capped issue shouldn't drop below ~5, got ${s.finalScore}`);
-  });
-
-  it('fix-bonus: a release that closed many core-serious bugs scores higher', () => {
-    // Same negative load on both releases, but one closed 30 core-serious bugs
-    // during its reign — should clearly outscore the one that closed nothing.
-    const negs = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const closed = Array.from({ length: 30 }, (_, i) =>
-      mkIssue(100 + i, mkClass({ severity: 'high', functionality: 'core' })),
-    );
-    const noFixes  = scoreRelease(negs, RELEASE_PUB, NOW).finalScore;
-    const withFixes = scoreRelease(negs, RELEASE_PUB, NOW, undefined, closed).finalScore;
-    assert.ok(withFixes > noFixes + 1.5,
-      `30 fixes should add ~4 points; got ${noFixes} → ${withFixes}`);
-  });
-
-  it('fix-bonus: only core-serious closures count, not random closures', () => {
-    const negs = [mkIssue(1, mkClass({ severity: 'high', functionality: 'core' }))];
-    const trivialClosed = Array.from({ length: 30 }, (_, i) =>
-      // neutral / docs / low severity — should NOT credit the release
-      mkIssue(100 + i, mkClass({ sentiment: 'neutral', severity: 'low', functionality: 'docs' })),
-    );
-    const base = scoreRelease(negs, RELEASE_PUB, NOW).finalScore;
-    const withTrivialClosures = scoreRelease(negs, RELEASE_PUB, NOW, undefined, trivialClosed).finalScore;
-    assert.equal(base, withTrivialClosures,
-      'closures of non-core-serious or non-negative issues must not affect the score');
-  });
-
-  it('tie-breaker: no signals → score unchanged (contract preserved)', () => {
-    // Two at-median releases with no release-notes signals must still be identical.
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const { weightedNegSum } = scoreRelease(issues, RELEASE_PUB, NOW);
-    const withoutSignals = scoreRelease(issues, RELEASE_PUB, NOW, weightedNegSum);
-    assert.equal(withoutSignals.tieBreaker, 0);
-  });
-
-  it('tie-breaker: more fixes/PR activity nudges an at-median release up', () => {
-    // The real-world case: three releases the peer curve flattens to 7.0 should
-    // separate by how much maintenance shipped.
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const { weightedNegSum: med } = scoreRelease(issues, RELEASE_PUB, NOW);
-    const quiet = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
-      breakingCount: 0, fixesCount: 4, prRefsCount: 3,
-    });
-    const busy = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
-      breakingCount: 0, fixesCount: 227, prRefsCount: 119,
-    });
-    assert.ok(busy.finalScore > quiet.finalScore,
-      `busy (${busy.finalScore}) should outrank quiet (${quiet.finalScore})`);
-    assert.ok(busy.tieBreaker > quiet.tieBreaker && quiet.tieBreaker > 0);
-  });
-
-  it('tie-breaker: breaking changes nudge down, and net is bounded to ±0.6', () => {
-    const issues = Array.from({ length: 4 }, (_, i) =>
-      mkIssue(i + 1, mkClass({ severity: 'critical', scope: 'broad', functionality: 'core', affectedUsers: 'many' })),
-    );
-    const { weightedNegSum: med } = scoreRelease(issues, RELEASE_PUB, NOW);
-    const clean = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
-      breakingCount: 0, fixesCount: 50, prRefsCount: 50,
-    });
-    const breaking = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
-      breakingCount: 8, fixesCount: 50, prRefsCount: 50,
-    });
-    assert.ok(breaking.finalScore < clean.finalScore, 'breaking changes should pull the score down');
-    // Bound check: even an extreme changelog can't move more than ±0.6.
-    const huge = scoreRelease(issues, RELEASE_PUB, NOW, med, [], [], {
-      breakingCount: 0, fixesCount: 9999, prRefsCount: 9999,
-    });
-    assert.ok(Math.abs(huge.tieBreaker) <= 0.6 + 1e-9, `tie-breaker must stay within ±0.6, got ${huge.tieBreaker}`);
-  });
-
-  it('older issues still register but with reduced weight (recency floor 0.55)', () => {
-    const fresh = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { updatedAt: '2024-06-30T00:00:00Z' })],
-      RELEASE_PUB,
-      NOW,
-    ).riskIndex;
-    const old = scoreRelease(
-      [mkIssue(1, mkClass({ severity: 'critical', functionality: 'core' }), { updatedAt: '2022-06-30T00:00:00Z' })],
-      RELEASE_PUB,
-      NOW,
-    ).riskIndex;
-    assert.ok(fresh > old, `fresh (${fresh}) should exceed old (${old})`);
-    // Recency formula floors at 0.55, so old issues still contribute substantially.
-    assert.ok(old / fresh > 0.4, `old/fresh ratio (${old / fresh}) should be > 0.4 (recency floor)`);
   });
 });

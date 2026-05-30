@@ -1,47 +1,40 @@
-// Sanity test for the scoring algorithm. Run after `npm run build`:
+// Sanity smoke for the Install Confidence model. Run after `npm run build`:
 //   node scripts/score-smoke.mjs
-import { scoreRelease } from '../dist/lib/score.js';
+import { installConfidence, pickRecommended } from '../dist/lib/score.js';
 
 const now = Date.now();
 const daysAgo = (n) => new Date(now - n * 86400000).toISOString();
 
-function mkIssue({ number = 0, updatedAt = daysAgo(2), commentCount = 2, classification = {} } = {}) {
+function mk(over = {}) {
   return {
-    number,
-    updatedAt,
-    commentCount,
-    classification: {
-      sentiment: 'negative',
-      severity: 'medium',
-      scope: 'moderate',
-      functionality: 'integration',
-      affectedUsers: 'some',
-      hasWorkaround: false,
-      duplicateCluster: null,
-      affectsVersion: null,
-      confidence: 0.8,
-      rationale: '',
-      ...classification,
-    },
+    publishedAt: daysAgo(10),
+    isLatest: false,
+    hoursToNextStable: 24,
+    hasHotfixSuccessor: false,
+    betaCount: 0,
+    breakingCount: 0,
+    feltOpenedWeight: 0,
+    feltClosedWeight: 0,
+    cveAffected: false,
+    cveLoad: 0,
+    ...over,
   };
 }
 
 const cases = [
-  ['only-positive', [mkIssue({ classification: { sentiment: 'positive' } })]],
-  ['low-doc-bug',   [mkIssue({ classification: {
-      severity: 'low', functionality: 'docs', scope: 'niche',
-      affectedUsers: 'few', hasWorkaround: true } })]],
-  ['two-criticals-same-cluster', [
-    mkIssue({ number: 1, commentCount: 12, classification: {
-      severity: 'critical', scope: 'broad', functionality: 'core',
-      affectedUsers: 'many', confidence: 0.9, duplicateCluster: 'ollama-timeout' } }),
-    mkIssue({ number: 2, commentCount: 4, classification: {
-      severity: 'critical', scope: 'broad', functionality: 'core',
-      affectedUsers: 'many', confidence: 0.9, duplicateCluster: 'ollama-timeout' } }),
-  ]],
+  ['cve (light load)', mk({ cveAffected: true, cveLoad: 3 })],
+  ['cve (heavy load)', mk({ cveAffected: true, cveLoad: 40 })],
+  ['too-new',          mk({ publishedAt: daysAgo(0.2) })],
+  ['hotfixed (-N)',    mk({ hasHotfixSuccessor: true })],
+  ['typical ~24h',     mk()],
+  ['stood 4d + betas', mk({ hoursToNextStable: 96, betaCount: 10 })],
+  ['net-breaking vis', mk({ feltOpenedWeight: 40, feltClosedWeight: 8 })],
+  ['latest, 3d',       mk({ isLatest: true, hoursToNextStable: null, publishedAt: daysAgo(3) })],
 ];
 
-for (const [name, issues] of cases) {
-  const r = scoreRelease(issues, now);
-  console.log(`${name.padEnd(28)} score=${r.finalScore}  risk=${r.riskIndex}  neg=${r.negativeIssues}  pos=${r.positiveIssues}`);
+const scored = cases.map(([name, input]) => ({ name, ...installConfidence(input, now) }));
+for (const s of scored) {
+  console.log(`${s.name.padEnd(18)} score=${String(s.score).padEnd(4)} band=${String(s.band).padEnd(8)} status=${s.status}`);
 }
+const rec = pickRecommended(scored.map((s) => ({ tag: s.name, status: s.status, score: s.score })));
+console.log(`\nrecommended → ${rec}`);

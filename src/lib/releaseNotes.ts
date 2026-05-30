@@ -179,3 +179,40 @@ export function computeHoursToNextRelease(
   const hours = (nMs - tMs) / 3_600_000;
   return hours >= 0 ? hours : null;
 }
+
+// Hours from a STABLE release to the next newer STABLE release, ignoring any
+// prereleases in between. This is the right "how long did this stay the current
+// version users install?" signal — a beta of the NEXT version dropping soon after
+// a stable is forward development, not a reaction to the stable. Returns null for
+// the newest stable (no successor) or when timestamps are missing.
+//
+// Contrast with computeHoursToNextRelease (next-of-any-kind): for v2026.5.19 that
+// returns ~3.8h (the next *beta*), wildly understating how long 5.19 actually
+// stood as the current stable (~24h until 5.20). The install decision needs the
+// stable-to-stable gap.
+export function computeHoursToNextStable(
+  allReleasesDescByDate: Array<{ tag: string; published_at: string | null; prerelease: boolean }>,
+  targetTag: string,
+): number | null {
+  const idx = allReleasesDescByDate.findIndex((r) => r.tag === targetTag);
+  if (idx === -1) return null;
+  const target = allReleasesDescByDate[idx];
+  if (!target.published_at) return null;
+  const tMs = Date.parse(target.published_at);
+  if (!Number.isFinite(tMs)) return null;
+  // Walk toward newer entries; first stable with a strictly-greater timestamp wins.
+  for (let i = idx - 1; i >= 0; i--) {
+    const r = allReleasesDescByDate[i];
+    if (r.prerelease || !r.published_at) continue;
+    const nMs = Date.parse(r.published_at);
+    if (Number.isFinite(nMs) && nMs > tMs) return (nMs - tMs) / 3_600_000;
+  }
+  return null; // no newer stable in the window (this is the latest stable)
+}
+
+// True if some release tag is a `<tag>-N` patch of `targetTag` — openclaw's hotfix
+// convention (v2026.5.3 -> v2026.5.3-1). An unambiguous "this stable was hotfixed".
+export function hasHotfixSuccessor(allTags: string[], targetTag: string): boolean {
+  const re = new RegExp(`^${targetTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`);
+  return allTags.some((t) => re.test(t));
+}

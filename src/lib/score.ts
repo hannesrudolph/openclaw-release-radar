@@ -1,429 +1,289 @@
-import type { IssueClassification } from './llm';
+// Install Confidence — answers ONE question: "should I install this stable release?"
+//
+// Design rationale (see git history for the model it replaced):
+// The previous 0–10 "stability" score was dominated by reign-confounded terms
+// (fix-bonus, peer-median) and ended up POSITIVELY correlated with bug volume —
+// the buggiest releases scored highest. This model instead leans on signals that
+// are (a) age/cadence-invariant and (b) mostly structural / LLM-free, because the
+// install decision is about proven safety, not maintenance activity.
+//
+// Signal hierarchy (most → least trusted), and why each survives the "is it
+// confounded by how long/popular the release was?" test:
+//   1. CVE exposure         — objective, version-range matched. Sets a "skip-cve"
+//                             STATUS (never recommended), and a DECAYED penalty on
+//                             the score. Decay: a vuln counts 100% for the version
+//                             right before its patch, then ×0.3 per older release
+//                             (capped 10 back). GitHub advisory ranges have no lower
+//                             bound (`< X` blames every older version equally), so
+//                             without decay the oldest release always looks worst —
+//                             an age artifact, not real quality. Decay attributes a
+//                             vuln mostly to the versions just before its fix.
+//   2. Settle age (<24h)    — below a day there is genuinely no signal yet.
+//   3. Hotfix succession    — a `<tag>-N` patch successor (openclaw's hotfix
+//                             convention) or a next STABLE within 6h => the
+//                             maintainers themselves replaced it. Hard skip.
+//   4. Survival gap         — how long it stood before the next STABLE (NOT the
+//                             next beta — a beta of the next version is forward
+//                             development, not a reaction). Age-invariant.
+//   5. Shakeout depth       — betas baked before promotion. Structural, LLM-free.
+//   6. Visible-bug balance  — USER-VISIBLE regressions (core + integration + provider,
+//                             high/critical, weighted by how many users hit them) closed
+//                             vs opened during its reign, as a RATIO (time-invariant).
+//                             This is what people actually downgrade over ("Discord stopped
+//                             delivering"), unlike a silent CVE. LLM-derived, so it's
+//                             shrunk toward neutral on low volume.
+//   7. Breaking changes     — adoption cost. Situational; dormant when zero.
 
-// Ported from davideuler/agent-watch's release-stability-evaluation methodology.
-// Key principles:
-// - Baseline for a release with zero attributed issues is NEUTRAL (5), not perfect (10).
-//   "No signal" ≠ "good"; we explicitly don't know.
-// - Per-issue cap so one nasty bug can't single-handedly crash the score.
-// - Core-serious (core + critical/high) issues drive the score; other issues are
-//   limited to a small bounded penalty.
-// - Hard floor at 1.0 so unstable releases stay distinguishable from "grey".
-// - Recency decay floors at 0.55 — old issues still matter but less.
-
-// Calibration target. Mapping under the log-based curve below:
-//   risk  →  score
-//     0   →  10
-//     2.5 →   7.3   (one isolated high+core bug — MOSTLY STABLE)
-//     6   →   5.8   (a couple core-serious bugs — MIXED)
-//     12  →   4.5   (RISKY)
-//     20  →   3.4   (RISKY/UNSTABLE boundary)
-//     30  →   2.6   (UNSTABLE, clearly worse than 20)
-//     50  →   1.5   (very bad, still > MIN_SCORE)
-// The earlier sigmoid (10/(1+(r/8)^1.2)) collapsed everything above ~15 risk into the
-// 1.0 floor — two releases with risk=25 vs 27 looked identical. log2 retains separation
-// at the heavy end so users can tell a worsening release from a stable-bad one.
-const PER_ISSUE_CAP = 4;
-const RISK_LOG_FACTOR = 1.5;
-const OTHER_DROP_MAX = 1.5;
-const OTHER_DROP_TAU = 3.5;
-const MIN_SCORE = 1.0;
-const NEUTRAL_SCORE = 5.0;
-const POS_OFFSET = 0.7;
-const NEW_VERSION_GREY_HOURS = 3;
-const HALF_LIFE_DAYS = 45;
-const DAY_MS = 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
-export const PEER_MEDIAN_FLOOR = 5.5; // bumped by refresh.ts when signal ≤ median
-// Peer-relative scoring constants. PEER_BASELINE_SCORE is what an "at-median"
-// release scores — chose 7 so typical openclaw releases land in the
-// "Mostly stable" band rather than "Mixed", reflecting that being typical for
-// an actively-developed project is fine (not a problem). PEER_LOG_FACTOR controls
-// how quickly the score drops as ratio grows past 1.
-const PEER_BASELINE_SCORE = 7.0;
-const PEER_LOG_FACTOR = 2.0;
-// Fix-bonus credits each release for the bugs it closed during its reign.
-// A release that resolved 100 core-serious bugs deserves a higher score than
-// one that closed zero, even if their inherited debt is similar. Without this,
-// active maintenance is invisible to the score and inactive releases ("stable
-// because nobody touched them") look the same as well-tended ones.
-//   closed=1   → +0.55    closed=10  → +1.92
-//   closed=30  → +2.73    closed=100 → +3.69
-//   closed=300 → +4.62
-// Calibrated so a "great fix release" (~50 closures) lands around +3.0 above
-// baseline, and heroes don't all collapse into the 10.0 ceiling.
-const FIX_BONUS_FACTOR = 0.55;
-// Bot-generated issues still get counted, but their contribution is dampened. They tend
-// to over-report (one human bug → 20 bot reports), so weighting prevents volume bias
-// while preserving the underlying signal.
-const BOT_WEIGHT_MULTIPLIER = 0.3;
 
-// Tie-breaker — a small ± nudge from release-notes signals. The peer-relative
-// curve flattens every at/below-median release onto PEER_BASELINE_SCORE (7),
-// so three "fine" releases with very different changelogs all read 7.0. This
-// breaks those ties by how much the release actually shipped vs. how much it
-// might break:
-//   activity = fixesCount + prRefsCount  →  nudge UP   (well-tended)
-//   breakingCount                        →  nudge DOWN (riskier to adopt)
-// Both are log-scaled and the net is clamped to ±TIE_BREAKER_MAX, so this can
-// only break ties — it never overrides the peer-relative signal or fix-bonus.
-// Crucially these are release-notes counts, NOT raw issue volume, so unlike
-// `negativeIssues` they are not confounded by how long the release sat as the
-// latest version — a fair differentiator. Example nudges (breaking=0):
-//   activity 7   → +0.25    activity 89  → +0.54    activity 346 → +0.60 (cap)
-const TIE_BREAKER_MAX = 0.6;
-const TIE_ACTIVITY_FACTOR = 0.12;
-const TIE_BREAKING_FACTOR = 0.35;
+// ---- tunables (calibrated on openclaw's release history; see scripts/) ----
+const SETTLE_HOURS = 24;       // younger than this => no settle signal yet ("wait")
+const HOTFIX_GAP_HOURS = 6;    // next STABLE faster than this => emergency hotfix
+const PIVOT_HOURS = 24;        // a "typical" stable lifetime → neutral survival
+const BASE = 6.0;              // neutral eligible baseline
+const HOTFIX_SCORE_CAP = 4.9;  // a hotfixed release must read below 5.0
+// ---- visible-bug ("felt") regression balance ----
+// "felt" = user-facing surfaces (core/integration/provider), high/critical, weighted by
+// reach (scope × affected users). A broad bug that hits many weighs ~4× a niche one.
+const FELT_SCOPE: Record<string, number> = { broad: 1.5, moderate: 1.0, niche: 0.4 };
+const FELT_USERS: Record<string, number> = { many: 1.3, some: 0.85, few: 0.35, unknown: 0.65 };
+const FELT_PRIOR = 12;         // pseudo-count (weighted) — shrinks low-volume ratios to neutral
+const FELT_REACH = 6;          // ratio→points scale
+const FELT_DOWN = -3.0, FELT_UP = 2.0; // max points a net-breaking / net-fixing reign can apply
+// ---- CVE (skip-cve releases are scored purely by own-CVE severity; see header) ----
+const CVE_DECAY = 0.3;         // weight per stable older than the patch (used by cveDecayLoad)
+const CVE_WINDOW = 10;         // releases beyond this far back from a patch => weight 0
+const CVE_SEV_WEIGHT: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const CVE_SKIP_TOP = HOTFIX_SCORE_CAP; // mildest skip-cve score (≈ 1 low CVE); always < 5
+const CVE_LOAD_FULL = 30;      // own-CVE severity load at which skip-cve bottoms out (~0)
+// Score needed to be the recommended install. Set at the caution-band floor (5.5),
+// NOT "ok" (7): `eligible` already means a release cleared the hard safety gates
+// (no CVE, not hotfixed, settled), so among those we recommend the NEWEST that
+// isn't outright "weak". This matters when a CVE wave gates every older release
+// and the only clean option is a freshly-settled one scoring in the caution band —
+// returning "nothing recommended" there would be unhelpful. The band still conveys
+// the nuance (a recommended release can read "Caution").
+export const REC_THRESHOLD = 5.5;
 
-const SEVERITY: Record<IssueClassification['severity'], number> = {
-  critical: 2.2,
-  high: 1.4,
-  medium: 0.7,
-  low: 0.25,
-};
+// component caps — these ARE the weights, expressed as max swing each signal can apply
+const SURVIVAL_MIN = -3.0, SURVIVAL_MAX = 2.0;
+const SHAKEOUT_MAX = 1.2;
+const BREAKING_PER_BULLET = -0.3, BREAKING_MAX_BULLETS = 5;
 
-const SCOPE: Record<IssueClassification['scope'], number> = {
-  broad: 1.5,
-  moderate: 1.0,
-  niche: 0.4,
-};
+export type InstallStatus = 'wait' | 'skip-cve' | 'skip-hotfix' | 'eligible';
+export type InstallBand = 'solid' | 'ok' | 'caution' | 'weak' | 'skip' | 'wait';
 
-const FUNCTIONALITY: Record<IssueClassification['functionality'], number> = {
-  core: 1.3,
-  provider: 0.65,
-  integration: 0.4,
-  docs: 0.1,
-};
-
-const USER_SHARE: Record<IssueClassification['affectedUsers'], number> = {
-  many: 1.3,
-  some: 0.85,
-  few: 0.35,
-  unknown: 0.65,
-};
-
-const WORKAROUND: Record<IssueClassification['workaroundStatus'], number> = {
-  none: 1.0,
-  unknown: 0.85,
-  partial: 0.65,
-  confirmed: 0.35,
-};
-
-export interface IssueInput {
-  number: number;
-  updatedAt: string;
-  commentCount: number;
-  isBot: boolean;             // true → contribution multiplied by BOT_WEIGHT_MULTIPLIER
-  classification: IssueClassification;
+export interface InstallInput {
+  publishedAt: string | null;
+  isLatest: boolean;               // true only for the single newest stable
+  hoursToNextStable: number | null; // gap to the next STABLE; null if latest/unknown
+  hasHotfixSuccessor: boolean;     // a `<tag>-N` patch release follows it
+  betaCount: number;               // prereleases baked before this stable
+  breakingCount: number;           // `### Breaking` bullets (aggregate)
+  feltOpenedWeight: number;        // reach-weighted visible bugs OPENED during its reign
+  feltClosedWeight: number;        // reach-weighted visible bugs CLOSED during its reign
+  cveAffected: boolean;            // any known advisory matches this version → skip-cve status
+  cveLoad: number;                 // decayed severity-weighted CVE load (see cveDecayLoad)
 }
 
-export interface ScoredIssue {
-  number: number;
-  weight: number;
-  isCoreSerious: boolean;
-  classification: IssueClassification;
+export interface InstallComponents {
+  base: number;
+  survival: number;
+  shakeout: number;
+  regression: number;
+  breaking: number;
 }
 
-// Release-notes-derived signals used only for the bounded tie-breaker.
-export interface ReleaseSignals {
-  breakingCount: number;
-  fixesCount: number;
-  prRefsCount: number;
-}
-
-export interface ScoreBreakdown {
-  finalScore: number;
-  baseScore: number;
-  riskIndex: number;          // effective core risk, post-cancellation
-  weightedNegSum: number;     // total negative signal pre-cancellation, used for peer median
-  negativeIssues: number;
-  positiveIssues: number;
-  closedSeriousFixed: number; // core-serious bugs closed during this release's reign
-  fixBonus: number;           // score points added for those fixes
-  openedSeriousDuringReign: number; // core-serious bugs OPENED in same window — informational
-  tieBreaker: number;         // ± nudge from release-notes signals (rated only)
-  perIssue: ScoredIssue[];
-  state: 'analyzing' | 'rated' | 'insufficient';
-}
-
-function recencyFactor(updatedAt: string, now: number): number {
-  // Activity recency: comments / edits bump the clock. A bug that was filed 6 months
-  // ago but is still getting comments today is fresh signal, not stale signal.
-  const ageDays = Math.max(0, now - Date.parse(updatedAt)) / DAY_MS;
-  return 0.55 + 0.45 * Math.exp(-ageDays / HALF_LIFE_DAYS);
-}
-
-function discussionBoost(commentCount: number): number {
-  return 1 + Math.min(1.4, Math.log10(1 + commentCount) * 0.45);
-}
-
-function duplicateBoost(clusterSize: number): number {
-  if (clusterSize <= 1) return 1;
-  return 1 + Math.log2(clusterSize) * 0.28;
-}
-
-function issueRiskWeight(i: IssueInput, now: number, clusterSize: number): number {
-  const c = i.classification;
-  const conf = Math.max(0.2, c.confidence);
-  const botFactor = i.isBot ? BOT_WEIGHT_MULTIPLIER : 1.0;
-  return (
-    recencyFactor(i.updatedAt, now) *
-    discussionBoost(i.commentCount) *
-    duplicateBoost(clusterSize) *
-    conf *
-    SEVERITY[c.severity] *
-    SCOPE[c.scope] *
-    FUNCTIONALITY[c.functionality] *
-    USER_SHARE[c.affectedUsers] *
-    WORKAROUND[c.workaroundStatus] *
-    botFactor
-  );
-}
-
-function positiveEvidenceWeight(i: IssueInput, now: number): number {
-  const ageDays = Math.max(0, now - Date.parse(i.updatedAt)) / DAY_MS;
-  const recency = 0.65 + 0.35 * Math.exp(-ageDays / HALF_LIFE_DAYS);
-  const dboost = 1 + Math.min(0.8, Math.log10(1 + i.commentCount) * 0.3);
-  return recency * dboost * Math.max(0.2, i.classification.confidence);
-}
-
-function scoreFromRiskIndex(riskIndex: number): number {
-  return 10 - Math.log2(1 + Math.max(0, riskIndex)) * RISK_LOG_FACTOR;
-}
-
-// Bounded ± nudge from release-notes signals — see TIE_BREAKER_MAX comment.
-// Returns 0 when no signals are supplied, so the scoring contract is unchanged
-// for callers (and tests) that don't pass them.
-function tieBreaker(signals?: ReleaseSignals): number {
-  if (!signals) return 0;
-  const activity = Math.max(0, signals.fixesCount) + Math.max(0, signals.prRefsCount);
-  const breaking = Math.max(0, signals.breakingCount);
-  const up = Math.log1p(activity) * TIE_ACTIVITY_FACTOR;
-  const down = Math.log1p(breaking) * TIE_BREAKING_FACTOR;
-  return clamp(up - down, -TIE_BREAKER_MAX, TIE_BREAKER_MAX);
-}
-
-function round1(x: number): number {
-  return Math.round(x * 10) / 10;
-}
-
-function round2(x: number): number {
-  return Math.round(x * 100) / 100;
+export interface InstallConfidence {
+  score: number | null;            // 0–10, null when status === 'wait'
+  status: InstallStatus;
+  band: InstallBand;
+  hotfix: boolean;
+  components: InstallComponents | null;
+  reason: string;                  // short human explanation for the UI/API
 }
 
 function clamp(v: number, lo: number, hi: number): number {
   return Math.max(lo, Math.min(hi, v));
 }
+function round1(x: number): number {
+  return Math.round(x * 10) / 10;
+}
 
-export function scoreRelease(
-  issues: IssueInput[],
-  releasePublishedAt: string | null,
-  now = Date.now(),
-  peerMedianWeightedNeg?: number,
-  closedIssues: IssueInput[] = [],
-  openedIssues: IssueInput[] = [],
-  signals?: ReleaseSignals,
-): ScoreBreakdown {
-  // Count core-serious negatives closed during this release's reign — these are
-  // the "fixes" we credit. Closed neutrals (stale-bot, duplicates) and positives
-  // don't count.
-  const countCoreSerious = (issues: IssueInput[]): number =>
-    issues.reduce((n, ci) => {
-      const c = ci.classification;
-      if (c.sentiment !== 'negative') return n;
-      if (c.functionality !== 'core') return n;
-      if (c.severity !== 'critical' && c.severity !== 'high') return n;
-      return n + 1;
-    }, 0);
-  const closedSeriousFixed = countCoreSerious(closedIssues);
-  const openedSeriousDuringReign = countCoreSerious(openedIssues);
-  const fixBonus = closedSeriousFixed > 0
-    ? Math.log2(1 + closedSeriousFixed) * FIX_BONUS_FACTOR
-    : 0;
-  // 3-hour grace period for fresh releases — no useful signal yet.
-  if (releasePublishedAt) {
-    const ageMs = now - Date.parse(releasePublishedAt);
-    if (ageMs >= 0 && ageMs < NEW_VERSION_GREY_HOURS * HOUR_MS) {
-      return {
-        finalScore: NEUTRAL_SCORE,
-        baseScore: NEUTRAL_SCORE,
-        riskIndex: 0,
-        weightedNegSum: 0,
-        negativeIssues: 0,
-        positiveIssues: 0,
-        closedSeriousFixed,
-        fixBonus: 0,
-        openedSeriousDuringReign,
-        tieBreaker: 0,
-        perIssue: [],
-        state: 'analyzing',
-      };
-    }
+// How long it stood before the next STABLE, log-scaled around a typical lifetime.
+// Negative for releases superseded faster than typical; positive for ones that
+// stood notably longer (more battle-tested as the current version).
+function survivalPoints(input: InstallInput, ageHours: number): number {
+  if (input.isLatest) {
+    // No successor yet: "time as latest with no hotfix" is mild positive evidence,
+    // capped low because there's no successor to confirm the team is comfortable.
+    return clamp(Math.log2(ageHours / 24) * 0.6, 0, 1.8);
+  }
+  if (input.hoursToNextStable == null) return 0; // data gap → neutral
+  return clamp(Math.log2(input.hoursToNextStable / PIVOT_HOURS) * 0.9, SURVIVAL_MIN, SURVIVAL_MAX);
+}
+
+function shakeoutPoints(betaCount: number): number {
+  return clamp(Math.log2(1 + Math.max(0, betaCount)) * 0.4, 0, SHAKEOUT_MAX);
+}
+
+// A minimal classification shape for the visible-bug ("felt") signal.
+export interface FeltClassification {
+  sentiment: string;
+  severity: string;
+  functionality: string;
+  scope: string;
+  affectedUsers: string;
+}
+
+// Reach-weighted "felt" load of a set of issues: user-visible (core/integration/
+// provider), high/critical negatives, each weighted by scope × affected users. This
+// is the signal a CVE misses — what users actually see and downgrade over.
+export function feltLoad(items: FeltClassification[]): number {
+  let w = 0;
+  for (const c of items) {
+    if (c.sentiment !== 'negative') continue;
+    if (c.functionality !== 'core' && c.functionality !== 'integration' && c.functionality !== 'provider') continue;
+    if (c.severity !== 'critical' && c.severity !== 'high') continue;
+    w += (FELT_SCOPE[c.scope] ?? 1.0) * (FELT_USERS[c.affectedUsers] ?? 0.65);
+  }
+  return w;
+}
+
+// Visible-bug close/open balance during the reign, as a ratio so it's invariant to how
+// long the release stood. Bayesian-shrunk toward neutral (FELT_PRIOR pseudo-count) so a
+// release with only a couple of visible bugs isn't slammed by a noisy 0%-fixed ratio —
+// only a release with real volume of unfixed visible regressions takes the full hit.
+// Net-breaking is penalised slightly harder than net-fixing is rewarded.
+function feltRegressionPoints(openedWeight: number, closedWeight: number): number {
+  const o = Math.max(0, openedWeight);
+  const c = Math.max(0, closedWeight);
+  const ratio = (c + FELT_PRIOR * 0.5) / (o + c + FELT_PRIOR);
+  const raw = (ratio - 0.5) * FELT_REACH;
+  return clamp(ratio < 0.5 ? raw * 1.3 : raw, FELT_DOWN, FELT_UP);
+}
+
+function breakingPoints(breakingCount: number): number {
+  return Math.max(BREAKING_PER_BULLET * BREAKING_MAX_BULLETS, BREAKING_PER_BULLET * Math.max(0, breakingCount));
+}
+
+// Decayed, severity-weighted CVE load for a version. Each affecting advisory comes
+// with a `distance` = how many STABLE releases sit between this version and the
+// advisory's patch (0 = this is the newest still-affected version). The version
+// right before the patch counts 100%, each older release ×CVE_DECAY, zero beyond
+// CVE_WINDOW. This stops GitHub's lower-bound-less ranges (`< X` blames every prior
+// version equally) from making the oldest release look worst purely by age: a vuln
+// is attributed mostly to the versions just before it was fixed.
+// (Distance is computed by lib/versionMatch.stableDistance — kept out of here so
+// this stays a pure numeric function with no cross-module imports.)
+export function cveDecayLoad(items: Array<{ severity: string; distance: number }>): number {
+  let load = 0;
+  for (const it of items) {
+    const sev = CVE_SEV_WEIGHT[it.severity] ?? 0;
+    if (sev === 0) continue;
+    const d = Math.max(0, it.distance);
+    const weight = d < CVE_WINDOW ? Math.pow(CVE_DECAY, d) : 0;
+    load += sev * weight;
+  }
+  return load;
+}
+
+export function bandFor(score: number | null, status: InstallStatus): InstallBand {
+  if (status === 'wait') return 'wait';
+  if (status === 'skip-cve' || status === 'skip-hotfix') return 'skip';
+  if (score == null) return 'wait';
+  if (score >= 8) return 'solid';
+  if (score >= 7) return 'ok';
+  if (score >= 5.5) return 'caution';
+  return 'weak';
+}
+
+function reasonFor(
+  input: InstallInput,
+  status: InstallStatus,
+  ageHours: number,
+): string {
+  if (status === 'skip-cve') return 'vulnerable to a known CVE — upgrade past this version';
+  if (status === 'wait') return `only ${(ageHours / 24).toFixed(1)}d old — no settle signal yet`;
+  if (status === 'skip-hotfix') {
+    return input.hasHotfixSuccessor
+      ? 'maintainers shipped a hotfix patch on top of it'
+      : `replaced by the next stable within ${Math.round(input.hoursToNextStable ?? 0)}h`;
+  }
+  const bits: string[] = [];
+  if (input.isLatest) {
+    bits.push(`latest — stood ${(ageHours / 24).toFixed(1)}d with no hotfix`);
+  } else if (input.hoursToNextStable != null) {
+    const h = input.hoursToNextStable;
+    bits.push(`stood ${h >= 24 ? `${(h / 24).toFixed(1)}d` : `${Math.round(h)}h`} as current stable`);
+  }
+  if (input.betaCount > 0) bits.push(`${input.betaCount} betas baked`);
+  const feltTotal = input.feltOpenedWeight + input.feltClosedWeight;
+  if (feltTotal >= 4) {
+    bits.push(input.feltClosedWeight >= input.feltOpenedWeight ? 'net-fixing visible bugs' : 'net-breaking visible bugs');
+  }
+  if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);
+  return bits.join(', ') || 'no adverse signal';
+}
+
+export function installConfidence(input: InstallInput, now: number = Date.now()): InstallConfidence {
+  const ageHours = input.publishedAt ? (now - Date.parse(input.publishedAt)) / HOUR_MS : Infinity;
+  const hotfix =
+    !input.isLatest &&
+    (input.hasHotfixSuccessor ||
+      (input.hoursToNextStable != null && input.hoursToNextStable < HOTFIX_GAP_HOURS));
+
+  // skip-cve: scored PURELY by how vulnerable this version is — the severity of its
+  // OWN CVEs (cveLoad, same own-CVE set the badge shows) — NOT by maintenance quality.
+  // Rationale: a vulnerable release won't be installed regardless, so its number should
+  // rank "how bad to be on it" (more/worse CVEs => lower) and track the CVE badge.
+  // Letting the maintenance base (survival/betas) leak in here was wrong: it let a
+  // well-tended but more-vulnerable release (e.g. one that baked through many betas)
+  // outrank a short-lived but less-vulnerable one. Always < 5 → never outranks an install.
+  if (input.cveAffected) {
+    const score = round1(clamp(CVE_SKIP_TOP * (1 - Math.min(1, input.cveLoad / CVE_LOAD_FULL)), 0, CVE_SKIP_TOP));
+    return { score, status: 'skip-cve', band: 'skip', hotfix, components: null, reason: reasonFor(input, 'skip-cve', ageHours) };
   }
 
-  // No attributed issues → neutral baseline + fix-bonus if any. A short-lived
-  // release with no attribution but real closures still deserves credit.
-  if (issues.length === 0) {
-    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
-    return {
-      finalScore: round1(fs),
-      baseScore: NEUTRAL_SCORE,
-      riskIndex: 0,
-      weightedNegSum: 0,
-      negativeIssues: 0,
-      positiveIssues: 0,
-      closedSeriousFixed,
-      fixBonus: round2(fixBonus),
-      openedSeriousDuringReign,
-      tieBreaker: 0,
-      perIssue: [],
-      state: 'insufficient',
-    };
+  // Too young to judge (and not CVE-flagged) → no signal yet.
+  if (!(ageHours >= SETTLE_HOURS)) {
+    return { score: null, status: 'wait', band: 'wait', hotfix, components: null, reason: reasonFor(input, 'wait', ageHours) };
   }
 
-  // Cluster sizes for duplicate boost.
-  const clusterSizes = new Map<string, number>();
-  for (const i of issues) {
-    const key = i.classification.duplicateCluster;
-    if (!key) continue;
-    clusterSizes.set(key, (clusterSizes.get(key) ?? 0) + 1);
-  }
-
-  let weightedNegCoreSerious = 0;
-  let weightedNegOther = 0;
-  let weightedPos = 0;
-  let neg = 0;
-  let pos = 0;
-  const perIssue: ScoredIssue[] = [];
-
-  for (const i of issues) {
-    const c = i.classification;
-    const clusterSize = c.duplicateCluster ? clusterSizes.get(c.duplicateCluster) ?? 1 : 1;
-
-    if (c.sentiment === 'negative') {
-      const raw = issueRiskWeight(i, now, clusterSize);
-      const w = Math.min(raw, PER_ISSUE_CAP);
-      const isCoreSerious = c.functionality === 'core' && (c.severity === 'critical' || c.severity === 'high');
-      if (isCoreSerious) {
-        weightedNegCoreSerious += w;
-      } else {
-        weightedNegOther += w;
-      }
-      neg++;
-      perIssue.push({ number: i.number, weight: -w, isCoreSerious, classification: c });
-    } else if (c.sentiment === 'positive') {
-      const w = positiveEvidenceWeight(i, now);
-      weightedPos += w;
-      pos++;
-      perIssue.push({ number: i.number, weight: w, isCoreSerious: false, classification: c });
-    } else {
-      perIssue.push({ number: i.number, weight: 0, isCoreSerious: false, classification: c });
-    }
-  }
-
-  // No negative signal → insufficient. Includes "no issues at all", "only neutral mentions"
-  // and — importantly — "only positive mentions". A few users saying "works for me" is
-  // not enough to declare a release stable for everyone else; the product question is
-  // "should I install this?", and the honest answer to "we have one thumbs-up and no
-  // bug reports" is "we don't know yet", not "perfect 10". Without this guard the latter
-  // would mislead anyone using the dashboard to decide whether to upgrade.
-  if (neg === 0) {
-    const fs = clamp(NEUTRAL_SCORE + fixBonus, MIN_SCORE, 10);
-    return {
-      finalScore: round1(fs),
-      baseScore: NEUTRAL_SCORE,
-      riskIndex: 0,
-      weightedNegSum: 0,
-      negativeIssues: 0,
-      positiveIssues: 0,
-      closedSeriousFixed,
-      fixBonus: round2(fixBonus),
-      openedSeriousDuringReign,
-      tieBreaker: 0,
-      perIssue,
-      state: 'insufficient',
-    };
-  }
-
-  // Positives cancel non-core-serious negatives first, then residual budget eats core-serious.
-  const posBudget = POS_OFFSET * weightedPos;
-  const otherCancel = Math.min(weightedNegOther, posBudget);
-  const coreCancel = Math.min(weightedNegCoreSerious, Math.max(0, posBudget - otherCancel));
-  const effectiveCore = Math.max(0, weightedNegCoreSerious - coreCancel);
-  const effectiveOther = Math.max(0, weightedNegOther - otherCancel);
-
-  const weightedNegSum = weightedNegCoreSerious + weightedNegOther;
-  const totalRisk = effectiveCore + effectiveOther;
-
-  // Score mode A: peer-relative (used when we have a peer median to compare against).
-  // Under window-based attribution every release carries a large open-bug debt
-  // (often 700+ weighted risk points for an actively-developed project like
-  // openclaw), so an absolute "10 - log2(risk)" curve floors every release.
-  // The question users actually care about is "is this release worse than a
-  // typical release of this project?". We answer that by comparing this
-  // release's risk to the project's median.
-  //
-  //   ratio = totalRisk / peerMedian
-  //   ratio ≤ 1 (at or below typical)  →  PEER_BASELINE_SCORE (7)
-  //   ratio = 2 (twice as bad)          →  PEER_BASELINE_SCORE − 2  = 5
-  //   ratio = 4                         →  3
-  //   ratio = 8                         →  1
-  //
-  // Score mode B: absolute (used only when no peer median is available — e.g.,
-  // first release ever, or no rated peers). Keeps the old log2 curve as a
-  // sensible fallback.
-  let coreScore: number;
-  if (
-    peerMedianWeightedNeg !== undefined &&
-    Number.isFinite(peerMedianWeightedNeg) &&
-    peerMedianWeightedNeg > 0
-  ) {
-    const ratio = totalRisk / peerMedianWeightedNeg;
-    coreScore = ratio <= 1
-      ? PEER_BASELINE_SCORE
-      : PEER_BASELINE_SCORE - Math.log2(ratio) * PEER_LOG_FACTOR;
-  } else {
-    coreScore = scoreFromRiskIndex(effectiveCore);
-  }
-
-  // Core drives the score; in peer-relative mode, otherDrop is already implicit
-  // in totalRisk so we skip the extra penalty. In absolute mode it still helps
-  // distinguish "1 core-serious bug" from "1 core-serious + 50 nicies".
-  const otherDrop = peerMedianWeightedNeg !== undefined
-    ? 0
-    : OTHER_DROP_MAX * (1 - Math.exp(-effectiveOther / OTHER_DROP_TAU));
-  const baseScore = clamp(coreScore - otherDrop, MIN_SCORE, 10);
-  // Apply fix-bonus + the bounded release-notes tie-breaker on top of the
-  // peer-relative / absolute base. fix-bonus can lift a heavy-fix release ~5
-  // points; the tie-breaker only nudges ±0.6 to separate otherwise-identical
-  // baseline releases.
-  const tb = tieBreaker(signals);
-  let finalScore = clamp(baseScore + fixBonus + tb, MIN_SCORE, 10);
-
-  // Floor lift kept from the old model. With peer-relative scoring it rarely
-  // fires (releases at/below median already score PEER_BASELINE_SCORE which is
-  // above the floor), but it remains a safety net for absolute-mode edge cases.
-  if (
-    peerMedianWeightedNeg !== undefined &&
-    Number.isFinite(peerMedianWeightedNeg) &&
-    peerMedianWeightedNeg > 0 &&
-    weightedNegSum <= peerMedianWeightedNeg &&
-    finalScore < PEER_MEDIAN_FLOOR
-  ) {
-    finalScore = PEER_MEDIAN_FLOOR;
-  }
-
+  // Eligible / hotfixed: maintenance quality is the right signal here.
+  const survival = survivalPoints(input, ageHours);
+  const shakeout = shakeoutPoints(input.betaCount);
+  const regression = feltRegressionPoints(input.feltOpenedWeight, input.feltClosedWeight);
+  const breaking = breakingPoints(input.breakingCount);
+  let s = clamp(BASE + survival + shakeout + regression + breaking, 0, 10);
+  if (hotfix) s = Math.min(s, HOTFIX_SCORE_CAP); // a hotfixed release must read < 5
+  const score = round1(s);
+  const status: InstallStatus = hotfix ? 'skip-hotfix' : 'eligible';
   return {
-    finalScore: round1(finalScore),
-    baseScore: round1(baseScore),
-    riskIndex: round2(effectiveCore),
-    weightedNegSum: round2(weightedNegSum),
-    negativeIssues: neg,
-    positiveIssues: pos,
-    closedSeriousFixed,
-    fixBonus: round2(fixBonus),
-    openedSeriousDuringReign,
-    tieBreaker: round2(tb),
-    perIssue,
-    state: 'rated',
+    score,
+    status,
+    band: bandFor(score, status),
+    hotfix,
+    components: {
+      base: BASE,
+      survival: round1(survival),
+      shakeout: round1(shakeout),
+      regression: round1(regression),
+      breaking: round1(breaking),
+    },
+    reason: reasonFor(input, status, ageHours),
   };
+}
+
+// Cross-release pick: the recommended install is the NEWEST release that passed
+// all gates (status 'eligible') and scores at or above REC_THRESHOLD. Encodes the
+// product choice "newest that's good enough" (recency-first). `scored` must be in
+// newest-first order. Returns the chosen tag, or null when nothing qualifies.
+export function pickRecommended(
+  scored: Array<{ tag: string; status: InstallStatus; score: number | null }>,
+): string | null {
+  for (const r of scored) {
+    if (r.status === 'eligible' && r.score != null && r.score >= REC_THRESHOLD) return r.tag;
+  }
+  return null;
 }

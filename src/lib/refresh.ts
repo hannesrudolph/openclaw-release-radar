@@ -13,19 +13,17 @@ import {
   computeAggregateBreaking,
   computeBetaCount,
   computeHoursToNextRelease,
+  computeHoursToNextStable,
+  hasHotfixSuccessor,
   parseReleaseNotes,
 } from './releaseNotes';
+import { matchesRange, stableDistance } from './versionMatch';
+import { topBrokenSurfaces } from './surfaces';
 
 // Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
 // back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
 // staying well under GitHub's secondary rate limit and OpenAI's per-minute token caps.
 const CLASSIFY_CONCURRENCY = 5;
-
-function computeMedian(sorted: number[]): number | undefined {
-  if (sorted.length < 3) return undefined;
-  const mid = sorted.length >> 1;
-  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
-}
 
 async function runWithConcurrency<T>(
   items: T[],
@@ -42,7 +40,7 @@ async function runWithConcurrency<T>(
   });
   await Promise.all(pool);
 }
-import { scoreRelease, type IssueInput } from './score';
+import { cveDecayLoad, feltLoad, installConfidence, pickRecommended, type InstallInput } from './score';
 import {
   closedDuringReign,
   countStaleClassifications,
@@ -53,6 +51,7 @@ import {
   getMeta,
   getRelease,
   issuesForVersion,
+  listAdvisories,
   listReleasesDb,
   openedDuringReign,
   setMeta,
@@ -143,6 +142,7 @@ export async function refresh(): Promise<{
         pr_refs_count: stats.prRefsCount,
         beta_count: computeBetaCount(releasesForCalc, r.tag_name),
         hours_to_next_release: computeHoursToNextRelease(releasesForCalc, r.tag_name),
+        hours_to_next_stable: computeHoursToNextStable(releasesForCalc, r.tag_name),
       });
     }
 
@@ -297,79 +297,112 @@ export async function refresh(): Promise<{
       }
     }
 
-    // 4. Recompute scores per release using strict LLM attribution (agent-watch model).
-    //
-    // Only issues where the LLM extracted an explicit affectsVersion are counted toward
-    // that version's score. Unattributed issues are silently dropped — this is by design,
-    // see the rationale in db.ts/issuesForVersionStmt.
-    //
-    // Two passes: pass 1 scores without peer floor to collect each release's
-    // weightedNegSum; pass 2 re-scores rated releases with the median injected, so
-    // average-or-better releases get lifted to PEER_MEDIAN_FLOOR (5.5) if they fell below.
+    // 4. Score every monitored release with the Install Confidence model — a single
+    //    pass answering "should I install this stable?" from age/cadence-invariant
+    //    signals (CVE, settle age, hotfix succession, stable-to-stable survival, beta
+    //    shakeout, serious-regression balance). No peer median, no carry-forward
+    //    attribution in the score itself. See lib/score.ts for the full rationale.
     const allReleases = listReleasesDb(config.limits.releases);
+    const allFetchedTags = fetched.map((r) => r.tag_name);
 
-    const buildInput = (r: ReturnType<typeof issuesForVersion>[number]): IssueInput => {
-      const labelNames = safeParseLabels(r.labels);
-      let classification = rowToClassification(r);
-      classification = applyTitleFunctionalityHint(classification, r.title);
-      classification = applyLabelOverrides(classification, labelNames);
-      return {
-        number: r.number,
-        updatedAt: r.updated_at,
-        commentCount: r.comments,
-        isBot: r.is_bot === 1,
-        classification,
-      };
+    // CVE exposure per tag. `affected` (medium+ advisory matches) drives the
+    // skip-cve STATUS (never recommended); `load` is the DECAYED severity-weighted
+    // penalty on the score — see cveDecayLoad. Distance is measured over all fetched
+    // stables (newest first), so it can see releases between a version and a far patch.
+    const advisories = listAdvisories();
+    const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+    const stableTagsNewestFirst = fetched.filter((r) => !r.prerelease).map((r) => r.tag_name);
+    const cveFor = (tag: string): { affected: boolean; load: number } => {
+      const matching = advisories.filter((a) => matchesRange(tag, a.vulnerable_version_range));
+      const affected = matching.some((a) => (SEV_RANK[a.severity] ?? 0) >= 2); // medium+ gates
+      // Score load = severity of this version's OWN CVEs (patched in the next stable,
+      // distance ≤ 0) — the same set the badge shows. Distant CVEs still trip the
+      // skip-cve STATUS via `affected`, but don't inflate the severity number.
+      const load = cveDecayLoad(
+        matching
+          .map((a) => ({
+            severity: a.severity,
+            distance: stableDistance(tag, a.patched_versions, stableTagsNewestFirst),
+          }))
+          .filter((x) => x.distance <= 0),
+      );
+      return { affected, load };
     };
 
-    const relSignals = (rel: (typeof allReleases)[number]) => ({
-      breakingCount: rel.breaking_count,
-      fixesCount: rel.fixes_count,
-      prRefsCount: rel.pr_refs_count,
-    });
+    // Post-override classification for an attributed/reign issue row.
+    const classify = (r: ReturnType<typeof issuesForVersion>[number]): IssueClassification =>
+      applyLabelOverrides(
+        applyTitleFunctionalityHint(rowToClassification(r), r.title),
+        safeParseLabels(r.labels),
+      );
+    const isCoreSerious = (c: IssueClassification): boolean =>
+      c.sentiment === 'negative' &&
+      c.functionality === 'core' &&
+      (c.severity === 'critical' || c.severity === 'high');
+    const countCoreSerious = (rows: ReturnType<typeof issuesForVersion>): number =>
+      rows.reduce((n, r) => (isCoreSerious(classify(r)) ? n + 1 : n), 0);
+    const isFeltSerious = (c: IssueClassification): boolean =>
+      c.sentiment === 'negative' &&
+      (c.functionality === 'core' || c.functionality === 'integration' || c.functionality === 'provider') &&
+      (c.severity === 'critical' || c.severity === 'high');
 
-    const pass1 = allReleases.map((rel) => {
-      const inputs = issuesForVersion(rel.tag).map(buildInput);
-      const closedInputs = closedDuringReign(rel.tag).map(buildInput);
-      const openedInputs = openedDuringReign(rel.tag).map(buildInput);
-      return {
-        rel,
-        inputs,
-        closedInputs,
-        openedInputs,
-        score: scoreRelease(
-          inputs, rel.published_at, undefined, undefined, closedInputs, openedInputs, relSignals(rel),
+    const scored = allReleases.map((rel, idx) => {
+      // negative/positive counts are display-only context (not part of the score).
+      let neg = 0;
+      let pos = 0;
+      for (const r of issuesForVersion(rel.tag)) {
+        const s = classify(r).sentiment;
+        if (s === 'negative') neg++;
+        else if (s === 'positive') pos++;
+      }
+      const openedReign = openedDuringReign(rel.tag);
+      const closedReign = closedDuringReign(rel.tag);
+      // core-serious counts: kept for the informational API/DB stats.
+      const openedSerious = countCoreSerious(openedReign);
+      const closedSerious = countCoreSerious(closedReign);
+      // visible-bug ("felt") reach-weighted load drives the score's regression term.
+      const feltOpenedWeight = feltLoad(openedReign.map(classify));
+      const feltClosedWeight = feltLoad(closedReign.map(classify));
+      // WHAT it breaks: still-open visible regressions introduced during the reign,
+      // grouped by named surface (Discord, Ollama, …) for the UI.
+      const brokenSurfaces = JSON.stringify(
+        topBrokenSurfaces(
+          openedReign.filter((r) => r.state === 'open' && isFeltSerious(classify(r))).map((r) => r.title),
         ),
+      );
+      const cve = cveFor(rel.tag);
+      const input: InstallInput = {
+        publishedAt: rel.published_at,
+        isLatest: idx === 0, // listReleasesDb returns newest-first
+        hoursToNextStable: rel.hours_to_next_stable,
+        hasHotfixSuccessor: hasHotfixSuccessor(allFetchedTags, rel.tag),
+        betaCount: rel.beta_count,
+        breakingCount: rel.breaking_count,
+        feltOpenedWeight,
+        feltClosedWeight,
+        cveAffected: cve.affected,
+        cveLoad: cve.load,
       };
+      return { rel, conf: installConfidence(input), neg, pos, openedSerious, closedSerious, brokenSurfaces };
     });
 
-    // Median weightedNegSum across rated releases that actually have negative signal.
-    // Need at least 3 such releases — otherwise the median is meaningless noise.
-    // For even-sized lists, take the mean of the two central values rather than the
-    // upper one — the floor lift is sensitive to this for small N.
-    const negSums = pass1
-      .filter((p) => p.score.state === 'rated' && p.score.negativeIssues > 0)
-      .map((p) => p.score.weightedNegSum)
-      .sort((a, b) => a - b);
-    const peerMedian = computeMedian(negSums);
+    // Recommended install: newest release that passed all gates and scores ≥ threshold.
+    const recommendedTag = pickRecommended(
+      scored.map((s) => ({ tag: s.rel.tag, status: s.conf.status, score: s.conf.score })),
+    );
 
-    for (const { rel, inputs, closedInputs, openedInputs, score: firstScore } of pass1) {
-      const score =
-        peerMedian !== undefined && firstScore.state === 'rated'
-          ? scoreRelease(
-              inputs, rel.published_at, undefined, peerMedian, closedInputs, openedInputs, relSignals(rel),
-            )
-          : firstScore;
+    for (const s of scored) {
       updateReleaseScore({
-        tag: rel.tag,
-        final_score: score.finalScore,
-        risk_index: score.riskIndex,
-        negative_issues: score.negativeIssues,
-        positive_issues: score.positiveIssues,
-        state: score.state,
-        closed_serious_fixed: score.closedSeriousFixed,
-        fix_bonus: score.fixBonus,
-        opened_serious_during_reign: score.openedSeriousDuringReign,
+        tag: s.rel.tag,
+        final_score: s.conf.score,
+        negative_issues: s.neg,
+        positive_issues: s.pos,
+        state: s.conf.status,
+        recommended: s.rel.tag === recommendedTag ? 1 : 0,
+        score_reason: s.conf.reason,
+        broken_surfaces: s.brokenSurfaces,
+        closed_serious_fixed: s.closedSerious,
+        opened_serious_during_reign: s.openedSerious,
       });
     }
 
