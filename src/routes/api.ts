@@ -3,7 +3,6 @@ import { config } from '../config';
 import { getCached, setCached } from '../lib/cache';
 import {
   getRefreshState,
-  getRelease,
   issuesForVersion,
   listReleasesDb,
 } from '../lib/refresh';
@@ -12,6 +11,9 @@ import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versio
 import { bandFor, type InstallStatus } from '../lib/score';
 
 export const api = Router();
+
+// Score-history charts only — independent of RELEASES_LIMIT (the release list cap).
+const SCORE_HISTORY_CHART_LIMIT = 20;
 
 // How many stables after a version we still count its CVEs for the BADGE. 0 =
 // only CVEs patched in the very next stable — i.e. "this version's own disclosed
@@ -154,38 +156,15 @@ api.get('/releases', (_req, res) => {
   );
 });
 
-api.get('/release/:tag', (req, res) => {
-  const rel = getRelease(req.params.tag);
-  if (!rel) {
-    res.status(404).json({ error: 'release not found' });
-    return;
-  }
-  const issues = issuesForVersion(rel.tag).map(serializeIssue);
-  const stableTags = listReleasesDb(config.limits.releases).map((r) => r.tag);
-  const status = advisoryStatusFor(rel.tag, listAdvisories(), stableTags);
-  res.json({
-    tag: rel.tag,
-    name: rel.name,
-    publishedAt: rel.published_at,
-    htmlUrl: rel.html_url,
-    finalScore: rel.final_score,
-    band: bandFor(rel.final_score, (rel.state ?? 'eligible') as InstallStatus),
-    status: rel.state,
-    recommended: rel.recommended === 1,
-    reason: rel.score_reason,
-    brokenSurfaces: parseBrokenSurfaces(rel.broken_surfaces),
-    negativeIssues: rel.negative_issues,
-    positiveIssues: rel.positive_issues,
-    closedSeriousFixed: rel.closed_serious_fixed,
-    openedSeriousDuringReign: rel.opened_serious_during_reign,
-    scoredAt: rel.scored_at,
-    advisories: {
-      affected: summarizeAdvisories(status.affected),
-      patched: summarizeAdvisories(status.patched),
-    },
-    maintainerSignals: maintainerSignals(rel),
-    issues,
-  });
+api.get('/releases/history', (_req, res) => {
+  const rows = listReleasesDb(SCORE_HISTORY_CHART_LIMIT);
+  res.json(
+    rows.map((r) => ({
+      tag: r.tag,
+      publishedAt: r.published_at,
+      finalScore: r.final_score,
+    })),
+  );
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -211,8 +190,7 @@ api.get('/release/:tag', (req, res) => {
 // returning every attributed issue per release inflates the payload (we observed
 // 5 MB for openclaw with ~1100 negs × 10 releases). For the public-API surface
 // we cap to the most relevant issues per release: negatives first, sorted by
-// severity, then positives. Full per-release issue lists remain available via
-// /api/release/:tag for callers that actually want them.
+// severity, then positives.
 const PUBLIC_ISSUES_PER_RELEASE = 25;
 const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
@@ -272,41 +250,3 @@ api.get('/public', (_req, res) => {
   setCached(data);
   res.json(data);
 });
-
-function serializeIssue(r: {
-  number: number;
-  title: string;
-  state: string;
-  html_url: string;
-  author: string | null;
-  comments: number;
-  updated_at: string;
-  sentiment: string;
-  severity: string;
-  scope: string;
-  functionality: string;
-  affected_users: string;
-  has_workaround: number;
-  duplicate_cluster: string | null;
-  confidence: number;
-  rationale: string | null;
-}) {
-  return {
-    number: r.number,
-    title: r.title,
-    state: r.state,
-    htmlUrl: r.html_url,
-    author: r.author,
-    comments: r.comments,
-    updatedAt: r.updated_at,
-    sentiment: r.sentiment,
-    severity: r.severity,
-    scope: r.scope,
-    functionality: r.functionality,
-    affectedUsers: r.affected_users,
-    hasWorkaround: r.has_workaround === 1,
-    duplicateCluster: r.duplicate_cluster,
-    confidence: r.confidence,
-    rationale: r.rationale,
-  };
-}

@@ -8,7 +8,7 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-<title>iClaw Release Radar</title>
+<title>IsItStable — openclaw release radar</title>
 <style>
 /* ── design tokens (iClaw subset) ─────────────────────────────────────── */
 :root {
@@ -79,24 +79,224 @@ a:hover{color:var(--link-hover)}
 .topbar__updated{color:var(--warn)}
 
 /* ── main ─────────────────────────────────────────────────────────────── */
-main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--space-10)}
+main{
+  max-width:720px;margin:0 auto;
+  padding:var(--space-9) var(--space-9) var(--space-10);
+}
+main.main-home{max-width:880px}
 
-.page-title{
-  font-size:1.9rem;font-weight:700;letter-spacing:-.03em;
-  margin-bottom:var(--space-3);
+.page-hero{
+  text-align:center;
+  margin-bottom:var(--space-10);
+  padding-top:var(--space-6);
 }
-.page-title-row{
-  display:flex;align-items:center;justify-content:space-between;
-  gap:var(--space-6);
-  margin-bottom:var(--space-3);
+.page-hero__question{
+  font-size:clamp(3rem,11vw,5rem);
+  font-weight:700;letter-spacing:-.045em;line-height:1.05;
+  color:var(--text);
+  margin-bottom:var(--space-6);
 }
-.page-title-row .page-title{margin-bottom:0}
 .page-sub{
   color:var(--muted);font-size:var(--text-sm);line-height:1.55;
   margin-bottom:var(--space-10);
 }
+.page-sub--center{text-align:center}
 .page-sub a{color:var(--muted);border-bottom:1px dotted var(--border)}
 .page-sub a:hover{color:var(--text)}
+
+.detail-back{
+  display:inline-flex;align-items:center;gap:var(--space-3);
+  font-size:var(--text-sm);color:var(--muted);margin-bottom:var(--space-8);
+}
+.detail-back:hover{color:var(--text)}
+.detail-title{
+  font-size:1.75rem;font-weight:700;letter-spacing:-.03em;
+  margin-bottom:var(--space-4);
+}
+
+/* ── tracked packages (landing) ───────────────────────────────────────── */
+.tracked{margin-bottom:var(--space-10)}
+.tracked__title{
+  font-size:var(--text-md);font-weight:600;letter-spacing:-.01em;
+  margin-bottom:var(--space-7);
+}
+.pkg-card-shell{
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.05);
+  transition:transform .15s ease,box-shadow .15s ease,border-color .15s;
+}
+.pkg-card-shell:hover{
+  transform:translateY(-1px);
+  border-color:color-mix(in srgb,var(--link) 28%,var(--border));
+  box-shadow:0 2px 8px rgba(0,0,0,.06),0 12px 32px rgba(0,0,0,.08);
+}
+.pkg-card{
+  display:block;color:inherit;text-decoration:none;
+  padding:var(--space-8) var(--space-9) var(--space-7);
+}
+.pkg-card:hover{color:inherit}
+.pkg-card__cmd{
+  padding:0 var(--space-9) var(--space-8);
+}
+.pkg-card__top{
+  display:flex;align-items:flex-start;justify-content:space-between;
+  gap:var(--space-8);
+}
+.pkg-card__name{
+  font-size:1.35rem;font-weight:700;letter-spacing:-.02em;
+}
+.pkg-card__meta{
+  margin-top:var(--space-3);font-size:var(--text-sm);color:var(--muted);
+}
+.pkg-card__meta strong{
+  font-weight:600;color:var(--text);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+}
+.pkg-card__score-wrap{
+  display:flex;align-items:center;gap:var(--space-4);
+  flex-shrink:0;
+}
+.pkg-card__score-big{
+  font-size:2.5rem;font-weight:700;line-height:1;
+  font-variant-numeric:tabular-nums;letter-spacing:-.03em;
+}
+.pkg-card__chevron{
+  width:18px;height:18px;flex-shrink:0;color:var(--muted);
+  transition:transform .15s ease,color .15s ease;
+  margin-top:4px;
+}
+.pkg-card:hover .pkg-card__chevron{
+  color:var(--text);
+  transform:translateX(2px);
+}
+.pkg-card__score-denom{
+  font-size:.9rem;font-weight:500;color:var(--muted);margin-left:2px;
+}
+.pkg-card__alt{
+  display:flex;align-items:center;gap:var(--space-5);
+  margin-top:var(--space-6);
+  padding:var(--space-5) var(--space-6);
+  border-radius:var(--radius-md);
+  background:color-mix(in srgb,var(--ok) 9%,var(--surface));
+  border:1px solid color-mix(in srgb,var(--ok) 28%,transparent);
+}
+.pkg-card__alt-label{
+  font-size:var(--text-xs);font-weight:700;color:var(--ok);
+  text-transform:uppercase;letter-spacing:.05em;
+  white-space:nowrap;
+}
+.pkg-card__alt-tag{
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:var(--text-sm);font-weight:600;color:var(--text);
+  min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.pkg-card__alt-score{
+  margin-left:auto;
+  font-size:var(--text-sm);font-weight:700;
+  font-variant-numeric:tabular-nums;white-space:nowrap;
+}
+
+.score-history{
+  margin-bottom:var(--space-9);
+  padding:var(--space-8) var(--space-8) var(--space-7);
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.score-history__title{
+  font-size:var(--text-xs);font-weight:700;letter-spacing:.06em;
+  text-transform:uppercase;color:var(--muted);
+  margin-bottom:var(--space-3);
+}
+.score-history__chart{
+  width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch;
+}
+.score-history__chart svg{
+  display:block;min-width:520px;width:100%;height:auto;
+}
+.score-history__grid{
+  stroke:color-mix(in srgb,var(--border) 70%,transparent);
+  stroke-width:1;
+}
+.score-history__axis-label{
+  font-size:11px;fill:var(--muted);font-variant-numeric:tabular-nums;
+}
+.score-history__line{
+  fill:none;stroke:color-mix(in srgb,var(--muted) 75%,var(--text));
+  stroke-width:2;stroke-linejoin:round;stroke-linecap:round;
+}
+.score-history__dot{
+  cursor:pointer;
+}
+.score-history__dot circle{transition:r .12s ease}
+.score-history__dot:hover circle,.score-history__dot:focus-visible circle{r:7}
+.score-history__dot:focus{outline:none}
+.score-history__dot:focus-visible circle{
+  stroke:var(--link);stroke-width:2;
+}
+.score-history__score-label{
+  font-size:12px;font-weight:700;font-variant-numeric:tabular-nums;
+}
+.score-history__tip{
+  opacity:0;pointer-events:none;
+  transition:opacity .15s ease;
+}
+.score-history__dot:hover .score-history__tip,
+.score-history__dot:focus-visible .score-history__tip{opacity:1}
+.score-history__tip text{
+  font-size:10px;font-weight:600;text-anchor:middle;
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  fill:var(--muted);
+}
+
+.cta-track{
+  margin-top:var(--space-10);
+  padding:var(--space-10) var(--space-9);
+  text-align:center;
+  background:var(--surface);
+  border:1px solid var(--border-soft);
+  border-radius:18px;
+  box-shadow:0 1px 3px rgba(0,0,0,.04);
+}
+.cta-track__title{
+  font-size:clamp(1.35rem,4vw,1.65rem);
+  font-weight:700;letter-spacing:-.02em;
+  margin-bottom:var(--space-5);
+}
+.cta-track__text{
+  color:var(--muted);font-size:var(--text-sm);line-height:1.6;
+  max-width:32em;margin:0 auto var(--space-8);
+}
+.cta-track__actions{
+  display:flex;flex-wrap:wrap;gap:var(--space-5);
+  justify-content:center;align-items:center;
+}
+.btn{
+  display:inline-flex;align-items:center;justify-content:center;gap:var(--space-4);
+  padding:var(--space-5) var(--space-8);
+  border-radius:var(--radius-md);
+  font-size:var(--text-sm);font-weight:600;
+  text-decoration:none;white-space:nowrap;
+  transition:opacity .15s ease,background .15s ease,border-color .15s;
+}
+.btn--primary{
+  background:var(--text);color:var(--bg);
+}
+.btn--primary:hover{color:var(--bg);opacity:.88}
+.btn--ghost{
+  background:transparent;color:var(--text);
+  border:1px solid color-mix(in srgb,var(--border) 85%,var(--text));
+}
+.btn--ghost:hover{
+  color:var(--text);
+  background:color-mix(in srgb,var(--text) 6%,var(--bg));
+}
+.btn__gh-ico{
+  width:18px;height:18px;flex-shrink:0;
+}
 
 /* ── release list ─────────────────────────────────────────────────────── */
 .releases{
@@ -199,47 +399,66 @@ details[open] > .surf-more{display:none}
 }
 .release.open .chevron{transform:rotate(90deg)}
 
-/* ── expanded details ─────────────────────────────────────────────────── */
+/* ── expanded install panel ───────────────────────────────────────────── */
 .details{
-  display:none;
+  display:grid;
+  grid-template-rows:0fr;
   background:var(--surface-2);
-  border-top:1px solid var(--border);
+  border-top:1px solid transparent;
+  padding:0 var(--space-8);
+  transition:
+    grid-template-rows .22s ease,
+    padding .22s ease,
+    border-color .22s ease;
+}
+.details__inner{overflow:hidden;min-height:0}
+.release.open + .details{
+  grid-template-rows:1fr;
   padding:var(--space-7) var(--space-8);
+  border-top-color:color-mix(in srgb,var(--border) 55%,transparent);
 }
-.release.open + .details{display:block}
-
-.details__empty{
-  color:var(--muted);font-size:var(--text-sm);
-  padding:var(--space-6) 0;
-  text-align:center;
+.update-cmd{
+  display:flex;flex-direction:column;gap:var(--space-4);
 }
-
-.issue{
-  display:flex;gap:var(--space-5);align-items:flex-start;
-  padding:var(--space-5) 0;
-  border-bottom:1px solid color-mix(in srgb,var(--border) 60%,transparent);
+.update-cmd--plain{gap:0}
+.update-cmd__label{
+  font-size:var(--text-xs);font-weight:600;color:var(--muted);
+  letter-spacing:.05em;text-transform:uppercase;
 }
-.issue:last-child{border-bottom:none}
-
-.sev-dot{
-  width:8px;height:8px;border-radius:50%;flex-shrink:0;
-  margin-top:5px;
+.update-cmd__row{
+  display:flex;align-items:stretch;
+  border-radius:var(--radius-lg);
+  overflow:hidden;
+  border:1px solid color-mix(in srgb,var(--border) 80%,transparent);
+  background:color-mix(in srgb,var(--text) 4%,var(--surface-2));
+  box-shadow:inset 0 1px 0 color-mix(in srgb,var(--text) 5%,transparent);
 }
-.sev-dot.critical{background:var(--danger)}
-.sev-dot.high{background:var(--warn)}
-.sev-dot.medium,.sev-dot.low,.sev-dot.positive{
-  background:color-mix(in srgb,var(--muted) 40%,transparent);
+.update-cmd__code{
+  flex:1;min-width:0;
+  padding:var(--space-5) var(--space-7);
+  font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  font-size:var(--text-sm);line-height:1.55;
+  color:var(--text);word-break:break-all;user-select:all;
+  background:color-mix(in srgb,var(--text) 3%,var(--bg));
 }
-.sev-dot.positive{background:color-mix(in srgb,var(--ok) 50%,transparent)}
-
-.issue__body{min-width:0;flex:1}
-.issue__title{
-  display:block;
-  font-size:var(--text-sm);font-weight:500;color:var(--text);
-  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  line-height:1.45;
+.update-cmd__copy{
+  flex-shrink:0;align-self:stretch;
+  display:inline-flex;align-items:center;justify-content:center;
+  min-width:4.5rem;padding:0 var(--space-6);
+  border:none;border-left:1px solid color-mix(in srgb,var(--border) 70%,transparent);
+  font-size:var(--text-xs);font-weight:600;letter-spacing:.02em;
+  color:var(--text);
+  background:color-mix(in srgb,var(--text) 6%,var(--surface-2));
+  cursor:pointer;
+  transition:background .15s,color .15s;
 }
-.issue__title:hover{color:var(--link)}
+.update-cmd__copy:hover{
+  background:color-mix(in srgb,var(--text) 10%,var(--surface-2));
+}
+.update-cmd__copy.is-copied{
+  color:var(--ok);
+  background:color-mix(in srgb,var(--ok) 12%,var(--surface));
+}
 
 /* ── loading / empty states ───────────────────────────────────────────── */
 .state{
@@ -286,8 +505,8 @@ details[open] > .surf-more{display:none}
 }
 /* ── footer ───────────────────────────────────────────────────────────── */
 footer{
-  max-width:720px;margin:0 auto;
-  padding:var(--space-8) var(--space-9);
+  max-width:880px;margin:0 auto;
+  padding:var(--space-8) var(--space-9) var(--space-10);
   color:var(--muted);font-size:var(--text-xs);
   text-align:center;
 }
@@ -312,39 +531,99 @@ footer a:hover{color:var(--text)}
   background:color-mix(in srgb,var(--text) 8%,var(--bg));
   border-color:color-mix(in srgb,var(--muted) 35%,var(--border));
 }
+.topbar__nav{
+  display:flex;align-items:center;gap:var(--space-5);
+  flex-shrink:0;
+}
+.topbar__nav a{
+  font-size:.8125rem;font-weight:500;color:var(--muted);
+  padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);
+}
+.topbar__nav a:hover{color:var(--text);background:color-mix(in srgb,var(--text) 5%,var(--bg))}
+.view[hidden]{display:none!important}
 
 </style>
 </head>
 <body>
 
 <nav class="topbar">
-  <a class="topbar__brand" href="https://iclaw.digital" target="_blank" rel="noopener">
-    <img src="/iclaw-logo.png" alt="iClaw" class="topbar__logo-img" />
-    iClaw
+  <a class="topbar__brand" href="#/">
+    <span aria-hidden="true">🔍</span>
+    <span><span class="page-hero__brand" style="font-weight:700">IsItStable</span><span style="font-weight:500;color:var(--muted)">.iclaw.digital</span></span>
   </a>
   <div class="topbar__spacer"></div>
   <div class="topbar__updated" id="topbarUpdated" hidden>
     <span id="updatedLabel"></span>
   </div>
-  <a class="api-link" href="/api/public" target="_blank" rel="noopener">API</a>
+  <div class="topbar__nav">
+    <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
+    <a class="api-link" href="/api/public" target="_blank" rel="noopener">API</a>
+  </div>
 </nav>
 
-<main>
-  <div class="page-title-row">
-    <h1 class="page-title">Should I install it?</h1>
-  </div>
-  <p class="page-sub">
-    Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
-  </p>
+<div id="viewHome" class="view">
+  <main class="main-home">
+    <header class="page-hero">
+      <h1 class="page-hero__question">Is It Stable?</h1>
+    </header>
 
-  <div class="rec-block" id="recBlock" hidden>
-    <div class="rec-target" id="recTarget" hidden></div>
-    <div class="releases" id="releases"></div>
-  </div>
-</main>
+    <section class="tracked" aria-labelledby="trackedTitle">
+      <h2 class="tracked__title" id="trackedTitle">Tracked packages</h2>
+      <div id="packageCards"><div class="state">Loading…</div></div>
+    </section>
+
+    <section class="cta-track" aria-labelledby="ctaTrackTitle">
+      <h2 class="cta-track__title" id="ctaTrackTitle">Want your package tracked? 📦</h2>
+      <p class="cta-track__text">
+        Open an issue on GitHub. We'll add it if enough people share the anxiety
+      </p>
+      <div class="cta-track__actions">
+        <a class="btn btn--primary"
+           href="https://github.com/iClawApp/openclaw-release-radar/issues/new?title=Track%20package%3A%20&amp;labels=package-request"
+           target="_blank" rel="noopener">Request a Package →</a>
+        <a class="btn btn--ghost"
+           href="https://github.com/iClawApp/openclaw-release-radar"
+           target="_blank" rel="noopener">
+          <svg class="btn__gh-ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+            <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
+          </svg>
+          GitHub
+        </a>
+      </div>
+    </section>
+  </main>
+</div>
+
+<div id="viewPackage" class="view" hidden>
+  <main>
+    <a class="detail-back" href="#/">← Tracked packages</a>
+    <h1 class="detail-title">openclaw</h1>
+    <p class="page-sub">
+      Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
+      · Install Confidence 0–10
+    </p>
+
+    <section class="score-history" id="scoreHistory" hidden aria-labelledby="scoreHistoryTitle">
+      <h2 class="score-history__title" id="scoreHistoryTitle">Score history</h2>
+      <div class="score-history__chart" id="scoreHistoryChart"></div>
+    </section>
+
+    <div class="rec-block" id="recBlock" hidden>
+      <div class="rec-target" id="recTarget" hidden></div>
+      <div class="releases" id="releases"></div>
+    </div>
+  </main>
+</div>
 
 <footer>
-  Issues analyzed with AI · <a href="https://github.com/davideuler/agent-watch" target="_blank" rel="noopener">Inspired by agent-watch</a> · <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">Open source</a>
+  <p>
+    <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
+    ·
+    <a href="https://iclaw.digital" target="_blank" rel="noopener">iClaw</a>
+    ·
+    <a href="/api/public" target="_blank" rel="noopener">API</a>
+  </p>
+  <p style="margin-top:var(--space-6);font-size:.7rem;opacity:.85">Issues analyzed with AI</p>
 </footer>
 
 <script>
@@ -390,6 +669,217 @@ function scoreInfo(r) {
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
+function formatScore10(s) {
+  if (s == null || Number.isNaN(Number(s))) return null;
+  return Number(s).toFixed(1);
+}
+
+function scoreColor10(s) {
+  if (s == null || Number.isNaN(Number(s))) return 'var(--muted)';
+  const n = Number(s);
+  if (n >= 7) return 'var(--ok)';
+  if (n >= 5) return 'var(--warn)';
+  return 'var(--danger)';
+}
+
+const SCORE_CHART_MAX = 10;
+const SCORE_HISTORY_LIMIT = 20;
+
+function scoreHistoryPoints() {
+  const scored = chartReleases
+    .filter((r) => r.finalScore != null && !Number.isNaN(Number(r.finalScore)))
+    .map((r) => ({ tag: r.tag, score: Number(r.finalScore) }));
+  const recent = scored.slice(0, Math.min(SCORE_HISTORY_LIMIT, scored.length));
+  return recent.slice().reverse();
+}
+
+function chartCoords(points, w, h, pad) {
+  const n = points.length;
+  if (!n) return [];
+  const innerW = w - pad.l - pad.r;
+  const innerH = h - pad.t - pad.b;
+  return points.map((p, i) => ({
+    tag: p.tag,
+    score: p.score,
+    x: pad.l + (n === 1 ? innerW / 2 : (i / (n - 1)) * innerW),
+    y: pad.t + (1 - p.score / SCORE_CHART_MAX) * innerH,
+    color: scoreColor10(p.score),
+    label: formatScore10(p.score),
+  }));
+}
+
+function scoreHistoryChartSvg(points) {
+  const w = 1000;
+  const h = 230;
+  const pad = { t: 44, r: 20, b: 28, l: 40 };
+  const coords = chartCoords(points, w, h, pad);
+  const yTicks = [0, 5, 10];
+  const innerH = h - pad.t - pad.b;
+
+  const grids = yTicks.map((tick) => {
+    const y = pad.t + (1 - tick / SCORE_CHART_MAX) * innerH;
+    return `<line class="score-history__grid" x1="${pad.l}" y1="${y.toFixed(1)}" `
+      + `x2="${w - pad.r}" y2="${y.toFixed(1)}"/>`
+      + `<text class="score-history__axis-label" x="${pad.l - 8}" y="${(y + 4).toFixed(1)}" `
+      + `text-anchor="end">${tick}</text>`;
+  }).join('');
+
+  const path = coords
+    .map((c, i) => `${i ? 'L' : 'M'}${c.x.toFixed(1)},${c.y.toFixed(1)}`)
+    .join(' ');
+
+  const nodes = coords.map((c) =>
+    `<g class="score-history__dot" data-tag="${esc(c.tag)}" role="button" tabindex="0" `
+    + `aria-label="${esc(c.tag)} score ${esc(c.label)}">`
+    + `<title>${esc(c.tag)} — ${esc(c.label)}/10</title>`
+    + `<text class="score-history__score-label" x="${c.x.toFixed(1)}" y="${(c.y - 14).toFixed(1)}" `
+    + `text-anchor="middle" fill="${c.color}">${esc(c.label)}</text>`
+    + `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="5" fill="${c.color}"/>`
+    + `<g class="score-history__tip">`
+    + `<text x="${c.x.toFixed(1)}" y="${(c.y + 20).toFixed(1)}">${esc(c.tag)}</text>`
+    + `</g></g>`,
+  ).join('');
+
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Install confidence score history">`
+    + grids
+    + `<path class="score-history__line" d="${path}"/>`
+    + nodes
+    + `</svg>`;
+}
+
+function renderScoreHistory() {
+  const section = document.getElementById('scoreHistory');
+  const chart = document.getElementById('scoreHistoryChart');
+  if (!section || !chart) return;
+
+  const points = scoreHistoryPoints();
+  if (points.length < 2) {
+    section.hidden = true;
+    chart.innerHTML = '';
+    return;
+  }
+
+  section.hidden = false;
+  chart.innerHTML = scoreHistoryChartSvg(points);
+
+  if (!chart.dataset.bound) {
+    chart.dataset.bound = '1';
+    const activate = (tag) => {
+      if (!tag) return;
+      focusReleaseTag(tag);
+    };
+    chart.addEventListener('click', (e) => {
+      const dot = e.target.closest('.score-history__dot');
+      if (!dot) return;
+      activate(dot.dataset.tag);
+    });
+    chart.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      const dot = e.target.closest('.score-history__dot');
+      if (!dot) return;
+      e.preventDefault();
+      activate(dot.dataset.tag);
+    });
+  }
+}
+
+function focusReleaseTag(tag) {
+  const row = [...document.querySelectorAll('.release')].find((r) => r.dataset.tag === tag);
+  if (!row) return;
+  document.querySelectorAll('.release.open').forEach((r) => r.classList.remove('open'));
+  row.classList.add('open');
+  row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+function npmVersionFromTag(tag) {
+  return String(tag ?? '').replace(/^v/i, '');
+}
+
+function installCommand(tag) {
+  return `openclaw update --tag ${npmVersionFromTag(tag)}`;
+}
+
+function updateCommandBlockHtml(tag, opts = {}) {
+  const showLabel = opts.showLabel !== false;
+  const cmd = installCommand(tag);
+  const label = showLabel
+    ? `<span class="update-cmd__label">Update command</span>` : '';
+  return `<div class="update-cmd${showLabel ? '' : ' update-cmd--plain'}">`
+    + label
+    + `<div class="update-cmd__row">`
+    + `<code class="update-cmd__code">${esc(cmd)}</code>`
+    + `<button type="button" class="update-cmd__copy" data-cmd="${esc(cmd)}">Copy</button>`
+    + `</div></div>`;
+}
+
+function installPanelHtml(tag) {
+  return `<div class="details__inner">${updateCommandBlockHtml(tag)}</div>`;
+}
+
+function pickRecommendedRelease(rows) {
+  return rows.find((r) => r.recommended)
+    ?? rows.find((r) => r.status === 'eligible' && r.finalScore != null)
+    ?? rows[0];
+}
+
+let installCopyBound = false;
+function bindInstallCopy() {
+  if (installCopyBound) return;
+  installCopyBound = true;
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.update-cmd__copy');
+    if (!btn) return;
+    e.stopPropagation();
+    e.preventDefault();
+    const cmd = btn.dataset.cmd;
+    if (!cmd) return;
+    const done = () => {
+      btn.textContent = 'Copied';
+      btn.classList.add('is-copied');
+      setTimeout(() => {
+        btn.textContent = 'Copy';
+        btn.classList.remove('is-copied');
+      }, 1600);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(cmd).then(done).catch(() => {});
+    } else {
+      done();
+    }
+  });
+}
+
+function pickBestAlternative(rows, latest) {
+  const rec = rows.find((r) => r.recommended);
+  if (rec && rec.tag !== latest.tag) return rec;
+  const latestScore = latest.finalScore;
+  if (latestScore == null) return null;
+  return rows
+    .filter((r) =>
+      r.tag !== latest.tag &&
+      r.status === 'eligible' &&
+      r.finalScore != null &&
+      r.finalScore > latestScore,
+    )
+    .sort((a, b) => b.finalScore - a.finalScore)[0] ?? null;
+}
+
+function isPackageView() {
+  return (location.hash || '').startsWith('#/openclaw');
+}
+
+function applyRoute() {
+  const onPkg = isPackageView();
+  document.getElementById('viewHome').hidden = onPkg;
+  document.getElementById('viewPackage').hidden = !onPkg;
+  document.title = onPkg
+    ? 'openclaw — IsItStable'
+    : 'IsItStable — openclaw release radar';
+  if (onPkg && allReleases.length) renderReleases();
+  else if (!onPkg) renderPackageCard();
+  if (onPkg) window.scrollTo(0, 0);
+}
+
 /* ── api ──────────────────────────────────────────────────────────────── */
 async function api(path, opts) {
   const r = await fetch('/api' + path, opts);
@@ -399,23 +889,87 @@ async function api(path, opts) {
 
 /* ── render releases ──────────────────────────────────────────────────── */
 let allReleases = [];
+let chartReleases = [];
 
 async function loadReleases() {
-  try { allReleases = await api('/releases'); }
+  try {
+    const [releases, history] = await Promise.all([
+      api('/releases'),
+      api('/releases/history'),
+    ]);
+    allReleases = releases;
+    chartReleases = history;
+  }
   catch (e) {
+    const msg = `Could not load releases — ${esc(e.message)}`;
+    const cards = document.getElementById('packageCards');
+    if (cards) cards.innerHTML = `<div class="state">${msg}</div>`;
     const recBlock = document.getElementById('recBlock');
     if (recBlock) recBlock.hidden = false;
     const targetEl = document.getElementById('recTarget');
-    targetEl.hidden = false;
-    targetEl.className = 'rec-target rec-target--none';
-    targetEl.innerHTML =
-      `<div class="state">Could not load releases — ${esc(e.message)}</div>`;
+    if (targetEl) {
+      targetEl.hidden = false;
+      targetEl.className = 'rec-target rec-target--none';
+      targetEl.innerHTML = `<div class="state">${msg}</div>`;
+    }
+    applyRoute();
     return;
   }
-  renderReleases();
+  renderPackageCard();
+  applyRoute();
+}
+
+function renderPackageCard() {
+  const root = document.getElementById('packageCards');
+  if (!root || isPackageView()) return;
+
+  if (!allReleases.length) {
+    root.innerHTML = '<div class="state">No releases yet — first refresh in progress</div>';
+    return;
+  }
+
+  const latest = allReleases[0];
+  const recommended = pickRecommendedRelease(allReleases);
+  const bestAlt = pickBestAlternative(allReleases, latest);
+  const latestScore = formatScore10(latest.finalScore);
+  const latestColor = scoreColor10(latest.finalScore);
+
+  const altBlock = bestAlt
+    ? `<div class="pkg-card__alt">`
+      + `<span class="pkg-card__alt-label">Best bet</span>`
+      + `<span class="pkg-card__alt-tag">${esc(bestAlt.tag)}</span>`
+      + `<span class="pkg-card__alt-score" style="color:${scoreColor10(bestAlt.finalScore)}">`
+      + `${formatScore10(bestAlt.finalScore) ?? '—'}<span class="pkg-card__score-denom">/10</span>`
+      + `</span></div>`
+    : '';
+
+  root.innerHTML = `
+    <div class="pkg-card-shell">
+      <a class="pkg-card" href="#/openclaw">
+        <div class="pkg-card__top">
+          <div>
+            <h3 class="pkg-card__name">openclaw</h3>
+            <p class="pkg-card__meta">Latest <strong>${esc(latest.tag)}</strong></p>
+          </div>
+          <div class="pkg-card__score-wrap" aria-label="Latest release score">
+            <div class="pkg-card__score-big" style="color:${latestColor}">
+              ${latestScore ?? '—'}<span class="pkg-card__score-denom">/10</span>
+            </div>
+            <svg class="pkg-card__chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+              <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5"
+                    stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+        </div>
+        ${altBlock}
+      </a>
+      <div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>
+    </div>`;
+  bindInstallCopy();
 }
 
 function renderReleases() {
+  if (!isPackageView()) return;
   const rows = allReleases.slice(0, uiLimits.releases);
   const root = document.getElementById('releases');
   const recBlock = document.getElementById('recBlock');
@@ -506,15 +1060,17 @@ function renderReleases() {
     const det = document.createElement('div');
     det.className = 'details';
     det.id = `det-${id}`;
-    det.innerHTML = '<div class="state" style="padding:var(--space-7) 0">Loading…</div>';
+    det.innerHTML = installPanelHtml(r.tag);
 
-    row.addEventListener('click', () => toggleRelease(row, det, r.tag));
+    row.addEventListener('click', () => toggleRelease(row));
     // "+N more" toggles its own disclosure — don't let it also open the issue panel.
     row.querySelectorAll('.surf-more').forEach((el) =>
       el.addEventListener('click', (e) => e.stopPropagation()));
     root.appendChild(row);
     root.appendChild(det);
   });
+  bindInstallCopy();
+  renderScoreHistory();
 }
 
 /* ── recommendation view ─────────────────────────────────────────────────
@@ -579,52 +1135,11 @@ function renderTarget(categorized) {
 }
 
 /* ── toggle release row ───────────────────────────────────────────────── */
-async function toggleRelease(row, det, tag) {
+function toggleRelease(row) {
   const opening = !row.classList.contains('open');
-
-  // close all
-  document.querySelectorAll('.release.open').forEach(r => r.classList.remove('open'));
-
+  document.querySelectorAll('.release.open').forEach((r) => r.classList.remove('open'));
   if (!opening) return;
   row.classList.add('open');
-
-  // already loaded?
-  if (det.dataset.loaded) return;
-  det.dataset.loaded = '1';
-
-  try {
-    const data = await api('/release/' + encodeURIComponent(tag));
-    renderIssues(det, data.issues ?? []);
-  } catch (e) {
-    det.innerHTML = `<div class="details__empty">Failed to load: ${esc(e.message)}</div>`;
-  }
-}
-
-function renderIssues(det, issues) {
-  if (!issues.length) {
-    det.innerHTML = '<div class="details__empty">No reported issues for this version yet</div>';
-    return;
-  }
-
-  // show negatives first, then positives, skip neutral without rationale
-  const sorted = [...issues].sort((a, b) => {
-    const sevOrder = { critical: 0, high: 1, medium: 2, low: 3 };
-    const sentOrder = { negative: 0, positive: 1, neutral: 2 };
-    if (a.sentiment !== b.sentiment) return sentOrder[a.sentiment] - sentOrder[b.sentiment];
-    return (sevOrder[a.severity] ?? 9) - (sevOrder[b.severity] ?? 9);
-  });
-
-  det.innerHTML = sorted.map(i => {
-    const dotClass = i.sentiment === 'positive' ? 'positive' : (i.severity ?? 'low');
-    return `
-      <div class="issue">
-        <span class="sev-dot ${esc(dotClass)}"></span>
-        <div class="issue__body">
-          <a class="issue__title" href="${esc(i.htmlUrl)}" target="_blank"
-             rel="noopener" title="${esc(i.title)}">${esc(i.title)}</a>
-        </div>
-      </div>`;
-  }).join('');
 }
 
 /* ── status dot ───────────────────────────────────────────────────────── */
@@ -659,8 +1174,11 @@ async function loadStatus() {
 /* ── init ─────────────────────────────────────────────────────────────── */
 let uiLimits = { releases: 10, refreshMinutes: 30 };
 
+window.addEventListener('hashchange', applyRoute);
+
 (async () => {
   try { uiLimits = await api('/config'); } catch { /* use defaults */ }
+  applyRoute();
   loadStatus();
   loadReleases();
   setInterval(loadStatus, 30_000);
