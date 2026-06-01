@@ -6,7 +6,7 @@ Scores each release from GitHub issues: which one to pick, known CVEs, and what 
 
 [![OpenClaw Release Radar](docs/screenshot.png)](https://radar.iclaw.digital/)
 
-Source repo: [openclaw/openclaw](https://github.com/openclaw/openclaw) · Inspired by [agent-watch](https://github.com/davideuler/agent-watch)
+Source repo: [openclaw/openclaw](https://github.com/openclaw/openclaw)
 
 ## Run locally
 
@@ -20,7 +20,7 @@ npm run dev            # http://localhost:8787
 
 ## API
 
-`GET /api/releases` · `GET /api/release/:tag` · [full JSON](https://radar.iclaw.digital/api/public)
+`GET /api/releases` · [full JSON](https://radar.iclaw.digital/api/public)
 
 ## License
 

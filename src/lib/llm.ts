@@ -2,7 +2,7 @@ import { config } from '../config';
 import type { GhComment, GhIssue } from './github';
 import { applyLabelOverrides } from './labelOverrides';
 
-// 7-dimension classification, matches agent-watch taxonomy.
+// 7-dimension issue classification taxonomy.
 export type Sentiment = 'negative' | 'positive' | 'neutral';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type Scope = 'broad' | 'moderate' | 'niche';
@@ -28,7 +28,7 @@ export interface IssueClassification {
 // prompt fix automatically reshapes the whole dataset on the next cron tick.
 export const PROMPT_VERSION = 6;
 
-// Attribution philosophy (mirrors agent-watch):
+// Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
 //   mentions one, or it's obvious from a stack trace / log / "I'm running vX.Y.Z" line.
 // - When unclear, return null. Unattributed issues are intentionally ignored by scoring
