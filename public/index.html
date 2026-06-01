@@ -82,8 +82,16 @@ a:hover{color:var(--link-hover)}
 main{max-width:720px;margin:0 auto;padding:var(--space-9) var(--space-9) var(--space-10)}
 
 .page-title{
-  font-size:1.9rem;font-weight:700;letter-spacing:-.03em;
+  font-size:1.9rem;letter-spacing:-.03em;
   margin-bottom:var(--space-3);
+}
+.page-title__brand{
+  font-weight:700;
+  color:var(--text);
+}
+.page-title__domain{
+  font-weight:500;
+  color:var(--muted);
 }
 .page-title-row{
   display:flex;align-items:center;justify-content:space-between;
@@ -331,7 +339,7 @@ footer a:hover{color:var(--text)}
 
 <main>
   <div class="page-title-row">
-    <h1 class="page-title">Should I install it?</h1>
+    <h1 class="page-title"><span class="page-title__brand">IsItStable</span><span class="page-title__domain">.iclaw.digital</span></h1>
   </div>
   <p class="page-sub">
     Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
