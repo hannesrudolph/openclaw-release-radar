@@ -12,6 +12,9 @@ import { bandFor, type InstallStatus } from '../lib/score';
 
 export const api = Router();
 
+// Score-history charts only — independent of RELEASES_LIMIT (the release list cap).
+const SCORE_HISTORY_CHART_LIMIT = 20;
+
 // How many stables after a version we still count its CVEs for the BADGE. 0 =
 // only CVEs patched in the very next stable — i.e. "this version's own disclosed
 // vulnerabilities". This deliberately differs from the cumulative `< X` match:
@@ -150,6 +153,17 @@ api.get('/releases', (_req, res) => {
         maintainerSignals: maintainerSignals(r),
       };
     }),
+  );
+});
+
+api.get('/releases/history', (_req, res) => {
+  const rows = listReleasesDb(SCORE_HISTORY_CHART_LIMIT);
+  res.json(
+    rows.map((r) => ({
+      tag: r.tag,
+      publishedAt: r.published_at,
+      finalScore: r.final_score,
+    })),
   );
 });
 
