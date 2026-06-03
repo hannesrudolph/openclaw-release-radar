@@ -19,6 +19,7 @@ import {
 } from './releaseNotes';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
+import { SCORE_HISTORY_CHART_LIMIT } from './historyWindow';
 
 // Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
 // back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
@@ -96,8 +97,9 @@ export async function refresh(): Promise<{
     // breaking bullets to be counted. At openclaw's 3:1 beta:stable ratio,
     // ×6 → ~10 stables of headroom past the monitored count. If that ratio ever
     // inverts (more betas per stable), bump the multiplier.
-    const fetched = await listReleases(config.limits.releases * 6);
-    const releases = fetched.filter((r) => !r.prerelease).slice(0, config.limits.releases);
+    const monitoredReleaseCount = Math.max(config.limits.releases, SCORE_HISTORY_CHART_LIMIT);
+    const fetched = await listReleases(monitoredReleaseCount * 6);
+    const releases = fetched.filter((r) => !r.prerelease).slice(0, monitoredReleaseCount);
     for (const r of releases) {
       upsertRelease({
         tag: r.tag_name,
@@ -302,7 +304,7 @@ export async function refresh(): Promise<{
     //    signals (CVE, settle age, hotfix succession, stable-to-stable survival, beta
     //    shakeout, serious-regression balance). No peer median, no carry-forward
     //    attribution in the score itself. See lib/score.ts for the full rationale.
-    const allReleases = listReleasesDb(config.limits.releases);
+    const allReleases = listReleasesDb(monitoredReleaseCount);
     const allFetchedTags = fetched.map((r) => r.tag_name);
 
     // CVE exposure per tag. `affected` (medium+ advisory matches) drives the
@@ -330,22 +332,13 @@ export async function refresh(): Promise<{
     };
 
     // Post-override classification for an attributed/reign issue row.
-    const classify = (r: ReturnType<typeof issuesForVersion>[number]): IssueClassification =>
-      applyLabelOverrides(
-        applyTitleFunctionalityHint(rowToClassification(r), r.title),
-        safeParseLabels(r.labels),
-      );
+    const classify = classifyIssueRow;
     const isCoreSerious = (c: IssueClassification): boolean =>
       c.sentiment === 'negative' &&
       c.functionality === 'core' &&
       (c.severity === 'critical' || c.severity === 'high');
     const countCoreSerious = (rows: ReturnType<typeof issuesForVersion>): number =>
       rows.reduce((n, r) => (isCoreSerious(classify(r)) ? n + 1 : n), 0);
-    const isFeltSerious = (c: IssueClassification): boolean =>
-      c.sentiment === 'negative' &&
-      (c.functionality === 'core' || c.functionality === 'integration' || c.functionality === 'provider') &&
-      (c.severity === 'critical' || c.severity === 'high');
-
     const scored = allReleases.map((rel, idx) => {
       // negative/positive counts are display-only context (not part of the score).
       let neg = 0;
@@ -367,7 +360,7 @@ export async function refresh(): Promise<{
       // grouped by named surface (Discord, Ollama, …) for the UI.
       const brokenSurfaces = JSON.stringify(
         topBrokenSurfaces(
-          openedReign.filter((r) => r.state === 'open' && isFeltSerious(classify(r))).map((r) => r.title),
+          openedReign.filter(isOpenFeltSeriousIssue).map((r) => r.title),
         ),
       );
       const cve = cveFor(rel.tag);
@@ -466,4 +459,20 @@ function rowToClassification(row: {
 }
 
 // re-export for routes
-export { getRelease, issuesForVersion, listReleasesDb };
+
+export function classifyIssueRow(row: ReturnType<typeof issuesForVersion>[number]): IssueClassification {
+  return applyLabelOverrides(
+    applyTitleFunctionalityHint(rowToClassification(row), row.title),
+    safeParseLabels(row.labels),
+  );
+}
+
+export function isOpenFeltSeriousIssue(row: ReturnType<typeof issuesForVersion>[number]): boolean {
+  const c = classifyIssueRow(row);
+  return row.state === 'open'
+    && c.sentiment === 'negative'
+    && (c.functionality === 'core' || c.functionality === 'integration' || c.functionality === 'provider')
+    && (c.severity === 'critical' || c.severity === 'high');
+}
+
+export { getRelease, issuesForVersion, listReleasesDb, openedDuringReign };

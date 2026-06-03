@@ -3,17 +3,18 @@ import { config } from '../config';
 import { getCached, setCached } from '../lib/cache';
 import {
   getRefreshState,
+  isOpenFeltSeriousIssue,
   issuesForVersion,
   listReleasesDb,
+  openedDuringReign,
 } from '../lib/refresh';
 import { listAdvisories, type AdvisoryRow } from '../lib/db';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, type InstallStatus } from '../lib/score';
+import { surfaceOf } from '../lib/surfaces';
+import { SCORE_HISTORY_CHART_LIMIT } from '../lib/historyWindow';
 
 export const api = Router();
-
-// Score-history charts only — independent of RELEASES_LIMIT (the release list cap).
-const SCORE_HISTORY_CHART_LIMIT = 20;
 
 // How many stables after a version we still count its CVEs for the BADGE. 0 =
 // only CVEs patched in the very next stable — i.e. "this version's own disclosed
@@ -69,6 +70,7 @@ function summarizeAdvisories(list: AdvisoryRow[]) {
       severity: a.severity,
       summary: a.summary,
       url: a.html_url,
+      patchedVersion: firstPatchedVersion(a.patched_versions),
     })),
   };
 }
@@ -197,7 +199,7 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
-  const allReleases = listReleasesDb(config.limits.releases);
+  const allReleases = listReleasesDb(Math.max(config.limits.releases, SCORE_HISTORY_CHART_LIMIT));
 
   const releases = allReleases.map((r) => {
     const all = issuesForVersion(r.tag);
@@ -206,18 +208,24 @@ function buildPublicPayload() {
       if (s !== 0) return s;
       return (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
     });
-    const topIssues = sorted.slice(0, PUBLIC_ISSUES_PER_RELEASE).map((i) => ({
+    const issueSummary = (i: typeof sorted[number]) => ({
       number:        i.number,
       title:         i.title,
       url:           i.html_url,
       state:         i.state,
+      closedAt:      i.closed_at,
+      surface:       ((surface) => surface ? { label: surface.label, icon: surface.icon } : null)(surfaceOf(i.title)),
       sentiment:     i.sentiment,
       severity:      i.severity,
       scope:         i.scope,
       hasWorkaround: i.has_workaround === 1,
       confidence:    i.confidence,
       rationale:     i.rationale,
-    }));
+    });
+    const topIssues = sorted.slice(0, PUBLIC_ISSUES_PER_RELEASE).map(issueSummary);
+    const watchIssues = openedDuringReign(r.tag)
+      .filter(isOpenFeltSeriousIssue)
+      .map(issueSummary);
 
     return {
       tag:               r.tag,
@@ -233,6 +241,7 @@ function buildPublicPayload() {
       scoredAt:          r.scored_at,
       totalAttributedIssues: all.length,
       issues:            topIssues,
+      watchIssues,
     };
   });
 
