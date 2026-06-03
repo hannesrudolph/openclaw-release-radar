@@ -329,13 +329,16 @@ main.main-home{max-width:880px}
   font-size:var(--text-xs);color:var(--muted);line-height:1.45;
 }
 .release--skip .release__reason{color:var(--danger)}
-/* ── "what it breaks" surface chips ─────────────────────────────────────── */
+/* ── affected-area surface chips ─────────────────────────────────────── */
 /* vertical list — caption and items share the same text colour; icons stay muted */
 .surfaces{
   display:flex;flex-direction:column;gap:4px;margin-top:6px;
   font-size:var(--text-sm);color:var(--text);
 }
 .surf-label{font-weight:600;margin-bottom:1px}
+.surface-group{display:flex;flex-direction:column;gap:4px}
+.surface-group + .surface-group{margin-top:var(--space-3)}
+.surface-group--other{color:var(--muted)}
 .surf{
   display:flex;align-items:center;gap:6px;white-space:nowrap;
 }
@@ -357,6 +360,17 @@ details[open] > .surf-more{display:none}
   width:13px;height:13px;flex-shrink:0;background:var(--muted);opacity:.85;
   -webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat;
 }
+.profile-filter{
+  display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-4) var(--space-6);
+  margin-bottom:var(--space-7);font-size:var(--text-sm);color:var(--muted);
+}
+.profile-filter[hidden]{display:none}
+.profile-filter__label{font-weight:600;color:var(--text)}
+.profile-filter__options{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-4) var(--space-5)}
+.profile-filter label{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.profile-filter input{accent-color:var(--link)}
+.profile-filter button{border:0;background:transparent;color:var(--link);font:inherit;padding:0;cursor:pointer}
+.profile-filter button[hidden]{display:none}
 .rec-pill{
   font-size:var(--text-xs);font-weight:600;white-space:nowrap;
   padding:1px var(--space-4);border-radius:var(--radius-pill);
@@ -608,6 +622,12 @@ footer a:hover{color:var(--text)}
       <div class="score-history__chart" id="scoreHistoryChart"></div>
     </section>
 
+    <div class="profile-filter" id="profileFilter" hidden>
+      <span class="profile-filter__label">My install:</span>
+      <div class="profile-filter__options" id="profileFilterOptions"></div>
+      <button id="profileFilterClear" type="button">Clear</button>
+    </div>
+
     <div class="rec-block" id="recBlock" hidden>
       <div class="rec-target" id="recTarget" hidden></div>
       <div class="releases" id="releases"></div>
@@ -684,6 +704,108 @@ function scoreColor10(s) {
 
 const SCORE_CHART_MAX = 10;
 const SCORE_HISTORY_LIMIT = 20;
+const INSTALL_PROFILE_STORAGE_KEY = 'openclaw-release-radar.installProfile.v1';
+// Kept in sync with src/lib/surfaces.ts; the static frontend does not receive taxonomy metadata yet.
+const INSTALL_PROFILE_SURFACES = [
+  'Discord', 'Telegram', 'Slack', 'WhatsApp', 'WeChat', 'Mattermost', 'Feishu',
+  'TikTok', 'KakaoTalk', 'LINE', 'iMessage', 'WebChat', 'Control UI', 'Dashboard',
+  'Ollama', 'Llama', 'OpenAI', 'Claude', 'Gemini', 'DeepSeek', 'Mistral',
+  'Qwen', 'MiniMax', 'Bedrock', 'xAI', 'Codex', 'MCP',
+];
+let selectedProfileSurfaces = new Set(readInstallProfile());
+let profileFilterBound = false;
+
+function normalizeSurfaceLabel(label) {
+  return String(label ?? '').trim();
+}
+
+function readInstallProfile() {
+  try {
+    const raw = localStorage.getItem(INSTALL_PROFILE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeSurfaceLabel).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeInstallProfile() {
+  try {
+    localStorage.setItem(INSTALL_PROFILE_STORAGE_KEY, JSON.stringify([...selectedProfileSurfaces].sort()));
+  } catch {
+    // localStorage is optional; the current-page filter still works without it.
+  }
+}
+
+function renderProfileFilter(rows) {
+  const filter = document.getElementById('profileFilter');
+  const optionsRoot = document.getElementById('profileFilterOptions');
+  const clear = document.getElementById('profileFilterClear');
+  if (!filter || !optionsRoot || !clear) return;
+
+  const observedLabels = rows.flatMap((r) =>
+    (Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [])
+      .map((s) => normalizeSurfaceLabel(s.label))
+      .filter(Boolean)
+  );
+  const labels = [...new Set([...INSTALL_PROFILE_SURFACES, ...observedLabels])];
+
+  filter.hidden = labels.length === 0;
+  clear.hidden = selectedProfileSurfaces.size === 0;
+  optionsRoot.innerHTML = labels.map((label) =>
+    `<label><input type="checkbox" value="${esc(label)}"${selectedProfileSurfaces.has(label) ? ' checked' : ''}> ${esc(label)}</label>`
+  ).join('');
+
+  if (!profileFilterBound) {
+    profileFilterBound = true;
+    optionsRoot.addEventListener('change', (e) => {
+      const input = e.target.closest('input[type="checkbox"]');
+      if (!input) return;
+      const label = normalizeSurfaceLabel(input.value);
+      if (input.checked) selectedProfileSurfaces.add(label);
+      else selectedProfileSurfaces.delete(label);
+      writeInstallProfile();
+      renderReleases();
+    });
+    clear.addEventListener('click', () => {
+      selectedProfileSurfaces = new Set();
+      writeInstallProfile();
+      renderReleases();
+    });
+  }
+}
+
+function surfaceChip(s) {
+  return `<span class="surf"><i class="surf-ico" style="--m:url('/icons/${s.icon}.svg')"></i>${esc(s.label)}</span>`;
+}
+
+function surfaceGroup(label, surfaces, muted = false) {
+  if (!surfaces.length) return '';
+  const rest = surfaces.slice(3);
+  return `<div class="surface-group${muted ? ' surface-group--other' : ''}">`
+    + `<span class="surf-label">${label}</span>`
+    + surfaces.slice(0, 3).map(surfaceChip).join('')
+    + (rest.length
+        ? `<details class="surf-rest"><summary class="surf-more">+${rest.length} more</summary>`
+          + `<div class="surf-rest-items">` + rest.map(surfaceChip).join('') + `</div></details>`
+        : '')
+    + `</div>`;
+}
+
+function affectedAreasHtml(surfaces) {
+  if (!surfaces.length) return '';
+  if (!selectedProfileSurfaces.size) {
+    return `<div class="surfaces" title="Reported affected areas this version introduced or still has open">`
+      + surfaceGroup('Reported affected areas:', surfaces)
+      + `</div>`;
+  }
+  const relevant = surfaces.filter((s) => selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
+  const other = surfaces.filter((s) => !selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
+  return `<div class="surfaces" title="Reported affected areas split by your install profile">`
+    + surfaceGroup('Relevant watch areas:', relevant)
+    + surfaceGroup('Other reported areas:', other, true)
+    + `</div>`;
+}
 
 function scoreHistoryPoints() {
   const scored = chartReleases
@@ -989,6 +1111,7 @@ function renderReleases() {
   const { categorized } = categorizeReleases(rows);
   const byTag = new Map(categorized.map(c => [c.release.tag, c]));
   renderTarget(categorized);
+  renderProfileFilter(rows);
 
   root.innerHTML = '';
 
@@ -1019,23 +1142,8 @@ function renderReleases() {
     const reasonLine = reasonText
       ? `<span class="release__reason">${esc(reasonText)}</span>` : '';
 
-    // "What it breaks": top 3 named surfaces always shown; the rest fold into a
-    // click-to-expand <details> (a full list runs 14–15 lines on busy releases).
     const surfaces = Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [];
-    const SURF_TOP = 3;
-    const surfChip = (s) =>
-      `<span class="surf"><i class="surf-ico" style="--m:url('/icons/${s.icon}.svg')"></i>${esc(s.label)}</span>`;
-    const rest = surfaces.slice(SURF_TOP);
-    const surfacesLine = surfaces.length
-      ? `<div class="surfaces" title="Visible regressions this version introduced (still open)">`
-        + `<span class="surf-label">Breaks:</span>`
-        + surfaces.slice(0, SURF_TOP).map(surfChip).join('')
-        + (rest.length
-            ? `<details class="surf-rest"><summary class="surf-more">+${rest.length} more</summary>`
-              + `<div class="surf-rest-items">` + rest.map(surfChip).join('') + `</div></details>`
-            : '')
-        + `</div>`
-      : '';
+    const surfacesLine = affectedAreasHtml(surfaces);
 
     row.innerHTML = `
       <div class="release__left">
