@@ -252,6 +252,31 @@ main.main-home{max-width:880px}
   fill:var(--muted);
 }
 
+.help-head{display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3)}
+.help-head .score-history__title{margin-bottom:0}
+.help-button{
+  width:20px;height:20px;border-radius:999px;border:1px solid var(--border);
+  background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:700;
+  line-height:1;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
+}
+.help-button:hover,.help-popover[open] .help-button{color:var(--text);border-color:var(--muted);background:color-mix(in srgb,var(--text) 5%,transparent)}
+.help-popover{display:inline-flex;position:relative}
+.help-popover summary{list-style:none}
+.help-popover summary::-webkit-details-marker{display:none}
+.score-explain{
+  margin:var(--space-4) 0 var(--space-5);padding:var(--space-6);
+  border:1px solid var(--border-soft);border-radius:var(--radius-md);
+  background:color-mix(in srgb,var(--text) 3%,var(--surface));
+  color:var(--muted);font-size:var(--text-sm);line-height:1.55;
+}
+.score-explain[hidden]{display:none}
+.help-popover .score-explain{margin:var(--space-3) 0 0}
+.score-explain__title{font-weight:700;color:var(--text);margin-bottom:var(--space-3)}
+.score-explain p{margin:0 0 var(--space-4)}
+.score-explain p:last-child{margin-bottom:0}
+.score-explain ul{margin:0;padding-left:1.15rem;display:flex;flex-direction:column;gap:var(--space-2)}
+.score-explain strong{color:var(--text)}
+
 .cta-track{
   margin-top:var(--space-10);
   padding:var(--space-10) var(--space-9);
@@ -329,13 +354,16 @@ main.main-home{max-width:880px}
   font-size:var(--text-xs);color:var(--muted);line-height:1.45;
 }
 .release--skip .release__reason{color:var(--danger)}
-/* ── "what it breaks" surface chips ─────────────────────────────────────── */
+/* ── affected-area surface chips ─────────────────────────────────────── */
 /* vertical list — caption and items share the same text colour; icons stay muted */
 .surfaces{
   display:flex;flex-direction:column;gap:4px;margin-top:6px;
   font-size:var(--text-sm);color:var(--text);
 }
 .surf-label{font-weight:600;margin-bottom:1px}
+.surface-group{display:flex;flex-direction:column;gap:4px}
+.surface-group + .surface-group{margin-top:var(--space-3)}
+.surface-group--other{color:var(--muted)}
 .surf{
   display:flex;align-items:center;gap:6px;white-space:nowrap;
 }
@@ -357,6 +385,26 @@ details[open] > .surf-more{display:none}
   width:13px;height:13px;flex-shrink:0;background:var(--muted);opacity:.85;
   -webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat;
 }
+.profile-filter{
+  display:grid;grid-template-columns:auto 1fr auto;align-items:start;gap:var(--space-4) var(--space-6);
+  margin-bottom:var(--space-7);font-size:var(--text-sm);color:var(--muted);
+}
+.profile-filter[hidden]{display:none}
+.profile-filter__label{font-weight:600;color:var(--text);padding-top:2px}
+.profile-filter__options{display:flex;align-items:flex-start;flex-wrap:wrap;gap:var(--space-6) var(--space-8)}
+.profile-filter__group{display:flex;flex-direction:column;gap:var(--space-3);min-width:8.5rem}
+.profile-filter__group-title{font-size:var(--text-xs);font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:.04em}
+.profile-filter__choices{display:flex;align-items:center;flex-wrap:wrap;gap:var(--space-3) var(--space-4)}
+.profile-filter label{display:inline-flex;align-items:center;gap:4px;white-space:nowrap}
+.profile-filter input{accent-color:var(--link)}
+.profile-filter button{border:0;background:transparent;color:var(--link);font:inherit;padding:2px 0 0;cursor:pointer}
+.profile-filter button[hidden]{display:none}
+.profile-filter-status{
+  margin:calc(-1 * var(--space-4)) 0 var(--space-7);
+  color:var(--muted);font-size:var(--text-xs);line-height:1.45;
+}
+.profile-filter-status[hidden]{display:none}
+@media(max-width:720px){.profile-filter{grid-template-columns:1fr}.profile-filter__options{gap:var(--space-5)}}
 .rec-pill{
   font-size:var(--text-xs);font-weight:600;white-space:nowrap;
   padding:1px var(--space-4);border-radius:var(--radius-pill);
@@ -379,6 +427,8 @@ details[open] > .surf-more{display:none}
 .release__right{
   display:flex;align-items:center;gap:var(--space-4);flex-shrink:0;
 }
+.score-stack{display:flex;flex-direction:column;align-items:flex-end;gap:2px}
+.score-sub{font-size:var(--text-xs);color:var(--muted);white-space:nowrap}
 .score-dot{
   width:10px;height:10px;border-radius:50%;flex-shrink:0;
   background:var(--score-color,var(--muted));
@@ -412,6 +462,7 @@ details[open] > .surf-more{display:none}
     border-color .22s ease;
 }
 .details__inner{overflow:hidden;min-height:0}
+.details[hidden]{display:none}
 .release.open + .details{
   grid-template-rows:1fr;
   padding:var(--space-7) var(--space-8);
@@ -459,6 +510,22 @@ details[open] > .surf-more{display:none}
   color:var(--ok);
   background:color-mix(in srgb,var(--ok) 12%,var(--surface));
 }
+
+.evidence{
+  margin-top:var(--space-7);display:flex;flex-direction:column;gap:var(--space-4);
+  font-size:var(--text-sm);line-height:1.45;color:var(--muted);
+}
+.evidence__title{
+  font-size:var(--text-xs);font-weight:600;letter-spacing:.05em;text-transform:uppercase;color:var(--muted);
+}
+.evidence__list{display:flex;flex-direction:column;gap:var(--space-3);margin:0;padding:0;list-style:none}
+.evidence__item{display:flex;flex-direction:column;gap:var(--space-1)}
+.evidence__item[hidden]{display:none}
+.evidence__item a{color:var(--text);text-decoration:none}
+.evidence__item a:hover{color:var(--link)}
+.evidence__meta{font-size:var(--text-xs);color:var(--muted)}
+.evidence__more{align-self:flex-start;border:0;background:transparent;color:var(--link);font:inherit;font-size:var(--text-xs);padding:0;cursor:pointer}
+.evidence__more:hover{text-decoration:underline}
 
 /* ── loading / empty states ───────────────────────────────────────────── */
 .state{
@@ -604,9 +671,39 @@ footer a:hover{color:var(--text)}
     </p>
 
     <section class="score-history" id="scoreHistory" hidden aria-labelledby="scoreHistoryTitle">
-      <h2 class="score-history__title" id="scoreHistoryTitle">Score history</h2>
+      <div class="help-head">
+        <h2 class="score-history__title" id="scoreHistoryTitle">Score history</h2>
+        <details class="help-popover" id="scoreHelp">
+          <summary class="help-button" title="Explain the score" aria-label="Explain the score">?</summary>
+          <div class="score-explain">
+            <div class="score-explain__title">What this score means</div>
+            <p><strong>Global score</strong> estimates whether this stable release is broadly safe to install. It combines hard gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
+            <p><strong>My install</strong> appears after you select a meaningful profile. It keeps global/core issues, keeps issues for your selected surfaces, and filters out unrelated surfaced issues so the trend reflects your setup instead of everyone else's.</p>
+            <p>The score is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
+          </div>
+        </details>
+      </div>
       <div class="score-history__chart" id="scoreHistoryChart"></div>
     </section>
+
+    <div class="profile-filter" id="profileFilter" hidden>
+      <span class="profile-filter__label">My install:</span>
+      <details class="help-popover" id="filterHelp">
+        <summary class="help-button" title="Explain install filtering" aria-label="Explain install filtering">?</summary>
+        <div class="score-explain">
+          <div class="score-explain__title">How install filtering works</div>
+          <ul>
+            <li>Select at least <strong>one OS</strong>, <strong>one channel</strong>, and <strong>one model/provider/runtime</strong> before a My install score is shown.</li>
+            <li>Issues tagged to selected areas count normally. Untagged or core/general issues count for everyone.</li>
+            <li>Issues tagged only to unselected areas are removed from the user-specific issue burden.</li>
+            <li>Hard safety gates still apply. Filtering cannot make a CVE-blocked, hotfixed, or too-young release recommended.</li>
+          </ul>
+        </div>
+      </details>
+      <div class="profile-filter__options" id="profileFilterOptions"></div>
+      <button id="profileFilterClear" type="button">Clear</button>
+    </div>
+    <div class="profile-filter-status" id="profileFilterStatus" hidden></div>
 
     <div class="rec-block" id="recBlock" hidden>
       <div class="rec-target" id="recTarget" hidden></div>
@@ -684,11 +781,365 @@ function scoreColor10(s) {
 
 const SCORE_CHART_MAX = 10;
 const SCORE_HISTORY_LIMIT = 20;
+const INSTALL_PROFILE_STORAGE_KEY = 'openclaw-release-radar.installProfile.v1';
+// Local taxonomy data for the install-profile selector. Keep this data-shaped so a
+// later PR can move it to JSON/API/admin editing without rewriting the UI renderer.
+// `label` must match issue surface labels from src/lib/surfaces.ts when one exists;
+// entries without backend surface detection still work as selectable profile areas.
+const INSTALL_PROFILE_TAXONOMY = [
+  { key: 'os', title: 'OS', items: [
+    { label: 'macOS', match: ['macOS', 'Mac OS', 'Darwin'] },
+    { label: 'Windows', match: ['Windows', 'Win32'] },
+    { label: 'Linux', match: ['Linux'] },
+  ] },
+  { key: 'channels', title: 'Channels', items: [
+    { label: 'Discord' },
+    { label: 'Telegram' },
+    { label: 'Slack' },
+    { label: 'WhatsApp' },
+    { label: 'WeChat', match: ['WeChat', 'Weixin'] },
+    { label: 'Mattermost' },
+    { label: 'Feishu' },
+    { label: 'TikTok' },
+    { label: 'KakaoTalk' },
+    { label: 'LINE', match: ['LINE bot', 'LINE channel'] },
+    { label: 'iMessage' },
+  ] },
+  { key: 'app-surfaces', title: 'App surfaces', items: [
+    { label: 'WebChat' },
+    { label: 'Control UI' },
+    { label: 'Dashboard' },
+  ] },
+  { key: 'local-models', title: 'Local models', items: [
+    { label: 'Ollama' },
+    { label: 'Llama', match: ['llama.cpp', 'Llama'] },
+  ] },
+  { key: 'cloud-models', title: 'Cloud models', items: [
+    { label: 'OpenAI' },
+    { label: 'Claude', match: ['Claude', 'Anthropic'] },
+    { label: 'Gemini' },
+    { label: 'DeepSeek' },
+    { label: 'Mistral' },
+    { label: 'Qwen' },
+    { label: 'MiniMax' },
+    { label: 'Bedrock' },
+    { label: 'xAI', match: ['xAI', 'Grok'] },
+  ] },
+  { key: 'agent-runtime', title: 'Agent runtime', items: [
+    { label: 'Codex' },
+    { label: 'MCP' },
+  ] },
+];
+const INSTALL_PROFILE_GROUPS = INSTALL_PROFILE_TAXONOMY.map((group) => ({
+  title: group.title,
+  items: group.items.map((item) => item.label),
+}));
+const INSTALL_PROFILE_SURFACES = INSTALL_PROFILE_TAXONOMY.flatMap((group) =>
+  group.items.map((item) => item.label),
+);
+const INSTALL_PROFILE_ITEMS = INSTALL_PROFILE_TAXONOMY.flatMap((group) =>
+  group.items.map((item) => ({ ...item, groupKey: group.key, groupTitle: group.title })),
+);
+const INSTALL_PROFILE_REQUIREMENTS = [
+  { key: 'os', label: 'an OS' },
+  { key: 'channels', label: 'a channel' },
+  { key: 'runtime', label: 'a model/provider/runtime', groups: ['local-models', 'cloud-models', 'agent-runtime'] },
+];
+const INSTALL_PROFILE_ITEM_BY_LABEL = new Map(INSTALL_PROFILE_ITEMS.map((item) => [item.label, item]));
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function installProfileItemMatchesTitle(item, title) {
+  const haystack = String(title ?? '');
+  const terms = item.match ?? [item.label];
+  return terms.some((term) => new RegExp(`\\b${escapeRegExp(term)}\\b`, 'i').test(haystack));
+}
+
+function inferredIssueSurface(issue) {
+  if (issue?.surface?.label) return issue.surface;
+  const item = INSTALL_PROFILE_ITEMS.find((candidate) =>
+    candidate.detect !== false && installProfileItemMatchesTitle(candidate, issue?.title),
+  );
+  return item ? { label: item.label, icon: item.icon ?? item.label } : null;
+}
+
+function enrichIssue(issue) {
+  if (!issue || issue.surface?.label) return issue;
+  return { ...issue, surface: inferredIssueSurface(issue) };
+}
+
+function evidenceIssuesForRelease(detail) {
+  if (Array.isArray(detail?.watchIssues)) return detail.watchIssues.map(enrichIssue);
+  if (Array.isArray(detail?.issues)) return detail.issues.map(enrichIssue);
+  return [];
+}
+let selectedProfileSurfaces = new Set(readInstallProfile());
+let profileFilterBound = false;
+
+function normalizeSurfaceLabel(label) {
+  return String(label ?? '').trim();
+}
+
+function readInstallProfile() {
+  try {
+    const raw = localStorage.getItem(INSTALL_PROFILE_STORAGE_KEY);
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed) ? parsed.map(normalizeSurfaceLabel).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function writeInstallProfile() {
+  try {
+    localStorage.setItem(INSTALL_PROFILE_STORAGE_KEY, JSON.stringify([...selectedProfileSurfaces].sort()));
+  } catch {
+    // localStorage is optional; the current-page filter still works without it.
+  }
+}
+
+function groupedProfileOptions(labels) {
+  const remaining = new Set(labels);
+  const groups = INSTALL_PROFILE_GROUPS.map((group) => {
+    const items = group.items.filter((label) => remaining.delete(label));
+    return { title: group.title, items };
+  }).filter((group) => group.items.length);
+  const other = [...remaining].sort((a, b) => a.localeCompare(b));
+  if (other.length) groups.push({ title: 'Other', items: other });
+  return groups;
+}
+
+function profileOptionHtml(label) {
+  return `<label><input type="checkbox" value="${esc(label)}"${selectedProfileSurfaces.has(label) ? ' checked' : ''}> ${esc(label)}</label>`;
+}
+
+function renderProfileFilter(rows) {
+  const filter = document.getElementById('profileFilter');
+  const optionsRoot = document.getElementById('profileFilterOptions');
+  const clear = document.getElementById('profileFilterClear');
+  if (!filter || !optionsRoot || !clear) return;
+
+  const observedLabels = rows.flatMap((r) =>
+    (Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [])
+      .map((s) => normalizeSurfaceLabel(s.label))
+      .filter(Boolean)
+  );
+  const labels = [...new Set([...INSTALL_PROFILE_SURFACES, ...observedLabels])];
+
+  filter.hidden = labels.length === 0;
+  clear.hidden = selectedProfileSurfaces.size === 0;
+  optionsRoot.innerHTML = groupedProfileOptions(labels).map((group) =>
+    `<div class="profile-filter__group">`
+      + `<span class="profile-filter__group-title">${esc(group.title)}</span>`
+      + `<div class="profile-filter__choices">${group.items.map(profileOptionHtml).join('')}</div>`
+    + `</div>`
+  ).join('');
+  renderInstallProfileStatus();
+
+  if (!profileFilterBound) {
+    profileFilterBound = true;
+    optionsRoot.addEventListener('change', (e) => {
+      const input = e.target.closest('input[type="checkbox"]');
+      if (!input) return;
+      const label = normalizeSurfaceLabel(input.value);
+      if (input.checked) selectedProfileSurfaces.add(label);
+      else selectedProfileSurfaces.delete(label);
+      writeInstallProfile();
+      renderReleases();
+    });
+    clear.addEventListener('click', () => {
+      selectedProfileSurfaces = new Set();
+      writeInstallProfile();
+      renderReleases();
+    });
+  }
+}
+
+function surfaceChip(s) {
+  return `<span class="surf"><i class="surf-ico" style="--m:url('/icons/${s.icon}.svg')"></i>${esc(s.label)}</span>`;
+}
+
+function surfaceGroup(label, surfaces, muted = false) {
+  if (!surfaces.length) return '';
+  const rest = surfaces.slice(3);
+  return `<div class="surface-group${muted ? ' surface-group--other' : ''}">`
+    + `<span class="surf-label">${label}</span>`
+    + surfaces.slice(0, 3).map(surfaceChip).join('')
+    + (rest.length
+        ? `<details class="surf-rest"><summary class="surf-more">+${rest.length} more</summary>`
+          + `<div class="surf-rest-items">` + rest.map(surfaceChip).join('') + `</div></details>`
+        : '')
+    + `</div>`;
+}
+
+function affectedAreasHtml(surfaces) {
+  if (!surfaces.length) return '';
+  if (!selectedProfileSurfaces.size) {
+    return `<div class="surfaces" title="Reported affected areas this version introduced or still has open">`
+      + surfaceGroup('Reported affected areas:', surfaces)
+      + `</div>`;
+  }
+  const relevant = surfaces.filter((s) => selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
+  const other = surfaces.filter((s) => !selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
+  return `<div class="surfaces" title="Reported affected areas split by your install profile">`
+    + surfaceGroup('Relevant watch areas:', relevant)
+    + surfaceGroup('Other reported areas:', other, true)
+    + `</div>`;
+}
+
+function issueBackedSurfaces(r) {
+  const fallback = Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [];
+  const detail = publicReleaseDetails.get(r.tag);
+  const issues = evidenceIssuesForRelease(detail);
+  if (!issues.length) return fallback;
+
+  const byLabel = new Map();
+  const fallbackByLabel = new Map(fallback.map((surf) => [normalizeSurfaceLabel(surf.label), surf]));
+  for (const issue of issues) {
+    const label = normalizeSurfaceLabel(issue.surface?.label);
+    if (!label) continue;
+    const previous = byLabel.get(label);
+    const base = previous || fallbackByLabel.get(label) || issue.surface || { label, icon: label };
+    byLabel.set(label, { ...base, label: base.label || label, count: (previous?.count || 0) + 1 });
+  }
+
+  return fallback
+    .map((surf) => byLabel.get(normalizeSurfaceLabel(surf.label)))
+    .filter(Boolean)
+    .concat([...byLabel.entries()]
+      .filter(([label]) => !fallbackByLabel.has(label))
+      .map(([, surf]) => surf));
+}
+
+function profileIssueWeight(issue) {
+  if (!issue || issue.sentiment === 'positive' || issue.sentiment === 'neutral') return 0;
+  const severity = { critical: 2.2, high: 1.5, medium: 0.8, low: 0.35 }[issue.severity] ?? 0.6;
+  const confidence = Math.max(0.5, Math.min(1.25, Number(issue.confidence ?? 1)));
+  const state = String(issue.state ?? '').toLowerCase();
+  const stateFactor = state === 'closed' ? 0.35 : 1;
+  return severity * confidence * stateFactor;
+}
+
+function issueSurfaceLabel(issue) {
+  return normalizeSurfaceLabel(enrichIssue(issue)?.surface?.label);
+}
+
+function issueHasInstallSurface(issue) {
+  return Boolean(issueSurfaceLabel(issue));
+}
+
+function issueMatchesSelectedProfile(issue) {
+  return selectedProfileSurfaces.has(issueSurfaceLabel(issue));
+}
+
+function selectedProfileGroups() {
+  const groups = new Set();
+  for (const label of selectedProfileSurfaces) {
+    const item = INSTALL_PROFILE_ITEM_BY_LABEL.get(label);
+    if (item?.groupKey) groups.add(item.groupKey);
+  }
+  return groups;
+}
+
+function missingInstallProfileRequirements() {
+  const groups = selectedProfileGroups();
+  return INSTALL_PROFILE_REQUIREMENTS
+    .filter((req) => !(req.groups ?? [req.key]).some((key) => groups.has(key)))
+    .map((req) => req.label);
+}
+
+function hasMeaningfulInstallProfile() {
+  return missingInstallProfileRequirements().length === 0;
+}
+
+function installProfileStatusText() {
+  if (selectedProfileSurfaces.size === 0) return '';
+  const missing = missingInstallProfileRequirements();
+  if (!missing.length) return 'My install score is active. Issue evidence and trend are filtered for this profile.';
+  return `Filtering issue evidence only. Select ${missing.join(' + ')} to calculate a My install score.`;
+}
+
+function renderInstallProfileStatus() {
+  const el = document.getElementById('profileFilterStatus');
+  if (!el) return;
+  const text = installProfileStatusText();
+  el.hidden = !text;
+  el.textContent = text;
+}
+
+function myInstallScore(r) {
+  if (!hasMeaningfulInstallProfile() || r.finalScore == null || r.status !== 'eligible') return null;
+  const detail = publicReleaseDetails.get(r.tag);
+  const issues = evidenceIssuesForRelease(detail);
+  if (!issues.length) return null;
+  let selectedLoad = 0;
+  let generalLoad = 0;
+  let unrelatedLoad = 0;
+  for (const issue of issues) {
+    const weight = profileIssueWeight(issue);
+    if (!weight) continue;
+    if (!issueHasInstallSurface(issue)) generalLoad += weight;
+    else if (issueMatchesSelectedProfile(issue)) selectedLoad += weight;
+    else unrelatedLoad += weight;
+  }
+  const totalVisibleLoad = selectedLoad + generalLoad + unrelatedLoad;
+  if (!totalVisibleLoad) return null;
+  const relevantLoad = selectedLoad + generalLoad;
+  const filteredOutLoad = Math.max(0, totalVisibleLoad - relevantLoad);
+  const adjustment = filteredOutLoad * 0.18;
+  const score = Math.max(0, Math.min(10, Number(r.finalScore) + adjustment));
+  return Math.round(score * 10) / 10;
+}
+
+function displayScoreInfo(r) {
+  const mine = myInstallScore(r);
+  if (mine == null) return { main: scoreInfo(r), sub: '' };
+  return {
+    main: { color: scoreColor10(mine), label: 'My install', num: formatScore10(mine) ?? '—' },
+    sub: `global ${formatScore10(r.finalScore) ?? '—'}`,
+  };
+}
+
+function releaseForChartPoint(r) {
+  const row = allReleases.find((candidate) => candidate.tag === r.tag);
+  const detail = publicReleaseDetails.get(r.tag);
+  return {
+    ...(row ?? {}),
+    ...r,
+    ...(detail ? {
+      status: detail.status ?? row?.status ?? r.status,
+      finalScore: detail.score ?? row?.finalScore ?? r.finalScore,
+      publishedAt: detail.publishedAt ?? row?.publishedAt ?? r.publishedAt,
+    } : {}),
+  };
+}
+
+function chartScoreInfo(r) {
+  const release = releaseForChartPoint(r);
+  const mine = myInstallScore(release);
+  if (mine != null) {
+    return { score: mine, label: 'My install', global: release.finalScore };
+  }
+  if (release.finalScore == null || Number.isNaN(Number(release.finalScore))) return null;
+  return { score: Number(release.finalScore), label: 'Global', global: null };
+}
+
+function scoreHistoryMode() {
+  return hasMeaningfulInstallProfile() ? 'My install score history' : 'Global score history';
+}
 
 function scoreHistoryPoints() {
   const scored = chartReleases
-    .filter((r) => r.finalScore != null && !Number.isNaN(Number(r.finalScore)))
-    .map((r) => ({ tag: r.tag, score: Number(r.finalScore) }));
+    .map((r) => ({ release: releaseForChartPoint(r), info: chartScoreInfo(r) }))
+    .filter(({ info }) => info && info.score != null && !Number.isNaN(Number(info.score)))
+    .map(({ release, info }) => ({
+      tag: release.tag,
+      score: Number(info.score),
+      label: info.label,
+      global: info.global,
+    }));
   const recent = scored.slice(0, Math.min(SCORE_HISTORY_LIMIT, scored.length));
   return recent.slice().reverse();
 }
@@ -705,6 +1156,7 @@ function chartCoords(points, w, h, pad) {
     y: pad.t + (1 - p.score / SCORE_CHART_MAX) * innerH,
     color: scoreColor10(p.score),
     label: formatScore10(p.score),
+    global: p.global,
   }));
 }
 
@@ -731,7 +1183,7 @@ function scoreHistoryChartSvg(points) {
   const nodes = coords.map((c) =>
     `<g class="score-history__dot" data-tag="${esc(c.tag)}" role="button" tabindex="0" `
     + `aria-label="${esc(c.tag)} score ${esc(c.label)}">`
-    + `<title>${esc(c.tag)} — ${esc(c.label)}/10</title>`
+    + `<title>${esc(c.tag)} — ${esc(c.label)}/10${c.global != null ? ` · global ${formatScore10(c.global)}/10` : ''}</title>`
     + `<text class="score-history__score-label" x="${c.x.toFixed(1)}" y="${(c.y - 14).toFixed(1)}" `
     + `text-anchor="middle" fill="${c.color}">${esc(c.label)}</text>`
     + `<circle cx="${c.x.toFixed(1)}" cy="${c.y.toFixed(1)}" r="5" fill="${c.color}"/>`
@@ -740,7 +1192,7 @@ function scoreHistoryChartSvg(points) {
     + `</g></g>`,
   ).join('');
 
-  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="Install confidence score history">`
+  return `<svg viewBox="0 0 ${w} ${h}" role="img" aria-label="${esc(scoreHistoryMode())}">`
     + grids
     + `<path class="score-history__line" d="${path}"/>`
     + nodes
@@ -760,6 +1212,8 @@ function renderScoreHistory() {
   }
 
   section.hidden = false;
+  const title = document.getElementById('scoreHistoryTitle');
+  if (title) title.textContent = scoreHistoryMode();
   chart.innerHTML = scoreHistoryChartSvg(points);
 
   if (!chart.dataset.bound) {
@@ -786,8 +1240,16 @@ function renderScoreHistory() {
 function focusReleaseTag(tag) {
   const row = [...document.querySelectorAll('.release')].find((r) => r.dataset.tag === tag);
   if (!row) return;
-  document.querySelectorAll('.release.open').forEach((r) => r.classList.remove('open'));
+  document.querySelectorAll('.release.open').forEach((r) => {
+    r.classList.remove('open');
+    r.setAttribute('aria-expanded', 'false');
+    const d = r.nextElementSibling;
+    if (d?.classList.contains('details')) d.hidden = true;
+  });
   row.classList.add('open');
+  row.setAttribute('aria-expanded', 'true');
+  const details = row.nextElementSibling;
+  if (details?.classList.contains('details')) details.hidden = false;
   row.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -812,8 +1274,125 @@ function updateCommandBlockHtml(tag, opts = {}) {
     + `</div></div>`;
 }
 
-function installPanelHtml(tag) {
-  return `<div class="details__inner">${updateCommandBlockHtml(tag)}</div>`;
+function evidenceSectionHtml(title, itemsHtml, note = '') {
+  if (!itemsHtml) return '';
+  const noteHtml = note ? `<div class="evidence__meta">${esc(note)}</div>` : '';
+  return `<section class="evidence"><div class="evidence__title">${esc(title)}</div>${noteHtml}<ul class="evidence__list">${itemsHtml}</ul></section>`;
+}
+
+function safeExternalUrl(url) {
+  try {
+    const u = new URL(url);
+    return u.protocol === 'https:' && u.hostname === 'github.com' ? u.href : '';
+  } catch {
+    return '';
+  }
+}
+
+function advisoryEvidenceHtml(r) {
+  const items = r.advisories?.affected?.items ?? [];
+  if (!items.length) return '';
+  const rows = items.map((a) => {
+    const href = safeExternalUrl(a.url);
+    const id = a.cveId || a.ghsaId || 'Advisory';
+    const meta = [a.severity, a.patchedVersion ? `patched in ${a.patchedVersion}` : '', a.summary].filter(Boolean).join(' · ');
+    const link = href
+      ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(id)}</a>`
+      : `<span>${esc(id)}</span>`;
+    return `<li class="evidence__item">${link}`
+      + (meta ? `<span class="evidence__meta">${esc(meta)}</span>` : '')
+      + `</li>`;
+  }).join('');
+  return evidenceSectionHtml(
+    items.length === 1 ? 'Known advisory' : 'Known advisories',
+    rows,
+    'Version-level; not filtered by install profile.',
+  );
+}
+
+function releaseAfter(dateString) {
+  const t = Date.parse(dateString || '');
+  if (!Number.isFinite(t)) return null;
+  const later = allReleases
+    .filter((r) => Number.isFinite(Date.parse(r.publishedAt)) && Date.parse(r.publishedAt) > t)
+    .sort((a, b) => Date.parse(a.publishedAt) - Date.parse(b.publishedAt));
+  return later[0]?.tag ?? null;
+}
+
+function issueStateLabel(issue) {
+  if (issue.state !== 'closed') return issue.state || '';
+  const tag = releaseAfter(issue.closedAt);
+  if (tag) return `closed before ${tag}`;
+  return allReleases[0]?.tag ? `closed after ${allReleases[0].tag}` : 'closed';
+}
+
+function issueRowHtml(issue, extra = false) {
+  const href = safeExternalUrl(issue.url);
+  const label = `#${issue.number} ${issue.title}`;
+  const link = href
+    ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
+    : `<span>${esc(label)}</span>`;
+  const stateLabel = issueStateLabel(issue);
+  return `<li class="evidence__item"${extra ? ' data-extra-issue hidden' : ''}>${link}`
+    + (stateLabel ? `<span class="evidence__meta">${esc(stateLabel)}</span>` : '')
+    + `</li>`;
+}
+
+function selectedWatchAreaSummaryHtml(r) {
+  const selectedRows = (Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [])
+    .filter((s) => selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
+  if (!selectedRows.length) {
+    return '<li class="evidence__item"><span class="evidence__meta">No watch-area reports found for selected areas.</span></li>';
+  }
+  return selectedRows.map((s) =>
+    '<li class="evidence__item"><span>' + esc(s.label) + '</span><span class="evidence__meta">'
+      + esc(s.count) + (s.count === 1 ? ' watch-area report' : ' watch-area reports')
+      + '; issue details need a refreshed API payload.</span></li>'
+  ).join('');
+}
+
+function issueRowsHtml(issues, visibleCount = 8) {
+  return issues.map((issue, idx) => issueRowHtml(issue, idx >= visibleCount)).join('')
+    + (issues.length > visibleCount
+      ? '<li class="evidence__item"><button type="button" class="evidence__more" data-expanded="false" data-collapsed-label="Show all ' + esc(issues.length) + ' related issues">Show all ' + esc(issues.length) + ' related issues</button></li>'
+      : '');
+}
+
+function issueEvidenceHtml(r) {
+  const detail = publicReleaseDetails.get(r.tag);
+  const selected = selectedProfileSurfaces;
+  const title = selected.size ? 'Related issues for selected areas' : 'Related issues';
+  const issues = evidenceIssuesForRelease(detail);
+  if (selected.size && !issues.length) {
+    return evidenceSectionHtml(title, selectedWatchAreaSummaryHtml(r));
+  }
+  if (!issues.length) return '';
+
+  if (!selected.size) {
+    return evidenceSectionHtml(title, issueRowsHtml(issues));
+  }
+
+  const selectedIssues = issues.filter(issueMatchesSelectedProfile);
+  const generalIssues = issues.filter((i) => !issueHasInstallSurface(i));
+  const selectedHtml = selectedIssues.length
+    ? issueRowsHtml(selectedIssues)
+    : '<li class="evidence__item"><span class="evidence__meta">No watch-area issues found for selected areas.</span></li>';
+  return evidenceSectionHtml(title, selectedHtml)
+    + evidenceSectionHtml(
+      'General issues',
+      generalIssues.length
+        ? issueRowsHtml(generalIssues)
+        : '<li class="evidence__item"><span class="evidence__meta">No untagged/core watch issues found for this release.</span></li>',
+      'Core or untagged serious issues count for every install profile.',
+    );
+}
+
+function installPanelHtml(r) {
+  return `<div class="details__inner">`
+    + updateCommandBlockHtml(r.tag)
+    + advisoryEvidenceHtml(r)
+    + issueEvidenceHtml(r)
+    + `</div>`;
 }
 
 function pickRecommendedRelease(rows) {
@@ -827,6 +1406,17 @@ function bindInstallCopy() {
   if (installCopyBound) return;
   installCopyBound = true;
   document.addEventListener('click', (e) => {
+    const more = e.target.closest('.evidence__more');
+    if (more) {
+      e.stopPropagation();
+      e.preventDefault();
+      const section = more.closest('.evidence');
+      const expanded = more.dataset.expanded === 'true';
+      section?.querySelectorAll('[data-extra-issue]').forEach((el) => { el.hidden = expanded; });
+      more.dataset.expanded = expanded ? 'false' : 'true';
+      more.textContent = expanded ? (more.dataset.collapsedLabel || 'Show all related issues') : 'Show fewer related issues';
+      return;
+    }
     const btn = e.target.closest('.update-cmd__copy');
     if (!btn) return;
     e.stopPropagation();
@@ -890,15 +1480,18 @@ async function api(path, opts) {
 /* ── render releases ──────────────────────────────────────────────────── */
 let allReleases = [];
 let chartReleases = [];
+let publicReleaseDetails = new Map();
 
 async function loadReleases() {
   try {
-    const [releases, history] = await Promise.all([
+    const [releases, history, publicPayload] = await Promise.all([
       api('/releases'),
       api('/releases/history'),
+      api('/public').catch(() => null),
     ]);
     allReleases = releases;
     chartReleases = history;
+    publicReleaseDetails = new Map((publicPayload?.releases ?? []).map((r) => [r.tag, r]));
   }
   catch (e) {
     const msg = `Could not load releases — ${esc(e.message)}`;
@@ -989,18 +1582,23 @@ function renderReleases() {
   const { categorized } = categorizeReleases(rows);
   const byTag = new Map(categorized.map(c => [c.release.tag, c]));
   renderTarget(categorized);
+  renderProfileFilter(rows);
 
   root.innerHTML = '';
 
   rows.forEach(r => {
-    const si  = scoreInfo(r);
+    const si  = displayScoreInfo(r);
     const id  = cssId(r.tag);
     const cat = byTag.get(r.tag) ?? { category: 'normal', reason: '' };
 
     const row = document.createElement('div');
     row.className = 'release release--' + cat.category;
     row.dataset.tag = r.tag;
-    row.style.setProperty('--score-color', si.color);
+    row.tabIndex = 0;
+    row.setAttribute('role', 'button');
+    row.setAttribute('aria-expanded', 'false');
+    row.setAttribute('aria-controls', `det-${id}`);
+    row.style.setProperty('--score-color', si.main.color);
 
     // Only flag a problem when there is one: vulnerable → "known CVE"; otherwise
     // show nothing (no "patched" badge — absence of a flag already means "clean").
@@ -1019,23 +1617,8 @@ function renderReleases() {
     const reasonLine = reasonText
       ? `<span class="release__reason">${esc(reasonText)}</span>` : '';
 
-    // "What it breaks": top 3 named surfaces always shown; the rest fold into a
-    // click-to-expand <details> (a full list runs 14–15 lines on busy releases).
-    const surfaces = Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [];
-    const SURF_TOP = 3;
-    const surfChip = (s) =>
-      `<span class="surf"><i class="surf-ico" style="--m:url('/icons/${s.icon}.svg')"></i>${esc(s.label)}</span>`;
-    const rest = surfaces.slice(SURF_TOP);
-    const surfacesLine = surfaces.length
-      ? `<div class="surfaces" title="Visible regressions this version introduced (still open)">`
-        + `<span class="surf-label">Breaks:</span>`
-        + surfaces.slice(0, SURF_TOP).map(surfChip).join('')
-        + (rest.length
-            ? `<details class="surf-rest"><summary class="surf-more">+${rest.length} more</summary>`
-              + `<div class="surf-rest-items">` + rest.map(surfChip).join('') + `</div></details>`
-            : '')
-        + `</div>`
-      : '';
+    const surfaces = issueBackedSurfaces(r);
+    const surfacesLine = affectedAreasHtml(surfaces);
 
     row.innerHTML = `
       <div class="release__left">
@@ -1048,9 +1631,9 @@ function renderReleases() {
         ${reasonLine}
         ${surfacesLine}
       </div>
-      <div class="release__right">
+      <div class="release__right" title="${esc(si.main.label)}">
         <span class="score-dot"></span>
-        <span class="score-num">${esc(si.num)}</span>
+        <span class="score-stack"><span class="score-num">${esc(si.main.num)}</span>${si.sub ? `<span class="score-sub">${esc(si.sub)}</span>` : ''}</span>
         <svg class="chevron" viewBox="0 0 16 16" fill="none">
           <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5"
                 stroke-linecap="round" stroke-linejoin="round"/>
@@ -1060,9 +1643,15 @@ function renderReleases() {
     const det = document.createElement('div');
     det.className = 'details';
     det.id = `det-${id}`;
-    det.innerHTML = installPanelHtml(r.tag);
+    det.hidden = true;
+    det.innerHTML = installPanelHtml(r);
 
     row.addEventListener('click', () => toggleRelease(row));
+    row.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      toggleRelease(row);
+    });
     // "+N more" toggles its own disclosure — don't let it also open the issue panel.
     row.querySelectorAll('.surf-more').forEach((el) =>
       el.addEventListener('click', (e) => e.stopPropagation()));
@@ -1136,10 +1725,18 @@ function renderTarget(categorized) {
 
 /* ── toggle release row ───────────────────────────────────────────────── */
 function toggleRelease(row) {
+  const details = row.nextElementSibling;
   const opening = !row.classList.contains('open');
-  document.querySelectorAll('.release.open').forEach((r) => r.classList.remove('open'));
+  document.querySelectorAll('.release.open').forEach((r) => {
+    r.classList.remove('open');
+    r.setAttribute('aria-expanded', 'false');
+    const d = r.nextElementSibling;
+    if (d?.classList.contains('details')) d.hidden = true;
+  });
   if (!opening) return;
   row.classList.add('open');
+  row.setAttribute('aria-expanded', 'true');
+  if (details?.classList.contains('details')) details.hidden = false;
 }
 
 /* ── status dot ───────────────────────────────────────────────────────── */
