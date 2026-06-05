@@ -38,6 +38,11 @@ export const SURFACES: Surface[] = [
   // ── providers ──
   { re: /\bollama\b/i,             label: 'Ollama',     icon: 'ollama' },
   { re: /\b(llama\.cpp|llama)\b/i, label: 'Llama',      icon: 'llama' },
+  // Codex MUST precede OpenAI: the `openai-codex` provider (ChatGPT sign-in / OAuth)
+  // is a distinct surface from plain `openai` (API key), and many titles mention both
+  // ("Codex OAuth falls back to direct OpenAI API"). First-match-wins, so without this
+  // ordering ~31% of Codex issues leak into the OpenAI bucket.
+  { re: /\b(openai-codex|codex)\b/i, label: 'Codex',    icon: 'codex' },
   { re: /\bopenai\b/i,             label: 'OpenAI',     icon: 'openai' },
   { re: /\b(anthropic|claude)\b/i, label: 'Claude',     icon: 'claude' },
   { re: /\bgemini\b/i,             label: 'Gemini',     icon: 'gemini' },
@@ -47,7 +52,6 @@ export const SURFACES: Surface[] = [
   { re: /\bminimax\b/i,            label: 'MiniMax',    icon: 'minimax' },
   { re: /\bbedrock\b/i,            label: 'Bedrock',    icon: 'bedrock' },
   { re: /\b(xai|grok)\b/i,         label: 'xAI',        icon: 'xai' },
-  { re: /\bcodex\b/i,              label: 'Codex',      icon: 'codex' },
   { re: /\bmcp\b/i,                label: 'MCP',        icon: 'mcp' },
 ];
 
