@@ -199,7 +199,12 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
-  const allReleases = listReleasesDb(Math.max(config.limits.releases, SCORE_HISTORY_CHART_LIMIT));
+  // Only the focused window (config.limits.releases, default 10) carries full
+  // evidence + My-install scoring. The chart still plots SCORE_HISTORY_CHART_LIMIT
+  // (20) points, but releases 11–20 are frozen rows from past runs: on the client
+  // they have no /public detail, so My-install falls back to their stored global
+  // score — comparative trend context only, not re-filtered per profile.
+  const allReleases = listReleasesDb(config.limits.releases);
 
   const releases = allReleases.map((r) => {
     const all = issuesForVersion(r.tag);

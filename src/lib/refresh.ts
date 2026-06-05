@@ -19,7 +19,6 @@ import {
 } from './releaseNotes';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
-import { SCORE_HISTORY_CHART_LIMIT } from './historyWindow';
 
 // Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
 // back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
@@ -97,7 +96,14 @@ export async function refresh(): Promise<{
     // breaking bullets to be counted. At openclaw's 3:1 beta:stable ratio,
     // ×6 → ~10 stables of headroom past the monitored count. If that ratio ever
     // inverts (more betas per stable), bump the multiplier.
-    const monitoredReleaseCount = Math.max(config.limits.releases, SCORE_HISTORY_CHART_LIMIT);
+    // Monitor only the latest `config.limits.releases` (default 10). This is the
+    // expensive window: it drives the issue-classification cutoff (oldestMonitoredMs
+    // below) and thus how many LLM calls a back-fill / prompt-sweep costs. The score
+    // chart renders up to SCORE_HISTORY_CHART_LIMIT (20) points, but there's no sense
+    // running the long classification pass that wide — the focus is the recent 10.
+    // Chart points 11–20 are intentionally frozen rows already scored in past runs
+    // (served straight from the DB), kept purely as comparative trend context.
+    const monitoredReleaseCount = config.limits.releases;
     const fetched = await listReleases(monitoredReleaseCount * 6);
     const releases = fetched.filter((r) => !r.prerelease).slice(0, monitoredReleaseCount);
     for (const r of releases) {
