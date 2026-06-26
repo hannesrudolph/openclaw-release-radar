@@ -244,6 +244,10 @@ interface OpenAIResp {
   choices: { message: { content: string } }[];
 }
 
+function supportsCustomTemperature(model: string): boolean {
+  return !/^gpt-5(?:\.|-|$)/i.test(model);
+}
+
 function buildUserMessage(
   issue: GhIssue,
   comments: GhComment[],
@@ -298,21 +302,23 @@ export async function classifyIssue(
 ): Promise<IssueClassification> {
   if (!config.openai.apiKey) throw new Error('OPENAI_API_KEY is not set');
 
+  const body: Record<string, unknown> = {
+    model: config.openai.model,
+    response_format: { type: 'json_object' },
+    messages: [
+      { role: 'system', content: SYSTEM_PROMPT },
+      { role: 'user', content: buildUserMessage(issue, comments, knownTags) },
+    ],
+  };
+  if (supportsCustomTemperature(config.openai.model)) body.temperature = 0.1;
+
   const res = await fetch('https://api.openai.com/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       Authorization: `Bearer ${config.openai.apiKey}`,
     },
-    body: JSON.stringify({
-      model: config.openai.model,
-      temperature: 0.1,
-      response_format: { type: 'json_object' },
-      messages: [
-        { role: 'system', content: SYSTEM_PROMPT },
-        { role: 'user', content: buildUserMessage(issue, comments, knownTags) },
-      ],
-    }),
+    body: JSON.stringify(body),
   });
 
   if (!res.ok) {

@@ -76,6 +76,22 @@ http://127.0.0.1:8787
 
 The first refresh can take a few minutes because it backfills GitHub data and classifies issues. Later refreshes only process changed issues.
 
+## Seed From The Old Public API
+
+You can seed local release scores from the old public endpoint:
+
+```bash
+npm run import:public-snapshot
+```
+
+Or pass an explicit URL:
+
+```bash
+npm run import:public-snapshot -- https://isitstable.iclaw.digital/api/public
+```
+
+This is a snapshot import, not a full DB restore. It imports release tags, publish times, scores, statuses, recommendation, score reasons, and issue counts. The public endpoint does not include the full GitHub issue history, comments, labels, advisory rows, release-note bodies, or every classification row, so a normal refresh is still required for a complete local database.
+
 ## Tokens
 
 ### GitHub
