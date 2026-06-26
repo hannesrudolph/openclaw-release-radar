@@ -13,7 +13,7 @@ Source repo: [openclaw/openclaw](https://github.com/openclaw/openclaw)
 Node ≥ 22.5.
 
 ```bash
-cp .env.example .env   # OPENAI_API_KEY required; GITHUB_TOKEN optional
+cp .env.example .env   # OPENAI_API_KEY and GITHUB_TOKEN required
 npm install
 npm run dev            # http://localhost:8787
 ```

@@ -9,7 +9,7 @@
     "build": "tsc",
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --no-warnings --test 'src/lib/*.test.ts'"
+    "test": "tsx --test 'src/lib/*.test.ts'"
   },
   "engines": {
     "node": ">=22.5.0"

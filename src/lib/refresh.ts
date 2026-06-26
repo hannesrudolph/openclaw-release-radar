@@ -2,7 +2,7 @@ import { config } from '../config';
 import { invalidateCache } from './cache';
 import {
   GhIssue,
-  listIssueComments,
+  listIssueCommentsBatch,
   listReleases,
   listSecurityAdvisories,
   paginateIssues,
@@ -259,11 +259,15 @@ export async function refresh(): Promise<{
         toClassify.push(issue);
       }
 
-      // Pass 2: classify pending issues in parallel. Per-issue failures are isolated
-      // — one issue erroring out doesn't kill the rest of the page or the back-fill.
+      // Pass 2: pull recent comments in one GraphQL batch, then classify pending
+      // issues in parallel. Per-issue failures are isolated — one issue erroring
+      // out doesn't kill the rest of the page or the back-fill.
+      const commentsByIssue = await listIssueCommentsBatch(
+        toClassify.filter((issue) => issue.comments > 0).map((issue) => issue.number),
+      );
       await runWithConcurrency(toClassify, CLASSIFY_CONCURRENCY, async (issue) => {
         try {
-          const comments = issue.comments > 0 ? await listIssueComments(issue.number) : [];
+          const comments = commentsByIssue.get(issue.number) ?? [];
           const cls: IssueClassification = await classifyIssue(issue, comments, tags);
           upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
           classifiedCount++;
