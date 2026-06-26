@@ -1,85 +1,52 @@
 # OpenClaw Release Radar
 
-Release Radar answers one question: **which OpenClaw stable release should I install right now?**
+OpenClaw Release Radar is a small dashboard that answers:
 
-It watches a GitHub repository, pulls releases, issues, comments, and security advisory data through GitHub GraphQL, classifies issue impact with OpenAI, stores the results in SQLite, and serves a small dashboard plus JSON API.
+> Which OpenClaw stable release should I install right now?
 
-Live instance: configure your own domain in your deployment.
+It watches `openclaw/openclaw`, pulls releases, issues, comments, and advisory data from GitHub GraphQL, classifies issue impact with OpenAI, stores the result in SQLite, and serves a local web UI plus JSON API.
 
-Default tracked source repo: `openclaw/openclaw`
+![OpenClaw Release Radar screenshot](docs/screenshot.png)
 
-![OpenClaw Release Radar](docs/screenshot.png)
+## Current Status
 
-## What You Need
+This is now maintained from:
+
+```text
+https://github.com/hannesrudolph/openclaw-release-radar
+```
+
+It is intended to be deployed under your own domain. The old `isitstable.iclaw.digital` / `radar.iclaw.digital` references are not part of this setup.
+
+## Quick Start
+
+Requirements:
 
 - Node.js `>=22.5`
 - npm
-- A GitHub token for GraphQL reads
-- An OpenAI API key for issue classification
+- GitHub token
+- OpenAI API key
 
-The app writes its local database to `./data/radar.db` by default.
-
-## 1. Install
-
-```bash
-git clone https://github.com/hannesrudolph/openclaw-release-radar.git
-cd openclaw-release-radar
-npm install
-```
-
-If you already have the repo checked out, just run:
+Install dependencies:
 
 ```bash
 npm install
 ```
 
-## Fork Workflow
-
-This fork is intended to be developed and deployed from `hannesrudolph/openclaw-release-radar`.
-
-Recommended local remotes:
-
-```bash
-git remote -v
-```
-
-Expected shape:
-
-```text
-origin   https://github.com/hannesrudolph/openclaw-release-radar.git (fetch)
-origin   https://github.com/hannesrudolph/openclaw-release-radar.git (push)
-upstream https://github.com/iClawApp/openclaw-release-radar (fetch)
-upstream DISABLED (push)
-```
-
-`origin` is your fork and should be the only push target. `upstream` is optional and fetch-only; keep it only if you want to compare or pull changes from the original project later.
-
-To disable upstream pushes:
-
-```bash
-git remote set-url --push upstream DISABLED
-```
-
-To remove upstream entirely:
-
-```bash
-git remote remove upstream
-```
-
-## 2. Create `.env`
+Create local config:
 
 ```bash
 cp .env.example .env
 ```
 
-Edit `.env` and fill in these required values:
+Edit `.env`:
 
 ```bash
 GITHUB_OWNER=openclaw
 GITHUB_REPO=openclaw
-GITHUB_TOKEN=ghp_your_token_here
+GITHUB_TOKEN=ghp_your_github_token
 
-OPENAI_API_KEY=sk-your_key_here
+OPENAI_API_KEY=sk-your_openai_key
 OPENAI_MODEL=gpt-4o-mini
 
 PORT=8787
@@ -88,45 +55,10 @@ REFRESH_MINUTES=30
 RELEASES_LIMIT=10
 ```
 
-`GITHUB_OWNER` and `GITHUB_REPO` are the repo being analyzed. They are not this dashboard repo unless you intentionally point the radar at itself.
-
-## 3. Get A GitHub Token
-
-The GraphQL API requires authenticated requests.
-
-For the default public `openclaw/openclaw` target, a classic GitHub personal access token with `public_repo` is enough. If you point the radar at a private repo, use a token that can read that repo.
-
-Quick local option if `gh` is already logged in:
-
-```bash
-gh auth status
-gh auth token
-```
-
-Paste that token into `.env` as `GITHUB_TOKEN`.
-
-## 4. Get An OpenAI Key
-
-Create an API key in your OpenAI account and set:
-
-```bash
-OPENAI_API_KEY=sk-your_key_here
-```
-
-The first refresh can classify many issues and may take a few minutes. It can also spend OpenAI API credits. Later refreshes reuse cached classifications and only process changed issues.
-
-## 5. Run Locally
+Run the app:
 
 ```bash
 npm run dev
-```
-
-Expected startup output looks like:
-
-```text
-[radar] listening on http://127.0.0.1:8787
-[radar] watching openclaw/openclaw
-[refresh] every 30 min
 ```
 
 Open:
@@ -135,26 +67,69 @@ Open:
 http://127.0.0.1:8787
 ```
 
-The first page load may show empty or stale-looking data while the startup refresh is running. Check status with:
+The first refresh can take a few minutes because it backfills GitHub data and classifies issues. Later refreshes only process changed issues.
+
+## Tokens
+
+### GitHub
+
+`GITHUB_TOKEN` is required because the app uses GitHub GraphQL.
+
+For the public `openclaw/openclaw` repo, a classic token with `public_repo` is enough. For a private target repo, use a token that can read that repo.
+
+If you already use the GitHub CLI:
 
 ```bash
-curl http://127.0.0.1:8787/api/status
+gh auth status
+gh auth token
 ```
 
-When `refreshing` is `false` and `lastError` is `null`, the latest refresh completed.
+Paste the token into `.env`.
 
-## Useful API Endpoints
+### OpenAI
+
+`OPENAI_API_KEY` is required for issue classification. Without it, GitHub data can be fetched but release scoring will fail.
+
+## Verify It Works
+
+Health check:
 
 ```bash
 curl http://127.0.0.1:8787/api/health
+```
+
+Refresh status:
+
+```bash
 curl http://127.0.0.1:8787/api/status
-curl http://127.0.0.1:8787/api/releases
+```
+
+Main public payload:
+
+```bash
 curl http://127.0.0.1:8787/api/public
 ```
 
-`/api/public` is the main machine-readable answer for "which release should I install?"
+A healthy completed refresh has:
 
-## Build And Run Production Mode
+```json
+{
+  "refreshing": false,
+  "lastError": null
+}
+```
+
+## API
+
+| Endpoint | Purpose |
+| --- | --- |
+| `/api/health` | Basic process and target repo check |
+| `/api/status` | Refresh state and last error |
+| `/api/releases` | Dashboard release data |
+| `/api/releases/history` | Score history |
+| `/api/public` | Main install recommendation payload |
+
+## Development Commands
 
 ```bash
 npm run typecheck
@@ -163,86 +138,43 @@ npm run build
 npm start
 ```
 
+`npm run dev` runs TypeScript directly with watch mode.
+
 `npm start` runs the compiled app from `dist/`.
 
-## Configuration
+## Local Data
 
-| Variable | Required | Default | Meaning |
-| --- | --- | --- | --- |
-| `GITHUB_OWNER` | yes | `openclaw` | GitHub owner/org to analyze |
-| `GITHUB_REPO` | yes | `openclaw` | GitHub repo to analyze |
-| `GITHUB_TOKEN` | yes | none | Token used for GitHub GraphQL reads |
-| `OPENAI_API_KEY` | yes | none | Key used for issue classification |
-| `OPENAI_MODEL` | yes | `gpt-4o-mini` | OpenAI model used for classification |
-| `PORT` | no | `8787` | Local HTTP port |
-| `DB_PATH` | no | `./data/radar.db` | SQLite database path |
-| `REFRESH_MINUTES` | no | `30` | Automatic refresh interval, 1 to 600 |
-| `RELEASES_LIMIT` | no | `10` | Number of stable releases to score |
+The SQLite database defaults to:
 
-## Troubleshooting
-
-### `GITHUB_TOKEN is required`
-
-You did not set `GITHUB_TOKEN` in `.env`, or the process was started from a shell that cannot see it.
-
-### GitHub GraphQL errors
-
-Check that the token is valid:
-
-```bash
-gh auth status
+```text
+./data/radar.db
 ```
 
-Then verify the target repo exists:
-
-```bash
-set -a
-source .env
-set +a
-gh repo view "$GITHUB_OWNER/$GITHUB_REPO"
-```
-
-### `OPENAI_API_KEY is not set`
-
-Set `OPENAI_API_KEY` in `.env`. The app can fetch GitHub data without it, but classification will fail and releases will not score correctly.
-
-### The dashboard is empty
-
-Check refresh state:
-
-```bash
-curl http://127.0.0.1:8787/api/status
-```
-
-If `refreshing` is `true`, wait. If `lastError` has a value, fix that error and restart `npm run dev`.
-
-### Reset local data
-
-Stop the server and remove the SQLite DB:
+To reset local data:
 
 ```bash
 rm -f ./data/radar.db ./data/radar.db-shm ./data/radar.db-wal
 ```
 
-Start the app again:
+Then restart:
 
 ```bash
 npm run dev
 ```
 
-This forces a fresh backfill and may trigger more OpenAI classification work.
+This forces a fresh backfill and may spend additional OpenAI API credits.
 
-## Deploy Notes
+## Deployment
 
-The included GitHub Actions workflow deploys `main` over SSH. It does not care what public domain you use, but the final health check needs to know that domain.
+The included GitHub Actions workflow deploys `main` over SSH.
 
-Set this repository variable or secret in GitHub:
+Set this repo variable or secret to your real domain:
 
 ```text
 DEPLOY_HEALTH_URL=https://your-domain.example/api/health
 ```
 
-Then configure these SSH secrets:
+Set these SSH secrets:
 
 ```text
 DEPLOY_SSH_HOST
@@ -251,21 +183,40 @@ DEPLOY_SSH_USER
 DEPLOY_SSH_KEY
 ```
 
-The workflow runs:
-
-```bash
-npm ci
-npm run typecheck
-npm run build
-```
-
-and then calls the server-side install helper:
+The workflow builds the app, uploads a tarball, and calls this server-side installer:
 
 ```text
 /usr/local/bin/openclaw-release-radar-install-release
 ```
 
-Local development does not require the deploy workflow.
+That installer expects shared runtime config at:
+
+```text
+/opt/openclaw-release-radar/shared/.env
+```
+
+## Git Remote Setup
+
+This repo should push only to your fork:
+
+```text
+origin   https://github.com/hannesrudolph/openclaw-release-radar.git
+```
+
+If you keep the original project as a reference remote, make it fetch-only:
+
+```bash
+git remote set-url --push upstream DISABLED
+```
+
+Current recommended shape:
+
+```text
+origin   https://github.com/hannesrudolph/openclaw-release-radar.git (fetch)
+origin   https://github.com/hannesrudolph/openclaw-release-radar.git (push)
+upstream https://github.com/iClawApp/openclaw-release-radar (fetch)
+upstream DISABLED (push)
+```
 
 ## License
 
