@@ -44,16 +44,23 @@ Edit `.env`:
 ```bash
 GITHUB_OWNER=openclaw
 GITHUB_REPO=openclaw
-GITHUB_TOKEN=ghp_your_github_token
 
-OPENAI_API_KEY=sk-your_openai_key
-OPENAI_MODEL=gpt-4o-mini
+OPENAI_MODEL=gpt-5.5
 
 PORT=8787
 DB_PATH=./data/radar.db
 REFRESH_MINUTES=30
 RELEASES_LIMIT=10
 ```
+
+Secrets can live in your shell/global environment instead of `.env`:
+
+```bash
+GITHUB_PERSONAL_ACCESS_TOKEN=ghp_your_github_token
+OC_OPENAI_API_KEY=sk-your_openai_key
+```
+
+The app also accepts the conventional names `GITHUB_TOKEN` and `OPENAI_API_KEY` if you prefer those.
 
 Run the app:
 
@@ -73,7 +80,7 @@ The first refresh can take a few minutes because it backfills GitHub data and cl
 
 ### GitHub
 
-`GITHUB_TOKEN` is required because the app uses GitHub GraphQL.
+`GITHUB_PERSONAL_ACCESS_TOKEN` or `GITHUB_TOKEN` is required because the app uses GitHub GraphQL.
 
 For the public `openclaw/openclaw` repo, a classic token with `public_repo` is enough. For a private target repo, use a token that can read that repo.
 
@@ -84,11 +91,11 @@ gh auth status
 gh auth token
 ```
 
-Paste the token into `.env`.
+Export the token globally as `GITHUB_PERSONAL_ACCESS_TOKEN`, or put it in `.env` as `GITHUB_TOKEN`.
 
 ### OpenAI
 
-`OPENAI_API_KEY` is required for issue classification. Without it, GitHub data can be fetched but release scoring will fail.
+`OC_OPENAI_API_KEY` or `OPENAI_API_KEY` is required for issue classification. Without it, GitHub data can be fetched but release scoring will fail.
 
 ## Verify It Works
 

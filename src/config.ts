@@ -26,10 +26,10 @@ export const config = {
   github: {
     owner: env('GITHUB_OWNER', 'openclaw'),
     repo: env('GITHUB_REPO', 'openclaw'),
-    token: process.env.GITHUB_TOKEN || '',
+    token: process.env.GITHUB_TOKEN || process.env.GITHUB_PERSONAL_ACCESS_TOKEN || '',
   },
   openai: {
-    apiKey: process.env.OPENAI_API_KEY || '',
+    apiKey: process.env.OPENAI_API_KEY || process.env.OC_OPENAI_API_KEY || '',
     model: env('OPENAI_MODEL', 'gpt-4o-mini'),
   },
   server: {
