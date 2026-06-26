@@ -8,9 +8,9 @@
 <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32x32.png" />
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
-<title>IsItStable — openclaw release radar</title>
+<title>Release Radar — openclaw</title>
 <style>
-/* ── design tokens (iClaw subset) ─────────────────────────────────────── */
+/* ── design tokens ────────────────────────────────────────────────────── */
 :root {
   --space-1:2px; --space-2:4px; --space-3:6px; --space-4:8px;
   --space-5:10px; --space-6:12px; --space-7:16px; --space-8:20px;
@@ -695,14 +695,14 @@ footer a:hover{color:var(--text)}
 <nav class="topbar">
   <a class="topbar__brand" href="#/">
     <span aria-hidden="true">🔍</span>
-    <span><span class="page-hero__brand" style="font-weight:700">IsItStable</span><span style="font-weight:500;color:var(--muted)">.iclaw.digital</span></span>
+    <span><span class="page-hero__brand" style="font-weight:700">Release Radar</span></span>
   </a>
   <div class="topbar__spacer"></div>
   <div class="topbar__updated" id="topbarUpdated" hidden>
     <span id="updatedLabel"></span>
   </div>
   <div class="topbar__nav">
-    <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/hannesrudolph/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
     <a class="api-link" href="/api/public" target="_blank" rel="noopener">API</a>
   </div>
 </nav>
@@ -725,10 +725,10 @@ footer a:hover{color:var(--text)}
       </p>
       <div class="cta-track__actions">
         <a class="btn btn--primary"
-           href="https://github.com/iClawApp/openclaw-release-radar/issues/new?title=Track%20package%3A%20&amp;labels=package-request"
+           href="https://github.com/hannesrudolph/openclaw-release-radar/issues/new?title=Track%20package%3A%20&amp;labels=package-request"
            target="_blank" rel="noopener">Request a Package →</a>
         <a class="btn btn--ghost"
-           href="https://github.com/iClawApp/openclaw-release-radar"
+           href="https://github.com/hannesrudolph/openclaw-release-radar"
            target="_blank" rel="noopener">
           <svg class="btn__gh-ico" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
             <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/>
@@ -776,9 +776,9 @@ footer a:hover{color:var(--text)}
 
 <footer>
   <p>
-    <a href="https://github.com/iClawApp/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
+    <a href="https://github.com/hannesrudolph/openclaw-release-radar" target="_blank" rel="noopener">GitHub</a>
     ·
-    <a href="https://iclaw.digital" target="_blank" rel="noopener">iClaw</a>
+    <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">OpenClaw</a>
     ·
     <a href="/api/public" target="_blank" rel="noopener">API</a>
   </p>
@@ -1701,8 +1701,8 @@ function applyRoute() {
   document.getElementById('viewHome').hidden = onPkg;
   document.getElementById('viewPackage').hidden = !onPkg;
   document.title = onPkg
-    ? 'openclaw — IsItStable'
-    : 'IsItStable — openclaw release radar';
+    ? 'openclaw — Release Radar'
+    : 'Release Radar — openclaw';
   if (onPkg && allReleases.length) renderReleases();
   else if (!onPkg) renderPackageCard();
   if (onPkg) window.scrollTo(0, 0);

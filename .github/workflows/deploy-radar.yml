@@ -1,4 +1,4 @@
-name: Deploy radar.iclaw.digital
+name: Deploy Release Radar
 
 on:
   push:
@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: deploy-radar-iclaw-digital
+  group: deploy-release-radar
   cancel-in-progress: true
 
 jobs:
@@ -19,6 +19,7 @@ jobs:
     env:
       RELEASE_NAME: release-${{ github.sha }}
       RELEASE_TARBALL: openclaw-release-radar.tar.gz
+      HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTH_URL || secrets.DEPLOY_HEALTH_URL }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
@@ -68,8 +69,9 @@ jobs:
 
       - name: Verify public health endpoint
         run: |
+          : "${HEALTHCHECK_URL:?Set DEPLOY_HEALTH_URL to https://your-domain.example/api/health}"
           for _ in $(seq 1 20); do
-            if curl -fsS https://radar.iclaw.digital/api/health; then
+            if curl -fsS "$HEALTHCHECK_URL"; then
               exit 0
             fi
             sleep 3

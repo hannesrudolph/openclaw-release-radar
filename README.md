@@ -4,7 +4,7 @@ Release Radar answers one question: **which OpenClaw stable release should I ins
 
 It watches a GitHub repository, pulls releases, issues, comments, and security advisory data through GitHub GraphQL, classifies issue impact with OpenAI, stores the results in SQLite, and serves a small dashboard plus JSON API.
 
-Live instance: https://radar.iclaw.digital/
+Live instance: configure your own domain in your deployment.
 
 Default tracked source repo: `openclaw/openclaw`
 
@@ -31,6 +31,39 @@ If you already have the repo checked out, just run:
 
 ```bash
 npm install
+```
+
+## Fork Workflow
+
+This fork is intended to be developed and deployed from `hannesrudolph/openclaw-release-radar`.
+
+Recommended local remotes:
+
+```bash
+git remote -v
+```
+
+Expected shape:
+
+```text
+origin   https://github.com/hannesrudolph/openclaw-release-radar.git (fetch)
+origin   https://github.com/hannesrudolph/openclaw-release-radar.git (push)
+upstream https://github.com/iClawApp/openclaw-release-radar (fetch)
+upstream DISABLED (push)
+```
+
+`origin` is your fork and should be the only push target. `upstream` is optional and fetch-only; keep it only if you want to compare or pull changes from the original project later.
+
+To disable upstream pushes:
+
+```bash
+git remote set-url --push upstream DISABLED
+```
+
+To remove upstream entirely:
+
+```bash
+git remote remove upstream
 ```
 
 ## 2. Create `.env`
@@ -201,12 +234,35 @@ This forces a fresh backfill and may trigger more OpenAI classification work.
 
 ## Deploy Notes
 
-The included GitHub Actions workflow deploys `main` to `radar.iclaw.digital`. It expects SSH deploy secrets to be configured in GitHub Actions and runs:
+The included GitHub Actions workflow deploys `main` over SSH. It does not care what public domain you use, but the final health check needs to know that domain.
+
+Set this repository variable or secret in GitHub:
+
+```text
+DEPLOY_HEALTH_URL=https://your-domain.example/api/health
+```
+
+Then configure these SSH secrets:
+
+```text
+DEPLOY_SSH_HOST
+DEPLOY_SSH_PORT
+DEPLOY_SSH_USER
+DEPLOY_SSH_KEY
+```
+
+The workflow runs:
 
 ```bash
 npm ci
 npm run typecheck
 npm run build
+```
+
+and then calls the server-side install helper:
+
+```text
+/usr/local/bin/openclaw-release-radar-install-release
 ```
 
 Local development does not require the deploy workflow.
