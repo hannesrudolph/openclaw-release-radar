@@ -26,6 +26,12 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /if \(n >= 5\) return 'var\(--warn\)'/);
   });
 
+  it('safe-to-install wording is limited to recommended releases', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    assert.match(html, /if \(local\?\.recommended\)[\s\S]*release looks safe to install/);
+    assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed hard install gates/);
+  });
+
   it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {
     const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
     assert.match(script, /--allow-overwrite-local-releases/);

@@ -3,6 +3,8 @@ import { chromium } from 'playwright';
 const base = (process.env.API_BASE || process.argv[2] || 'http://127.0.0.1:8787').replace(/\/$/, '');
 
 const releases = await json('/api/releases');
+const publicPayload = await json('/api/public');
+const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
 const eligibleNonRecommended = releases.find((r) => r.status === 'eligible' && !r.recommended);
 if (!eligibleNonRecommended) throw new Error('No eligible non-recommended release available for UI smoke');
 
@@ -18,6 +20,11 @@ for (const release of releases) {
   }
 }
 if (!fixCreditTag) throw new Error('No release exposes releaseFixCredit for UI smoke');
+const publicDetail = publicByTag.get(fixCreditTag);
+const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
+if (!relatedIssue?.number || !relatedIssue?.url) {
+  throw new Error(`No public related issue details available for ${fixCreditTag}`);
+}
 
 const browser = await chromium.launch({ headless: true });
 const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
@@ -44,6 +51,8 @@ try {
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR is reachable from this release tag.')
     .waitFor();
+  await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
+  await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {
@@ -56,6 +65,9 @@ try {
   const normalText = await normalPanel.innerText();
   if (normalText.includes('The release is eligible and recommended.')) {
     throw new Error('eligible non-recommended breakdown used recommended wording');
+  }
+  if (normalText.includes('release looks safe to install')) {
+    throw new Error('eligible non-recommended breakdown used safe-to-install wording');
   }
 
   console.log(`UI smoke passed: fix credit ${fixCreditTag}; eligible non-recommended ${eligibleNonRecommended.tag}`);

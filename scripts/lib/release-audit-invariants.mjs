@@ -192,6 +192,11 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, publicRelease.scoredAt === release.scored_at,
         `public scoredAt (${publicRelease.scoredAt}) must match DB scored_at (${release.scored_at})`);
       verifyScoreAuditSummary({ failures, tag: release.tag, summary: publicRelease.scoreAudit });
+      const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
+      if (publicRelease.totalAttributedIssues > 0) {
+        expect(failures, release.tag, issueCount > 0,
+          'public release with attributed issues must expose capped issue summaries');
+      }
     }
 
     const comparison = comparisonByTag.get(release.tag);

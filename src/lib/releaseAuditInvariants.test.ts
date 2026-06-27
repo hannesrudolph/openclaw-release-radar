@@ -70,6 +70,8 @@ describe('verifyReleaseAudit', () => {
             recommended: true,
             scoredAt: 't',
             scoreAudit,
+            totalAttributedIssues: 1,
+            issues: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
           }],
         };
       }
