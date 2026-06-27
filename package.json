@@ -14,6 +14,7 @@
     "ingest:fix-provenance": "tsx scripts/ingest-fix-provenance.mjs",
     "check:release-pr-reachability": "tsx scripts/check-release-pr-reachability.mjs",
     "analyze:closure-proofs": "tsx scripts/analyze-closure-proofs.mjs",
+    "verify:release-audit": "tsx scripts/verify-release-audit-invariants.mjs",
     "import:public-snapshot": "tsx scripts/import-public-snapshot.mjs"
   },
   "engines": {

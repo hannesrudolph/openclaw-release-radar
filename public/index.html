@@ -1807,7 +1807,8 @@ function whyNotTenHtml(local) {
   const checks = gate.releaseChecks;
   if (checks?.failure === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed checks.`);
   if (artifact?.verified) positives.push('The npm package integrity, tarball, and release SHA match.');
-  if (local?.status === 'eligible') positives.push('The release is eligible and recommended.');
+  if (local?.recommended) positives.push('The release is eligible and recommended.');
+  else if (local?.status === 'eligible') positives.push('The release passed hard install gates.');
 
   return '<div class="score-explain">'
     + '<div class="score-explain__title">Why not 10?</div>'

@@ -318,6 +318,71 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.verifiedFixedForRelease('v1').map((row: any) => row.number), [1]);
   });
 
+  it('does not carry reachable fix credit across release windows', async () => {
+    const db = await freshDb('verified-window');
+    seedRelease(db, 'v-old', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v-new', '2026-06-10T00:00:00Z');
+    seedIssue(db, 41, '2026-06-11T00:00:00Z', '2026-06-10T12:00:00Z');
+    seedClosure(db, 41, 'COMPLETED', '2026-06-11T00:00:00Z');
+    seedPr(db, 241, true);
+    db.upsertIssuePrLink({
+      issue_number: 41,
+      pr_number: 241,
+      source: 'ClosureComment.fixProof',
+      will_close_target: null,
+      referenced_at: '2026-06-11T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-old',
+      pr_number: 241,
+      tag_commit_oid: 'v-old-commit',
+      merge_commit_oid: 'merge-241',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-new',
+      pr_number: 241,
+      tag_commit_oid: 'v-new-commit',
+      merge_commit_oid: 'merge-241',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-old').map((row: any) => row.number), []);
+    assert.deepEqual(db.verifiedFixedForRelease('v-new').map((row: any) => row.number), [41]);
+  });
+
+  it('does not count neutral completed closures as stability fix credit', async () => {
+    const db = await freshDb('neutral-fix-credit');
+    seedRelease(db, 'v-neutral', '2026-10-01T00:00:00Z');
+    seedIssue(db, 51, '2026-10-02T00:00:00Z', '2026-10-01T12:00:00Z');
+    db.upsertClassification(51, classification({ sentiment: 'neutral', severity: 'low' }), '2026-10-02T00:00:00Z', 1);
+    seedClosure(db, 51, 'COMPLETED', '2026-10-02T00:00:00Z');
+    seedPr(db, 251, true);
+    db.upsertIssuePrLink({
+      issue_number: 51,
+      pr_number: 251,
+      source: 'ClosureComment.fixProof',
+      will_close_target: null,
+      referenced_at: '2026-10-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-neutral',
+      pr_number: 251,
+      tag_commit_oid: 'v-neutral-commit',
+      merge_commit_oid: 'merge-251',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-neutral').map((row: any) => row.number), []);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-neutral').map((row: any) => row.number), [51]);
+  });
+
   it('credits closure-comment fix proof only when merged and reachable', async () => {
     const db = await freshDb('comment-mentioned-pr');
     seedRelease(db, 'v-comment');

@@ -101,6 +101,12 @@ The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCou
 
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
+Run the audit invariant verifier after refreshes:
+
+```bash
+npm run verify:release-audit
+```
+
 ## Release Checks
 
 The model reads the release tag commit's GitHub `statusCheckRollup`.

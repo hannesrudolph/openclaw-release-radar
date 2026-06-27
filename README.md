@@ -152,6 +152,13 @@ Score review:
 curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 ```
 
+Release audit invariant check:
+
+```bash
+npm run verify:release-audit
+npm run verify:release-audit -- --api-base http://127.0.0.1:8787
+```
+
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
 A healthy completed refresh has:
@@ -179,6 +186,7 @@ A healthy completed refresh has:
 npm run typecheck
 npm test
 npm run build
+npm run verify:release-audit
 npm run analyze:closure-proofs -- v2026.6.10
 npm start
 ```

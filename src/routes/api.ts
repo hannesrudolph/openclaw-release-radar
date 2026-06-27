@@ -262,7 +262,8 @@ api.get('/releases/:tag/review', (req, res) => {
   const audit = getReleaseScoreAudit(tag);
   const gateEvidence = parseJson(audit?.gate_evidence_json, null) as any;
   const closureProof = closureProofPayload(tag);
-  if (gateEvidence?.fixProvenance && closureProof) {
+  if (gateEvidence && closureProof) {
+    gateEvidence.fixProvenance ??= {};
     gateEvidence.fixProvenance.closureProof = closureProof;
     gateEvidence.fixProvenance.releaseFixCredit = {
       countedClosedCount: closureProof.creditedCount,

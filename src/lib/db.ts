@@ -1213,7 +1213,10 @@ export function closedDuringReign(tag: string): JoinedIssue[] {
 }
 
 const verifiedFixedForReleaseStmt = db.prepare(`
-WITH latest_closure AS (
+WITH target AS (
+  SELECT * FROM releases WHERE tag=?
+),
+latest_closure AS (
   SELECT issue_number, MAX(closed_at) AS closed_at
   FROM issue_closure_events
   GROUP BY issue_number
@@ -1231,12 +1234,22 @@ SELECT DISTINCT i.*,
        c.confidence, c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
+JOIN target
 JOIN final_closure e ON e.issue_number = i.number
 JOIN issue_pr_links l ON l.issue_number = i.number
 JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-JOIN release_pr_reachability rpr ON rpr.tag = ? AND rpr.pr_number = p.pr_number
+JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
 WHERE
-  e.state_reason = 'COMPLETED'
+  target.published_at IS NOT NULL
+  AND i.closed_at IS NOT NULL
+  AND i.closed_at >= target.published_at
+  AND i.closed_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+        '9999-12-31T23:59:59Z'
+      )
+  AND c.sentiment = 'negative'
+  AND e.state_reason = 'COMPLETED'
   AND p.merged = 1
   AND rpr.status = 'reachable'
   AND ${creditedFixLinkSql('l')}
@@ -1283,6 +1296,7 @@ WHERE
     JOIN pull_request_fixes p ON p.pr_number = l.pr_number
     JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
     WHERE e.issue_number = i.number
+      AND c.sentiment = 'negative'
       AND e.state_reason = 'COMPLETED'
       AND p.merged = 1
       AND rpr.status = 'reachable'
