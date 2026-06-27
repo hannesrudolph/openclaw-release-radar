@@ -852,11 +852,12 @@ function formatScore10(s) {
   return Number(s).toFixed(1);
 }
 
-function scoreColor10(s) {
+function scoreColor10(s, band = null) {
+  if (band) return scoreInfo({ finalScore: s, band }).color;
   if (s == null || Number.isNaN(Number(s))) return 'var(--muted)';
   const n = Number(s);
   if (n >= 7) return 'var(--ok)';
-  if (n >= 5) return 'var(--warn)';
+  if (n >= 5.5) return 'var(--warn)';
   return 'var(--danger)';
 }
 
@@ -1886,9 +1887,7 @@ function installPanelHtml(r) {
 }
 
 function pickRecommendedRelease(rows) {
-  return rows.find((r) => r.recommended)
-    ?? rows.find((r) => r.status === 'eligible' && r.finalScore != null)
-    ?? rows[0];
+  return rows.find((r) => r.recommended) ?? null;
 }
 
 let installCopyBound = false;
@@ -1932,16 +1931,7 @@ function bindInstallCopy() {
 function pickBestAlternative(rows, latest) {
   const rec = rows.find((r) => r.recommended);
   if (rec && rec.tag !== latest.tag) return rec;
-  const latestScore = latest.finalScore;
-  if (latestScore == null) return null;
-  return rows
-    .filter((r) =>
-      r.tag !== latest.tag &&
-      r.status === 'eligible' &&
-      r.finalScore != null &&
-      r.finalScore > latestScore,
-    )
-    .sort((a, b) => b.finalScore - a.finalScore)[0] ?? null;
+  return null;
 }
 
 function isPackageView() {
@@ -2020,13 +2010,13 @@ function renderPackageCard() {
   const recommended = pickRecommendedRelease(allReleases);
   const bestAlt = pickBestAlternative(allReleases, latest);
   const latestScore = formatScore10(latest.finalScore);
-  const latestColor = scoreColor10(latest.finalScore);
+  const latestColor = scoreColor10(latest.finalScore, latest.band);
 
   const altBlock = bestAlt
     ? `<div class="pkg-card__alt">`
       + `<span class="pkg-card__alt-label">Best bet</span>`
       + `<span class="pkg-card__alt-tag">${esc(bestAlt.tag)}</span>`
-      + `<span class="pkg-card__alt-score" style="color:${scoreColor10(bestAlt.finalScore)}">`
+      + `<span class="pkg-card__alt-score" style="color:${scoreColor10(bestAlt.finalScore, bestAlt.band)}">`
       + `${formatScore10(bestAlt.finalScore) ?? '—'}<span class="pkg-card__score-denom">/10</span>`
       + `</span></div>`
     : '';
@@ -2051,7 +2041,7 @@ function renderPackageCard() {
         </div>
         ${altBlock}
       </a>
-      <div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>
+      ${recommended ? `<div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>` : '<div class="pkg-card__cmd state">No safe target right now</div>'}
     </div>`;
   bindInstallCopy();
 }
@@ -2162,7 +2152,7 @@ function renderReleases() {
  * The UI just maps each release's status into a display category + reason:
  *   - 'skip'        : known CVE, or the maintainers hotfixed it
  *   - 'too-new'     : younger than the settle window (status 'wait')
- *   - 'recommended' : the one release the server picked (newest eligible ≥7)
+ *   - 'recommended' : the one release the server picked
  *   - 'normal'      : eligible but not the pick — its score speaks for itself
  */
 function categorizeReleases(rows) {
