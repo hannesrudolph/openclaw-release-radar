@@ -22,6 +22,7 @@ import {
 } from './releaseNotes';
 import { verifyNpmArtifact } from './npmRegistry';
 import { verifyEvidenceReportUrl } from './releaseEvidence';
+import { analyzeClosureProofsForRelease } from './closureProofAnalysis';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 
@@ -734,6 +735,15 @@ export async function refresh(): Promise<{
         issue_evidence_json: JSON.stringify(s.debtEvidence),
         gate_evidence_json: JSON.stringify(s.gateEvidence),
       });
+    }
+
+    for (const s of scored) {
+      try {
+        const proof = await analyzeClosureProofsForRelease(s.rel.tag);
+        console.log(`[closure-proof] ${s.rel.tag}: ${proof.analyzed} analyzed`);
+      } catch (e) {
+        console.warn(`[closure-proof] ${s.rel.tag} failed (continuing): ${(e as Error).message}`);
+      }
     }
 
     lastRefreshAt = new Date().toISOString();

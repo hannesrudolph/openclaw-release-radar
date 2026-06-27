@@ -84,6 +84,8 @@ The closure proof analyzer classifies every closed-but-not-credited issue into o
 
 Only `fixed_in_release` receives fix credit. Other buckets explain closure context without improving the release score.
 
+Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
+
 ## Release Checks
 
 The model reads the release tag commit's GitHub `statusCheckRollup`.

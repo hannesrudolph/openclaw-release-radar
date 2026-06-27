@@ -751,6 +751,11 @@ export function upsertIssueClosureProof(input: IssueClosureProofInput): void {
   upsertIssueClosureProofStmt.run({ ...input, checked_at: new Date().toISOString() });
 }
 
+const deleteIssueClosureProofsForReleaseStmt = db.prepare(`DELETE FROM issue_closure_proofs WHERE release_tag=?`);
+export function deleteIssueClosureProofsForRelease(releaseTag: string): void {
+  deleteIssueClosureProofsForReleaseStmt.run(releaseTag);
+}
+
 export interface IssueClosureProofRow extends IssueClosureProofInput {
   checked_at: string;
 }

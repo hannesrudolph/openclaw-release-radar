@@ -180,6 +180,8 @@ npm start
 
 `npm start` runs the compiled app from `dist/`.
 
+Refresh computes closure proof automatically. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging.
+
 ## Local Data
 
 The SQLite database defaults to:
