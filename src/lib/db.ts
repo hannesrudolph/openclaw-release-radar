@@ -595,6 +595,16 @@ export function getReleaseScoreAudit(tag: string): ReleaseScoreAuditRow | undefi
   return getReleaseScoreAuditStmt.get(tag) as ReleaseScoreAuditRow | undefined;
 }
 
+const updateReleaseScoreAuditGateEvidenceStmt = db.prepare(`
+UPDATE release_score_audits
+SET gate_evidence_json=?
+WHERE release_tag=?
+`);
+
+export function updateReleaseScoreAuditGateEvidence(tag: string, gateEvidenceJson: string): void {
+  updateReleaseScoreAuditGateEvidenceStmt.run(gateEvidenceJson, tag);
+}
+
 export interface ReleaseCommitInput {
   tag: string;
   tag_commit_oid: string | null;

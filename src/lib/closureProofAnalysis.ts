@@ -2,6 +2,7 @@ import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsert
 import { classifyClosureProof, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
 import { closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch } from './github';
+import { persistClosureProofInScoreAudit } from './closureProofPayload';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -185,6 +186,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     });
     counts.set(adjusted.status, (counts.get(adjusted.status) ?? 0) + 1);
   }
+  persistClosureProofInScoreAudit(releaseTag);
 
   return {
     releaseTag,

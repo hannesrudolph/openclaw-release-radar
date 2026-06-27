@@ -99,6 +99,8 @@ The API exposes a coherent `releaseFixCredit` object:
 
 The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCount`.
 
+After closure proof analysis, the same `closureProof` and `releaseFixCredit` payload is persisted back into `release_score_audits.gate_evidence_json` and exposed through `/review` and `/comparison`.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 Run the audit invariant verifier after refreshes:

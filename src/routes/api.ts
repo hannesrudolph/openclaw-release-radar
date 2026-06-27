@@ -9,8 +9,6 @@ import {
   openedDuringReign,
 } from '../lib/refresh';
 import {
-  closureProofExamples,
-  closureProofSummary,
   comparisonReleases,
   getLastScoredAt,
   getRelease,
@@ -19,6 +17,7 @@ import {
   listAdvisories,
   type AdvisoryRow,
 } from '../lib/db';
+import { enrichGateEvidenceWithClosureProof } from '../lib/closureProofPayload';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, type InstallStatus } from '../lib/score';
 import { surfaceOf } from '../lib/surfaces';
@@ -235,7 +234,7 @@ api.get('/comparison', (_req, res) => {
         modelVersion: audit?.score_model_version ?? null,
         components: parseJson(audit?.components_json, null),
         input: parseJson(audit?.input_json, null),
-        gateEvidence: enrichedGateEvidence(release.tag, parseJson(audit?.gate_evidence_json, null)),
+        gateEvidence: enrichGateEvidenceWithClosureProof(release.tag, parseJson(audit?.gate_evidence_json, null)),
       },
       upstream,
       delta: {
@@ -260,7 +259,7 @@ api.get('/releases/:tag/review', (req, res) => {
   const snapshot = latestComparisonSnapshot();
   const upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   const audit = getReleaseScoreAudit(tag);
-  const gateEvidence = enrichedGateEvidence(tag, parseJson(audit?.gate_evidence_json, null));
+  const gateEvidence = enrichGateEvidenceWithClosureProof(tag, parseJson(audit?.gate_evidence_json, null));
   res.json({
     tag,
     local: {
@@ -282,50 +281,6 @@ api.get('/releases/:tag/review', (req, res) => {
     upstream: upstream ? { ...upstream, snapshot } : null,
   });
 });
-
-function enrichedGateEvidence(tag: string, gateEvidence: any) {
-  const closureProof = closureProofPayload(tag);
-  if (gateEvidence && closureProof) {
-    gateEvidence.fixProvenance ??= {};
-    gateEvidence.fixProvenance.closureProof = closureProof;
-    gateEvidence.fixProvenance.releaseFixCredit = {
-      countedClosedCount: closureProof.creditedCount,
-      notCountedClosedCount: closureProof.notCreditedCount,
-      analyzedClosedCount: closureProof.analyzedClosedCount,
-    };
-  }
-  return gateEvidence;
-}
-
-function closureProofPayload(tag: string) {
-  const summaryRows = closureProofSummary(tag);
-  if (!summaryRows.length) return null;
-  const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
-  const notCreditedCount = summaryRows
-    .filter((row) => row.status !== 'fixed_in_release')
-    .reduce((sum, row) => sum + row.count, 0);
-  const creditedCount = byStatus.fixed_in_release ?? 0;
-  const examples = closureProofExamples(tag, 30).map((row) => ({
-    number: row.issue_number,
-    title: row.title,
-    url: row.html_url,
-    closedAt: row.closed_at,
-    status: row.status,
-    summary: row.summary,
-    sentiment: row.sentiment,
-    severity: row.severity,
-    functionality: row.functionality,
-    checkedAt: row.checked_at,
-    evidence: parseJson(row.evidence_json, {}),
-  }));
-  return {
-    creditedCount,
-    notCreditedCount,
-    analyzedClosedCount: creditedCount + notCreditedCount,
-    byStatus,
-    examples,
-  };
-}
 
 // ── Public API ────────────────────────────────────────────────────────────────
 // Single endpoint answering "which stable should I install right now?".

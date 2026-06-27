@@ -95,13 +95,29 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
 
     const audit = reader.getReleaseScoreAudit(tag);
     if (audit) {
-      const gate = parseJson(audit.gate_evidence_json, {});
-      const fix = gate.fixProvenance ?? {};
-      expect(failures, tag, fix.verifiedFixedCount === verified.length,
-        `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
-      expect(failures, tag, fix.unverifiedClosedCount === unverified.length,
-        `audit unverifiedClosedCount (${fix.unverifiedClosedCount}) must match unverifiedClosedForRelease (${unverified.length})`);
-    } else {
+    const gate = parseJson(audit.gate_evidence_json, {});
+    const fix = gate.fixProvenance ?? {};
+    expect(failures, tag, fix.verifiedFixedCount === verified.length,
+      `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
+    expect(failures, tag, fix.unverifiedClosedCount === unverified.length,
+      `audit unverifiedClosedCount (${fix.unverifiedClosedCount}) must match unverifiedClosedForRelease (${unverified.length})`);
+    if (proofRows.length) {
+      expect(failures, tag, !!fix.closureProof && !!fix.releaseFixCredit,
+        'persisted audit gateEvidence must include closureProof and releaseFixCredit when proof rows exist');
+      if (fix.closureProof && fix.releaseFixCredit) {
+        expect(failures, tag, fix.releaseFixCredit.countedClosedCount === fixedProof.length,
+          `persisted countedClosedCount (${fix.releaseFixCredit.countedClosedCount}) must match fixed_in_release proof rows (${fixedProof.length})`);
+        expect(failures, tag, fix.releaseFixCredit.notCountedClosedCount === notCountedProof.length,
+          `persisted notCountedClosedCount (${fix.releaseFixCredit.notCountedClosedCount}) must match non-fixed proof rows (${notCountedProof.length})`);
+        expect(failures, tag, fix.releaseFixCredit.analyzedClosedCount === proofRows.length,
+          `persisted analyzedClosedCount (${fix.releaseFixCredit.analyzedClosedCount}) must match proof rows (${proofRows.length})`);
+        expect(failures, tag, fix.closureProof.creditedCount === fixedProof.length,
+          `persisted closureProof creditedCount (${fix.closureProof.creditedCount}) must match fixed proof rows (${fixedProof.length})`);
+        expect(failures, tag, fix.closureProof.notCreditedCount === notCountedProof.length,
+          `persisted closureProof notCreditedCount (${fix.closureProof.notCreditedCount}) must match non-fixed proof rows (${notCountedProof.length})`);
+      }
+    }
+  } else {
       expect(failures, tag, false, 'release score audit row is missing');
     }
   }

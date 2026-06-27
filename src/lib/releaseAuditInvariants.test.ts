@@ -24,7 +24,16 @@ function reader(overrides: Partial<{
         stateReasons: ['COMPLETED'],
       }),
     }],
-    audit: { gate_evidence_json: JSON.stringify({ fixProvenance: { verifiedFixedCount: 1, unverifiedClosedCount: 0 } }) },
+    audit: {
+      gate_evidence_json: JSON.stringify({
+        fixProvenance: {
+          verifiedFixedCount: 1,
+          unverifiedClosedCount: 0,
+          closureProof: { creditedCount: 1, notCreditedCount: 0 },
+          releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+        },
+      }),
+    },
     ...overrides,
   };
   return {
@@ -86,7 +95,16 @@ describe('verifyReleaseAudit', () => {
   it('fails when audit fix counts drift from verified queries', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
-        audit: { gate_evidence_json: JSON.stringify({ fixProvenance: { verifiedFixedCount: 2, unverifiedClosedCount: 0 } }) },
+        audit: {
+          gate_evidence_json: JSON.stringify({
+            fixProvenance: {
+              verifiedFixedCount: 2,
+              unverifiedClosedCount: 0,
+              closureProof: { creditedCount: 1, notCreditedCount: 0 },
+              releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
       }),
     });
     assert.equal(result.failures.length, 1);
@@ -104,7 +122,16 @@ describe('verifyReleaseAudit', () => {
           status: 'duplicate_to_open_canonical',
           evidence_json: JSON.stringify({ canonicalResolution: { terminalIssue: { state: 'closed' } } }),
         }],
-        audit: { gate_evidence_json: JSON.stringify({ fixProvenance: { verifiedFixedCount: 0, unverifiedClosedCount: 1 } }) },
+        audit: {
+          gate_evidence_json: JSON.stringify({
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: { creditedCount: 0, notCreditedCount: 1 },
+              releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
       }),
     });
     assert.equal(result.failures.length, 1);
