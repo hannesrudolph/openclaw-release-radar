@@ -41,7 +41,15 @@ const scored = releases.map((rel, idx) => {
   const fixedNumbers = new Set(fixed.map(r => r.number));
   const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
   const scoreState = r => fixedNumbers.has(r.number) ? 'closed' : (r.state === 'open' ? 'open' : 'closed-unverified');
-  const scoredIssue = r => ({ ...classify(r), labels: safeLabels(r.labels) });
+  const scoredIssue = r => ({
+    ...classify(r),
+    issueNumber: r.number,
+    duplicateCluster: r.duplicate_cluster,
+    author: r.author,
+    isBot: r.is_bot,
+    comments: r.comments,
+    labels: safeLabels(r.labels),
+  });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
   const opened = countCS(oReign), closed = countCS(fixed);
   const isFelt = c => c.sentiment==='negative' && ['core','integration','provider'].includes(c.functionality) && (c.severity==='critical'||c.severity==='high');

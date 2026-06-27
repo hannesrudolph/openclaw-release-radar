@@ -256,6 +256,47 @@ describe('openDebtLoad — current issue debt', () => {
     assert.equal(repeated, one);
   });
 
+  it('uses duplicate-cluster reporter breadth as field/community evidence', () => {
+    const clustered = openDebtLoad([
+      dc({
+        issueNumber: 201,
+        duplicateCluster: 'reported-by-two-users',
+        author: 'alice',
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+      dc({
+        issueNumber: 202,
+        duplicateCluster: 'reported-by-two-users',
+        author: 'bob',
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.ok(clustered.verified > 0);
+  });
+
+  it('uses substantial discussion as field/community evidence for source-repro findings', () => {
+    const discussed = openDebtLoad([
+      dc({
+        issueNumber: 203,
+        comments: 6,
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.ok(discussed.verified > 0);
+  });
+
   it('reduces debt for confirmed workarounds', () => {
     const blocker = { releaseLocal: true, labels: ['P0'], functionality: 'core', severity: 'high', scope: 'broad' };
     const none = openDebtLoad([dc({ ...blocker, workaroundStatus: 'none' })]).verified;
@@ -385,6 +426,18 @@ describe('openDebtLoad — current issue debt', () => {
       }),
     ]);
     assert.equal(load, 0);
+  });
+
+  it('counts source-repro clusters as field-visible only with reporter breadth', () => {
+    const solo = feltLoad([
+      dc({ labels: ['clawsweeper:source-repro'], author: 'alice' }),
+    ]);
+    const clustered = feltLoad([
+      dc({ labels: ['clawsweeper:source-repro'], author: 'alice', duplicateCluster: 'same-visible-bug' }),
+      dc({ labels: ['clawsweeper:source-repro'], author: 'bob', duplicateCluster: 'same-visible-bug' }),
+    ]);
+    assert.equal(solo, 0);
+    assert.ok(clustered > 0);
   });
 });
 

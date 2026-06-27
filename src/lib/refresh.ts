@@ -43,6 +43,7 @@ import {
   cveDecayLoad,
   explainOpenDebtLoad,
   feltLoad,
+  feltSignalMask,
   installConfidence,
   isFeltSignal,
   pickRecommended,
@@ -399,10 +400,15 @@ export async function refresh(): Promise<{
       };
       const feltInput = (row: typeof attributed[number]) => ({
         ...classify(row),
+        issueNumber: row.number,
+        duplicateCluster: row.duplicate_cluster,
+        author: row.author,
+        isBot: row.is_bot,
+        comments: row.comments,
         labels: safeParseLabels(row.labels),
       });
       const debtInputs = attributed.map((row) => ({
-          ...classify(row),
+          ...feltInput(row),
           issueNumber: row.number,
           // Artifact-scoped scoring: reachable fixes remove debt. Closed issues
           // without reachable-fix proof stay visible in provenance review but do
@@ -412,20 +418,22 @@ export async function refresh(): Promise<{
           updatedAt: row.updated_at,
           affectsVersion: row.affects_version,
           releaseLocal: rel.published_at ? Date.parse(row.created_at) >= Date.parse(rel.published_at) : false,
-          labels: safeParseLabels(row.labels),
         }));
       const activeDebt = explainOpenDebtLoad(debtInputs);
       // core-serious counts: kept for the informational API/DB stats.
       const openedSerious = countCoreSerious(openedReign);
       const closedSerious = countCoreSerious(verifiedFixed);
       // visible-bug ("felt") reach-weighted load drives the score's regression term.
-      const feltOpenedWeight = feltLoad(openedReign.map(feltInput));
+      const openedFeltInputs = openedReign.map(feltInput);
+      const openedFeltMask = feltSignalMask(openedFeltInputs);
+      const openedFeltRows = openedReign.filter((_, rowIndex) => openedFeltMask[rowIndex]);
+      const feltOpenedWeight = feltLoad(openedFeltInputs);
       const feltClosedWeight = feltLoad(verifiedFixed.map(feltInput));
       // WHAT it breaks: still-open visible regressions introduced during the reign,
       // grouped by named surface (Discord, Ollama, …) for the UI.
       const brokenSurfaces = JSON.stringify(
         topBrokenSurfaces(
-          openedReign.filter(isOpenFeltSeriousIssue).map((r) => r.title),
+          openedFeltRows.map((r) => r.title),
         ),
       );
       const cve = cveFor(rel.tag);
@@ -459,6 +467,8 @@ export async function refresh(): Promise<{
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           closedAt: row.closed_at,
+          author: row.author,
+          comments: row.comments,
           labels: safeParseLabels(row.labels),
           affectsVersion: row.affects_version,
           duplicateCluster: row.duplicate_cluster,
@@ -478,8 +488,7 @@ export async function refresh(): Promise<{
           .filter((item) => item.tier === 'stale')
           .slice(0, 25)
           .map((item) => ({ ...item, issue: summarizeIssue(item.issueNumber ? issueByNumber.get(item.issueNumber) : undefined) })),
-        openedFeltSerious: openedReign
-          .filter(isOpenFeltSeriousIssue)
+        openedFeltSerious: openedFeltRows
           .slice(0, 25)
           .map((row) => summarizeIssue(row)),
         verifiedFixed: verifiedFixed
@@ -620,7 +629,15 @@ export function classifyIssueRow(row: ReturnType<typeof issuesForVersion>[number
 
 export function isOpenFeltSeriousIssue(row: ReturnType<typeof issuesForVersion>[number]): boolean {
   const c = classifyIssueRow(row);
-  return row.state === 'open' && isFeltSignal({ ...c, labels: safeParseLabels(row.labels) });
+  return row.state === 'open' && isFeltSignal({
+    ...c,
+    issueNumber: row.number,
+    duplicateCluster: row.duplicate_cluster,
+    author: row.author,
+    isBot: row.is_bot,
+    comments: row.comments,
+    labels: safeParseLabels(row.labels),
+  });
 }
 
 export { getRelease, issuesForVersion, listReleasesDb, openedDuringReign };

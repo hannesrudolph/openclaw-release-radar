@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v4-field-risk';
+export const SCORE_MODEL_VERSION = 'evidence-v5-community-risk';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -97,7 +97,17 @@ export interface InstallConfidence {
   reason: string;
 }
 
-export interface FeltClassification {
+interface IssueSignalFields {
+  issueNumber?: number;
+  duplicateCluster?: string | null;
+  author?: string | null;
+  isBot?: boolean | number;
+  comments?: number;
+  clusterHumanReporterCount?: number;
+  clusterCommentCount?: number;
+}
+
+export interface FeltClassification extends IssueSignalFields {
   sentiment: string;
   severity: string;
   functionality: string;
@@ -109,8 +119,6 @@ export interface FeltClassification {
 }
 
 export interface DebtClassification extends FeltClassification {
-  issueNumber?: number;
-  duplicateCluster?: string | null;
   workaroundStatus?: string;
   confidence?: number;
   state?: string;
@@ -132,6 +140,9 @@ export interface DebtEvidenceItem {
   duplicateCluster?: string | null;
   tier: keyof DebtLoads;
   weight: number;
+  humanReporterCount?: number;
+  commentCount?: number;
+  fieldConfirmed?: boolean;
 }
 
 export interface DebtExplanation {
@@ -174,6 +185,46 @@ function workaroundMultiplier(status: string | undefined): number {
   return 1;
 }
 
+function issueKey(item: IssueSignalFields, index: number): string {
+  return item.duplicateCluster || `issue:${item.issueNumber ?? index}`;
+}
+
+function isBotIssue(item: IssueSignalFields): boolean {
+  if (item.isBot === true || item.isBot === 1) return true;
+  return /\[bot\]$/i.test(item.author ?? '');
+}
+
+function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & Required<Pick<IssueSignalFields, 'clusterHumanReporterCount' | 'clusterCommentCount'>>> {
+  const stats = new Map<string, { reporters: Set<string>; comments: number }>();
+  items.forEach((item, index) => {
+    const key = issueKey(item, index);
+    const current = stats.get(key) ?? { reporters: new Set<string>(), comments: 0 };
+    if (!isBotIssue(item) && item.author) current.reporters.add(item.author);
+    current.comments += Math.max(0, item.comments ?? 0);
+    stats.set(key, current);
+  });
+  return items.map((item, index) => {
+    const current = stats.get(issueKey(item, index));
+    return {
+      ...item,
+      clusterHumanReporterCount: current?.reporters.size ?? 0,
+      clusterCommentCount: current?.comments ?? 0,
+    };
+  });
+}
+
+function hasCommunityConfirmation(item: IssueSignalFields): boolean {
+  return (item.clusterHumanReporterCount ?? 0) >= 2 || (item.clusterCommentCount ?? item.comments ?? 0) >= 6;
+}
+
+function communityMultiplier(item: IssueSignalFields): number {
+  const reporters = Math.max(0, item.clusterHumanReporterCount ?? (isBotIssue(item) ? 0 : item.author ? 1 : 0));
+  const comments = Math.max(0, item.clusterCommentCount ?? item.comments ?? 0);
+  const reporterLift = Math.log1p(Math.max(0, reporters - 1)) * 0.25;
+  const commentLift = Math.log1p(comments) * 0.08;
+  return clamp(1 + reporterLift + commentLift, 0.75, 1.6);
+}
+
 function issueDebtWeight(item: DebtClassification): number {
   if (item.state !== 'open') return 0;
   if (item.sentiment !== 'negative') return 0;
@@ -186,7 +237,14 @@ function issueDebtWeight(item: DebtClassification): number {
     (SCOPE_WEIGHT[item.scope] ?? 1) *
     (USERS_WEIGHT[item.affectedUsers] ?? 0.65);
   const confidence = 0.5 + 0.5 * clamp(item.confidence ?? 0.5, 0, 1);
-  return severity * functionality * reach * confidence * workaroundMultiplier(item.workaroundStatus);
+  const sourceShape = isSourceOnlySignal(item) ? 0.8 : 1;
+  return severity *
+    functionality *
+    reach *
+    confidence *
+    workaroundMultiplier(item.workaroundStatus) *
+    communityMultiplier(item) *
+    sourceShape;
 }
 
 function hasAnyLabel(item: { labels?: string[] }, names: string[]): boolean {
@@ -202,7 +260,7 @@ function isWeakEvidence(item: DebtClassification): boolean {
   );
 }
 
-function hasFieldConfirmation(item: { labels?: string[] }): boolean {
+function hasFieldConfirmation(item: IssueSignalFields & { labels?: string[] }): boolean {
   const emergency = hasAnyLabel(item, ['P0', 'beta-blocker']);
   const fieldRegression =
     hasAnyLabel(item, ['P1']) &&
@@ -211,10 +269,10 @@ function hasFieldConfirmation(item: { labels?: string[] }): boolean {
   const maintainerConfirmed =
     hasAnyLabel(item, ['maintainer']) &&
     hasAnyLabel(item, ['bug', 'bug:behavior', 'P1', 'regression']);
-  return emergency || fieldRegression || maintainerConfirmed;
+  return emergency || fieldRegression || maintainerConfirmed || hasCommunityConfirmation(item);
 }
 
-function isSourceOnlySignal(item: { labels?: string[] }): boolean {
+function isSourceOnlySignal(item: IssueSignalFields & { labels?: string[] }): boolean {
   return hasAnyLabel(item, ['clawsweeper:source-repro', 'clawsweeper:current-main-repro']) &&
     !hasFieldConfirmation(item);
 }
@@ -237,21 +295,22 @@ function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
   return 'carryover';
 }
 
-// Bucket current open debt. Only verified or explicit-version evidence can become
-// hard release-local debt. Carryover and stale/design debt are capped context.
+// Bucket current open debt. Only release-local field/community evidence can
+// become hard debt. Source-only/static findings remain visible as capped context.
 export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanation {
+  const enrichedItems = enrichIssueSignals(items);
   const buckets = {
     verified: new Map<string, number>(),
     carryover: new Map<string, number>(),
     stale: new Map<string, number>(),
   };
   const evidenceByKey = new Map<string, DebtEvidenceItem>();
-  for (const item of items) {
+  for (const [index, item] of enrichedItems.entries()) {
     const weight = issueDebtWeight(item);
     if (weight <= 0) continue;
     const tier = classifyDebtTier(item);
     const bucket = buckets[tier];
-    const key = item.duplicateCluster || `issue:${item.issueNumber ?? bucket.size}`;
+    const key = issueKey(item, index);
     const previous = bucket.get(key) ?? 0;
     if (weight > previous) {
       bucket.set(key, weight);
@@ -260,6 +319,9 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         duplicateCluster: item.duplicateCluster,
         tier,
         weight,
+        humanReporterCount: item.clusterHumanReporterCount,
+        commentCount: item.clusterCommentCount,
+        fieldConfirmed: hasFieldConfirmation(item),
       });
     }
   }
@@ -280,13 +342,18 @@ export function openDebtLoad(items: DebtClassification[]): DebtLoads {
 
 // Reach-weighted visible-bug load used for the opened/closed reign balance.
 export function feltLoad(items: FeltClassification[]): number {
-  return items.reduce((sum, item) => {
+  return enrichIssueSignals(items).reduce((sum, item) => {
     if (!isFeltSignal(item)) return sum;
     return sum
       + (SCOPE_WEIGHT[item.scope] ?? 1)
       * (USERS_WEIGHT[item.affectedUsers] ?? 0.65)
-      * workaroundMultiplier(item.workaroundStatus);
+      * workaroundMultiplier(item.workaroundStatus)
+      * communityMultiplier(item);
   }, 0);
+}
+
+export function feltSignalMask(items: FeltClassification[]): boolean[] {
+  return enrichIssueSignals(items).map((item) => isFeltSignal(item));
 }
 
 export function isFeltSignal(item: FeltClassification): boolean {

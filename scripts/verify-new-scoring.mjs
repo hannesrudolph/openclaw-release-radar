@@ -40,7 +40,15 @@ const scored = releases.map((rel, idx) => {
   const fixed = verifiedFixedForRelease(rel.tag);
   const fixedNumbers = new Set(fixed.map(r => r.number));
   const scoreState = r => fixedNumbers.has(r.number) ? 'closed' : (r.state === 'open' ? 'open' : 'closed-unverified');
-  const scoredIssue = r => ({ ...classify(r), labels: safeLabels(r.labels) });
+  const scoredIssue = r => ({
+    ...classify(r),
+    issueNumber: r.number,
+    duplicateCluster: r.duplicate_cluster,
+    author: r.author,
+    isBot: r.is_bot,
+    comments: r.comments,
+    labels: safeLabels(r.labels),
+  });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
   const conf = installConfidence({
     publishedAt: rel.published_at,
