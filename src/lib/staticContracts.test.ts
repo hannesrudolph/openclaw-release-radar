@@ -38,4 +38,14 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(script, /^import \{ db, setMeta \} from '\.\.\/src\/lib\/db\.ts';/m);
     assert.match(script, /await import\('\.\.\/src\/lib\/db\.ts'\)/);
   });
+
+  it('score verifier is wired as a hard drift check', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
+    assert.match(verifier, /scoredAtMillis/);
+    assert.match(verifier, /process\.exit\(1\)/);
+    assert.match(readme, /npm run verify:score/);
+  });
 });

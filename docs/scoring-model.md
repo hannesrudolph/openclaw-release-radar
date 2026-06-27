@@ -106,6 +106,7 @@ Refresh recomputes closure proof automatically for monitored releases. The manua
 Run the audit invariant verifier after refreshes:
 
 ```bash
+npm run verify:score
 npm run verify:release-audit
 npm run ui:smoke
 ```
