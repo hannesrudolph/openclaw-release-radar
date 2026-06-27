@@ -16,6 +16,7 @@ const db = new DatabaseSync('./data/radar.db');
 const setStableGap = db.prepare(`UPDATE releases SET hours_to_next_stable=? WHERE tag=?`);
 const allRel = db.prepare(`SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`)
   .all().map(r => ({ tag: r.tag, published_at: r.published_at, prerelease: r.prerelease === 1 }));
+const commitStmt = db.prepare(`SELECT * FROM release_commits WHERE tag=?`);
 const allTags = allRel.filter(r => !r.prerelease).map(r => r.tag); // stables only (distance + hotfix-tag)
 
 const advisories = listAdvisories();
@@ -64,6 +65,7 @@ const scored = releases.map((rel, idx) => {
   const gap = computeHoursToNextStable(allRel, rel.tag);
   setStableGap.run(gap, rel.tag);
   const cve = cveFor(rel.tag);
+  const commit = commitStmt.get(rel.tag);
   const conf = installConfidence({
     publishedAt: rel.published_at, isLatest: idx === 0, hoursToNextStable: gap,
     hasHotfixSuccessor: hasHotfixSuccessor(allTags, rel.tag), betaCount: rel.beta_count,
@@ -72,6 +74,11 @@ const scored = releases.map((rel, idx) => {
     verifiedDebtWeight: debt.verified, carryoverDebtWeight: debt.carryover, staleDebtWeight: debt.stale,
     rawIssueCount: issueCountForVersion(rel.tag), classifiedIssueCount: attributed.length,
     cveAffected: cve.affected, cveLoad: cve.load,
+    releaseCheckState: commit?.check_state ?? null,
+    releaseCheckTotal: commit?.check_total ?? 0,
+    releaseCheckSuccess: commit?.check_success ?? 0,
+    releaseCheckFailure: commit?.check_failure ?? 0,
+    releaseCheckPending: commit?.check_pending ?? 0,
   });
   return { rel, conf, neg, pos, opened, closed, brokenSurfaces };
 });

@@ -131,6 +131,20 @@ describe('installConfidence — graded signals', () => {
     assert.ok(score({ breakingCount: 3 }) < score({ breakingCount: 0 }));
   });
 
+  it('successful release checks add a small capped verification bump', () => {
+    const unchecked = score();
+    const checked = score({ releaseCheckState: 'SUCCESS', releaseCheckTotal: 7, releaseCheckSuccess: 4 });
+    const manyChecked = score({ releaseCheckState: 'SUCCESS', releaseCheckTotal: 70, releaseCheckSuccess: 70 });
+    assert.ok(checked > unchecked, `checked ${checked} should beat unchecked ${unchecked}`);
+    assert.ok(manyChecked - unchecked <= 0.5, `release checks must stay capped (${manyChecked} vs ${unchecked})`);
+  });
+
+  it('failed release checks penalize more than pending checks', () => {
+    const pending = score({ releaseCheckState: 'PENDING', releaseCheckTotal: 7, releaseCheckPending: 2 });
+    const failed = score({ releaseCheckState: 'FAILURE', releaseCheckTotal: 7, releaseCheckFailure: 1 });
+    assert.ok(failed < pending, `failed ${failed} should be below pending ${pending}`);
+  });
+
   it('verified open debt lowers the score even when reign balance is neutral', () => {
     assert.ok(score({ verifiedDebtWeight: 1 }) > score({ verifiedDebtWeight: 30 }));
   });

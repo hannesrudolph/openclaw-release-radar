@@ -179,6 +179,31 @@ describe('release fix provenance', () => {
     ]);
   });
 
+  it('stores release check rollup evidence with the release commit', async () => {
+    const db = await freshDb('release-checks');
+    seedRelease(db, 'v1');
+
+    db.upsertReleaseCommit({
+      tag: 'v1',
+      tag_commit_oid: 'commit-1',
+      committed_at: '2026-06-01T00:00:00Z',
+      check_state: 'SUCCESS',
+      check_total: 4,
+      check_success: 3,
+      check_failure: 0,
+      check_pending: 0,
+      check_skipped: 1,
+      check_contexts_json: '[{"name":"build","conclusion":"SUCCESS"}]',
+    });
+
+    const row = db.getReleaseCommit('v1') as any;
+    assert.equal(row.check_state, 'SUCCESS');
+    assert.equal(row.check_total, 4);
+    assert.equal(row.check_success, 3);
+    assert.equal(row.check_skipped, 1);
+    assert.equal(row.check_contexts_json, '[{"name":"build","conclusion":"SUCCESS"}]');
+  });
+
   it('counts only completed issues fixed by merged reachable PRs', async () => {
     const db = await freshDb('verified-fixed');
     seedRelease(db, 'v1');

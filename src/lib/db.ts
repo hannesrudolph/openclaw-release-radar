@@ -181,6 +181,13 @@ CREATE TABLE IF NOT EXISTS release_commits (
   tag TEXT PRIMARY KEY,
   tag_commit_oid TEXT,
   committed_at TEXT,
+  check_state TEXT,
+  check_total INTEGER NOT NULL DEFAULT 0,
+  check_success INTEGER NOT NULL DEFAULT 0,
+  check_failure INTEGER NOT NULL DEFAULT 0,
+  check_pending INTEGER NOT NULL DEFAULT 0,
+  check_skipped INTEGER NOT NULL DEFAULT 0,
+  check_contexts_json TEXT NOT NULL DEFAULT '[]',
   fetched_at TEXT NOT NULL
 );
 
@@ -248,6 +255,13 @@ for (const sql of [
   `ALTER TABLE issues ADD COLUMN commenter_scan_truncated INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issues ADD COLUMN reaction_total INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issues ADD COLUMN positive_reactions INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_state TEXT`,
+  `ALTER TABLE release_commits ADD COLUMN check_total INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_success INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_failure INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_pending INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_skipped INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE release_commits ADD COLUMN check_contexts_json TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
   `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN state TEXT`,
@@ -484,19 +498,68 @@ export interface ReleaseCommitInput {
   tag: string;
   tag_commit_oid: string | null;
   committed_at: string | null;
+  check_state?: string | null;
+  check_total?: number;
+  check_success?: number;
+  check_failure?: number;
+  check_pending?: number;
+  check_skipped?: number;
+  check_contexts_json?: string;
 }
 
 const upsertReleaseCommitStmt = db.prepare(`
-INSERT INTO release_commits (tag, tag_commit_oid, committed_at, fetched_at)
-VALUES (:tag, :tag_commit_oid, :committed_at, :fetched_at)
+INSERT INTO release_commits (
+  tag, tag_commit_oid, committed_at, check_state, check_total, check_success,
+  check_failure, check_pending, check_skipped, check_contexts_json, fetched_at
+)
+VALUES (
+  :tag, :tag_commit_oid, :committed_at, :check_state, :check_total, :check_success,
+  :check_failure, :check_pending, :check_skipped, :check_contexts_json, :fetched_at
+)
 ON CONFLICT(tag) DO UPDATE SET
   tag_commit_oid=excluded.tag_commit_oid,
   committed_at=excluded.committed_at,
+  check_state=excluded.check_state,
+  check_total=excluded.check_total,
+  check_success=excluded.check_success,
+  check_failure=excluded.check_failure,
+  check_pending=excluded.check_pending,
+  check_skipped=excluded.check_skipped,
+  check_contexts_json=excluded.check_contexts_json,
   fetched_at=excluded.fetched_at
 `);
 
 export function upsertReleaseCommit(input: ReleaseCommitInput): void {
-  upsertReleaseCommitStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  upsertReleaseCommitStmt.run({
+    ...input,
+    check_state: input.check_state ?? null,
+    check_total: input.check_total ?? 0,
+    check_success: input.check_success ?? 0,
+    check_failure: input.check_failure ?? 0,
+    check_pending: input.check_pending ?? 0,
+    check_skipped: input.check_skipped ?? 0,
+    check_contexts_json: input.check_contexts_json ?? '[]',
+    fetched_at: new Date().toISOString(),
+  });
+}
+
+export interface ReleaseCommitRow {
+  tag: string;
+  tag_commit_oid: string | null;
+  committed_at: string | null;
+  check_state: string | null;
+  check_total: number;
+  check_success: number;
+  check_failure: number;
+  check_pending: number;
+  check_skipped: number;
+  check_contexts_json: string;
+  fetched_at: string;
+}
+
+const getReleaseCommitStmt = db.prepare(`SELECT * FROM release_commits WHERE tag=?`);
+export function getReleaseCommit(tag: string): ReleaseCommitRow | undefined {
+  return getReleaseCommitStmt.get(tag) as ReleaseCommitRow | undefined;
 }
 
 export interface IssueClosureEventInput {

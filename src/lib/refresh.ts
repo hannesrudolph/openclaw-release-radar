@@ -3,6 +3,7 @@ import { invalidateCache } from './cache';
 import {
   GhComment,
   GhIssue,
+  getReleaseCommit as fetchReleaseCommit,
   listIssueCommentsBatch,
   listReleases,
   listSecurityAdvisories,
@@ -59,6 +60,7 @@ import {
   detectBot,
   getClassification,
   getLastScoredAt,
+  getReleaseCommit,
   getMeta,
   getRelease,
   issueCountForVersion,
@@ -74,6 +76,7 @@ import {
   upsertClassification,
   upsertIssue,
   upsertRelease,
+  upsertReleaseCommit,
   unverifiedClosedForRelease,
   verifiedFixedForRelease,
 } from './db';
@@ -199,6 +202,26 @@ export async function refresh(): Promise<{
         hours_to_next_release: computeHoursToNextRelease(releasesForCalc, r.tag_name),
         hours_to_next_stable: computeHoursToNextStable(releasesForCalc, r.tag_name),
       });
+    }
+
+    for (const r of releases) {
+      try {
+        const commit = await fetchReleaseCommit(r.tag_name);
+        upsertReleaseCommit({
+          tag: r.tag_name,
+          tag_commit_oid: commit.oid,
+          committed_at: commit.committedAt,
+          check_state: commit.checkState,
+          check_total: commit.checkTotal,
+          check_success: commit.checkSuccess,
+          check_failure: commit.checkFailure,
+          check_pending: commit.checkPending,
+          check_skipped: commit.checkSkipped,
+          check_contexts_json: JSON.stringify(commit.checkContexts),
+        });
+      } catch (e) {
+        console.warn(`[release-checks] ${r.tag_name} fetch failed (continuing): ${(e as Error).message}`);
+      }
     }
 
     // 1b. Pull all security advisories for the repo. One cheap call, backfills
@@ -487,6 +510,7 @@ export async function refresh(): Promise<{
         ),
       );
       const cve = cveFor(rel.tag);
+      const releaseCommit = getReleaseCommit(rel.tag);
       const input: InstallInput = {
         publishedAt: rel.published_at,
         isLatest: idx === 0, // listReleasesDb returns newest-first
@@ -503,6 +527,11 @@ export async function refresh(): Promise<{
         classifiedIssueCount: attributed.length,
         cveAffected: cve.affected,
         cveLoad: cve.load,
+        releaseCheckState: releaseCommit?.check_state ?? null,
+        releaseCheckTotal: releaseCommit?.check_total ?? 0,
+        releaseCheckSuccess: releaseCommit?.check_success ?? 0,
+        releaseCheckFailure: releaseCommit?.check_failure ?? 0,
+        releaseCheckPending: releaseCommit?.check_pending ?? 0,
       };
       const conf = installConfidence(input);
       const issueByNumber = new Map(attributed.map((row) => [row.number, row]));
@@ -561,6 +590,15 @@ export async function refresh(): Promise<{
         breakingCount: rel.breaking_count,
         hoursToNextStable: rel.hours_to_next_stable,
         hasHotfixSuccessor: input.hasHotfixSuccessor,
+        releaseChecks: releaseCommit ? {
+          state: releaseCommit.check_state,
+          total: releaseCommit.check_total,
+          success: releaseCommit.check_success,
+          failure: releaseCommit.check_failure,
+          pending: releaseCommit.check_pending,
+          skipped: releaseCommit.check_skipped,
+          contexts: parseJsonArray(releaseCommit.check_contexts_json).slice(0, 25),
+        } : null,
         fixProvenance: {
           verifiedFixedCount: verifiedFixed.length,
           unverifiedClosedCount: unverifiedClosed.length,
@@ -629,6 +667,15 @@ function safeParseLabels(json: string): string[] {
   try {
     const v = JSON.parse(json);
     return Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function parseJsonArray(json: string | null | undefined): unknown[] {
+  try {
+    const value = json ? JSON.parse(json) : [];
+    return Array.isArray(value) ? value : [];
   } catch {
     return [];
   }

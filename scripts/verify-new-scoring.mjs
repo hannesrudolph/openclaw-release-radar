@@ -14,6 +14,7 @@ const db = new DatabaseSync('./data/radar.db');
 const allRel = db.prepare(
   `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`
 ).all().map(r => ({ tag: r.tag, published_at: r.published_at, prerelease: r.prerelease === 1 }));
+const commitStmt = db.prepare(`SELECT * FROM release_commits WHERE tag=?`);
 const allTags = allRel.filter(r => !r.prerelease).map(r => r.tag);
 
 const advisories = listAdvisories();
@@ -57,6 +58,7 @@ const scored = releases.map((rel, idx) => {
     labels: safeLabels(r.labels),
   });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
+  const commit = commitStmt.get(rel.tag);
   const conf = installConfidence({
     publishedAt: rel.published_at,
     isLatest: idx === 0,
@@ -73,6 +75,11 @@ const scored = releases.map((rel, idx) => {
     classifiedIssueCount: attributed.length,
     cveAffected: cveFor(rel.tag).affected,
     cveLoad: cveFor(rel.tag).load,
+    releaseCheckState: commit?.check_state ?? null,
+    releaseCheckTotal: commit?.check_total ?? 0,
+    releaseCheckSuccess: commit?.check_success ?? 0,
+    releaseCheckFailure: commit?.check_failure ?? 0,
+    releaseCheckPending: commit?.check_pending ?? 0,
   });
   return { rel, conf };
 });

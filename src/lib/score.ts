@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v6-graphql-community';
+export const SCORE_MODEL_VERSION = 'evidence-v7-release-checks';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -28,6 +28,8 @@ const STALE_DEBT_MAX = -0.2;
 const COVERAGE_MAX = -2.5;
 const REGRESSION_DOWN = -0.8;
 const REGRESSION_UP = 0.4;
+const RELEASE_CHECK_UP = 0.4;
+const RELEASE_CHECK_DOWN = -1.4;
 const PRIOR = 12;
 
 const SEVERITY_WEIGHT: Record<string, number> = {
@@ -73,6 +75,11 @@ export interface InstallInput {
   classifiedIssueCount: number;
   cveAffected: boolean;
   cveLoad: number;
+  releaseCheckState?: string | null;
+  releaseCheckTotal?: number;
+  releaseCheckSuccess?: number;
+  releaseCheckFailure?: number;
+  releaseCheckPending?: number;
 }
 
 export interface InstallComponents {
@@ -85,6 +92,7 @@ export interface InstallComponents {
   shakeout: number;
   regression: number;
   breaking: number;
+  releaseVerification: number;
 }
 
 export interface InstallConfidence {
@@ -469,6 +477,25 @@ function breakingPoints(breakingCount: number): number {
   );
 }
 
+function releaseVerificationPoints(input: InstallInput): number {
+  const total = Math.max(0, input.releaseCheckTotal ?? 0);
+  if (total === 0 && !input.releaseCheckState) return 0;
+  const state = (input.releaseCheckState ?? '').toUpperCase();
+  const failures = Math.max(0, input.releaseCheckFailure ?? 0);
+  const pending = Math.max(0, input.releaseCheckPending ?? 0);
+  const successes = Math.max(0, input.releaseCheckSuccess ?? 0);
+  if (failures > 0 || ['FAILURE', 'ERROR', 'EXPECTED', 'ACTION_REQUIRED'].includes(state)) {
+    return clamp(-0.8 - Math.log1p(failures) * 0.25, RELEASE_CHECK_DOWN, 0);
+  }
+  if (pending > 0 || ['PENDING'].includes(state)) {
+    return clamp(-0.25 - Math.log1p(pending) * 0.08, RELEASE_CHECK_DOWN, 0);
+  }
+  if (state === 'SUCCESS' && successes > 0) {
+    return clamp(Math.log1p(successes) * 0.18, 0, RELEASE_CHECK_UP);
+  }
+  return 0;
+}
+
 export function cveDecayLoad(items: Array<{ severity: string; distance: number }>): number {
   const severityWeight: Record<string, number> = {
     critical: 4,
@@ -524,6 +551,13 @@ function reasonFor(
   } else if (input.feltOpenedWeight > input.feltClosedWeight && input.feltOpenedWeight > 2) {
     bits.push('net-opening field-visible bugs');
   }
+  if ((input.releaseCheckFailure ?? 0) > 0) {
+    bits.push(`${input.releaseCheckFailure} failed release checks`);
+  } else if ((input.releaseCheckPending ?? 0) > 0) {
+    bits.push(`${input.releaseCheckPending} pending release checks`);
+  } else if ((input.releaseCheckSuccess ?? 0) > 0 && (input.releaseCheckState ?? '').toUpperCase() === 'SUCCESS') {
+    bits.push(`${input.releaseCheckSuccess} release checks passed`);
+  }
   if (input.betaCount > 0) bits.push(`${input.betaCount} betas baked`);
   if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);
   if (coverage < 0.95) bits.push(`${Math.round(coverage * 100)}% evidence coverage`);
@@ -578,8 +612,9 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
   const shakeout = shakeoutPoints(input.betaCount);
   const regression = regressionPoints(input.feltOpenedWeight, input.feltClosedWeight);
   const breaking = breakingPoints(input.breakingCount);
+  const releaseVerification = releaseVerificationPoints(input);
   let score = clamp(
-    BASE + verifiedDebt + carryoverDebt + staleDebt + coverage.points + survival + shakeout + regression + breaking,
+    BASE + verifiedDebt + carryoverDebt + staleDebt + coverage.points + survival + shakeout + regression + breaking + releaseVerification,
     0,
     10,
   );
@@ -601,6 +636,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
       shakeout: round1(shakeout),
       regression: round1(regression),
       breaking: round1(breaking),
+      releaseVerification: round1(releaseVerification),
     },
     evidenceCoverage: coverage.ratio,
     reason: reasonFor(input, hotfix ? 'skip-hotfix' : 'eligible', age, coverage.ratio, {

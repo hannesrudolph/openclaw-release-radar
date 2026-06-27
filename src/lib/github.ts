@@ -147,6 +147,23 @@ export interface GhReleaseCommit {
   tag: string;
   oid: string | null;
   committedAt: string | null;
+  checkState: string | null;
+  checkTotal: number;
+  checkSuccess: number;
+  checkFailure: number;
+  checkPending: number;
+  checkSkipped: number;
+  checkContexts: GhReleaseCheckContext[];
+}
+
+export interface GhReleaseCheckContext {
+  type: string;
+  name: string;
+  workflowName: string | null;
+  appSlug: string | null;
+  status: string | null;
+  conclusion: string | null;
+  url: string | null;
 }
 
 export interface GhPullRequestFix {
@@ -518,6 +535,26 @@ export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
         tagCommit: {
           oid: string;
           committedDate?: string;
+          statusCheckRollup?: {
+            state: string | null;
+            contexts: {
+              totalCount: number;
+              nodes: Array<{
+                __typename: string;
+                name?: string | null;
+                context?: string | null;
+                status?: string | null;
+                conclusion?: string | null;
+                state?: string | null;
+                detailsUrl?: string | null;
+                targetUrl?: string | null;
+                checkSuite?: {
+                  app?: { slug: string } | null;
+                  workflowRun?: { workflow?: { name: string } | null } | null;
+                } | null;
+              } | null> | null;
+            };
+          } | null;
         } | null;
       } | null;
     } | null;
@@ -527,7 +564,33 @@ export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
         release(tagName: $tag) {
           tagCommit {
             oid
-            ... on Commit { committedDate }
+            ... on Commit {
+              committedDate
+              statusCheckRollup {
+                state
+                contexts(first: 100) {
+                  totalCount
+                  nodes {
+                    __typename
+                    ... on CheckRun {
+                      name
+                      status
+                      conclusion
+                      detailsUrl
+                      checkSuite {
+                        app { slug }
+                        workflowRun { workflow { name } }
+                      }
+                    }
+                    ... on StatusContext {
+                      context
+                      state
+                      targetUrl
+                    }
+                  }
+                }
+              }
+            }
           }
         }
       }
@@ -535,11 +598,69 @@ export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
     repoVars({ tag }),
   );
   const release = assertRepo(data.repository).release;
+  const rollup = release?.tagCommit?.statusCheckRollup ?? null;
+  const contexts = mapReleaseCheckContexts(rollup?.contexts.nodes ?? []);
+  const counts = countReleaseCheckContexts(contexts);
   return {
     tag,
     oid: release?.tagCommit?.oid ?? null,
     committedAt: release?.tagCommit?.committedDate ?? null,
+    checkState: rollup?.state ?? null,
+    checkTotal: rollup?.contexts.totalCount ?? contexts.length,
+    checkSuccess: counts.success,
+    checkFailure: counts.failure,
+    checkPending: counts.pending,
+    checkSkipped: counts.skipped,
+    checkContexts: contexts,
   };
+}
+
+function mapReleaseCheckContexts(nodes: Array<any | null>): GhReleaseCheckContext[] {
+  return nodes
+    .filter((node): node is NonNullable<typeof node> => !!node)
+    .map((node) => {
+      if (node.__typename === 'StatusContext') {
+        return {
+          type: 'StatusContext',
+          name: node.context ?? 'status',
+          workflowName: null,
+          appSlug: null,
+          status: null,
+          conclusion: node.state ?? null,
+          url: node.targetUrl ?? null,
+        };
+      }
+      return {
+        type: node.__typename ?? 'CheckRun',
+        name: node.name ?? 'check',
+        workflowName: node.checkSuite?.workflowRun?.workflow?.name ?? null,
+        appSlug: node.checkSuite?.app?.slug ?? null,
+        status: node.status ?? null,
+        conclusion: node.conclusion ?? null,
+        url: node.detailsUrl ?? null,
+      };
+    });
+}
+
+function countReleaseCheckContexts(contexts: GhReleaseCheckContext[]): {
+  success: number;
+  failure: number;
+  pending: number;
+  skipped: number;
+} {
+  let success = 0;
+  let failure = 0;
+  let pending = 0;
+  let skipped = 0;
+  for (const context of contexts) {
+    const conclusion = (context.conclusion ?? '').toUpperCase();
+    const status = (context.status ?? '').toUpperCase();
+    if (['SUCCESS'].includes(conclusion)) success++;
+    else if (['SKIPPED', 'NEUTRAL'].includes(conclusion)) skipped++;
+    else if (['FAILURE', 'ERROR', 'TIMED_OUT', 'CANCELLED', 'ACTION_REQUIRED'].includes(conclusion)) failure++;
+    else if (status && status !== 'COMPLETED') pending++;
+  }
+  return { success, failure, pending, skipped };
 }
 
 export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise<Map<number, GhIssueFixEvidence>> {

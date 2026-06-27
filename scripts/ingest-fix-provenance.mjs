@@ -33,6 +33,13 @@ upsertReleaseCommit({
   tag,
   tag_commit_oid: commit.oid,
   committed_at: commit.committedAt,
+  check_state: commit.checkState,
+  check_total: commit.checkTotal,
+  check_success: commit.checkSuccess,
+  check_failure: commit.checkFailure,
+  check_pending: commit.checkPending,
+  check_skipped: commit.checkSkipped,
+  check_contexts_json: JSON.stringify(commit.checkContexts),
 });
 
 let closureEvents = 0;
