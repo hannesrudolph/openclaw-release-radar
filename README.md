@@ -155,8 +155,10 @@ curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 Release audit invariant check:
 
 ```bash
+npm run verify:local
 npm run verify:release-audit
 npm run verify:release-audit -- --api-base http://127.0.0.1:8787
+npm run verify:live
 npm run ui:smoke
 ```
 
@@ -191,6 +193,9 @@ A healthy completed refresh has:
 ## Development Commands
 
 ```bash
+npm run verify:ci
+npm run verify:local
+npm run verify:live
 npm run typecheck
 npm test
 npm run build
@@ -200,6 +205,12 @@ npm run ui:smoke
 npm run analyze:closure-proofs -- v2026.6.10
 npm start
 ```
+
+`npm run verify:ci` is CI-safe and does not require a local DB or running server.
+
+`npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency.
+
+`npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts.
 
 `npm run dev` runs TypeScript directly with watch mode.
 

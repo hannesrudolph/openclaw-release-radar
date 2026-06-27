@@ -110,6 +110,8 @@ The release audit verifier checks both aggregate counts and proof shape, includi
 Run the audit invariant verifier after refreshes:
 
 ```bash
+npm run verify:local
+npm run verify:live
 npm run verify:score
 npm run verify:release-audit
 npm run ui:smoke
@@ -177,7 +179,9 @@ Use these before trusting a scoring change:
 npm test
 npm run typecheck
 npm run build
-npx tsx scripts/verify-new-scoring.mjs
+npm run verify:ci
+npm run verify:local
+npm run verify:live
 npm run analyze:closure-proofs -- v2026.6.10
 curl http://127.0.0.1:8787/api/releases/v2026.6.10/review | jq
 ```

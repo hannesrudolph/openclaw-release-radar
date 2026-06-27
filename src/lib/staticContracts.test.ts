@@ -56,11 +56,23 @@ describe('static scoring/UI contracts', () => {
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
+    assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run build');
+    assert.equal(pkg.scripts['verify:local'], 'npm run verify:score && npm run verify:release-audit');
+    assert.equal(pkg.scripts['verify:live'], 'npm run verify:score && npm run verify:release-audit -- --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.match(verifier, /buildReleaseScoreRun/);
     assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);
     assert.match(verifier, /process\.exit\(1\)/);
-    assert.match(readme, /npm run verify:score/);
+    assert.match(readme, /npm run verify:ci/);
+    assert.match(readme, /npm run verify:local/);
+    assert.match(readme, /npm run verify:live/);
+  });
+
+  it('deploy workflow runs the CI verification gate', () => {
+    const workflow = readFileSync(join(root, '.github/workflows/deploy-radar.yml'), 'utf8');
+    assert.match(workflow, /npm run verify:ci/);
+    assert.doesNotMatch(workflow, /run: npm run typecheck/);
+    assert.doesNotMatch(workflow, /name: Build app[\s\S]*?run: npm run build/);
   });
 
   it('offline score writers use the shared release scorer', () => {
