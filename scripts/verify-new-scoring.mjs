@@ -4,7 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { cveDecayLoad, feltLoad, installConfidence, openDebtLoad, pickRecommended } from '../src/lib/score.ts';
 import {
-  listReleasesDb, openedDuringReign, issueCountForVersion, issuesForVersion, listAdvisories, verifiedFixedForRelease,
+  labelsForIssueAt, listReleasesDb, openedDuringReign, issueCountForVersion, issuesForVersion, listAdvisories, verifiedFixedForRelease,
 } from '../src/lib/db.ts';
 import { computeHoursToNextStable, hasHotfixSuccessor } from '../src/lib/releaseNotes.ts';
 import { matchesRange, stableDistance } from '../src/lib/versionMatch.ts';
@@ -30,9 +30,11 @@ const cveFor = (tag) => {
 function safeLabels(j){ try{ const v=JSON.parse(j); return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]; }catch{ return []; } }
 function rowToCls(r){ const ok=['none','partial','confirmed','unknown']; const ws=ok.includes(r.workaround_status)?r.workaround_status:(r.has_workaround===1?'confirmed':'unknown');
   return { sentiment:r.sentiment, severity:r.severity, scope:r.scope, functionality:r.functionality, affectedUsers:r.affected_users, workaroundStatus:ws, duplicateCluster:r.duplicate_cluster, affectsVersion:r.affects_version, confidence:r.confidence, rationale:r.rationale??'' }; }
-const classify = (r)=>{ const labels=safeLabels(r.labels); return applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels); };
+const classify = (r, labels=safeLabels(r.labels))=>applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels);
 const isCoreSerious = (c)=>c.sentiment==='negative'&&c.functionality==='core'&&(c.severity==='critical'||c.severity==='high');
-const countCS = (rows)=>rows.reduce((n,r)=>isCoreSerious(classify(r))?n+1:n,0);
+const labelCutoff = (rel) => rel.published_at && rel.hours_to_next_release != null
+  ? new Date(Date.parse(rel.published_at) + rel.hours_to_next_release * 3_600_000).toISOString()
+  : null;
 
 const releases = listReleasesDb(10);
 const scored = releases.map((rel, idx) => {
@@ -40,9 +42,13 @@ const scored = releases.map((rel, idx) => {
   const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
   const fixed = verifiedFixedForRelease(rel.tag);
   const fixedNumbers = new Set(fixed.map(r => r.number));
+  const cutoff = labelCutoff(rel);
+  const labelsFor = r => labelsForIssueAt(r.number, safeLabels(r.labels), cutoff);
+  const classifyAt = r => classify(r, labelsFor(r));
+  const countCS = (rows)=>rows.reduce((n,r)=>isCoreSerious(classifyAt(r))?n+1:n,0);
   const scoreState = r => fixedNumbers.has(r.number) ? 'closed' : (r.state === 'open' ? 'open' : 'closed-unverified');
   const scoredIssue = r => ({
-    ...classify(r),
+    ...classifyAt(r),
     issueNumber: r.number,
     duplicateCluster: r.duplicate_cluster,
     author: r.author,
@@ -55,7 +61,7 @@ const scored = releases.map((rel, idx) => {
     commenterScanTruncated: r.commenter_scan_truncated,
     reactionTotal: r.reaction_total,
     positiveReactionCount: r.positive_reactions,
-    labels: safeLabels(r.labels),
+    labels: labelsFor(r),
   });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
   const commit = commitStmt.get(rel.tag);

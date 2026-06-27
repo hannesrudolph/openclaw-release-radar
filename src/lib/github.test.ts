@@ -65,6 +65,16 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /authorAssociation/);
   });
 
+  it('builds one GraphQL query with aliased issue label timeline lookups', () => {
+    const query = __githubTest.buildIssueLabelEventsBatchQuery(2);
+
+    assert.match(query, /LABELED_EVENT/);
+    assert.match(query, /UNLABELED_EVENT/);
+    assert.match(query, /issue0: issue\(number: \$number0\)/);
+    assert.match(query, /issue1: issue\(number: \$number1\)/);
+    assert.match(query, /label \{ name \}/);
+  });
+
   it('groups active security vulnerability nodes by advisory', () => {
     const advisories = __githubTest.mapSecurityVulnerabilities([
       {

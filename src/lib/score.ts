@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v7-release-checks';
+export const SCORE_MODEL_VERSION = 'evidence-v8-label-timeline';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;

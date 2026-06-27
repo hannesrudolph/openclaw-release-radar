@@ -214,6 +214,16 @@ CREATE TABLE IF NOT EXISTS issue_pr_links (
   PRIMARY KEY (issue_number, pr_number, source)
 );
 
+CREATE TABLE IF NOT EXISTS issue_label_events (
+  issue_number INTEGER NOT NULL,
+  event_id TEXT PRIMARY KEY,
+  action TEXT NOT NULL,
+  label_name TEXT NOT NULL,
+  actor_login TEXT,
+  created_at TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS pull_request_fixes (
   pr_number INTEGER PRIMARY KEY,
   title TEXT,
@@ -241,6 +251,7 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
 
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
+CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
 `);
 
@@ -572,6 +583,57 @@ export interface IssueClosureEventInput {
   closer_number: number | null;
   closer_oid: string | null;
   raw_json: string;
+}
+
+export interface IssueLabelEventInput {
+  issue_number: number;
+  event_id: string;
+  action: string;
+  label_name: string;
+  actor_login: string | null;
+  created_at: string;
+}
+
+const upsertIssueLabelEventStmt = db.prepare(`
+INSERT INTO issue_label_events (
+  issue_number, event_id, action, label_name, actor_login, created_at, fetched_at
+)
+VALUES (
+  :issue_number, :event_id, :action, :label_name, :actor_login, :created_at, :fetched_at
+)
+ON CONFLICT(event_id) DO UPDATE SET
+  issue_number=excluded.issue_number,
+  action=excluded.action,
+  label_name=excluded.label_name,
+  actor_login=excluded.actor_login,
+  created_at=excluded.created_at,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssueLabelEvent(input: IssueLabelEventInput): void {
+  upsertIssueLabelEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+const issueLabelEventsUntilStmt = db.prepare(`
+SELECT action, label_name
+FROM issue_label_events
+WHERE issue_number=?
+  AND (? IS NULL OR created_at <= ?)
+ORDER BY created_at ASC, event_id ASC
+`);
+
+const issueLabelEventCountStmt = db.prepare(`SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?`);
+
+export function labelsForIssueAt(issueNumber: number, fallbackLabels: string[], cutoff: string | null): string[] {
+  const eventCount = Number((issueLabelEventCountStmt.get(issueNumber) as { count: number }).count ?? 0);
+  if (eventCount === 0) return fallbackLabels;
+  const labels = new Set<string>();
+  const rows = issueLabelEventsUntilStmt.all(issueNumber, cutoff, cutoff) as Array<{ action: string; label_name: string }>;
+  for (const row of rows) {
+    if (row.action === 'labeled') labels.add(row.label_name);
+    else if (row.action === 'unlabeled') labels.delete(row.label_name);
+  }
+  return [...labels];
 }
 
 const upsertIssueClosureEventStmt = db.prepare(`

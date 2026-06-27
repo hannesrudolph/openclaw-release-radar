@@ -197,11 +197,77 @@ export interface GhIssuePrLink {
   referencedAt: string | null;
 }
 
+export interface GhIssueLabelEvent {
+  issueNumber: number;
+  eventId: string;
+  action: 'labeled' | 'unlabeled';
+  labelName: string;
+  actorLogin: string | null;
+  createdAt: string;
+}
+
 export interface GhIssueFixEvidence {
   issueNumber: number;
   closureEvents: GhIssueClosureEvent[];
   prLinks: GhIssuePrLink[];
   pullRequests: GhPullRequestFix[];
+}
+
+export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
+  const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
+  const all = new Map<number, GhIssueLabelEvent[]>();
+  for (const issueNumber of uniqueIssueNumbers) all.set(issueNumber, []);
+
+  const batchSize = 10;
+  for (let offset = 0; offset < uniqueIssueNumbers.length; offset += batchSize) {
+    const chunk = uniqueIssueNumbers.slice(offset, offset + batchSize);
+    const data = await gh<{ repository: Record<string, any> | null }>(
+      buildIssueLabelEventsBatchQuery(chunk.length),
+      repoVars(Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
+    );
+    const repo = assertRepo(data.repository);
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const issueNumber = chunk[idx];
+      const issue = repo[`issue${idx}`];
+      const events: GhIssueLabelEvent[] = [];
+      for (const node of issue?.timelineItems?.nodes ?? []) {
+        const type = node?.__typename;
+        if (type !== 'LabeledEvent' && type !== 'UnlabeledEvent') continue;
+        const labelName = node.label?.name;
+        if (!labelName) continue;
+        events.push({
+          issueNumber,
+          eventId: node.id,
+          action: type === 'LabeledEvent' ? 'labeled' : 'unlabeled',
+          labelName,
+          actorLogin: node.actor?.login ?? null,
+          createdAt: node.createdAt,
+        });
+      }
+      all.set(issueNumber, events);
+    }
+  }
+  return all;
+}
+
+function buildIssueLabelEventsBatchQuery(size: number): string {
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const fields = Array.from({ length: size }, (_, idx) => `
+    issue${idx}: issue(number: $number${idx}) {
+      timelineItems(first: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+        nodes {
+          __typename
+          ... on LabeledEvent { id createdAt actor { login } label { name } }
+          ... on UnlabeledEvent { id createdAt actor { login } label { name } }
+        }
+      }
+    }`).join('\n');
+
+  return `query IssueLabelEvents($owner: String!, $repo: String!, ${vars}) {
+    repository(owner: $owner, name: $repo) {
+      ${fields}
+    }
+  }`;
 }
 
 function headers(): Record<string, string> {
@@ -863,6 +929,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 
 export const __githubTest = {
   buildIssueCommentsBatchQuery,
+  buildIssueLabelEventsBatchQuery,
   mapComment,
   mapIssue,
   mapRelease,

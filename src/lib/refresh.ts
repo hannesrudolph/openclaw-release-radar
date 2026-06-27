@@ -5,6 +5,7 @@ import {
   GhIssue,
   getReleaseCommit as fetchReleaseCommit,
   listIssueCommentsBatch,
+  listIssueLabelEventsBatch,
   listReleases,
   listSecurityAdvisories,
   paginateIssues,
@@ -61,6 +62,7 @@ import {
   getClassification,
   getLastScoredAt,
   getReleaseCommit,
+  labelsForIssueAt,
   getMeta,
   getRelease,
   issueCountForVersion,
@@ -75,6 +77,7 @@ import {
   upsertAdvisory,
   upsertClassification,
   upsertIssue,
+  upsertIssueLabelEvent,
   upsertRelease,
   upsertReleaseCommit,
   unverifiedClosedForRelease,
@@ -111,6 +114,13 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
     contributor_commenters: contributors.size,
     commenter_scan_truncated: comments.length < issue.comments ? 1 : 0,
   };
+}
+
+function releaseLabelCutoff(rel: { published_at: string | null; hours_to_next_release: number | null }): string | null {
+  if (!rel.published_at || rel.hours_to_next_release == null) return null;
+  const publishedAt = Date.parse(rel.published_at);
+  if (!Number.isFinite(publishedAt)) return null;
+  return new Date(publishedAt + rel.hours_to_next_release * 3_600_000).toISOString();
 }
 
 const BACKFILL_FLAG = 'backfill_completed_at';
@@ -312,6 +322,11 @@ export async function refresh(): Promise<{
       const commentsByIssue = await listIssueCommentsBatch(
         page.filter((issue) => issue.comments > 0).map((issue) => issue.number),
       );
+      const labelEventsByIssue = await listIssueLabelEventsBatch(
+        page
+          .filter((issue) => issue.labels.length > 0 && issueOverlapsMonitoredWindow(issue))
+          .map((issue) => issue.number),
+      );
 
       // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
       for (const issue of page) {
@@ -339,6 +354,16 @@ export async function refresh(): Promise<{
           labels: labelsJson,
           is_bot: detectBot(author, labelsJson) ? 1 : 0,
         });
+        for (const event of labelEventsByIssue.get(issue.number) ?? []) {
+          upsertIssueLabelEvent({
+            issue_number: event.issueNumber,
+            event_id: event.eventId,
+            action: event.action,
+            label_name: event.labelName,
+            actor_login: event.actorLogin,
+            created_at: event.createdAt,
+          });
+        }
 
         if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
 
@@ -438,14 +463,18 @@ export async function refresh(): Promise<{
     };
 
     // Post-override classification for an attributed/reign issue row.
-    const classify = classifyIssueRow;
     const isCoreSerious = (c: IssueClassification): boolean =>
       c.sentiment === 'negative' &&
       c.functionality === 'core' &&
       (c.severity === 'critical' || c.severity === 'high');
-    const countCoreSerious = (rows: ReturnType<typeof issuesForVersion>): number =>
-      rows.reduce((n, r) => (isCoreSerious(classify(r)) ? n + 1 : n), 0);
     const scored = allReleases.map((rel, idx) => {
+      const labelCutoff = releaseLabelCutoff(rel);
+      const effectiveLabels = (row: ReturnType<typeof issuesForVersion>[number]): string[] =>
+        labelsForIssueAt(row.number, safeParseLabels(row.labels), labelCutoff);
+      const classify = (row: ReturnType<typeof issuesForVersion>[number]): IssueClassification =>
+        classifyIssueRowWithLabels(row, effectiveLabels(row));
+      const countCoreSerious = (rows: ReturnType<typeof issuesForVersion>): number =>
+        rows.reduce((n, r) => (isCoreSerious(classify(r)) ? n + 1 : n), 0);
       // negative/positive counts are display-only context (not part of the score).
       let neg = 0;
       let pos = 0;
@@ -478,7 +507,7 @@ export async function refresh(): Promise<{
         commenterScanTruncated: row.commenter_scan_truncated,
         reactionTotal: row.reaction_total,
         positiveReactionCount: row.positive_reactions,
-        labels: safeParseLabels(row.labels),
+        labels: effectiveLabels(row),
       });
       const debtInputs = attributed.map((row) => ({
           ...feltInput(row),
@@ -554,7 +583,9 @@ export async function refresh(): Promise<{
           commenterScanTruncated: row.commenter_scan_truncated,
           reactionTotal: row.reaction_total,
           positiveReactions: row.positive_reactions,
-          labels: safeParseLabels(row.labels),
+          labels: effectiveLabels(row),
+          currentLabels: safeParseLabels(row.labels),
+          labelCutoffAt: labelCutoff,
           affectsVersion: row.affects_version,
           duplicateCluster: row.duplicate_cluster,
           classification,
@@ -719,7 +750,13 @@ function rowToClassification(row: {
 // re-export for routes
 
 export function classifyIssueRow(row: ReturnType<typeof issuesForVersion>[number]): IssueClassification {
-  const labels = safeParseLabels(row.labels);
+  return classifyIssueRowWithLabels(row, safeParseLabels(row.labels));
+}
+
+export function classifyIssueRowWithLabels(
+  row: ReturnType<typeof issuesForVersion>[number],
+  labels: string[],
+): IssueClassification {
   return applyTitleIssueShapeHint(
     applyLabelOverrides(
       applyTitleFunctionalityHint(rowToClassification(row), row.title),

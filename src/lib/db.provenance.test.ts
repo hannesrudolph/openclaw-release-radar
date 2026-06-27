@@ -204,6 +204,42 @@ describe('release fix provenance', () => {
     assert.equal(row.check_contexts_json, '[{"name":"build","conclusion":"SUCCESS"}]');
   });
 
+  it('reconstructs issue labels at a cutoff from label timeline events', async () => {
+    const db = await freshDb('label-events');
+    seedRelease(db, 'v1');
+    seedIssue(db, 7101, null);
+
+    db.upsertIssueLabelEvent({
+      issue_number: 7101,
+      event_id: 'label-1',
+      action: 'labeled',
+      label_name: 'bug',
+      actor_login: 'reporter',
+      created_at: '2026-06-01T13:00:00Z',
+    });
+    db.upsertIssueLabelEvent({
+      issue_number: 7101,
+      event_id: 'label-2',
+      action: 'labeled',
+      label_name: 'P1',
+      actor_login: 'maintainer',
+      created_at: '2026-06-02T00:00:00Z',
+    });
+    db.upsertIssueLabelEvent({
+      issue_number: 7101,
+      event_id: 'label-3',
+      action: 'unlabeled',
+      label_name: 'P1',
+      actor_login: 'maintainer',
+      created_at: '2026-06-03T00:00:00Z',
+    });
+
+    assert.deepEqual(db.labelsForIssueAt(7101, ['fallback'], '2026-06-01T14:00:00Z'), ['bug']);
+    assert.deepEqual(db.labelsForIssueAt(7101, ['fallback'], '2026-06-02T12:00:00Z').sort(), ['P1', 'bug']);
+    assert.deepEqual(db.labelsForIssueAt(7101, ['fallback'], '2026-06-04T00:00:00Z'), ['bug']);
+    assert.deepEqual(db.labelsForIssueAt(9999, ['fallback'], '2026-06-04T00:00:00Z'), ['fallback']);
+  });
+
   it('counts only completed issues fixed by merged reachable PRs', async () => {
     const db = await freshDb('verified-fixed');
     seedRelease(db, 'v1');

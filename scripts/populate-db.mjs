@@ -5,7 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { cveDecayLoad, feltLoad, installConfidence, openDebtLoad, pickRecommended } from '../src/lib/score.ts';
 import { topBrokenSurfaces } from '../src/lib/surfaces.ts';
 import {
-  listReleasesDb, openedDuringReign, issueCountForVersion, issuesForVersion,
+  labelsForIssueAt, listReleasesDb, openedDuringReign, issueCountForVersion, issuesForVersion,
   listAdvisories, updateReleaseScore, verifiedFixedForRelease,
 } from '../src/lib/db.ts';
 import { computeHoursToNextStable, hasHotfixSuccessor } from '../src/lib/releaseNotes.ts';
@@ -30,9 +30,11 @@ const cveFor = (tag) => {
 };
 function safeLabels(j){ try{ const v=JSON.parse(j); return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]; }catch{ return []; } }
 function rowToCls(r){ const ok=['none','partial','confirmed','unknown']; const ws=ok.includes(r.workaround_status)?r.workaround_status:(r.has_workaround===1?'confirmed':'unknown'); return { sentiment:r.sentiment, severity:r.severity, scope:r.scope, functionality:r.functionality, affectedUsers:r.affected_users, workaroundStatus:ws, duplicateCluster:r.duplicate_cluster, affectsVersion:r.affects_version, confidence:r.confidence, rationale:r.rationale??'' }; }
-const classify = (r)=>{ const labels=safeLabels(r.labels); return applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels); };
+const classify = (r, labels=safeLabels(r.labels))=>applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels);
 const isCS = (c)=>c.sentiment==='negative'&&c.functionality==='core'&&(c.severity==='critical'||c.severity==='high');
-const countCS = (rows)=>rows.reduce((n,r)=>isCS(classify(r))?n+1:n,0);
+const labelCutoff = (rel) => rel.published_at && rel.hours_to_next_release != null
+  ? new Date(Date.parse(rel.published_at) + rel.hours_to_next_release * 3_600_000).toISOString()
+  : null;
 
 const releases = listReleasesDb(10);
 const scored = releases.map((rel, idx) => {
@@ -41,9 +43,13 @@ const scored = releases.map((rel, idx) => {
   const oReign = openedDuringReign(rel.tag), fixed = verifiedFixedForRelease(rel.tag);
   const fixedNumbers = new Set(fixed.map(r => r.number));
   const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
+  const cutoff = labelCutoff(rel);
+  const labelsFor = r => labelsForIssueAt(r.number, safeLabels(r.labels), cutoff);
+  const classifyAt = r => classify(r, labelsFor(r));
+  const countCS = (rows)=>rows.reduce((n,r)=>isCS(classifyAt(r))?n+1:n,0);
   const scoreState = r => fixedNumbers.has(r.number) ? 'closed' : (r.state === 'open' ? 'open' : 'closed-unverified');
   const scoredIssue = r => ({
-    ...classify(r),
+    ...classifyAt(r),
     issueNumber: r.number,
     duplicateCluster: r.duplicate_cluster,
     author: r.author,
@@ -56,12 +62,12 @@ const scored = releases.map((rel, idx) => {
     commenterScanTruncated: r.commenter_scan_truncated,
     reactionTotal: r.reaction_total,
     positiveReactionCount: r.positive_reactions,
-    labels: safeLabels(r.labels),
+    labels: labelsFor(r),
   });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
   const opened = countCS(oReign), closed = countCS(fixed);
   const isFelt = c => c.sentiment==='negative' && ['core','integration','provider'].includes(c.functionality) && (c.severity==='critical'||c.severity==='high');
-  const brokenSurfaces = JSON.stringify(topBrokenSurfaces(oReign.filter(r => r.state==='open' && isFelt(classify(r))).map(r => r.title)));
+  const brokenSurfaces = JSON.stringify(topBrokenSurfaces(oReign.filter(r => r.state==='open' && isFelt(classifyAt(r))).map(r => r.title)));
   const gap = computeHoursToNextStable(allRel, rel.tag);
   setStableGap.run(gap, rel.tag);
   const cve = cveFor(rel.tag);
