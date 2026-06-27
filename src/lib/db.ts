@@ -212,8 +212,22 @@ CREATE TABLE IF NOT EXISTS pull_request_fixes (
   fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS release_pr_reachability (
+  tag TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
+  tag_commit_oid TEXT NOT NULL,
+  merge_commit_oid TEXT NOT NULL,
+  base_ref_name TEXT,
+  status TEXT NOT NULL,
+  method TEXT NOT NULL DEFAULT 'git-merge-base',
+  evidence_json TEXT NOT NULL DEFAULT '{}',
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (tag, pr_number)
+);
+
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
+CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -240,6 +254,29 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
+}
+
+try {
+  const cols = db.prepare(`PRAGMA table_info(release_pr_reachability)`).all() as Array<{ name: string }>;
+  if (cols.length > 0 && !cols.some((col) => col.name === 'tag_commit_oid')) {
+    db.exec(`DROP TABLE release_pr_reachability`);
+    db.exec(`
+    CREATE TABLE release_pr_reachability (
+      tag TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      tag_commit_oid TEXT NOT NULL,
+      merge_commit_oid TEXT NOT NULL,
+      base_ref_name TEXT,
+      status TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'git-merge-base',
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      checked_at TEXT NOT NULL,
+      PRIMARY KEY (tag, pr_number)
+    )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
+  }
+} catch {
+  // The main CREATE TABLE block handles first-run setup; this only repairs old local schemas.
 }
 
 // Bot detection. Cheap, deterministic, no extra LLM tokens.
@@ -539,6 +576,44 @@ export function upsertPullRequestFix(input: PullRequestFixInput): void {
   upsertPullRequestFixStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
+export interface ReleasePrReachabilityInput {
+  tag: string;
+  pr_number: number;
+  tag_commit_oid: string;
+  merge_commit_oid: string;
+  base_ref_name: string | null;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+  method?: string;
+  evidence_json: string;
+}
+
+const upsertReleasePrReachabilityStmt = db.prepare(`
+INSERT INTO release_pr_reachability (
+  tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method,
+  evidence_json, checked_at
+)
+VALUES (
+  :tag, :pr_number, :tag_commit_oid, :merge_commit_oid, :base_ref_name, :status, :method,
+  :evidence_json, :checked_at
+)
+ON CONFLICT(tag, pr_number) DO UPDATE SET
+  tag_commit_oid=excluded.tag_commit_oid,
+  merge_commit_oid=excluded.merge_commit_oid,
+  base_ref_name=excluded.base_ref_name,
+  status=excluded.status,
+  method=excluded.method,
+  evidence_json=excluded.evidence_json,
+  checked_at=excluded.checked_at
+`);
+
+export function upsertReleasePrReachability(input: ReleasePrReachabilityInput): void {
+  upsertReleasePrReachabilityStmt.run({
+    ...input,
+    method: input.method ?? 'git-merge-base',
+    checked_at: new Date().toISOString(),
+  });
+}
+
 // Stable-only view. Prereleases live in the DB for derived-stat computation
 // (beta_count, hours_to_next_release) but are not surfaced to scoring or the
 // API — the UI is "should I install this stable release?", betas don't get
@@ -796,13 +871,12 @@ JOIN classifications c ON c.issue_number = i.number
 JOIN issue_closure_events e ON e.issue_number = i.number
 JOIN issue_pr_links l ON l.issue_number = i.number
 JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-JOIN release_commits rc ON rc.tag = ?
+JOIN release_pr_reachability rpr ON rpr.tag = ? AND rpr.pr_number = p.pr_number
 WHERE
   e.state_reason = 'COMPLETED'
   AND p.merged = 1
-  AND p.merged_at IS NOT NULL
-  AND rc.committed_at IS NOT NULL
-  AND p.merged_at <= rc.committed_at
+  AND rpr.status = 'reachable'
+  AND (l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer'))
 ORDER BY i.closed_at DESC
 `);
 
@@ -832,13 +906,12 @@ WHERE
     FROM issue_closure_events e
     JOIN issue_pr_links l ON l.issue_number = e.issue_number
     JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-    JOIN release_commits rc ON rc.tag = target.tag
+    JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
     WHERE e.issue_number = i.number
       AND e.state_reason = 'COMPLETED'
       AND p.merged = 1
-      AND p.merged_at IS NOT NULL
-      AND rc.committed_at IS NOT NULL
-      AND p.merged_at <= rc.committed_at
+      AND rpr.status = 'reachable'
+      AND (l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer'))
   )
 ORDER BY i.closed_at DESC
 `);
