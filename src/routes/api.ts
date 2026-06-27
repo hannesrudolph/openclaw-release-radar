@@ -401,9 +401,9 @@ function buildPublicPayload() {
 }
 
 api.get('/public', (_req, res) => {
-  const hit = getCached();
+  const hit = getCached(getLastScoredAt());
   if (hit) { res.json(hit); return; }
   const data = buildPublicPayload();
-  setCached(data);
+  setCached(data, data.updatedAt ?? null);
   res.json(data);
 });
