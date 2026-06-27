@@ -68,10 +68,14 @@ describe('GitHub GraphQL mapping', () => {
   it('builds one GraphQL query with aliased issue label timeline lookups', () => {
     const query = __githubTest.buildIssueLabelEventsBatchQuery(2);
 
+    assert.match(query, /\$after0: String/);
+    assert.match(query, /\$after1: String/);
     assert.match(query, /LABELED_EVENT/);
     assert.match(query, /UNLABELED_EVENT/);
     assert.match(query, /issue0: issue\(number: \$number0\)/);
     assert.match(query, /issue1: issue\(number: \$number1\)/);
+    assert.match(query, /timelineItems\(first: 100, after: \$after0/);
+    assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(query, /label \{ name \}/);
   });
 

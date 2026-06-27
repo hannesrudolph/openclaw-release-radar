@@ -235,45 +235,60 @@ export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise
   const batchSize = 10;
   for (let offset = 0; offset < uniqueIssueNumbers.length; offset += batchSize) {
     const chunk = uniqueIssueNumbers.slice(offset, offset + batchSize);
-    const data = await gh<{ repository: Record<string, any> | null }>(
-      buildIssueLabelEventsBatchQuery(chunk.length),
-      repoVars(Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
-    );
-    const repo = assertRepo(data.repository);
-    for (let idx = 0; idx < chunk.length; idx++) {
-      const issueNumber = chunk[idx];
-      const issue = repo[`issue${idx}`];
-      const events: GhIssueLabelEvent[] = [];
-      for (const node of issue?.timelineItems?.nodes ?? []) {
-        const type = node?.__typename;
-        if (type !== 'LabeledEvent' && type !== 'UnlabeledEvent') continue;
-        const labelName = node.label?.name;
-        if (!labelName) continue;
-        events.push({
-          issueNumber,
-          eventId: node.id,
-          action: type === 'LabeledEvent' ? 'labeled' : 'unlabeled',
-          labelName,
-          actorLogin: node.actor?.login ?? null,
-          createdAt: node.createdAt,
-        });
+    const cursors = new Map<number, string | null>(chunk.map((issueNumber) => [issueNumber, null]));
+    const done = new Set<number>();
+    while (done.size < chunk.length) {
+      const active = chunk.filter((issueNumber) => !done.has(issueNumber));
+      const data = await gh<{ repository: Record<string, any> | null }>(
+        buildIssueLabelEventsBatchQuery(active.length),
+        repoVars(Object.fromEntries(active.flatMap((issueNumber, idx) => [
+          [`number${idx}`, issueNumber],
+          [`after${idx}`, cursors.get(issueNumber) ?? null],
+        ]))),
+      );
+      const repo = assertRepo(data.repository);
+      for (let idx = 0; idx < active.length; idx++) {
+        const issueNumber = active[idx];
+        const issue = repo[`issue${idx}`];
+        const connection = issue?.timelineItems;
+        const events = all.get(issueNumber) ?? [];
+        for (const node of connection?.nodes ?? []) {
+          const type = node?.__typename;
+          if (type !== 'LabeledEvent' && type !== 'UnlabeledEvent') continue;
+          const labelName = node.label?.name;
+          if (!labelName) continue;
+          events.push({
+            issueNumber,
+            eventId: node.id,
+            action: type === 'LabeledEvent' ? 'labeled' : 'unlabeled',
+            labelName,
+            actorLogin: node.actor?.login ?? null,
+            createdAt: node.createdAt,
+          });
+        }
+        all.set(issueNumber, events);
+        if (connection?.pageInfo?.hasNextPage && connection.pageInfo.endCursor) {
+          cursors.set(issueNumber, connection.pageInfo.endCursor);
+        } else {
+          done.add(issueNumber);
+        }
       }
-      all.set(issueNumber, events);
     }
   }
   return all;
 }
 
 function buildIssueLabelEventsBatchQuery(size: number): string {
-  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!, $after${idx}: String`).join(', ');
   const fields = Array.from({ length: size }, (_, idx) => `
     issue${idx}: issue(number: $number${idx}) {
-      timelineItems(first: 100, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
+      timelineItems(first: 100, after: $after${idx}, itemTypes: [LABELED_EVENT, UNLABELED_EVENT]) {
         nodes {
           __typename
           ... on LabeledEvent { id createdAt actor { login } label { name } }
           ... on UnlabeledEvent { id createdAt actor { login } label { name } }
         }
+        pageInfo { hasNextPage endCursor }
       }
     }`).join('\n');
 

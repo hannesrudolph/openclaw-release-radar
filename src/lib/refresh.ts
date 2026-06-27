@@ -328,7 +328,7 @@ export async function refresh(): Promise<{
       );
       const labelEventsByIssue = await listIssueLabelEventsBatch(
         page
-          .filter((issue) => issue.labels.length > 0 && issueOverlapsMonitoredWindow(issue))
+          .filter((issue) => issueOverlapsMonitoredWindow(issue))
           .map((issue) => issue.number),
       );
 
