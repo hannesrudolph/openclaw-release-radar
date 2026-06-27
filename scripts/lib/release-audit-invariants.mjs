@@ -43,11 +43,15 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   for (const release of releases) {
     const tag = release.tag;
     const closed = reader.closedDuringReign(tag);
+    const rawClosed = typeof reader.rawClosedDuringReign === 'function'
+      ? reader.rawClosedDuringReign(tag)
+      : closed;
     const verified = reader.verifiedFixedForRelease(tag);
     const unverified = reader.unverifiedClosedForRelease(tag);
     const proofRows = reader.proofRowsFor(tag);
     const fixedProof = proofRows.filter((row) => row.status === 'fixed_in_release');
     const notCountedProof = proofRows.filter((row) => row.status !== 'fixed_in_release');
+    const enforceRawClosedCoverage = release.recommended === 1 || proofRows.length > 0;
 
     rows.push({
       tag,
@@ -59,15 +63,26 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       notCounted: notCountedProof.length,
     });
 
+    if (enforceRawClosedCoverage) {
+      expect(failures, tag, rawClosed.length === closed.length,
+        `raw closed release-window issues (${rawClosed.length}) must equal classified closed issues (${closed.length})`);
+    }
     expect(failures, tag, closed.length === verified.length + unverified.length,
       `closedDuringReign (${closed.length}) must equal verified + unverified (${verified.length + unverified.length})`);
-    expect(failures, tag, proofRows.length === closed.length,
-      `closure proofs (${proofRows.length}) must cover closed release-window issues (${closed.length})`);
+    expect(failures, tag, proofRows.length === (enforceRawClosedCoverage ? rawClosed.length : closed.length),
+      enforceRawClosedCoverage
+        ? `closure proofs (${proofRows.length}) must cover raw closed release-window issues (${rawClosed.length})`
+        : `closure proofs (${proofRows.length}) must cover classified closed release-window issues (${closed.length})`);
     expect(failures, tag, fixedProof.length + notCountedProof.length === proofRows.length,
       'counted + not-counted proof rows must equal all proof rows');
 
     const verifiedNumbers = new Set(verified.map((row) => row.number));
+    const rawClosedNumbers = new Set(rawClosed.map((row) => row.number));
     const proofByNumber = new Map(proofRows.map((row) => [row.issue_number, row]));
+    for (const row of proofRows) {
+      expect(failures, tag, rawClosedNumbers.has(row.issue_number),
+        `proof issue #${row.issue_number} must belong to the raw closed release window`);
+    }
     for (const row of fixedProof) {
       expect(failures, tag, verifiedNumbers.has(row.issue_number),
         `fixed_in_release issue #${row.issue_number} must be present in verifiedFixedForRelease`);
@@ -119,6 +134,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     if (audit) {
     const gate = parseJson(audit.gate_evidence_json, {});
     verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
+    verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
     const fix = gate.fixProvenance ?? {};
     expect(failures, tag, fix.verifiedFixedCount === verified.length,
       `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
@@ -171,6 +187,17 @@ function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
   if (labelTimeline.cutoffAt != null) {
     expect(failures, tag, labelTimeline.historicalCurrentLabelFallbackAllowed === false,
       'historical label cutoffs must not allow current-label fallback');
+  }
+}
+
+function verifyClosedClassificationPromptVersion({ failures, tag, closed, audit }) {
+  const expected = Number(audit.prompt_version);
+  expect(failures, tag, Number.isInteger(expected) && expected >= 0,
+    `audit prompt_version must be a non-negative integer, got ${audit.prompt_version}`);
+  if (!Number.isInteger(expected)) return;
+  for (const row of closed) {
+    expect(failures, tag, Number(row.prompt_version) === expected,
+      `closed issue #${row.number} classification prompt_version (${row.prompt_version}) must match audit prompt_version (${expected})`);
   }
 }
 

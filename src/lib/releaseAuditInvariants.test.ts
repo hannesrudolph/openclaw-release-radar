@@ -14,6 +14,7 @@ const labelTimelineFixture = {
 
 function reader(overrides: Partial<{
   releases: any[];
+  rawClosed: any[];
   closed: any[];
   verified: any[];
   unverified: any[];
@@ -22,8 +23,9 @@ function reader(overrides: Partial<{
 }> = {}) {
   const data = {
     releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1, scored_at: 't' }],
-    closed: [{ number: 1 }],
-    verified: [{ number: 1, sentiment: 'negative' }],
+    rawClosed: [{ number: 1 }],
+    closed: [{ number: 1, prompt_version: 6 }],
+    verified: [{ number: 1, sentiment: 'negative', prompt_version: 6 }],
     unverified: [],
     proofRows: [{
       release_tag: 'v1',
@@ -40,6 +42,7 @@ function reader(overrides: Partial<{
       }),
     }],
     audit: {
+      prompt_version: 6,
       gate_evidence_json: JSON.stringify({
         labelTimeline: labelTimelineFixture,
         fixProvenance: {
@@ -54,6 +57,7 @@ function reader(overrides: Partial<{
   };
   return {
     listReleases: () => data.releases,
+    rawClosedDuringReign: () => data.rawClosed,
     closedDuringReign: () => data.closed,
     verifiedFixedForRelease: () => data.verified,
     unverifiedClosedForRelease: () => data.unverified,
@@ -167,6 +171,7 @@ describe('verifyReleaseAudit', () => {
     const result = await verifyReleaseAudit({
       reader: reader({
         audit: {
+          prompt_version: 6,
           gate_evidence_json: JSON.stringify({
             labelTimeline: labelTimelineFixture,
             fixProvenance: {
@@ -183,12 +188,32 @@ describe('verifyReleaseAudit', () => {
     assert.match(result.failures[0], /verifiedFixedCount/);
   });
 
+  it('fails when raw closed issues are missing classifications', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        rawClosed: [{ number: 1 }, { number: 2 }],
+        closed: [{ number: 1, prompt_version: 6 }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /raw closed release-window issues/.test(failure)));
+  });
+
+  it('fails when closed-window classifications are stale', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 5 }],
+        verified: [{ number: 1, sentiment: 'negative', prompt_version: 5 }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /classification prompt_version/.test(failure)));
+  });
+
   it('fails when canonical-open proof does not resolve to open terminal', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
-        closed: [{ number: 1 }],
+        closed: [{ number: 1, prompt_version: 6 }],
         verified: [],
-        unverified: [{ number: 1 }],
+        unverified: [{ number: 1, prompt_version: 6 }],
         proofRows: [{
           issue_number: 1,
           status: 'duplicate_to_open_canonical',
@@ -202,6 +227,7 @@ describe('verifyReleaseAudit', () => {
           }),
         }],
         audit: {
+          prompt_version: 6,
           gate_evidence_json: JSON.stringify({
             labelTimeline: labelTimelineFixture,
             fixProvenance: {
