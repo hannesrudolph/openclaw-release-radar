@@ -46,9 +46,15 @@ describe('static scoring/UI contracts', () => {
 
   it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {
     const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.match(script, /--allow-overwrite-local-releases/);
     assert.doesNotMatch(script, /^import \{ db, setMeta \} from '\.\.\/src\/lib\/db\.ts';/m);
     assert.match(script, /await import\('\.\.\/src\/lib\/db\.ts'\)/);
+    assert.match(script, /final_score: null/);
+    assert.match(script, /recommended: 0/);
+    assert.match(script, /localScoresImported: false/);
+    assert.doesNotMatch(script, /nullableNumber\(release\.score\)/);
+    assert.match(readme, /external scores\/recommendations are not treated as local audit-backed scores/);
   });
 
   it('score verifier is wired as a hard drift check', () => {

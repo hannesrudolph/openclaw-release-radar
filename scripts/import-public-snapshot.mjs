@@ -18,33 +18,6 @@ function assertObject(value, label) {
   return value;
 }
 
-function nullableNumber(value) {
-  return typeof value === 'number' && Number.isFinite(value) ? value : null;
-}
-
-function countBrokenSurfaces(release) {
-  const counts = new Map();
-  const issues = [...(release.issues ?? []), ...(release.watchIssues ?? [])];
-  for (const issue of issues) {
-    const surface = issue?.surface;
-    if (!surface?.label || !surface?.icon) continue;
-    if (issue.state !== 'open') continue;
-    if (issue.sentiment !== 'negative') continue;
-    if (issue.severity !== 'critical' && issue.severity !== 'high') continue;
-
-    const key = `${surface.label}\0${surface.icon}`;
-    const prev = counts.get(key) ?? { label: surface.label, icon: surface.icon, count: 0 };
-    prev.count++;
-    counts.set(key, prev);
-  }
-
-  return JSON.stringify(
-    [...counts.values()]
-      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label))
-      .slice(0, 8),
-  );
-}
-
 async function main() {
   const { db, setMeta } = await import('../src/lib/db.ts');
   const res = await fetch(sourceUrl);
@@ -101,14 +74,14 @@ async function main() {
         name: release.tag,
         published_at: release.publishedAt ?? null,
         html_url: release.url,
-        final_score: nullableNumber(release.score),
-        negative_issues: Number.isInteger(release.negativeIssues) ? release.negativeIssues : 0,
-        positive_issues: Number.isInteger(release.positiveIssues) ? release.positiveIssues : 0,
-        scored_at: release.scoredAt ?? payload.updatedAt ?? importTime,
-        state: typeof release.status === 'string' ? release.status : 'eligible',
-        recommended: release.recommended ? 1 : 0,
-        score_reason: typeof release.reason === 'string' ? release.reason : '',
-        broken_surfaces: countBrokenSurfaces(release),
+        final_score: null,
+        negative_issues: 0,
+        positive_issues: 0,
+        scored_at: null,
+        state: 'wait',
+        recommended: 0,
+        score_reason: 'Imported from legacy public snapshot; run a local refresh to score with local evidence.',
+        broken_surfaces: '[]',
       });
     }
 
@@ -126,7 +99,9 @@ async function main() {
     importedReleases: payload.releases.length,
     sourceUrl,
     sourceUpdatedAt: payload.updatedAt ?? null,
-    recommended,
+    sourceRecommended: recommended,
+    localScoresImported: false,
+    nextStep: 'Run npm run dev or a manual refresh to compute local scores and score audits.',
   }, null, 2));
 }
 
