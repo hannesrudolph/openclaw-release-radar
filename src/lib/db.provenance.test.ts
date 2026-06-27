@@ -280,7 +280,7 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.labelsForIssueAt(9999, ['fallback'], '2026-06-04T00:00:00Z'), ['fallback']);
   });
 
-  it('counts only completed issues fixed by merged reachable PRs', async () => {
+  it('counts only completed issues fixed by merged reachable PRs or proof rows', async () => {
     const db = await freshDb('verified-fixed');
     seedRelease(db, 'v1');
 
@@ -316,6 +316,27 @@ describe('release fix provenance', () => {
     }
 
     assert.deepEqual(db.verifiedFixedForRelease('v1').map((row: any) => row.number), [1]);
+  });
+
+  it('credits completed closures with reachable commit proof rows', async () => {
+    const db = await freshDb('verified-commit-proof');
+    seedRelease(db, 'v-commit', '2027-01-01T00:00:00Z');
+    seedIssue(db, 5, '2027-01-02T00:00:00Z', '2027-01-01T12:00:00Z');
+    seedClosure(db, 5, 'COMPLETED', '2027-01-02T00:00:00Z');
+    db.upsertIssueClosureProof({
+      release_tag: 'v-commit',
+      issue_number: 5,
+      status: 'fixed_in_release',
+      summary: 'Closed by a fix/source commit reachable from this release tag.',
+      evidence_json: JSON.stringify({
+        stateReasons: ['COMPLETED'],
+        hasReachableFixCommit: true,
+        reachableFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+      }),
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-commit').map((row: any) => row.number), [5]);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-commit').map((row: any) => row.number), []);
   });
 
   it('does not carry reachable fix credit across release windows', async () => {

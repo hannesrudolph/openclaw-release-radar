@@ -23,6 +23,7 @@ import {
 import { verifyNpmArtifact } from './npmRegistry';
 import { verifyEvidenceReportUrl } from './releaseEvidence';
 import { analyzeClosureProofsForRelease, refreshClosureEvidenceForRelease } from './closureProofAnalysis';
+import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { checkReleasePrReachability } from './releaseReachability';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
@@ -473,6 +474,12 @@ export async function refresh(): Promise<{
       } catch (e) {
         console.warn(`[reachability] ${rel.tag} failed (continuing): ${(e as Error).message}`);
       }
+      try {
+        const proof = await analyzeClosureProofsForRelease(rel.tag);
+        console.log(`[closure-proof] ${rel.tag}: ${proof.analyzed} analyzed`);
+      } catch (e) {
+        console.warn(`[closure-proof] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+      }
     }
 
     // 4. Score every monitored release with the Install Confidence model — a single
@@ -749,14 +756,7 @@ export async function refresh(): Promise<{
       });
     }
 
-    for (const s of scored) {
-      try {
-        const proof = await analyzeClosureProofsForRelease(s.rel.tag);
-        console.log(`[closure-proof] ${s.rel.tag}: ${proof.analyzed} analyzed`);
-      } catch (e) {
-        console.warn(`[closure-proof] ${s.rel.tag} failed (continuing): ${(e as Error).message}`);
-      }
-    }
+    for (const s of scored) persistClosureProofInScoreAudit(s.rel.tag);
 
     lastRefreshAt = new Date().toISOString();
     invalidateCache();

@@ -101,6 +101,29 @@ describe('GitHub GraphQL mapping', () => {
     ]);
   });
 
+  it('extracts closure-comment commit proof without trusting incidental hashes', () => {
+    const mentions = __githubTest.closureCommentCommitMentions(97222, [
+      {
+        body: 'Fix provenance: Commit `cfeaf6897fd89201b71ff7d5285e48c5a382ac9a` is titled `fix(cron): clear payload model overrides`. Release provenance: v2026.6.10 contains the same behavior.',
+        created_at: '2026-06-27T09:04:25Z',
+      },
+      {
+        body: 'Codex review notes: reviewed against c5d34c8376f8aa32744786cae0473c60e39ef444.',
+        created_at: '2026-06-27T09:05:25Z',
+      },
+    ]);
+
+    assert.deepEqual(mentions, [
+      {
+        issueNumber: 97222,
+        commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+        referencedAt: '2026-06-27T09:04:25Z',
+        sourceIssueNumber: 97222,
+        snippet: 'Fix provenance: Commit `cfeaf6897fd89201b71ff7d5285e48c5a382ac9a` is titled `fix(cron): clear payload model overrides`. Release provenance: v2026.6.10 contains the same behavior.',
+      },
+    ]);
+  });
+
   it('builds one GraphQL query with aliased pull request fix lookups', () => {
     const query = __githubTest.buildPullRequestFixesBatchQuery(2);
 

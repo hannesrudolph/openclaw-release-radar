@@ -23,6 +23,10 @@ export interface ClosureProofInput {
   hasMergedClosingPr: boolean;
   hasReachableClosingPr: boolean;
   hasNotReachableClosingPr: boolean;
+  hasReachableFixCommit?: boolean;
+  hasNotReachableFixCommit?: boolean;
+  reachableFixCommits?: string[];
+  notReachableFixCommits?: string[];
   comments: Array<{ author?: string | null; body?: string | null; createdAt?: string | null }>;
 }
 
@@ -48,6 +52,10 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     hasMergedClosingPr: input.hasMergedClosingPr,
     hasReachableClosingPr: input.hasReachableClosingPr,
     hasNotReachableClosingPr: input.hasNotReachableClosingPr,
+    hasReachableFixCommit: input.hasReachableFixCommit === true,
+    hasNotReachableFixCommit: input.hasNotReachableFixCommit === true,
+    reachableFixCommits: input.reachableFixCommits ?? [],
+    notReachableFixCommits: input.notReachableFixCommits ?? [],
     matchingComments: matchingCommentSnippets(input.comments),
     canonicalIssues: canonicalIssueNumbers(combinedComments),
   };
@@ -70,26 +78,30 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
 
   const hasCompletedClosure = reasons.has('COMPLETED');
 
-  if (hasCompletedClosure && input.hasReachableClosingPr) {
-    return {
-      status: 'fixed_in_release',
-      summary: 'Closed by a merged PR reachable from this release tag.',
-      evidence,
-    };
-  }
-
-  if (hasCompletedClosure && input.hasMergedClosingPr && input.hasNotReachableClosingPr) {
-    return {
-      status: 'fixed_after_release',
-      summary: 'Closed by a merged PR, but that PR is not reachable from this release tag.',
-      evidence,
-    };
-  }
-
   if (MAIN_ONLY_RE.test(combinedComments)) {
     return {
       status: 'main_only_claim',
       summary: 'Closure says the fix is on current main, but not in this release tag.',
+      evidence,
+    };
+  }
+
+  if (hasCompletedClosure && (input.hasReachableClosingPr || input.hasReachableFixCommit)) {
+    return {
+      status: 'fixed_in_release',
+      summary: input.hasReachableClosingPr
+        ? 'Closed by a merged PR reachable from this release tag.'
+        : 'Closed by a fix/source commit reachable from this release tag.',
+      evidence,
+    };
+  }
+
+  if (hasCompletedClosure && ((input.hasMergedClosingPr && input.hasNotReachableClosingPr) || input.hasNotReachableFixCommit)) {
+    return {
+      status: 'fixed_after_release',
+      summary: input.hasNotReachableFixCommit
+        ? 'Closed by a fix/source commit, but that commit is not reachable from this release tag.'
+        : 'Closed by a merged PR, but that PR is not reachable from this release tag.',
       evidence,
     };
   }
@@ -105,7 +117,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   if (ALREADY_PRESENT_RE.test(combinedComments)) {
     return {
       status: 'already_present_claim',
-      summary: 'Closure says the behavior is already implemented, but no linked merged PR is reachable from this release tag.',
+      summary: 'Closure says the behavior is already implemented, but no hard code proof is reachable from this release tag.',
       evidence,
     };
   }
@@ -128,7 +140,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
 
   return {
     status: 'no_code_proof',
-    summary: 'Closed without a linked merged PR reachable from this release tag.',
+    summary: 'Closed without reachable PR or fix/source commit proof for this release tag.',
     evidence,
   };
 }

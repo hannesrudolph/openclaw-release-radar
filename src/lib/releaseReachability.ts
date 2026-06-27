@@ -14,6 +14,13 @@ export interface ReleaseReachabilityResult {
   unknown: number;
 }
 
+export interface CommitReachability {
+  commitOid: string;
+  tagCommitOid: string | null;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+  evidence: string;
+}
+
 const remote = process.env.OPENCLAW_REPO_URL ?? 'https://github.com/openclaw/openclaw.git';
 const repoDir = resolve('.cache/openclaw.git');
 
@@ -103,6 +110,56 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     notReachable: candidates.length - reachable - unknown,
     unknown,
   };
+}
+
+export async function checkReleaseCommitReachability(
+  tag: string,
+  commitOids: string[],
+): Promise<Map<string, CommitReachability>> {
+  const uniqueCommits = [...new Set(commitOids.map((oid) => oid.toLowerCase()))]
+    .filter((oid) => /^[0-9a-f]{40}$/.test(oid));
+  const results = new Map<string, CommitReachability>();
+  if (!uniqueCommits.length) return results;
+  const release = releaseCommitStmt.get(tag) as { tag_commit_oid: string | null } | undefined;
+  if (!release?.tag_commit_oid) {
+    for (const commitOid of uniqueCommits) {
+      results.set(commitOid, {
+        commitOid,
+        tagCommitOid: null,
+        status: 'unknown',
+        evidence: 'release_commit_unavailable',
+      });
+    }
+    return results;
+  }
+
+  await ensureRepo();
+  git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
+  git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], { stdio: 'inherit' });
+
+  for (const commitOid of uniqueCommits) {
+    git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commitOid], { allowFailure: true });
+    const exists = git(['cat-file', '-e', `${commitOid}^{commit}`], { allowFailure: true });
+    if (exists.status !== 0) {
+      results.set(commitOid, {
+        commitOid,
+        tagCommitOid: release.tag_commit_oid,
+        status: 'unknown',
+        evidence: 'commit_unavailable',
+      });
+      continue;
+    }
+    const res = git(['merge-base', '--is-ancestor', commitOid, release.tag_commit_oid], { allowFailure: true });
+    const isReachable = res.status === 0;
+    results.set(commitOid, {
+      commitOid,
+      tagCommitOid: release.tag_commit_oid,
+      status: isReachable ? 'reachable' : 'not_reachable',
+      evidence: isReachable ? 'fix_commit_in_release_history' : 'not_reachable_from_release_tag',
+    });
+  }
+
+  return results;
 }
 
 async function ensureRepo(): Promise<void> {

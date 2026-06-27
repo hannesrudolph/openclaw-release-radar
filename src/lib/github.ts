@@ -219,6 +219,14 @@ export interface ClosureCommentPrMention {
   referencedAt: string | null;
 }
 
+export interface ClosureCommentCommitMention {
+  issueNumber: number;
+  commitOid: string;
+  referencedAt: string | null;
+  sourceIssueNumber: number;
+  snippet: string;
+}
+
 export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueLabelEvent[]>();
@@ -871,6 +879,33 @@ export function closureCommentPrMentions(
   return [...byPr.values()].sort((a, b) => a.prNumber - b.prNumber);
 }
 
+export function closureCommentCommitMentions(
+  issueNumber: number,
+  comments: Array<{ body?: string | null; created_at?: string | null; createdAt?: string | null }>,
+  sourceIssueNumber = issueNumber,
+): ClosureCommentCommitMention[] {
+  const byCommit = new Map<string, ClosureCommentCommitMention>();
+  for (const comment of comments) {
+    const body = comment.body ?? '';
+    const text = body.replace(/\s+/g, ' ');
+    if (!isClosureCommitFixProofComment(text)) continue;
+    const referencedAt = comment.created_at ?? comment.createdAt ?? null;
+    for (const commitOid of extractCommitOids(text)) {
+      const existing = byCommit.get(commitOid);
+      if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
+        byCommit.set(commitOid, {
+          issueNumber,
+          commitOid,
+          referencedAt,
+          sourceIssueNumber,
+          snippet: text.slice(0, 500),
+        });
+      }
+    }
+  }
+  return [...byCommit.values()].sort((a, b) => a.commitOid.localeCompare(b.commitOid));
+}
+
 function extractClosureCommentPrNumbers(body: string): number[] {
   const numbers = new Set<number>();
   const text = body.replace(/\s+/g, ' ');
@@ -895,6 +930,28 @@ function isClosureFixProofComment(text: string): boolean {
     /\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b.{0,160}\bmerged\s+(?:pr|pull request)\b/i.test(text) ||
     /\b(?:pr|pull request)\s*#?\d+\b.{0,120}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\s+(?:this|the report|the issue)\b/i.test(text)
   );
+}
+
+function isClosureCommitFixProofComment(text: string): boolean {
+  return (
+    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{12,40}`?/i.test(text) ||
+    /\bfixed\s+by\s+commit\s+`?[0-9a-f]{12,40}`?/i.test(text) ||
+    /\bfix\s+provenance\b.{0,220}\bcommit\b/i.test(text) ||
+    /\bcanonical\s+fix\b.{0,220}\bcommit\b/i.test(text) ||
+    /\bfix\s+evidence\b.{0,220}\bcommit\b/i.test(text) ||
+    /\brelease\s+provenance\b.{0,260}\b(v20\d{2}\.\d+\.\d+|release|tag)\b/i.test(text)
+  );
+}
+
+function extractCommitOids(text: string): string[] {
+  const commits = new Set<string>();
+  for (const match of text.matchAll(/\b[0-9a-f]{40}\b/gi)) {
+    commits.add(match[0].toLowerCase());
+  }
+  for (const match of text.matchAll(/github\.com\/openclaw\/openclaw\/commit\/([0-9a-f]{40})\b/gi)) {
+    commits.add(match[1].toLowerCase());
+  }
+  return [...commits].sort();
 }
 
 function addPrNumber(numbers: Set<number>, raw: string | undefined): void {
@@ -1039,6 +1096,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 
 export const __githubTest = {
   buildPullRequestFixesBatchQuery,
+  closureCommentCommitMentions,
   closureCommentPrMentions,
   buildIssueCommentsBatchQuery,
   buildIssueLabelEventsBatchQuery,

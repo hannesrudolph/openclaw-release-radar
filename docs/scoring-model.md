@@ -66,25 +66,25 @@ Fix credit requires:
 
 - GitHub closure reason is `COMPLETED`.
 - The final GitHub close event is the `COMPLETED` close. Older close events do not count after reopen/reclose.
-- Closing PR is linked through GitHub closure/reference evidence or a high-confidence same-repo closure/fix proof comment.
-- PR is merged.
-- PR merge commit is reachable from the release tag commit.
+- A hard code proof exists:
+  - closing PR is linked through GitHub closure/reference evidence or a high-confidence same-repo closure/fix proof comment, the PR is merged, and the PR merge commit is reachable from the release tag commit; or
+  - a high-confidence closure/canonical comment names a fix/source commit, and that commit is reachable from the release tag commit.
 
-Closed issues without a merged linked PR reachable from the release tag remain visible in audit evidence, but they do not reduce release risk.
+Closed issues without a reachable merged PR or reachable named fix/source commit remain visible in audit evidence, but they do not reduce release risk.
 
-Broad PR mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix wording such as a maintainer/bot note identifying the merged PR that closed or fixed the report.
+Broad PR/commit mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix/provenance wording such as a maintainer/bot note identifying the merged PR or fix/source commit that closed, fixed, or proves the reported behavior is present in the release source.
 
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
-- `fixed_in_release`: merged closing PR is reachable from this release tag.
-- `fixed_after_release`: merged closing PR exists, but is not reachable from this release tag.
+- `fixed_in_release`: merged closing PR or named fix/source commit is reachable from this release tag.
+- `fixed_after_release`: merged closing PR or named fix/source commit exists, but is not reachable from this release tag.
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
 - `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
-- `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR is reachable from the scored release tag.
+- `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
-- `no_code_proof`: closure exists, but no linked merged PR is reachable from the scored release tag.
+- `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_neutral`: closed item is not negative bug evidence.
 - `not_planned`: closure reason or comment says the issue was not planned/actionable.

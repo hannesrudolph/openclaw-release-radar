@@ -1,8 +1,9 @@
 import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertPullRequestFix } from './db';
 import { classifyClosureProof, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
-import { closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch } from './github';
+import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
+import { checkReleaseCommitReachability, type CommitReachability } from './releaseReachability';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -131,6 +132,33 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
+  const directCanonicalIssuesByIssue = new Map<number, number[]>();
+  const canonicalIssueNumbers = new Set<number>();
+  for (const issueNumber of issueNumbers) {
+    const numbers = canonicalIssueNumbersFromComments(commentsByIssue.get(issueNumber) ?? [], issueNumber);
+    directCanonicalIssuesByIssue.set(issueNumber, numbers);
+    for (const number of numbers) canonicalIssueNumbers.add(number);
+  }
+  const canonicalCommentsByIssue = await listIssueCommentsBatch(
+    [...canonicalIssueNumbers].filter((number) => !issueNumbers.includes(number)),
+  );
+  const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
+  const allCommitOids = new Set<string>();
+  for (const issueNumber of issueNumbers) {
+    const mentions = [
+      ...closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+      ...(directCanonicalIssuesByIssue.get(issueNumber) ?? []).flatMap((canonicalIssueNumber) =>
+        closureCommentCommitMentions(
+          issueNumber,
+          commentsByIssue.get(canonicalIssueNumber) ?? canonicalCommentsByIssue.get(canonicalIssueNumber) ?? [],
+          canonicalIssueNumber,
+        ),
+      ),
+    ];
+    commitMentionsByIssue.set(issueNumber, mentions);
+    for (const mention of mentions) allCommitOids.add(mention.commitOid);
+  }
+  const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids]);
   const counts = new Map<string, number>();
   deleteIssueClosureProofsForRelease(releaseTag);
   const preparedRows: Array<{
@@ -145,6 +173,9 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       body: comment.body,
       createdAt: comment.created_at,
     }));
+    const commitProof = commitProofEvidence(commitMentionsByIssue.get(row.number) ?? [], commitReachability);
+    const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
+    const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
     const result = classifyClosureProof({
       issueNumber: row.number,
       sentiment: row.sentiment,
@@ -155,6 +186,10 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       hasMergedClosingPr: Number(row.merged_closing_prs ?? 0) > 0,
       hasReachableClosingPr: Number(row.reachable_closing_prs ?? 0) > 0,
       hasNotReachableClosingPr: Number(row.not_reachable_closing_prs ?? 0) > 0,
+      hasReachableFixCommit: reachableFixCommits.length > 0,
+      hasNotReachableFixCommit: notReachableFixCommits.length > 0,
+      reachableFixCommits,
+      notReachableFixCommits,
       comments,
     });
     const evidence: Record<string, unknown> = {
@@ -162,6 +197,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       title: row.title,
       closedAt: row.closed_at,
       closingPrs: splitCsv(row.closing_prs),
+      fixCommitProof: commitProof,
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
     preparedRows.push({ issueNumber: row.number, result, evidence });
@@ -194,6 +230,45 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     buckets: Object.fromEntries([...counts.entries()].sort((a, b) => b[1] - a[1])),
     rawEvidence,
   };
+}
+
+function commitProofEvidence(
+  mentions: ClosureCommentCommitMention[],
+  reachability: Map<string, CommitReachability>,
+): Array<ClosureCommentCommitMention & {
+  status: CommitReachability['status'];
+  tagCommitOid: string | null;
+  evidence: string;
+}> {
+  return mentions.map((mention) => {
+    const result = reachability.get(mention.commitOid);
+    return {
+      ...mention,
+      status: result?.status ?? 'unknown',
+      tagCommitOid: result?.tagCommitOid ?? null,
+      evidence: result?.evidence ?? 'reachability_not_checked',
+    };
+  });
+}
+
+function canonicalIssueNumbersFromComments(comments: GhComment[], sourceIssueNumber: number): number[] {
+  const numbers = new Set<number>();
+  for (const comment of comments) {
+    for (const number of canonicalIssueNumbersFromText(comment.body ?? '')) {
+      if (number !== sourceIssueNumber) numbers.add(number);
+    }
+  }
+  return [...numbers].sort((a, b) => a - b);
+}
+
+function canonicalIssueNumbersFromText(text: string): number[] {
+  const numbers = new Set<number>();
+  const canonicalLineRe = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
+  for (const match of text.matchAll(canonicalLineRe)) {
+    const number = Number(match[1]);
+    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  }
+  return [...numbers].sort((a, b) => a - b);
 }
 
 function adjustCanonicalDuplicateStatus(
@@ -398,6 +473,10 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
 function splitCsv(value: unknown): string[] {
   if (!value) return [];
   return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function unique(values: string[]): string[] {
+  return [...new Set(values)].sort();
 }
 
 function canonicalIssueDetails(sourceIssueNumber: number, numbers: number[]): Array<{

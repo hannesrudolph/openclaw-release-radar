@@ -68,14 +68,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       expect(failures, tag, knownProofStatuses.has(row.status), `unknown proof status ${row.status} for issue #${row.issue_number}`);
       const evidence = parseJson(row.evidence_json, {});
       if (row.status === 'fixed_in_release') {
-        expect(failures, tag, evidence.hasReachableClosingPr === true,
-          `fixed_in_release issue #${row.issue_number} must have reachable PR evidence`);
+        expect(failures, tag, evidence.hasReachableClosingPr === true || evidence.hasReachableFixCommit === true,
+          `fixed_in_release issue #${row.issue_number} must have reachable PR or commit evidence`);
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
           `fixed_in_release issue #${row.issue_number} must have COMPLETED state reason`);
       }
       if (row.status === 'fixed_after_release') {
-        expect(failures, tag, evidence.hasNotReachableClosingPr === true,
-          `fixed_after_release issue #${row.issue_number} must have not-reachable PR evidence`);
+        expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
+          `fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
           `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
       }

@@ -49,7 +49,7 @@ try {
   await fixPanel.locator('.score-review__label').filter({ hasText: 'Release fix credit' }).first().waitFor();
   await fixPanel.getByText(fixCreditText).waitFor();
   await fixPanel
-    .getByText('A closed issue only reduces release risk when its merged linked PR is reachable from this release tag.')
+    .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();

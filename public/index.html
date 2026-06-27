@@ -1741,7 +1741,7 @@ function closureProofHtml(closureProof) {
   return evidenceSectionHtml(
     'Release fix credit',
     rows,
-    'Closed issues get score credit only when a merged linked PR is reachable from this release tag.',
+    'Closed issues get score credit only when a merged linked PR or named fix/source commit is reachable from this release tag.',
   );
 }
 
@@ -1875,7 +1875,7 @@ function scoreReviewHtml(r) {
     + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
     + '</div>'
     + compHtml
-    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR is reachable from this release tag.</div>`
+    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';

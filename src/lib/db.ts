@@ -1245,10 +1245,6 @@ SELECT DISTINCT i.*,
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN target
-JOIN final_closure e ON e.issue_number = i.number
-JOIN issue_pr_links l ON l.issue_number = i.number
-JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
 WHERE
   target.published_at IS NOT NULL
   AND i.closed_at IS NOT NULL
@@ -1259,10 +1255,41 @@ WHERE
         '9999-12-31T23:59:59Z'
       )
   AND c.sentiment = 'negative'
-  AND e.state_reason = 'COMPLETED'
-  AND p.merged = 1
-  AND rpr.status = 'reachable'
-  AND ${creditedFixLinkSql('l')}
+  AND EXISTS (
+    SELECT 1
+    FROM final_closure e
+    WHERE e.issue_number = i.number
+      AND e.state_reason = 'COMPLETED'
+  )
+  AND (
+    EXISTS (
+      SELECT 1
+      FROM issue_closure_proofs proof
+      WHERE proof.release_tag = target.tag
+        AND proof.issue_number = i.number
+        AND proof.status = 'fixed_in_release'
+    )
+    OR (
+      NOT EXISTS (
+        SELECT 1
+        FROM issue_closure_proofs proof
+        WHERE proof.release_tag = target.tag
+          AND proof.issue_number = i.number
+      )
+      AND EXISTS (
+        SELECT 1
+        FROM final_closure e
+        JOIN issue_pr_links l ON l.issue_number = e.issue_number
+        JOIN pull_request_fixes p ON p.pr_number = l.pr_number
+        JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
+        WHERE e.issue_number = i.number
+          AND e.state_reason = 'COMPLETED'
+          AND p.merged = 1
+          AND rpr.status = 'reachable'
+          AND ${creditedFixLinkSql('l')}
+      )
+    )
+  )
 ORDER BY i.closed_at DESC
 `);
 
@@ -1301,6 +1328,12 @@ WHERE
        AND latest.closed_at=e.closed_at
     )
     SELECT 1
+    FROM issue_closure_proofs proof
+    WHERE proof.release_tag = target.tag
+      AND proof.issue_number = i.number
+      AND proof.status = 'fixed_in_release'
+    UNION ALL
+    SELECT 1
     FROM final_closure e
     JOIN issue_pr_links l ON l.issue_number = e.issue_number
     JOIN pull_request_fixes p ON p.pr_number = l.pr_number
@@ -1311,6 +1344,12 @@ WHERE
       AND p.merged = 1
       AND rpr.status = 'reachable'
       AND ${creditedFixLinkSql('l')}
+      AND NOT EXISTS (
+        SELECT 1
+        FROM issue_closure_proofs proof
+        WHERE proof.release_tag = target.tag
+          AND proof.issue_number = i.number
+      )
   )
 ORDER BY i.closed_at DESC
 `);

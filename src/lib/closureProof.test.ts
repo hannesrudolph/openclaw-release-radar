@@ -28,11 +28,29 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'fixed_in_release');
   });
 
+  it('credits named reachable fix commits as fixed in release', () => {
+    const result = classifyClosureProof(input({
+      hasReachableFixCommit: true,
+      reachableFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+      comments: [{ author: 'maintainer', body: 'Fixed on main in cfeaf6897fd89201b71ff7d5285e48c5a382ac9a.' }],
+    }));
+    assert.equal(result.status, 'fixed_in_release');
+    assert.deepEqual(result.evidence.reachableFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
+  });
+
   it('classifies merged but unreachable PR fixes as fixed after release', () => {
     const result = classifyClosureProof(input({
       hasClosingLink: true,
       hasMergedClosingPr: true,
       hasNotReachableClosingPr: true,
+    }));
+    assert.equal(result.status, 'fixed_after_release');
+  });
+
+  it('classifies unreachable fix commits as fixed after release', () => {
+    const result = classifyClosureProof(input({
+      hasNotReachableFixCommit: true,
+      notReachableFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
     }));
     assert.equal(result.status, 'fixed_after_release');
   });
@@ -82,6 +100,9 @@ describe('classifyClosureProof', () => {
 
   it('separates current-main-only claims from release-present claims', () => {
     const result = classifyClosureProof(input({
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: true,
       comments: [{
         author: 'bot',
         body: 'Current main already fixes this path, but stable v2026.6.10 predates the fix.',
