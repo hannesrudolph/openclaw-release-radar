@@ -34,6 +34,35 @@ const knownExplanationCodes = new Set([
   'release_recommended',
   'hard_gates_passed',
 ]);
+const publicTopLevelKeys = new Set(['repo', 'releases', 'updatedAt']);
+const publicReleaseKeys = new Set([
+  'band',
+  'explanation',
+  'issues',
+  'negativeIssues',
+  'positiveIssues',
+  'publishedAt',
+  'reason',
+  'recommended',
+  'score',
+  'scoreAudit',
+  'scoredAt',
+  'status',
+  'tag',
+  'totalAttributedIssues',
+  'url',
+  'watchIssues',
+]);
+const forbiddenPublicKeys = new Set([
+  'comparison',
+  'delta',
+  'local',
+  'pageText',
+  'rawCardText',
+  'snapshot',
+  'sourceUrl',
+  'upstream',
+]);
 
 export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10, scoredOnly = false }) {
   const releases = reader.listReleases(limit, { scoredOnly });
@@ -201,6 +230,27 @@ function verifyClosedClassificationPromptVersion({ failures, tag, closed, audit 
   }
 }
 
+function verifyAllowedKeys({ failures, tag, label, value, allowed }) {
+  expect(failures, tag, isObject(value), `${label} must be an object`);
+  if (!isObject(value)) return;
+  const extra = Object.keys(value).filter((key) => !allowed.has(key)).sort();
+  expect(failures, tag, extra.length === 0,
+    `${label} must not expose unknown keys: ${extra.join(', ')}`);
+}
+
+function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public release' }) {
+  if (Array.isArray(value)) {
+    value.forEach((item, idx) => verifyNoForbiddenPublicKeys({ failures, tag, value: item, path: `${path}[${idx}]` }));
+    return;
+  }
+  if (!isObject(value)) return;
+  for (const [key, child] of Object.entries(value)) {
+    expect(failures, tag, !forbiddenPublicKeys.has(key),
+      `${path} must not expose internal/comparison key ${key}`);
+    verifyNoForbiddenPublicKeys({ failures, tag, value: child, path: `${path}.${key}` });
+  }
+}
+
 function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
   expect(failures, tag, isObject(evidence),
     `proof issue #${row.issue_number} evidence_json must parse to an object`);
@@ -339,6 +389,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   }
 
   const publicPayload = await fetchJson(`${apiBase}/api/public`);
+  verifyAllowedKeys({ failures, tag: 'api/public', label: 'public top-level', value: publicPayload, allowed: publicTopLevelKeys });
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('comparison'), 'public payload must not include comparison data');
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('upstream'), 'public payload must not include upstream data');
   if (status.lastScoredAt) {
@@ -349,6 +400,10 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   const releasesPayload = await fetchJson(`${apiBase}/api/releases`);
   const releaseApiByTag = new Map((Array.isArray(releasesPayload) ? releasesPayload : []).map((release) => [release.tag, release]));
   const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
+  for (const release of publicPayload.releases ?? []) {
+    verifyAllowedKeys({ failures, tag: release.tag ?? 'api/public', label: 'public release', value: release, allowed: publicReleaseKeys });
+    verifyNoForbiddenPublicKeys({ failures, tag: release.tag ?? 'api/public', value: release });
+  }
   const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
   verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
   const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
