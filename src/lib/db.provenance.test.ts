@@ -197,6 +197,7 @@ describe('release fix provenance', () => {
     db.upsertIssuePrLink({ issue_number: 302, pr_number: 202, source: 'closedByPullRequestsReferences', will_close_target: 1, referenced_at: null });
     db.upsertReleasePrReachability({ tag: 'v3', pr_number: 202, tag_commit_oid: 'v3-commit', merge_commit_oid: 'merge-202', base_ref_name: 'main', status: 'not_reachable', evidence_json: '{}' });
 
+    assert.deepEqual(db.verifiedFixedForRelease('v3').map((row: any) => row.number), [301]);
     assert.deepEqual(db.unverifiedClosedForRelease('v3').map((row: any) => row.number).sort((a: number, b: number) => a - b), [302, 303, 304]);
   });
 });

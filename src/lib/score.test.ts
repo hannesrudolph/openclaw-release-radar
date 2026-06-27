@@ -218,6 +218,11 @@ describe('feltLoad — reach-weighted visible bugs', () => {
     const niche = feltLoad([fc({ scope: 'niche', affectedUsers: 'few' })]);
     assert.ok(broad > niche * 3, `broad ${broad} should be >3× niche ${niche}`);
   });
+
+  it('does not count source-repro-only automation findings as field regression load', () => {
+    assert.equal(feltLoad([fc({ labels: ['clawsweeper:source-repro'], confidence: 0.95 })]), 0);
+    assert.ok(feltLoad([fc({ labels: ['bug', 'regression', 'P1', 'clawsweeper:source-repro'], confidence: 0.95 })]) > 0);
+  });
 });
 
 describe('openDebtLoad — current issue debt', () => {
@@ -252,7 +257,7 @@ describe('openDebtLoad — current issue debt', () => {
   });
 
   it('reduces debt for confirmed workarounds', () => {
-    const blocker = { affectsVersion: 'v2026.6.10', labels: ['clawsweeper:source-repro'], functionality: 'core', severity: 'high', scope: 'broad' };
+    const blocker = { releaseLocal: true, labels: ['P0'], functionality: 'core', severity: 'high', scope: 'broad' };
     const none = openDebtLoad([dc({ ...blocker, workaroundStatus: 'none' })]).verified;
     const confirmed = openDebtLoad([dc({ ...blocker, workaroundStatus: 'confirmed' })]).verified;
     assert.ok(confirmed < none);
@@ -271,7 +276,7 @@ describe('openDebtLoad — current issue debt', () => {
     assert.ok(carryover.carryover > 0);
   });
 
-  it('does treat release-local source-repro issues as verified debt', () => {
+  it('does not treat release-local source-repro-only issues as verified field debt', () => {
     const local = openDebtLoad([
       dc({
         issueNumber: 100,
@@ -282,7 +287,104 @@ describe('openDebtLoad — current issue debt', () => {
         scope: 'broad',
       }),
     ]);
+    assert.equal(local.verified, 0);
+    assert.ok(local.carryover > 0);
+  });
+
+  it('does not treat sweeper-only workflow labels as verified field debt', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 101,
+        labels: [
+          'clawsweeper:source-repro',
+          'clawsweeper:fix-shape-clear',
+          'clawsweeper:no-new-fix-pr',
+          'clawsweeper:needs-maintainer-review',
+        ],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]);
+    assert.equal(local.verified, 0);
+    assert.ok(local.carryover > 0);
+  });
+
+  it('treats release-local P0 core blockers as verified field debt', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 102,
+        labels: ['P0'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'moderate',
+        affectedUsers: 'some',
+      }),
+    ]);
     assert.ok(local.verified > 0);
+  });
+
+  it('treats release-local P1 bug regressions as verified field debt', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 103,
+        labels: ['bug', 'regression', 'P1'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        affectedUsers: 'some',
+      }),
+    ]);
+    assert.ok(local.verified > 0);
+  });
+
+  it('does not treat P1 alone as verified field debt', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 104,
+        labels: ['P1'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        affectedUsers: 'some',
+      }),
+    ]);
+    assert.equal(local.verified, 0);
+    assert.ok(local.carryover > 0);
+  });
+
+  it('ignores classifier affectsVersion for verified field debt promotion', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 105,
+        labels: ['P0'],
+        releaseLocal: false,
+        affectsVersion: 'v2026.6.10',
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]);
+    assert.equal(local.verified, 0);
+    assert.ok(local.carryover > 0);
+  });
+
+  it('does not let needs-live-repro issues drive visible regression load', () => {
+    const load = feltLoad([
+      dc({
+        labels: ['bug', 'regression', 'P1', 'clawsweeper:needs-live-repro'],
+        functionality: 'provider',
+        severity: 'critical',
+        confidence: 0.5,
+      }),
+    ]);
+    assert.equal(load, 0);
   });
 });
 

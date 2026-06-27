@@ -44,6 +44,7 @@ import {
   explainOpenDebtLoad,
   feltLoad,
   installConfidence,
+  isFeltSignal,
   pickRecommended,
   SCORE_MODEL_VERSION,
   type InstallInput,
@@ -392,12 +393,21 @@ export async function refresh(): Promise<{
       const verifiedFixed = verifiedFixedForRelease(rel.tag);
       const unverifiedClosed = unverifiedClosedForRelease(rel.tag);
       const verifiedFixedNumbers = new Set(verifiedFixed.map((row) => row.number));
+      const scoreStateForIssue = (row: typeof attributed[number]): string => {
+        if (verifiedFixedNumbers.has(row.number)) return 'closed';
+        return row.state === 'open' ? 'open' : 'closed-unverified';
+      };
+      const feltInput = (row: typeof attributed[number]) => ({
+        ...classify(row),
+        labels: safeParseLabels(row.labels),
+      });
       const debtInputs = attributed.map((row) => ({
           ...classify(row),
           issueNumber: row.number,
-          // Artifact-scoped scoring: a closed GitHub issue is only "closed" for
-          // this release if the fix is proven reachable from this release tag.
-          state: verifiedFixedNumbers.has(row.number) ? 'closed' : 'open',
+          // Artifact-scoped scoring: reachable fixes remove debt. Closed issues
+          // without reachable-fix proof stay visible in provenance review but do
+          // not masquerade as active field-confirmed release debt.
+          state: scoreStateForIssue(row),
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           affectsVersion: row.affects_version,
@@ -409,8 +419,8 @@ export async function refresh(): Promise<{
       const openedSerious = countCoreSerious(openedReign);
       const closedSerious = countCoreSerious(verifiedFixed);
       // visible-bug ("felt") reach-weighted load drives the score's regression term.
-      const feltOpenedWeight = feltLoad(openedReign.map(classify));
-      const feltClosedWeight = feltLoad(verifiedFixed.map(classify));
+      const feltOpenedWeight = feltLoad(openedReign.map(feltInput));
+      const feltClosedWeight = feltLoad(verifiedFixed.map(feltInput));
       // WHAT it breaks: still-open visible regressions introduced during the reign,
       // grouped by named surface (Discord, Ollama, …) for the UI.
       const brokenSurfaces = JSON.stringify(
@@ -610,10 +620,7 @@ export function classifyIssueRow(row: ReturnType<typeof issuesForVersion>[number
 
 export function isOpenFeltSeriousIssue(row: ReturnType<typeof issuesForVersion>[number]): boolean {
   const c = classifyIssueRow(row);
-  return row.state === 'open'
-    && c.sentiment === 'negative'
-    && (c.functionality === 'core' || c.functionality === 'integration' || c.functionality === 'provider')
-    && (c.severity === 'critical' || c.severity === 'high');
+  return row.state === 'open' && isFeltSignal({ ...c, labels: safeParseLabels(row.labels) });
 }
 
 export { getRelease, issuesForVersion, listReleasesDb, openedDuringReign };

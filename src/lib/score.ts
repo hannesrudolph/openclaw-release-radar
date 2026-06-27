@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v3';
+export const SCORE_MODEL_VERSION = 'evidence-v4-field-risk';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -103,6 +103,9 @@ export interface FeltClassification {
   functionality: string;
   scope: string;
   affectedUsers: string;
+  workaroundStatus?: string;
+  confidence?: number;
+  labels?: string[];
 }
 
 export interface DebtClassification extends FeltClassification {
@@ -186,29 +189,46 @@ function issueDebtWeight(item: DebtClassification): number {
   return severity * functionality * reach * confidence * workaroundMultiplier(item.workaroundStatus);
 }
 
-function hasAnyLabel(item: DebtClassification, names: string[]): boolean {
+function hasAnyLabel(item: { labels?: string[] }, names: string[]): boolean {
   return names.some((name) => item.labels?.includes(name));
 }
 
-function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
-  const labels = item.labels ?? [];
-  const releaseSpecific = item.releaseLocal || !!item.affectsVersion;
-  const emergency = hasAnyLabel(item, ['P0', 'beta-blocker']);
-  const verifiedEvidence =
-    hasAnyLabel(item, ['clawsweeper:source-repro', 'clawsweeper:current-main-repro', 'regression']) ||
-    emergency;
-  const defaultPathImpact =
-    item.functionality === 'core' &&
-    (item.scope === 'broad' || item.affectedUsers === 'many' || emergency);
-  const weak =
+function isWeakEvidence(item: DebtClassification): boolean {
+  return (
     hasAnyLabel(item, ['stale', 'clawsweeper:needs-info', 'clawsweeper:needs-live-repro', 'enhancement']) ||
     item.confidence != null && item.confidence < 0.65 ||
     item.functionality === 'docs' ||
-    item.severity === 'low';
+    item.severity === 'low'
+  );
+}
+
+function hasFieldConfirmation(item: { labels?: string[] }): boolean {
+  const emergency = hasAnyLabel(item, ['P0', 'beta-blocker']);
+  const fieldRegression =
+    hasAnyLabel(item, ['P1']) &&
+    hasAnyLabel(item, ['bug', 'bug:behavior']) &&
+    hasAnyLabel(item, ['regression']);
+  const maintainerConfirmed =
+    hasAnyLabel(item, ['maintainer']) &&
+    hasAnyLabel(item, ['bug', 'bug:behavior', 'P1', 'regression']);
+  return emergency || fieldRegression || maintainerConfirmed;
+}
+
+function isSourceOnlySignal(item: { labels?: string[] }): boolean {
+  return hasAnyLabel(item, ['clawsweeper:source-repro', 'clawsweeper:current-main-repro']) &&
+    !hasFieldConfirmation(item);
+}
+
+function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
+  const releaseSpecific = item.releaseLocal === true;
+  const defaultPathImpact =
+    item.functionality === 'core' &&
+    (item.scope === 'broad' || item.affectedUsers === 'many' || hasAnyLabel(item, ['P0', 'beta-blocker']));
+  const weak = isWeakEvidence(item);
 
   if (
     releaseSpecific &&
-    verifiedEvidence &&
+    hasFieldConfirmation(item) &&
     defaultPathImpact &&
     !weak &&
     (item.severity === 'critical' || item.severity === 'high')
@@ -261,13 +281,24 @@ export function openDebtLoad(items: DebtClassification[]): DebtLoads {
 // Reach-weighted visible-bug load used for the opened/closed reign balance.
 export function feltLoad(items: FeltClassification[]): number {
   return items.reduce((sum, item) => {
-    if (item.sentiment !== 'negative') return sum;
-    if (!['core', 'integration', 'provider'].includes(item.functionality)) return sum;
-    if (!['critical', 'high'].includes(item.severity)) return sum;
+    if (!isFeltSignal(item)) return sum;
     return sum
       + (SCOPE_WEIGHT[item.scope] ?? 1)
-      * (USERS_WEIGHT[item.affectedUsers] ?? 0.65);
+      * (USERS_WEIGHT[item.affectedUsers] ?? 0.65)
+      * workaroundMultiplier(item.workaroundStatus);
   }, 0);
+}
+
+export function isFeltSignal(item: FeltClassification): boolean {
+  if (item.sentiment !== 'negative') return false;
+  if (!['core', 'integration', 'provider'].includes(item.functionality)) return false;
+  if (!['critical', 'high'].includes(item.severity)) return false;
+  if (hasAnyLabel(item, ['clawsweeper:needs-info', 'clawsweeper:needs-live-repro', 'stale', 'enhancement'])) {
+    return false;
+  }
+  if (item.confidence != null && item.confidence < 0.65) return false;
+  if (isSourceOnlySignal(item)) return false;
+  return true;
 }
 
 function verifiedDebtPoints(load: number): number {
@@ -357,12 +388,12 @@ function reasonFor(
       ? `${(input.hoursToNextStable / 24).toFixed(1)}d`
       : `${Math.round(input.hoursToNextStable)}h`} as current stable`);
   }
-  if (debt.verified > 2) bits.push(`${Math.round(debt.verified)} verified blocker-debt`);
-  if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} carryover debt`);
+  if (debt.verified > 2) bits.push(`${Math.round(debt.verified)} field-confirmed blocker risk`);
+  if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} source/carryover risk`);
   if (input.feltClosedWeight > input.feltOpenedWeight && input.feltClosedWeight > 2) {
-    bits.push('net-fixing visible bugs');
+    bits.push('net-fixing field-visible bugs');
   } else if (input.feltOpenedWeight > input.feltClosedWeight && input.feltOpenedWeight > 2) {
-    bits.push('net-opening visible bugs');
+    bits.push('net-opening field-visible bugs');
   }
   if (input.betaCount > 0) bits.push(`${input.betaCount} betas baked`);
   if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);

@@ -41,6 +41,11 @@ describe('applyLabelOverrides', () => {
     assert.deepEqual(out, base);
   });
 
+  it('P1 alone does not change severity, confidence, or sentiment', () => {
+    const base = mk({ severity: 'medium', confidence: 0.7, sentiment: 'negative' });
+    assert.deepEqual(applyLabelOverrides(base, ['P1']), base);
+  });
+
   // ── Sentiment overrides (factual state) ────────────────────────────────
   it('enhancement → sentiment neutral', () => {
     const out = applyLabelOverrides(mk(), ['enhancement']);

@@ -40,7 +40,9 @@ const scored = releases.map((rel, idx) => {
   const oReign = openedDuringReign(rel.tag), fixed = verifiedFixedForRelease(rel.tag);
   const fixedNumbers = new Set(fixed.map(r => r.number));
   const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
-  const debt = openDebtLoad(attributed.map(r => ({ ...classify(r), issueNumber: r.number, state: fixedNumbers.has(r.number) ? 'closed' : 'open', createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false, labels: safeLabels(r.labels) })));
+  const scoreState = r => fixedNumbers.has(r.number) ? 'closed' : (r.state === 'open' ? 'open' : 'closed-unverified');
+  const scoredIssue = r => ({ ...classify(r), labels: safeLabels(r.labels) });
+  const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
   const opened = countCS(oReign), closed = countCS(fixed);
   const isFelt = c => c.sentiment==='negative' && ['core','integration','provider'].includes(c.functionality) && (c.severity==='critical'||c.severity==='high');
   const brokenSurfaces = JSON.stringify(topBrokenSurfaces(oReign.filter(r => r.state==='open' && isFelt(classify(r))).map(r => r.title)));
@@ -51,7 +53,7 @@ const scored = releases.map((rel, idx) => {
     publishedAt: rel.published_at, isLatest: idx === 0, hoursToNextStable: gap,
     hasHotfixSuccessor: hasHotfixSuccessor(allTags, rel.tag), betaCount: rel.beta_count,
     breakingCount: rel.breaking_count,
-    feltOpenedWeight: feltLoad(oReign.map(classify)), feltClosedWeight: feltLoad(fixed.map(classify)),
+    feltOpenedWeight: feltLoad(oReign.map(scoredIssue)), feltClosedWeight: feltLoad(fixed.map(scoredIssue)),
     verifiedDebtWeight: debt.verified, carryoverDebtWeight: debt.carryover, staleDebtWeight: debt.stale,
     rawIssueCount: issueCountForVersion(rel.tag), classifiedIssueCount: attributed.length,
     cveAffected: cve.affected, cveLoad: cve.load,

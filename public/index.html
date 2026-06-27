@@ -1674,11 +1674,11 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Upstream score</span><span class="score-review__value">${esc(formatScore10(upstream?.score) ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((row.local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Debt weights</span><span class="score-review__value">V ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · C ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · S ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? 0)} credited · ${esc(fix.unverifiedClosedCount ?? 0)} unverified</span></div>`
     + '</div>'
     + compHtml
-    + `<div class="evidence__meta">Only fixes whose closing PR is reachable from this release tag are credited. Closed issues without reachable fix evidence are shown for review but do not improve the score.</div>`
+    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. Only fixes whose closing PR is reachable from this release tag are credited.</div>`
     + `<div class="evidence__meta">${esc(row.local.reason ?? '')}</div>`
     + '</div>';
 }
