@@ -111,6 +111,16 @@ function normalizeComparison(row: Record<string, unknown> | undefined) {
   };
 }
 
+function normalizeComparisonSnapshot(row: ReturnType<typeof latestComparisonSnapshot>) {
+  if (!row) return null;
+  return {
+    id: row.id,
+    sourceUrl: row.source_url,
+    capturedAt: row.captured_at,
+    pageTitle: row.page_title,
+  };
+}
+
 api.get('/health', (_req, res) => {
   res.json({ ok: true, repo: `${config.github.owner}/${config.github.repo}` });
 });
@@ -228,7 +238,7 @@ api.get('/releases/history', (_req, res) => {
 });
 
 api.get('/comparison', (_req, res) => {
-  const snapshot = latestComparisonSnapshot();
+  const snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
   const upstreamByTag = new Map(comparisonReleases().map((row) => [String(row.tag), row]));
   const releases = listReleasesDb(config.limits.releases).map((release) => {
     const audit = getReleaseScoreAudit(release.tag);
@@ -271,7 +281,7 @@ api.get('/releases/:tag/review', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
-  const snapshot = latestComparisonSnapshot();
+  const snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
   const upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   const audit = getReleaseScoreAudit(tag);
   const gateEvidence = enrichGateEvidenceWithClosureProof(tag, parseJson(audit?.gate_evidence_json, null));
@@ -293,7 +303,8 @@ api.get('/releases/:tag/review', (req, res) => {
       issueEvidence: parseJson(audit?.issue_evidence_json, null),
       gateEvidence,
     },
-    upstream: upstream ? { ...upstream, snapshot } : null,
+    snapshot,
+    upstream,
   });
 });
 

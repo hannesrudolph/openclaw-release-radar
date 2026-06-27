@@ -85,6 +85,7 @@ describe('verifyReleaseAudit', () => {
       }
       if (url.endsWith('/api/comparison')) {
         return {
+          snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
           releases: [{
             tag: 'v1',
             local: {
@@ -102,6 +103,7 @@ describe('verifyReleaseAudit', () => {
       }
       if (url.endsWith('/api/releases/v1/review')) {
         return {
+          snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
           local: {
             score: 7.5,
             status: 'eligible',

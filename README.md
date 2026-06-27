@@ -100,10 +100,10 @@ The snapshot is stored separately from local model data. It is for internal revi
 The older public JSON snapshot importer is still available as a one-off utility:
 
 ```bash
-npm run import:public-snapshot -- https://isitstable.iclaw.digital/api/public
+npm run import:public-snapshot -- --allow-overwrite-local-releases https://isitstable.iclaw.digital/api/public
 ```
 
-Do not use that importer as a benchmark source; it writes into the local release table. Prefer `scrape:upstream`.
+This is legacy recovery tooling. It refuses to run unless `--allow-overwrite-local-releases` is present because it writes external data into the local release table. Do not use it as a benchmark source; prefer `scrape:upstream`.
 
 ## Tokens
 

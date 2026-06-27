@@ -162,6 +162,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   const releaseApiByTag = new Map((Array.isArray(releasesPayload) ? releasesPayload : []).map((release) => [release.tag, release]));
   const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
   const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
+  verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
   const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
 
   for (const release of releases) {
@@ -198,6 +199,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       'comparison payload must include local, upstream, and delta objects');
 
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
+    verifyComparisonSnapshot({ failures, label: `${release.tag} review`, snapshot: review.snapshot });
     expect(failures, release.tag, review.local?.score === release.final_score,
       `review score (${review.local?.score}) must match DB final_score (${release.final_score})`);
     expect(failures, release.tag, review.local?.status === release.state,
@@ -233,6 +235,19 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         'comparison closureProof notCreditedCount must match review');
     }
   }
+}
+
+function verifyComparisonSnapshot({ failures, label, snapshot }) {
+  if (snapshot == null) return;
+  expect(failures, label, typeof snapshot.id === 'number', 'comparison snapshot id must be numeric');
+  expect(failures, label, typeof snapshot.sourceUrl === 'string' && snapshot.sourceUrl.length > 0,
+    'comparison snapshot sourceUrl must be present');
+  expect(failures, label, typeof snapshot.capturedAt === 'string' && snapshot.capturedAt.length > 0,
+    'comparison snapshot capturedAt must be present');
+  expect(failures, label, typeof snapshot.pageTitle === 'string',
+    'comparison snapshot pageTitle must be present');
+  expect(failures, label, !('source_url' in snapshot) && !('captured_at' in snapshot) && !('page_text' in snapshot),
+    'comparison snapshot must use normalized camelCase fields and omit page_text');
 }
 
 async function defaultFetchJson(url) {

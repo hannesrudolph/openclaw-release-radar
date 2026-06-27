@@ -25,4 +25,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /if \(n >= 5\.5\) return 'var\(--warn\)'/);
     assert.doesNotMatch(html, /if \(n >= 5\) return 'var\(--warn\)'/);
   });
+
+  it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {
+    const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
+    assert.match(script, /--allow-overwrite-local-releases/);
+    assert.doesNotMatch(script, /^import \{ db, setMeta \} from '\.\.\/src\/lib\/db\.ts';/m);
+    assert.match(script, /await import\('\.\.\/src\/lib\/db\.ts'\)/);
+  });
 });

@@ -1,7 +1,15 @@
-import { db, setMeta } from '../src/lib/db.ts';
-
 const DEFAULT_URL = 'https://isitstable.iclaw.digital/api/public';
-const sourceUrl = process.argv[2] ?? process.env.PUBLIC_SNAPSHOT_URL ?? DEFAULT_URL;
+const ALLOW_FLAG = '--allow-overwrite-local-releases';
+const args = process.argv.slice(2);
+const allowOverwrite = args.includes(ALLOW_FLAG) || process.env.ALLOW_PUBLIC_SNAPSHOT_IMPORT === 'true';
+const sourceUrl = args.find((arg) => !arg.startsWith('--')) ?? process.env.PUBLIC_SNAPSHOT_URL ?? DEFAULT_URL;
+
+if (!allowOverwrite) {
+  throw new Error(
+    `Refusing to overwrite local release rows from an external public snapshot. ` +
+    `Pass ${ALLOW_FLAG} only for intentional legacy recovery imports.`,
+  );
+}
 
 function assertObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -38,6 +46,7 @@ function countBrokenSurfaces(release) {
 }
 
 async function main() {
+  const { db, setMeta } = await import('../src/lib/db.ts');
   const res = await fetch(sourceUrl);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
