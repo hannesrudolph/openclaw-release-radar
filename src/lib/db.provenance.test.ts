@@ -30,13 +30,13 @@ function classification(overrides: Partial<IssueClassification> = {}): IssueClas
   };
 }
 
-function seedRelease(db: any, tag = 'v1', publishedAt = '2026-06-01T00:00:00Z') {
+function seedRelease(db: any, tag = 'v1', publishedAt = '2026-06-01T00:00:00Z', prerelease = false) {
   db.upsertRelease({
     tag,
     name: tag,
     published_at: publishedAt,
     html_url: `https://example.test/${tag}`,
-    prerelease: false,
+    prerelease,
     body: '',
   });
   db.upsertReleaseCommit({
@@ -96,6 +96,17 @@ function seedClosure(db: any, issue: number, reason = 'COMPLETED', closedAt = '2
 }
 
 describe('release fix provenance', () => {
+  it('uses the next stable release, not prereleases, for issue attribution windows', async () => {
+    const db = await freshDb('stable-attribution-window');
+    seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v1-beta', '2026-06-02T00:00:00Z', true);
+    seedRelease(db, 'v2', '2026-06-03T00:00:00Z');
+    seedIssue(db, 7001, null, '2026-06-02T12:00:00Z');
+
+    assert.ok(db.issuesForVersion('v1').some((row: any) => row.number === 7001));
+    assert.equal(db.issueCountForVersion('v1'), 1);
+  });
+
   it('round-trips issue community signal columns through issue and release views', async () => {
     const db = await freshDb('issue-community');
     seedRelease(db, 'v1');

@@ -1140,7 +1140,7 @@ export interface JoinedIssue extends IssueRow, ClassificationRow {}
 // Window-based attribution (carry-forward model).
 //
 // An issue affects release R if its existence window overlaps R's reign:
-//   - R reigns from R.published_at until the NEXT release is published
+//   - R reigns from R.published_at until the NEXT stable release is published
 //     (or forever, if R is the latest).
 //   - The issue exists from issue.created_at until issue.closed_at
 //     (or forever, if still open).
@@ -1178,11 +1178,11 @@ JOIN classifications c ON c.issue_number = i.number
 JOIN releases target ON target.tag = ?
 WHERE
   target.published_at IS NOT NULL
-  -- Issue was filed before target's reign ended (next release published).
+  -- Issue was filed before target's stable reign ended (next stable release published).
   -- For the latest release there is no "next", so we use a sentinel far future.
   AND i.created_at < COALESCE(
-        (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at),
+	        (SELECT MIN(next.published_at) FROM releases next
+	         WHERE next.published_at > target.published_at AND next.prerelease = 0),
         '9999-12-31T23:59:59Z'
       )
   -- Issue was not closed before target's reign started — i.e., the bug was
@@ -1202,8 +1202,8 @@ JOIN releases target ON target.tag = ?
 WHERE
   target.published_at IS NOT NULL
   AND i.created_at < COALESCE(
-        (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at),
+	        (SELECT MIN(next.published_at) FROM releases next
+	         WHERE next.published_at > target.published_at AND next.prerelease = 0),
         '9999-12-31T23:59:59Z'
       )
   AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
