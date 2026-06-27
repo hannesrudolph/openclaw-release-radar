@@ -513,6 +513,56 @@ describe('openDebtLoad — current issue debt', () => {
     assert.equal(reacted.verified, 0);
     assert.ok(reacted.carryover > plain.carryover);
   });
+
+  it('dampens security/design debt compared with install-impact data loss', () => {
+    const dataLoss = openDebtLoad([
+      dc({
+        title: 'sessions cleanup prunes fresh cron sessions',
+        labels: ['clawsweeper:source-repro', 'impact:data-loss'],
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]).carryover;
+    const security = openDebtLoad([
+      dc({
+        title: 'Installer executes downloaded scripts without validation',
+        labels: ['security', 'impact:security', 'clawsweeper:source-repro'],
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]).carryover;
+    assert.ok(security > 0);
+    assert.ok(security < dataLoss);
+  });
+
+  it('dampens provider catalog issues compared with core state loss', () => {
+    const core = openDebtLoad([
+      dc({
+        title: 'session transcript split mid-run',
+        labels: ['clawsweeper:source-repro', 'impact:data-loss'],
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'moderate',
+        affectedUsers: 'some',
+      }),
+    ]).carryover;
+    const provider = openDebtLoad([
+      dc({
+        title: 'Google vertex models cannot be overridden via openclaw.json',
+        labels: ['bug', 'impact:auth-provider', 'clawsweeper:source-repro'],
+        functionality: 'provider',
+        severity: 'critical',
+        scope: 'moderate',
+        affectedUsers: 'some',
+      }),
+    ]).carryover;
+    assert.ok(provider > 0);
+    assert.ok(provider < core);
+  });
 });
 
 describe('pickRecommended — newest eligible at or above threshold', () => {

@@ -1759,7 +1759,7 @@ function whyNotTenHtml(local) {
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
     reasons.push(
-      `There is unresolved source/carryover risk from older or source-confirmed issues. This is capped at ${esc(components.carryoverDebt ?? 0)} points, not treated like proven breakage.`
+      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${esc(components.carryoverDebt ?? 0)} points.`
       + (example ? ` Top examples: ${example}.` : '')
     );
   }

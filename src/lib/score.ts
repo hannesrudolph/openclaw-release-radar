@@ -116,6 +116,7 @@ export interface InstallConfidence {
 
 interface IssueSignalFields {
   issueNumber?: number;
+  title?: string | null;
   duplicateCluster?: string | null;
   author?: string | null;
   authorAssociation?: string | null;
@@ -134,6 +135,7 @@ interface IssueSignalFields {
   clusterContributorCommenterCount?: number;
   clusterReactionTotal?: number;
   clusterPositiveReactionCount?: number;
+  installImpactClass?: string;
 }
 
 export interface FeltClassification extends IssueSignalFields {
@@ -178,6 +180,7 @@ export interface DebtEvidenceItem {
   reactionTotal?: number;
   positiveReactionCount?: number;
   commenterScanTruncated?: boolean;
+  installImpactClass?: string;
 }
 
 export interface DebtExplanation {
@@ -298,6 +301,31 @@ function communityMultiplier(item: IssueSignalFields): number {
   return clamp(1 + reporterLift + commenterLift + contributorLift + reactionLift, 0.75, 1.65);
 }
 
+function installImpactClass(item: DebtClassification): string {
+  const title = `${item.title ?? ''} ${item.duplicateCluster ?? ''} ${item.issueNumber ?? ''}`.toLowerCase();
+  const labels = item.labels ?? [];
+  if (labels.includes('security') || labels.includes('impact:security')) return 'security';
+  if (labels.includes('impact:auth-provider') || item.functionality === 'provider') return 'provider';
+  if (/\b(pricing|catalog|model list|models cannot|unknown model|vertex|doubao|byteplus|openrouter|oauth|provider)\b/i.test(title)) {
+    return 'provider';
+  }
+  if (labels.includes('impact:message-loss')) return 'message_delivery';
+  if (labels.includes('impact:data-loss') || labels.includes('impact:session-state')) return 'state_data';
+  if (/\b(installer|install|upgrade|migration|bootstrap|doctor|backup|memory store|session|transcript|cron)\b/i.test(title)) {
+    return 'state_data';
+  }
+  return 'general';
+}
+
+function installImpactMultiplier(item: DebtClassification): number {
+  const klass = installImpactClass(item);
+  if (klass === 'security') return 0.45;
+  if (klass === 'provider') return 0.65;
+  if (klass === 'message_delivery') return 0.9;
+  if (klass === 'state_data') return 1;
+  return 0.75;
+}
+
 function issueDebtWeight(item: DebtClassification): number {
   if (item.state !== 'open') return 0;
   if (item.sentiment !== 'negative') return 0;
@@ -317,6 +345,7 @@ function issueDebtWeight(item: DebtClassification): number {
     confidence *
     workaroundMultiplier(item.workaroundStatus) *
     communityMultiplier(item) *
+    installImpactMultiplier(item) *
     sourceShape;
 }
 
@@ -401,6 +430,7 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         reactionTotal: item.clusterReactionTotal,
         positiveReactionCount: item.clusterPositiveReactionCount,
         commenterScanTruncated: item.commenterScanTruncated === true || item.commenterScanTruncated === 1,
+        installImpactClass: installImpactClass(item),
       });
     }
   }

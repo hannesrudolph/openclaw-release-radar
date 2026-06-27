@@ -546,6 +546,7 @@ export async function refresh(): Promise<{
       const feltInput = (row: typeof attributed[number]) => ({
         ...classify(row),
         issueNumber: row.number,
+        title: row.title,
         duplicateCluster: row.duplicate_cluster,
         author: row.author,
         authorAssociation: row.author_association,

@@ -51,6 +51,7 @@ const scored = releases.map((rel, idx) => {
   const scoredIssue = r => ({
     ...classifyAt(r),
     issueNumber: r.number,
+    title: r.title,
     duplicateCluster: r.duplicate_cluster,
     author: r.author,
     authorAssociation: r.author_association,
