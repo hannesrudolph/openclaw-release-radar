@@ -1658,6 +1658,95 @@ function scoreSignalSummary(local) {
   return parts.join(' · ');
 }
 
+function shortIssueTitle(issue) {
+  const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
+  return title.length > 88 ? `${title.slice(0, 85)}...` : title;
+}
+
+function issueRef(issue) {
+  if (!issue?.number) return '';
+  return `#${issue.number} ${shortIssueTitle(issue)}`;
+}
+
+function issueListText(issues, limit = 2) {
+  return issues
+    .slice(0, limit)
+    .map(issueRef)
+    .filter(Boolean)
+    .join('; ');
+}
+
+function whyNotTenHtml(local) {
+  const evidence = local?.issueEvidence ?? {};
+  const gate = local?.gateEvidence ?? {};
+  const input = local?.input ?? {};
+  const components = local?.components?.components ?? {};
+  const opened = evidence.openedFeltSerious ?? [];
+  const openedStillOpen = opened.filter((issue) => issue?.state === 'open');
+  const openedClosed = opened.filter((issue) => issue?.state === 'closed');
+  const carryover = (evidence.carryoverDebt ?? [])
+    .map((row) => row.issue)
+    .filter(Boolean);
+  const stale = evidence.staleDebt ?? [];
+  const verified = evidence.verifiedDebt ?? [];
+  const reasons = [];
+
+  if (opened.length) {
+    const example = issueListText(openedStillOpen.length ? openedStillOpen : opened);
+    reasons.push(
+      `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.`
+      + (example ? ` Examples: ${example}.` : '')
+    );
+  }
+
+  if ((input.carryoverDebtWeight ?? 0) > 0) {
+    const example = issueListText(carryover);
+    reasons.push(
+      `There is unresolved source/carryover risk from older or source-confirmed issues. This is capped at ${esc(components.carryoverDebt ?? 0)} points, not treated like proven breakage.`
+      + (example ? ` Top examples: ${example}.` : '')
+    );
+  }
+
+  if ((input.staleDebtWeight ?? 0) > 0) {
+    reasons.push(
+      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${esc(components.staleDebt ?? 0)} points.`
+    );
+  }
+
+  const fix = gate.fixProvenance ?? {};
+  if ((fix.unverifiedClosedCount ?? 0) > 0) {
+    reasons.push(
+      `${fix.unverifiedClosedCount} closed issues did not get fix credit because their closing PR was not proven reachable from this release tag.`
+    );
+  }
+
+  const artifact = gate.artifactVerification;
+  if (artifact?.ciReportMismatch) {
+    reasons.push(`The npm package is verified, but the linked full release evidence report is missing: ${artifact.ciReportMismatch}.`);
+  }
+
+  if (!reasons.length && !verified.length) {
+    reasons.push('No field-blocker evidence is currently holding this release down; the remaining gap is mostly the model ceiling and normal uncertainty.');
+  }
+
+  const positives = [];
+  if (!verified.length) positives.push('No verified field-blocker debt is currently scoring against this release.');
+  const checks = gate.releaseChecks;
+  if (checks?.failure === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed checks.`);
+  if (artifact?.verified) positives.push('The npm package integrity, tarball, and release SHA match.');
+  if (local?.status === 'eligible') positives.push('The release is eligible and recommended.');
+
+  return '<div class="score-explain">'
+    + '<div class="score-explain__title">Why not 10?</div>'
+    + (positives.length
+      ? `<p><strong>What looks good:</strong> ${esc(positives.join(' '))}</p>`
+      : '')
+    + '<p><strong>What keeps it below perfect:</strong></p>'
+    + '<ul>' + reasons.map((reason) => `<li>${esc(reason)}</li>`).join('') + '</ul>'
+    + '<p>This means the release looks safe to install, but there is still enough reported breakage, unresolved source risk, or missing proof that the model will not call it flawless.</p>'
+    + '</div>';
+}
+
 function scoreReviewHtml(r) {
   const review = reviewByTag.get(r.tag);
   const local = review?.local;
@@ -1677,6 +1766,7 @@ function scoreReviewHtml(r) {
       + '</div>'
     : '';
   return '<div class="score-review">'
+    + whyNotTenHtml(local)
     + '<div class="score-review__grid">'
     + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(local.modelVersion ?? 'unknown')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Score</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')}</span></div>`
