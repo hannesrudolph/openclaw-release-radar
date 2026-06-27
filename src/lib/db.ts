@@ -169,6 +169,51 @@ CREATE TABLE IF NOT EXISTS release_score_audits (
   gate_evidence_json TEXT NOT NULL,
   FOREIGN KEY (release_tag) REFERENCES releases(tag) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS release_commits (
+  tag TEXT PRIMARY KEY,
+  tag_commit_oid TEXT,
+  committed_at TEXT,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS issue_closure_events (
+  issue_number INTEGER NOT NULL,
+  event_id TEXT PRIMARY KEY,
+  closed_at TEXT,
+  actor_login TEXT,
+  state_reason TEXT,
+  closer_type TEXT,
+  closer_number INTEGER,
+  closer_oid TEXT,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS issue_pr_links (
+  issue_number INTEGER NOT NULL,
+  pr_number INTEGER NOT NULL,
+  source TEXT NOT NULL,
+  will_close_target INTEGER,
+  referenced_at TEXT,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (issue_number, pr_number, source)
+);
+
+CREATE TABLE IF NOT EXISTS pull_request_fixes (
+  pr_number INTEGER PRIMARY KEY,
+  title TEXT,
+  url TEXT,
+  state TEXT,
+  merged INTEGER NOT NULL DEFAULT 0,
+  merged_at TEXT,
+  merge_commit_oid TEXT,
+  base_ref_name TEXT,
+  fetched_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
+CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -382,6 +427,116 @@ export interface ReleaseScoreAuditRow extends ReleaseScoreAuditInput {}
 const getReleaseScoreAuditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 export function getReleaseScoreAudit(tag: string): ReleaseScoreAuditRow | undefined {
   return getReleaseScoreAuditStmt.get(tag) as ReleaseScoreAuditRow | undefined;
+}
+
+export interface ReleaseCommitInput {
+  tag: string;
+  tag_commit_oid: string | null;
+  committed_at: string | null;
+}
+
+const upsertReleaseCommitStmt = db.prepare(`
+INSERT INTO release_commits (tag, tag_commit_oid, committed_at, fetched_at)
+VALUES (:tag, :tag_commit_oid, :committed_at, :fetched_at)
+ON CONFLICT(tag) DO UPDATE SET
+  tag_commit_oid=excluded.tag_commit_oid,
+  committed_at=excluded.committed_at,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertReleaseCommit(input: ReleaseCommitInput): void {
+  upsertReleaseCommitStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+export interface IssueClosureEventInput {
+  issue_number: number;
+  event_id: string;
+  closed_at: string | null;
+  actor_login: string | null;
+  state_reason: string | null;
+  closer_type: string | null;
+  closer_number: number | null;
+  closer_oid: string | null;
+  raw_json: string;
+}
+
+const upsertIssueClosureEventStmt = db.prepare(`
+INSERT INTO issue_closure_events (
+  issue_number, event_id, closed_at, actor_login, state_reason,
+  closer_type, closer_number, closer_oid, raw_json, fetched_at
+)
+VALUES (
+  :issue_number, :event_id, :closed_at, :actor_login, :state_reason,
+  :closer_type, :closer_number, :closer_oid, :raw_json, :fetched_at
+)
+ON CONFLICT(event_id) DO UPDATE SET
+  issue_number=excluded.issue_number,
+  closed_at=excluded.closed_at,
+  actor_login=excluded.actor_login,
+  state_reason=excluded.state_reason,
+  closer_type=excluded.closer_type,
+  closer_number=excluded.closer_number,
+  closer_oid=excluded.closer_oid,
+  raw_json=excluded.raw_json,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssueClosureEvent(input: IssueClosureEventInput): void {
+  upsertIssueClosureEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+export interface IssuePrLinkInput {
+  issue_number: number;
+  pr_number: number;
+  source: string;
+  will_close_target: number | null;
+  referenced_at: string | null;
+}
+
+const upsertIssuePrLinkStmt = db.prepare(`
+INSERT INTO issue_pr_links (issue_number, pr_number, source, will_close_target, referenced_at, fetched_at)
+VALUES (:issue_number, :pr_number, :source, :will_close_target, :referenced_at, :fetched_at)
+ON CONFLICT(issue_number, pr_number, source) DO UPDATE SET
+  will_close_target=excluded.will_close_target,
+  referenced_at=excluded.referenced_at,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssuePrLink(input: IssuePrLinkInput): void {
+  upsertIssuePrLinkStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+export interface PullRequestFixInput {
+  pr_number: number;
+  title: string | null;
+  url: string | null;
+  state: string | null;
+  merged: number;
+  merged_at: string | null;
+  merge_commit_oid: string | null;
+  base_ref_name: string | null;
+}
+
+const upsertPullRequestFixStmt = db.prepare(`
+INSERT INTO pull_request_fixes (
+  pr_number, title, url, state, merged, merged_at, merge_commit_oid, base_ref_name, fetched_at
+)
+VALUES (
+  :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
+)
+ON CONFLICT(pr_number) DO UPDATE SET
+  title=excluded.title,
+  url=excluded.url,
+  state=excluded.state,
+  merged=excluded.merged,
+  merged_at=excluded.merged_at,
+  merge_commit_oid=excluded.merge_commit_oid,
+  base_ref_name=excluded.base_ref_name,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertPullRequestFix(input: PullRequestFixInput): void {
+  upsertPullRequestFixStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
 // Stable-only view. Prereleases live in the DB for derived-stat computation

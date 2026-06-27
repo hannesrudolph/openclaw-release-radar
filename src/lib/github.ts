@@ -129,6 +129,50 @@ interface SecurityVulnerabilitiesQueryData {
   };
 }
 
+export interface GhReleaseCommit {
+  tag: string;
+  oid: string | null;
+  committedAt: string | null;
+}
+
+export interface GhPullRequestFix {
+  number: number;
+  title: string | null;
+  url: string | null;
+  state: string | null;
+  merged: boolean;
+  mergedAt: string | null;
+  mergeCommitOid: string | null;
+  baseRefName: string | null;
+}
+
+export interface GhIssueClosureEvent {
+  issueNumber: number;
+  eventId: string;
+  closedAt: string | null;
+  actorLogin: string | null;
+  stateReason: string | null;
+  closerType: string | null;
+  closerNumber: number | null;
+  closerOid: string | null;
+  raw: unknown;
+}
+
+export interface GhIssuePrLink {
+  issueNumber: number;
+  prNumber: number;
+  source: string;
+  willCloseTarget: boolean | null;
+  referencedAt: string | null;
+}
+
+export interface GhIssueFixEvidence {
+  issueNumber: number;
+  closureEvents: GhIssueClosureEvent[];
+  prLinks: GhIssuePrLink[];
+  pullRequests: GhPullRequestFix[];
+}
+
 function headers(): Record<string, string> {
   if (!config.github.token) {
     throw new Error('GITHUB_TOKEN is required because GitHub GraphQL API requests must be authenticated');
@@ -423,6 +467,171 @@ function buildIssueCommentsBatchQuery(size: number): string {
     }`).join('\n');
 
   return `query IssueComments($owner: String!, $repo: String!, $last: Int!, ${vars}) {
+    repository(owner: $owner, name: $repo) {
+      ${fields}
+    }
+  }`;
+}
+
+export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
+  const data = await gh<{
+    repository: {
+      release: {
+        tagCommit: {
+          oid: string;
+          committedDate?: string;
+        } | null;
+      } | null;
+    } | null;
+  }>(
+    `query ReleaseCommit($owner: String!, $repo: String!, $tag: String!) {
+      repository(owner: $owner, name: $repo) {
+        release(tagName: $tag) {
+          tagCommit {
+            oid
+            ... on Commit { committedDate }
+          }
+        }
+      }
+    }`,
+    repoVars({ tag }),
+  );
+  const release = assertRepo(data.repository).release;
+  return {
+    tag,
+    oid: release?.tagCommit?.oid ?? null,
+    committedAt: release?.tagCommit?.committedDate ?? null,
+  };
+}
+
+export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise<Map<number, GhIssueFixEvidence>> {
+  const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
+  const all = new Map<number, GhIssueFixEvidence>();
+  for (const issueNumber of uniqueIssueNumbers) {
+    all.set(issueNumber, { issueNumber, closureEvents: [], prLinks: [], pullRequests: [] });
+  }
+
+  const batchSize = 10;
+  for (let offset = 0; offset < uniqueIssueNumbers.length; offset += batchSize) {
+    const chunk = uniqueIssueNumbers.slice(offset, offset + batchSize);
+    const data = await gh<{ repository: Record<string, any> | null }>(
+      buildIssueFixEvidenceBatchQuery(chunk.length),
+      repoVars(Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
+    );
+    const repo = assertRepo(data.repository);
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const issueNumber = chunk[idx];
+      const issue = repo[`issue${idx}`];
+      const evidence = all.get(issueNumber);
+      if (!issue || !evidence) continue;
+
+      for (const pr of issue.closedByPullRequestsReferences?.nodes ?? []) {
+        if (!pr?.number) continue;
+        evidence.prLinks.push({
+          issueNumber,
+          prNumber: pr.number,
+          source: 'closedByPullRequestsReferences',
+          willCloseTarget: true,
+          referencedAt: pr.mergedAt ?? null,
+        });
+        evidence.pullRequests.push(mapPullRequestFix(pr));
+      }
+
+      for (const node of issue.timelineItems?.nodes ?? []) {
+        if (!node?.__typename) continue;
+        if (node.__typename === 'ClosedEvent') {
+          const closer = node.closer ?? null;
+          evidence.closureEvents.push({
+            issueNumber,
+            eventId: node.id,
+            closedAt: node.createdAt ?? null,
+            actorLogin: node.actor?.login ?? null,
+            stateReason: node.stateReason ?? null,
+            closerType: closer?.__typename ?? null,
+            closerNumber: typeof closer?.number === 'number' ? closer.number : null,
+            closerOid: typeof closer?.oid === 'string' ? closer.oid : closer?.mergeCommit?.oid ?? null,
+            raw: node,
+          });
+          if (closer?.__typename === 'PullRequest' && typeof closer.number === 'number') {
+            evidence.prLinks.push({
+              issueNumber,
+              prNumber: closer.number,
+              source: 'ClosedEvent.closer',
+              willCloseTarget: true,
+              referencedAt: node.createdAt ?? null,
+            });
+            evidence.pullRequests.push(mapPullRequestFix(closer));
+          }
+        } else if (node.__typename === 'CrossReferencedEvent') {
+          const source = node.source;
+          if (source?.__typename === 'PullRequest' && typeof source.number === 'number') {
+            evidence.prLinks.push({
+              issueNumber,
+              prNumber: source.number,
+              source: 'CrossReferencedEvent',
+              willCloseTarget: typeof node.willCloseTarget === 'boolean' ? node.willCloseTarget : null,
+              referencedAt: node.createdAt ?? null,
+            });
+            evidence.pullRequests.push(mapPullRequestFix(source));
+          }
+        }
+      }
+    }
+  }
+  return all;
+}
+
+function mapPullRequestFix(pr: any): GhPullRequestFix {
+  return {
+    number: pr.number,
+    title: pr.title ?? null,
+    url: pr.url ?? null,
+    state: pr.state ?? null,
+    merged: pr.merged === true,
+    mergedAt: pr.mergedAt ?? null,
+    mergeCommitOid: pr.mergeCommit?.oid ?? null,
+    baseRefName: pr.baseRefName ?? null,
+  };
+}
+
+function buildIssueFixEvidenceBatchQuery(size: number): string {
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const fields = Array.from({ length: size }, (_, idx) => `
+    issue${idx}: issue(number: $number${idx}) {
+      closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {
+        nodes {
+          number title url state merged mergedAt baseRefName
+          mergeCommit { oid }
+        }
+      }
+      timelineItems(first: 40, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
+        nodes {
+          __typename
+          ... on ClosedEvent {
+            id createdAt stateReason actor { login }
+            closer {
+              __typename
+              ... on PullRequest {
+                number title url state merged mergedAt baseRefName
+                mergeCommit { oid }
+              }
+              ... on Commit { oid committedDate url }
+            }
+          }
+          ... on CrossReferencedEvent {
+            id createdAt willCloseTarget
+            source {
+              __typename
+              ... on PullRequest {
+                number title url state merged mergedAt baseRefName
+                mergeCommit { oid }
+              }
+            }
+          }
+        }
+      }
+    }`).join('\n');
+  return `query IssueFixEvidence($owner: String!, $repo: String!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}
     }
