@@ -146,6 +146,8 @@ curl http://127.0.0.1:8787/api/comparison
 curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 ```
 
+Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
+
 A healthy completed refresh has:
 
 ```json
