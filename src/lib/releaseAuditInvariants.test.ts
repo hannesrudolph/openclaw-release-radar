@@ -62,6 +62,7 @@ describe('verifyReleaseAudit', () => {
         classifiedIssueCount: 1,
       };
       const explanation = {
+        schemaVersion: 1,
         title: 'Why not 10?',
         positives: ['The release is eligible and recommended.'],
         positiveDetails: [{

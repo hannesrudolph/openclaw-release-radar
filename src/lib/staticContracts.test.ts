@@ -69,9 +69,18 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(scoringDoc, /Current `v20\d{2}\.\d+\.\d+` Snapshot/);
     assert.doesNotMatch(scoringDoc, /Score:\s*`[0-9.]+`/);
     assert.match(scoringDoc, /components\.explanation/);
+    assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
     assert.match(readme, /structured `explanation` object/);
+    assert.match(readme, /Current value: `1`/);
     assert.match(readme, /stable reason `code`/);
+  });
+
+  it('explanation reason-code exports remain public', () => {
+    const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
+    assert.match(scorer, /export const SCORE_EXPLANATION_SCHEMA_VERSION = 1/);
+    assert.match(scorer, /export const SCORE_EXPLANATION_LIMIT_CODES/);
+    assert.match(scorer, /export const SCORE_EXPLANATION_POSITIVE_CODES/);
   });
 });

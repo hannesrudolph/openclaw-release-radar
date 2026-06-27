@@ -16,6 +16,21 @@ export const knownProofStatuses = new Set([
 
 const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
+const scoreExplanationSchemaVersion = 1;
+const knownExplanationCodes = new Set([
+  'field_visible_reports_opened',
+  'source_carryover_risk',
+  'stale_low_confidence_evidence',
+  'closed_issues_not_counted_as_release_fixes',
+  'unverified_closed_fix_reachability',
+  'missing_full_release_evidence_report',
+  'model_ceiling_and_capped_confidence',
+  'no_verified_field_blocker_debt',
+  'release_checks_passed',
+  'artifact_verified',
+  'release_recommended',
+  'hard_gates_passed',
+]);
 
 export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10 }) {
   const releases = reader.listReleases(limit);
@@ -426,6 +441,8 @@ function verifyScoreAuditSummary({ failures, tag, summary }) {
 function verifyScoreExplanation({ failures, tag, explanation, recommended, source }) {
   expect(failures, tag, isObject(explanation), `${source} score explanation must be present`);
   if (!isObject(explanation)) return;
+  expect(failures, tag, explanation.schemaVersion === scoreExplanationSchemaVersion,
+    `${source} score explanation schemaVersion must be ${scoreExplanationSchemaVersion}, got ${JSON.stringify(explanation.schemaVersion)}`);
   expect(failures, tag, explanation.title === 'Why not 10?',
     `${source} score explanation title must be "Why not 10?", got ${JSON.stringify(explanation.title)}`);
   expect(failures, tag, isStringArray(explanation.positives) && explanation.positives.length > 0,
@@ -477,6 +494,8 @@ function verifyExplanationDetails({ failures, tag, source, label, details, text 
     if (!isObject(detail)) continue;
     expect(failures, tag, typeof detail.code === 'string' && /^[a-z0-9_]+$/.test(detail.code),
       `${source} score explanation ${label}[${idx}] code must be snake_case`);
+    expect(failures, tag, knownExplanationCodes.has(detail.code),
+      `${source} score explanation ${label}[${idx}] code ${JSON.stringify(detail.code)} must be known`);
     expect(failures, tag, detail.text === text[idx],
       `${source} score explanation ${label}[${idx}] text must match prose line`);
     if ('metrics' in detail) {

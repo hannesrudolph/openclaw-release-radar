@@ -160,6 +160,7 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
 
 `components.explanation` is the stable "Why not 10?" contract:
 
+- `schemaVersion`: explanation contract version. Current value: `1`.
 - `positives`: human-readable favorable evidence lines.
 - `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.
 - `limits`: human-readable limiting evidence lines.

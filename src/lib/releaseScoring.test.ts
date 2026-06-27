@@ -1,6 +1,12 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { buildReleaseScoreRun, __releaseScoringTest } from './releaseScoring.ts';
+import {
+  buildReleaseScoreRun,
+  SCORE_EXPLANATION_LIMIT_CODES,
+  SCORE_EXPLANATION_POSITIVE_CODES,
+  SCORE_EXPLANATION_SCHEMA_VERSION,
+  __releaseScoringTest,
+} from './releaseScoring.ts';
 
 describe('release score explanations', () => {
   it('truncates issue titles at useful boundaries', () => {
@@ -27,10 +33,13 @@ describe('release score explanations', () => {
     });
     const explanation = run.scored[0].explanation;
 
+    assert.equal(explanation.schemaVersion, SCORE_EXPLANATION_SCHEMA_VERSION);
     assert.equal(explanation.limits.length, explanation.limitDetails.length);
     assert.equal(explanation.positives.length, explanation.positiveDetails.length);
     assert.ok(explanation.limitDetails.every((detail, idx) => detail.text === explanation.limits[idx]));
     assert.ok(explanation.positiveDetails.every((detail, idx) => detail.text === explanation.positives[idx]));
+    assert.ok(explanation.limitDetails.every((detail) => SCORE_EXPLANATION_LIMIT_CODES.includes(detail.code as any)));
+    assert.ok(explanation.positiveDetails.every((detail) => SCORE_EXPLANATION_POSITIVE_CODES.includes(detail.code as any)));
 
     const closure = explanation.limitDetails.find((detail) => detail.code === 'closed_issues_not_counted_as_release_fixes');
     assert.ok(closure);

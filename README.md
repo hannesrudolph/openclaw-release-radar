@@ -183,6 +183,7 @@ A healthy completed refresh has:
 
 `/api/releases`, `/api/public`, `/api/comparison`, and `/api/releases/:tag/review` expose the same structured `explanation` object for each scored release. It contains:
 
+- `schemaVersion`: explanation contract version. Current value: `1`.
 - `positives` / `limits`: human-readable evidence lines for the UI.
 - `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets`, and `issueRefs`.
 - `verdict`: install-facing interpretation of the score.

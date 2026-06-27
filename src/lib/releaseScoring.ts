@@ -61,6 +61,7 @@ export interface ReleaseScoreRun {
 }
 
 export interface ScoreExplanation {
+  schemaVersion: number;
   title: string;
   positives: string[];
   positiveDetails: ScoreExplanationDetail[];
@@ -87,6 +88,25 @@ export interface ScoreExplanationIssueRef {
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 const SHORT_ISSUE_TITLE_LENGTH = 110;
+export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
+export const SCORE_EXPLANATION_LIMIT_CODES = [
+  'field_visible_reports_opened',
+  'source_carryover_risk',
+  'stale_low_confidence_evidence',
+  'closed_issues_not_counted_as_release_fixes',
+  'unverified_closed_fix_reachability',
+  'missing_full_release_evidence_report',
+  'model_ceiling_and_capped_confidence',
+] as const;
+export const SCORE_EXPLANATION_POSITIVE_CODES = [
+  'no_verified_field_blocker_debt',
+  'release_checks_passed',
+  'artifact_verified',
+  'release_recommended',
+  'hard_gates_passed',
+] as const;
+type ScoreExplanationLimitCode = (typeof SCORE_EXPLANATION_LIMIT_CODES)[number];
+type ScoreExplanationPositiveCode = (typeof SCORE_EXPLANATION_POSITIVE_CODES)[number];
 
 export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseScoreRun {
   const releases = options.releases ?? listReleasesDb(options.releaseLimit ?? 20);
@@ -323,7 +343,15 @@ function scoreRelease(args: {
     rel,
     conf,
     input,
-    explanation: { title: 'Why not 10?', positives: [], positiveDetails: [], limits: [], limitDetails: [], verdict: '' },
+    explanation: {
+      schemaVersion: SCORE_EXPLANATION_SCHEMA_VERSION,
+      title: 'Why not 10?',
+      positives: [],
+      positiveDetails: [],
+      limits: [],
+      limitDetails: [],
+      verdict: '',
+    },
     debtEvidence,
     gateEvidence,
     neg,
@@ -349,7 +377,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const limits: string[] = [];
   const limitDetails: ScoreExplanationDetail[] = [];
   const addLimit = (
-    code: string,
+    code: ScoreExplanationLimitCode,
     text: string,
     extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
   ) => {
@@ -447,7 +475,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const positives: string[] = [];
   const positiveDetails: ScoreExplanationDetail[] = [];
   const addPositive = (
-    code: string,
+    code: ScoreExplanationPositiveCode,
     text: string,
     extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
   ) => {
@@ -483,6 +511,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   }
 
   return {
+    schemaVersion: SCORE_EXPLANATION_SCHEMA_VERSION,
     title: 'Why not 10?',
     positives,
     positiveDetails,
