@@ -78,6 +78,34 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'duplicate_or_superseded');
   });
 
+  it('recognizes reporter-refiled issues as replacement context, not missing fix proof', () => {
+    const result = classifyClosureProof(input({
+      issueAuthor: 'reporter',
+      closureActors: ['reporter'],
+      comments: [{ author: 'reporter', body: 'Reopened as English version: #96333' }],
+    }));
+    assert.equal(result.status, 'reporter_replaced');
+    assert.equal(result.evidence.reporterSelfClosed, true);
+  });
+
+  it('recognizes reporter withdrawals as non-fix closure context', () => {
+    const result = classifyClosureProof(input({
+      issueAuthor: 'reporter',
+      closureActors: ['reporter'],
+      comments: [{ author: 'reporter', body: 'Apologies, please ignore.' }],
+    }));
+    assert.equal(result.status, 'reporter_withdrawn');
+  });
+
+  it('separates unexplained reporter self-closures from missing maintainer fix proof', () => {
+    const result = classifyClosureProof(input({
+      issueAuthor: 'reporter',
+      closureActors: ['reporter'],
+      comments: [],
+    }));
+    assert.equal(result.status, 'reporter_self_closed');
+  });
+
   it('recognizes already-present claims without treating them as release proof', () => {
     const result = classifyClosureProof(input({
       comments: [{ author: 'bot', body: 'Current main and tagged releases already implement this behavior.' }],

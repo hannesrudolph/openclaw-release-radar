@@ -8,6 +8,9 @@ export type ClosureProofStatus =
   | 'not_planned'
   | 'already_present_claim'
   | 'main_only_claim'
+  | 'reporter_replaced'
+  | 'reporter_withdrawn'
+  | 'reporter_self_closed'
   | 'no_code_proof'
   | 'no_timeline_event'
   | 'non_bug_neutral'
@@ -15,6 +18,7 @@ export type ClosureProofStatus =
 
 export interface ClosureProofInput {
   issueNumber: number;
+  issueAuthor?: string | null;
   sentiment?: string | null;
   stateReasons: string[];
   closureActors: string[];
@@ -40,14 +44,28 @@ const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|bro
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|current main|tagged releases? already|already contains|already covered|implemented in current)\b/i;
 const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
+const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|under|to)\b.{0,80}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#\d+\b/i;
+const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
 const CANONICAL_LINE_RE = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
 
 export function classifyClosureProof(input: ClosureProofInput): ClosureProofResult {
   const combinedComments = input.comments.map((comment) => comment.body ?? '').join('\n');
   const reasons = new Set(input.stateReasons.filter(Boolean));
+  const issueAuthor = normalizeLogin(input.issueAuthor);
+  const closureActors = input.closureActors.map(normalizeLogin).filter(Boolean);
+  const reporterSelfClosed = !!issueAuthor && closureActors.includes(issueAuthor);
+  const reporterComments = input.comments
+    .filter((comment) => {
+      const author = normalizeLogin(comment.author);
+      return !!author && (author === issueAuthor || closureActors.includes(author));
+    })
+    .map((comment) => comment.body ?? '')
+    .join('\n');
   const evidence = {
+    issueAuthor: input.issueAuthor ?? null,
     stateReasons: input.stateReasons,
     closureActors: input.closureActors,
+    reporterSelfClosed,
     hasClosingLink: input.hasClosingLink,
     hasMergedClosingPr: input.hasMergedClosingPr,
     hasReachableClosingPr: input.hasReachableClosingPr,
@@ -77,6 +95,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   }
 
   const hasCompletedClosure = reasons.has('COMPLETED');
+  const reporterContext = reporterComments || (reporterSelfClosed ? combinedComments : '');
 
   if (MAIN_ONLY_RE.test(combinedComments)) {
     return {
@@ -106,6 +125,22 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (REPORTER_REPLACED_RE.test(reporterContext)) {
+    return {
+      status: 'reporter_replaced',
+      summary: 'Reporter refiled or replaced this issue, so the closure is not release fix proof.',
+      evidence,
+    };
+  }
+
+  if (REPORTER_WITHDRAWN_RE.test(reporterContext)) {
+    return {
+      status: 'reporter_withdrawn',
+      summary: 'Reporter withdrew, ignored, or closed the report for non-fix reasons.',
+      evidence,
+    };
+  }
+
   if (reasons.has('DUPLICATE') || DUPLICATE_RE.test(combinedComments)) {
     return {
       status: 'duplicate_or_superseded',
@@ -130,6 +165,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (reporterSelfClosed && hasCompletedClosure) {
+    return {
+      status: 'reporter_self_closed',
+      summary: 'Reporter self-closed the issue without linked release fix proof or ongoing failure context.',
+      evidence,
+    };
+  }
+
   if (input.hasClosingLink && !input.hasMergedClosingPr) {
     return {
       status: 'no_code_proof',
@@ -143,6 +186,10 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     summary: 'Closed without reachable PR or fix/source commit proof for this release tag.',
     evidence,
   };
+}
+
+function normalizeLogin(login: string | null | undefined): string {
+  return String(login ?? '').trim().toLowerCase();
 }
 
 function canonicalIssueNumbers(text: string): number[] {
@@ -163,7 +210,8 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
   return comments
     .filter((comment) => {
       const body = comment.body ?? '';
-      return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || NO_PLAN_RE.test(body);
+      return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || NO_PLAN_RE.test(body) ||
+        REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body);
     })
     .slice(-3)
     .map((comment) => ({

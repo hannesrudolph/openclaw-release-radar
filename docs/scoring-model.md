@@ -86,6 +86,9 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
+- `reporter_replaced`: reporter refiled, reopened, or replaced the issue under another issue number.
+- `reporter_withdrawn`: reporter withdrew the report, asked maintainers to ignore it, or closed it for privacy/non-fix reasons.
+- `reporter_self_closed`: reporter self-closed the issue without linked release fix proof or ongoing failure context.
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_neutral`: closed item is not negative bug evidence.

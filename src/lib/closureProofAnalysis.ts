@@ -77,6 +77,7 @@ final_closure AS (
 SELECT
   i.number,
   i.title,
+  i.author,
   i.closed_at,
   c.sentiment,
   GROUP_CONCAT(DISTINCT e.state_reason) AS state_reasons,
@@ -178,6 +179,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
     const result = classifyClosureProof({
       issueNumber: row.number,
+      issueAuthor: row.author,
       sentiment: row.sentiment,
       stateReasons: splitCsv(row.state_reasons),
       closureActors: splitCsv(row.closure_actors),
