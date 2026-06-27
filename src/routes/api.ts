@@ -168,6 +168,19 @@ function maintainerSignals(r: {
   };
 }
 
+function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
+  if (!audit) return null;
+  const components = parseJson(audit.components_json, null) as any;
+  const input = parseJson(audit.input_json, null) as any;
+  return {
+    modelVersion: audit.score_model_version,
+    promptVersion: audit.prompt_version,
+    evidenceCoverage: components?.evidenceCoverage ?? null,
+    rawIssueCount: input?.rawIssueCount ?? null,
+    classifiedIssueCount: input?.classifiedIssueCount ?? null,
+  };
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
@@ -175,6 +188,7 @@ api.get('/releases', (_req, res) => {
   res.json(
     rows.map((r) => {
       const status = advisoryStatusFor(r.tag, advisories, stableTags);
+      const audit = getReleaseScoreAudit(r.tag);
       return {
         tag: r.tag,
         name: r.name,
@@ -191,6 +205,7 @@ api.get('/releases', (_req, res) => {
         closedSeriousFixed: r.closed_serious_fixed,
         openedSeriousDuringReign: r.opened_serious_during_reign,
         scoredAt: r.scored_at,
+        scoreAudit: scoreAuditSummary(audit),
         advisories: {
           affected: summarizeAdvisories(status.affected),
           patched: summarizeAdvisories(status.patched),
@@ -321,6 +336,8 @@ function buildPublicPayload() {
   const allReleases = listReleasesDb(config.limits.releases);
 
   const releases = allReleases.map((r) => {
+    const audit = getReleaseScoreAudit(r.tag);
+    const auditSummary = scoreAuditSummary(audit);
     const all = issuesForVersion(r.tag);
     const sorted = [...all].sort((a, b) => {
       const s = (SENTIMENT_RANK[a.sentiment] ?? 9) - (SENTIMENT_RANK[b.sentiment] ?? 9);
@@ -358,6 +375,7 @@ function buildPublicPayload() {
       negativeIssues:    r.negative_issues ?? 0,
       positiveIssues:    r.positive_issues ?? 0,
       scoredAt:          r.scored_at,
+      scoreAudit:        auditSummary,
       totalAttributedIssues: all.length,
       issues:            topIssues,
       watchIssues,

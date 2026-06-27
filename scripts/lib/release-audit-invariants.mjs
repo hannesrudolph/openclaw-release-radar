@@ -153,11 +153,46 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   const publicPayload = await fetchJson(`${apiBase}/api/public`);
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('comparison'), 'public payload must not include comparison data');
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('upstream'), 'public payload must not include upstream data');
+  if (status.lastScoredAt) {
+    expect(failures, 'api/public', publicPayload.updatedAt === status.lastScoredAt,
+      `public updatedAt (${publicPayload.updatedAt}) must equal status lastScoredAt (${status.lastScoredAt})`);
+  }
 
+  const releasesPayload = await fetchJson(`${apiBase}/api/releases`);
+  const releaseApiByTag = new Map((Array.isArray(releasesPayload) ? releasesPayload : []).map((release) => [release.tag, release]));
+  const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
   const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
   const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
 
   for (const release of releases) {
+    const releaseApi = releaseApiByTag.get(release.tag);
+    expect(failures, release.tag, !!releaseApi, 'releases API must include monitored release');
+    if (releaseApi) {
+      expect(failures, release.tag, releaseApi.finalScore === release.final_score,
+        `releases finalScore (${releaseApi.finalScore}) must match DB final_score (${release.final_score})`);
+      expect(failures, release.tag, releaseApi.status === release.state,
+        `releases status (${releaseApi.status}) must match DB state (${release.state})`);
+      expect(failures, release.tag, releaseApi.recommended === (release.recommended === 1),
+        `releases recommended (${releaseApi.recommended}) must match DB recommended (${release.recommended === 1})`);
+      expect(failures, release.tag, releaseApi.scoredAt === release.scored_at,
+        `releases scoredAt (${releaseApi.scoredAt}) must match DB scored_at (${release.scored_at})`);
+      verifyScoreAuditSummary({ failures, tag: release.tag, summary: releaseApi.scoreAudit });
+    }
+
+    const publicRelease = publicByTag.get(release.tag);
+    expect(failures, release.tag, !!publicRelease, 'public API must include monitored release');
+    if (publicRelease) {
+      expect(failures, release.tag, publicRelease.score === release.final_score,
+        `public score (${publicRelease.score}) must match DB final_score (${release.final_score})`);
+      expect(failures, release.tag, publicRelease.status === release.state,
+        `public status (${publicRelease.status}) must match DB state (${release.state})`);
+      expect(failures, release.tag, publicRelease.recommended === (release.recommended === 1),
+        `public recommended (${publicRelease.recommended}) must match DB recommended (${release.recommended === 1})`);
+      expect(failures, release.tag, publicRelease.scoredAt === release.scored_at,
+        `public scoredAt (${publicRelease.scoredAt}) must match DB scored_at (${release.scored_at})`);
+      verifyScoreAuditSummary({ failures, tag: release.tag, summary: publicRelease.scoreAudit });
+    }
+
     const comparison = comparisonByTag.get(release.tag);
     expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
       'comparison payload must include local, upstream, and delta objects');
@@ -204,4 +239,19 @@ async function defaultFetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} returned ${res.status}`);
   return res.json();
+}
+
+function verifyScoreAuditSummary({ failures, tag, summary }) {
+  expect(failures, tag, !!summary, 'scoreAudit summary must be present');
+  if (!summary) return;
+  expect(failures, tag, typeof summary.modelVersion === 'string' && summary.modelVersion.length > 0,
+    'scoreAudit modelVersion must be present');
+  expect(failures, tag, Number.isInteger(summary.promptVersion),
+    'scoreAudit promptVersion must be an integer');
+  expect(failures, tag, typeof summary.evidenceCoverage === 'number' && summary.evidenceCoverage >= 0 && summary.evidenceCoverage <= 1,
+    `scoreAudit evidenceCoverage must be in [0,1], got ${summary.evidenceCoverage}`);
+  expect(failures, tag, Number.isInteger(summary.rawIssueCount) && summary.rawIssueCount >= 0,
+    `scoreAudit rawIssueCount must be a non-negative integer, got ${summary.rawIssueCount}`);
+  expect(failures, tag, Number.isInteger(summary.classifiedIssueCount) && summary.classifiedIssueCount >= 0,
+    `scoreAudit classifiedIssueCount must be a non-negative integer, got ${summary.classifiedIssueCount}`);
 }

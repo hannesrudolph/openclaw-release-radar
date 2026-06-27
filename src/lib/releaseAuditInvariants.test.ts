@@ -11,7 +11,7 @@ function reader(overrides: Partial<{
   audit: any;
 }> = {}) {
   const data = {
-    releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1 }],
+    releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1, scored_at: 't' }],
     closed: [{ number: 1 }],
     verified: [{ number: 1, sentiment: 'negative' }],
     unverified: [],
@@ -49,10 +49,40 @@ function reader(overrides: Partial<{
 describe('verifyReleaseAudit', () => {
   it('passes coherent DB and API invariants', async () => {
     const fetchJson = async (url: string) => {
+      const scoreAudit = {
+        modelVersion: 'test-model',
+        promptVersion: 6,
+        evidenceCoverage: 1,
+        rawIssueCount: 1,
+        classifiedIssueCount: 1,
+      };
       if (url.endsWith('/api/status')) {
         return { refreshing: false, lastError: null, lastRefreshAt: 't', lastScoredAt: 't' };
       }
-      if (url.endsWith('/api/public')) return { repo: 'x/y', releases: [] };
+      if (url.endsWith('/api/public')) {
+        return {
+          repo: 'x/y',
+          updatedAt: 't',
+          releases: [{
+            tag: 'v1',
+            score: 7.5,
+            status: 'eligible',
+            recommended: true,
+            scoredAt: 't',
+            scoreAudit,
+          }],
+        };
+      }
+      if (url.endsWith('/api/releases')) {
+        return [{
+          tag: 'v1',
+          finalScore: 7.5,
+          status: 'eligible',
+          recommended: true,
+          scoredAt: 't',
+          scoreAudit,
+        }];
+      }
       if (url.endsWith('/api/comparison')) {
         return {
           releases: [{
