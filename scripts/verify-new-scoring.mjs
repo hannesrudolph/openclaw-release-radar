@@ -1,14 +1,15 @@
 // Offline validation of the real scoring path against the real DB. This reads
 // existing classifications/evidence only; it does not call GitHub or the LLM.
 import { DatabaseSync } from 'node:sqlite';
-import { buildReleaseScoreRun } from '../src/lib/releaseScoring.ts';
 
 const args = parseArgs(process.argv.slice(2));
 const limit = Number(args.limit ?? 10);
 const check = args.check !== false && args['print-only'] !== true;
 const dbPath = process.env.DB_PATH ?? './data/radar.db';
+process.env.RADAR_DB_READ_ONLY = '1';
 const db = new DatabaseSync(dbPath, { readOnly: true });
 db.exec('PRAGMA query_only = ON');
+const { buildReleaseScoreRun } = await import('../src/lib/releaseScoring.ts');
 
 const allRel = db.prepare(
   `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`,

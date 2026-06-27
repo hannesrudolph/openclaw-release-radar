@@ -8,7 +8,7 @@ The score answers one question:
 
 It is not a raw issue count. The model combines hard gates, release survival, issue provenance, community breadth, fix reachability, release checks, and package artifact verification. Every score is written to `release_score_audits` with JSON inputs, components, issue evidence, and gate evidence.
 
-Refresh and `npm run verify:score` both use the shared `releaseScoring` DB scoring pass. The verifier recomputes the same install inputs and audit payloads from stored evidence, then fails if persisted release rows or score-audit rows drift. The same pass also writes the structured `components.explanation` payload used by the UI's "Why not 10?" panel, including prose plus machine-readable reason codes, metrics, buckets, and supporting issue references.
+Refresh and `npm run verify:score` both use the shared `releaseScoring` DB scoring pass. The verifier opens the database in read-only/query-only mode, recomputes the same install inputs and audit payloads from stored evidence, then fails if persisted release rows or score-audit rows drift. The same pass also writes the structured `components.explanation` payload used by the UI's "Why not 10?" panel, including prose plus machine-readable reason codes, metrics, buckets, and supporting issue references.
 
 ## Hard Gates
 

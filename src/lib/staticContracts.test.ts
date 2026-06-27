@@ -60,6 +60,7 @@ describe('static scoring/UI contracts', () => {
   it('score verifier is wired as a hard drift check', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
+    const dbModule = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
     assert.equal(pkg.scripts['verify:scripts'], 'for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done');
@@ -67,9 +68,13 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:local'], 'npm run verify:score && npm run verify:release-audit');
     assert.equal(pkg.scripts['verify:live'], 'npm run verify:score && npm run verify:release-audit -- --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.match(verifier, /buildReleaseScoreRun/);
+    assert.match(verifier, /RADAR_DB_READ_ONLY = '1'/);
     assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);
     assert.match(verifier, /process\.exit\(1\)/);
+    assert.match(dbModule, /export const dbReadOnly/);
+    assert.match(dbModule, /readOnly: true/);
+    assert.match(dbModule, /PRAGMA query_only = ON/);
     assert.match(readme, /npm run verify:ci/);
     assert.match(readme, /npm run verify:scripts/);
     assert.match(readme, /npm run verify:local/);

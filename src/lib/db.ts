@@ -7,18 +7,26 @@ import { creditedFixLinkSql } from './fixProvenance';
 
 // node:sqlite is built into Node ≥ 22.5 (stable since 24). No native build, no prebuilds.
 
-mkdirSync(dirname(config.db.path), { recursive: true });
+export const dbReadOnly = process.env.RADAR_DB_READ_ONLY === '1' || process.env.RADAR_DB_READ_ONLY === 'true';
 
-export const db = new DatabaseSync(config.db.path);
+if (!dbReadOnly) mkdirSync(dirname(config.db.path), { recursive: true });
+
+export const db = dbReadOnly
+  ? new DatabaseSync(config.db.path, { readOnly: true })
+  : new DatabaseSync(config.db.path);
 // WAL improves concurrent reads but isn't supported on every mount (FUSE, some NFS).
 // Fall back to the default rollback journal if it fails.
-try {
-  db.exec('PRAGMA journal_mode = WAL');
-} catch (e) {
-  console.warn('[db] WAL not supported on this filesystem, falling back to default journal:', (e as Error).message);
+if (!dbReadOnly) {
+  try {
+    db.exec('PRAGMA journal_mode = WAL');
+  } catch (e) {
+    console.warn('[db] WAL not supported on this filesystem, falling back to default journal:', (e as Error).message);
+  }
 }
 db.exec('PRAGMA foreign_keys = ON');
+if (dbReadOnly) db.exec('PRAGMA query_only = ON');
 
+if (!dbReadOnly) {
 db.exec(`
 CREATE TABLE IF NOT EXISTS releases (
   tag TEXT PRIMARY KEY,
@@ -352,6 +360,7 @@ try {
   }
 } catch {
   // The main CREATE TABLE block handles first-run setup; this only repairs old local schemas.
+}
 }
 
 // Bot detection. Cheap, deterministic, no extra LLM tokens.
