@@ -799,60 +799,115 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
       const evidence = all.get(issueNumber);
       if (!issue || !evidence) continue;
 
-      for (const pr of issue.closedByPullRequestsReferences?.nodes ?? []) {
-        if (!pr?.number) continue;
-        evidence.prLinks.push({
-          issueNumber,
-          prNumber: pr.number,
-          source: 'closedByPullRequestsReferences',
-          willCloseTarget: true,
-          referencedAt: pr.mergedAt ?? null,
-        });
-        evidence.pullRequests.push(mapPullRequestFix(pr));
-      }
-
-      for (const node of issue.timelineItems?.nodes ?? []) {
-        if (!node?.__typename) continue;
-        if (node.__typename === 'ClosedEvent') {
-          const closer = node.closer ?? null;
-          evidence.closureEvents.push({
-            issueNumber,
-            eventId: node.id,
-            closedAt: node.createdAt ?? null,
-            actorLogin: node.actor?.login ?? null,
-            stateReason: node.stateReason ?? null,
-            closerType: closer?.__typename ?? null,
-            closerNumber: typeof closer?.number === 'number' ? closer.number : null,
-            closerOid: typeof closer?.oid === 'string' ? closer.oid : closer?.mergeCommit?.oid ?? null,
-            raw: node,
-          });
-          if (closer?.__typename === 'PullRequest' && typeof closer.number === 'number') {
-            evidence.prLinks.push({
-              issueNumber,
-              prNumber: closer.number,
-              source: 'ClosedEvent.closer',
-              willCloseTarget: true,
-              referencedAt: node.createdAt ?? null,
-            });
-            evidence.pullRequests.push(mapPullRequestFix(closer));
-          }
-        } else if (node.__typename === 'CrossReferencedEvent') {
-          const source = node.source;
-          if (source?.__typename === 'PullRequest' && typeof source.number === 'number') {
-            evidence.prLinks.push({
-              issueNumber,
-              prNumber: source.number,
-              source: 'CrossReferencedEvent',
-              willCloseTarget: typeof node.willCloseTarget === 'boolean' ? node.willCloseTarget : null,
-              referencedAt: node.createdAt ?? null,
-            });
-            evidence.pullRequests.push(mapPullRequestFix(source));
-          }
-        }
-      }
+      appendClosedByPullRequestReferences(evidence, issueNumber, issue.closedByPullRequestsReferences?.nodes ?? []);
+      appendFixTimelineNodes(evidence, issueNumber, issue.timelineItems?.nodes ?? []);
+      await appendRemainingClosedByPullRequestReferences(
+        evidence,
+        issueNumber,
+        issue.closedByPullRequestsReferences?.pageInfo ?? null,
+      );
+      await appendRemainingFixTimelineNodes(evidence, issueNumber, issue.timelineItems?.pageInfo ?? null);
     }
   }
   return all;
+}
+
+function appendClosedByPullRequestReferences(
+  evidence: GhIssueFixEvidence,
+  issueNumber: number,
+  nodes: Array<any | null>,
+): void {
+  for (const pr of nodes) {
+    if (!pr?.number) continue;
+    evidence.prLinks.push({
+      issueNumber,
+      prNumber: pr.number,
+      source: 'closedByPullRequestsReferences',
+      willCloseTarget: true,
+      referencedAt: pr.mergedAt ?? null,
+    });
+    evidence.pullRequests.push(mapPullRequestFix(pr));
+  }
+}
+
+function appendFixTimelineNodes(
+  evidence: GhIssueFixEvidence,
+  issueNumber: number,
+  nodes: Array<any | null>,
+): void {
+  for (const node of nodes) {
+    if (!node?.__typename) continue;
+    if (node.__typename === 'ClosedEvent') {
+      const closer = node.closer ?? null;
+      evidence.closureEvents.push({
+        issueNumber,
+        eventId: node.id,
+        closedAt: node.createdAt ?? null,
+        actorLogin: node.actor?.login ?? null,
+        stateReason: node.stateReason ?? null,
+        closerType: closer?.__typename ?? null,
+        closerNumber: typeof closer?.number === 'number' ? closer.number : null,
+        closerOid: typeof closer?.oid === 'string' ? closer.oid : closer?.mergeCommit?.oid ?? null,
+        raw: node,
+      });
+      if (closer?.__typename === 'PullRequest' && typeof closer.number === 'number') {
+        evidence.prLinks.push({
+          issueNumber,
+          prNumber: closer.number,
+          source: 'ClosedEvent.closer',
+          willCloseTarget: true,
+          referencedAt: node.createdAt ?? null,
+        });
+        evidence.pullRequests.push(mapPullRequestFix(closer));
+      }
+    } else if (node.__typename === 'CrossReferencedEvent') {
+      const source = node.source;
+      if (source?.__typename === 'PullRequest' && typeof source.number === 'number') {
+        evidence.prLinks.push({
+          issueNumber,
+          prNumber: source.number,
+          source: 'CrossReferencedEvent',
+          willCloseTarget: typeof node.willCloseTarget === 'boolean' ? node.willCloseTarget : null,
+          referencedAt: node.createdAt ?? null,
+        });
+        evidence.pullRequests.push(mapPullRequestFix(source));
+      }
+    }
+  }
+}
+
+async function appendRemainingClosedByPullRequestReferences(
+  evidence: GhIssueFixEvidence,
+  issueNumber: number,
+  pageInfo: PageInfo | null,
+): Promise<void> {
+  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  while (after) {
+    const data = await gh<{ repository: { issue: { closedByPullRequestsReferences: { nodes: Array<any | null>; pageInfo: PageInfo } } | null } | null }>(
+      buildIssueClosedByPrRefsQuery(),
+      repoVars({ number: issueNumber, after }),
+    );
+    const connection = assertRepo(data.repository).issue?.closedByPullRequestsReferences;
+    appendClosedByPullRequestReferences(evidence, issueNumber, connection?.nodes ?? []);
+    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  }
+}
+
+async function appendRemainingFixTimelineNodes(
+  evidence: GhIssueFixEvidence,
+  issueNumber: number,
+  pageInfo: PageInfo | null,
+): Promise<void> {
+  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  while (after) {
+    const data = await gh<{ repository: { issue: { timelineItems: { nodes: Array<any | null>; pageInfo: PageInfo } } | null } | null }>(
+      buildIssueFixTimelineQuery(),
+      repoVars({ number: issueNumber, after }),
+    );
+    const connection = assertRepo(data.repository).issue?.timelineItems;
+    appendFixTimelineNodes(evidence, issueNumber, connection?.nodes ?? []);
+    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  }
 }
 
 export async function listPullRequestFixesBatch(prNumbers: number[]): Promise<Map<number, GhPullRequestFix>> {
@@ -1011,13 +1066,14 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
   const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
   const fields = Array.from({ length: size }, (_, idx) => `
     issue${idx}: issue(number: $number${idx}) {
-      closedByPullRequestsReferences(first: 20, includeClosedPrs: true) {
+      closedByPullRequestsReferences(first: 100, includeClosedPrs: true) {
         nodes {
           number title url state merged mergedAt baseRefName
           mergeCommit { oid }
         }
+        pageInfo { hasNextPage endCursor }
       }
-      timelineItems(first: 40, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
+      timelineItems(first: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
         nodes {
           __typename
           ... on ClosedEvent {
@@ -1042,11 +1098,64 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
             }
           }
         }
+        pageInfo { hasNextPage endCursor }
       }
     }`).join('\n');
   return `query IssueFixEvidence($owner: String!, $repo: String!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}
+    }
+  }`;
+}
+
+function buildIssueClosedByPrRefsQuery(): string {
+  return `query IssueClosedByPrRefs($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        closedByPullRequestsReferences(first: 100, after: $after, includeClosedPrs: true) {
+          nodes {
+            number title url state merged mergedAt baseRefName
+            mergeCommit { oid }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
+    }
+  }`;
+}
+
+function buildIssueFixTimelineQuery(): string {
+  return `query IssueFixTimeline($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        timelineItems(first: 100, after: $after, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
+          nodes {
+            __typename
+            ... on ClosedEvent {
+              id createdAt stateReason actor { login }
+              closer {
+                __typename
+                ... on PullRequest {
+                  number title url state merged mergedAt baseRefName
+                  mergeCommit { oid }
+                }
+                ... on Commit { oid committedDate url }
+              }
+            }
+            ... on CrossReferencedEvent {
+              id createdAt willCloseTarget
+              source {
+                __typename
+                ... on PullRequest {
+                  number title url state merged mergedAt baseRefName
+                  mergeCommit { oid }
+                }
+              }
+            }
+          }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
     }
   }`;
 }
@@ -1131,6 +1240,9 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 
 export const __githubTest = {
   buildReleaseCommitQuery,
+  buildIssueFixEvidenceBatchQuery,
+  buildIssueClosedByPrRefsQuery,
+  buildIssueFixTimelineQuery,
   buildPullRequestFixesBatchQuery,
   closureCommentCommitMentions,
   closureCommentPrMentions,

@@ -138,6 +138,20 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /mergeCommit \{ oid \}/);
   });
 
+  it('paginates issue closure proof connections', () => {
+    const batch = __githubTest.buildIssueFixEvidenceBatchQuery(1);
+    const prRefs = __githubTest.buildIssueClosedByPrRefsQuery();
+    const timeline = __githubTest.buildIssueFixTimelineQuery();
+
+    assert.match(batch, /closedByPullRequestsReferences\(first: 100, includeClosedPrs: true\)/);
+    assert.match(batch, /timelineItems\(first: 100, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(batch, /pageInfo \{ hasNextPage endCursor \}/);
+    assert.match(prRefs, /closedByPullRequestsReferences\(first: 100, after: \$after, includeClosedPrs: true\)/);
+    assert.match(prRefs, /pageInfo \{ hasNextPage endCursor \}/);
+    assert.match(timeline, /timelineItems\(first: 100, after: \$after, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(timeline, /pageInfo \{ hasNextPage endCursor \}/);
+  });
+
   it('paginates release status check contexts', () => {
     const query = __githubTest.buildReleaseCommitQuery();
 
