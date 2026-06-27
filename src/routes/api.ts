@@ -225,6 +225,7 @@ api.get('/comparison', (_req, res) => {
         modelVersion: audit?.score_model_version ?? null,
         components: parseJson(audit?.components_json, null),
         input: parseJson(audit?.input_json, null),
+        gateEvidence: parseJson(audit?.gate_evidence_json, null),
       },
       upstream,
       delta: {

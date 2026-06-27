@@ -391,10 +391,13 @@ export async function refresh(): Promise<{
       const closedReign = closedDuringReign(rel.tag);
       const verifiedFixed = verifiedFixedForRelease(rel.tag);
       const unverifiedClosed = unverifiedClosedForRelease(rel.tag);
+      const verifiedFixedNumbers = new Set(verifiedFixed.map((row) => row.number));
       const debtInputs = attributed.map((row) => ({
           ...classify(row),
           issueNumber: row.number,
-          state: row.state,
+          // Artifact-scoped scoring: a closed GitHub issue is only "closed" for
+          // this release if the fix is proven reachable from this release tag.
+          state: verifiedFixedNumbers.has(row.number) ? 'closed' : 'open',
           createdAt: row.created_at,
           updatedAt: row.updated_at,
           affectsVersion: row.affects_version,

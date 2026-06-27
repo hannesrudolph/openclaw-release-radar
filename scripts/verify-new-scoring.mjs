@@ -37,7 +37,9 @@ const releases = listReleasesDb(10);
 const scored = releases.map((rel, idx) => {
   const attributed = issuesForVersion(rel.tag);
   const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
-  const debt = openDebtLoad(attributed.map(r => ({ ...classify(r), issueNumber: r.number, state: r.state, createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false, labels: safeLabels(r.labels) })));
+  const fixed = verifiedFixedForRelease(rel.tag);
+  const fixedNumbers = new Set(fixed.map(r => r.number));
+  const debt = openDebtLoad(attributed.map(r => ({ ...classify(r), issueNumber: r.number, state: fixedNumbers.has(r.number) ? 'closed' : 'open', createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false, labels: safeLabels(r.labels) })));
   const conf = installConfidence({
     publishedAt: rel.published_at,
     isLatest: idx === 0,
