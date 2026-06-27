@@ -786,6 +786,67 @@ export function closedDuringReign(tag: string): JoinedIssue[] {
   return closedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
 }
 
+const verifiedFixedForReleaseStmt = db.prepare(`
+SELECT DISTINCT i.*,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+FROM issues i
+JOIN classifications c ON c.issue_number = i.number
+JOIN issue_closure_events e ON e.issue_number = i.number
+JOIN issue_pr_links l ON l.issue_number = i.number
+JOIN pull_request_fixes p ON p.pr_number = l.pr_number
+JOIN release_commits rc ON rc.tag = ?
+WHERE
+  e.state_reason = 'COMPLETED'
+  AND p.merged = 1
+  AND p.merged_at IS NOT NULL
+  AND rc.committed_at IS NOT NULL
+  AND p.merged_at <= rc.committed_at
+ORDER BY i.closed_at DESC
+`);
+
+export function verifiedFixedForRelease(tag: string): JoinedIssue[] {
+  return verifiedFixedForReleaseStmt.all(tag) as unknown as JoinedIssue[];
+}
+
+const unverifiedClosedForReleaseStmt = db.prepare(`
+SELECT DISTINCT i.*,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+FROM issues i
+JOIN classifications c ON c.issue_number = i.number
+JOIN releases target ON target.tag = ?
+WHERE
+  target.published_at IS NOT NULL
+  AND i.closed_at IS NOT NULL
+  AND i.closed_at >= target.published_at
+  AND i.closed_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+        '9999-12-31T23:59:59Z'
+      )
+  AND NOT EXISTS (
+    SELECT 1
+    FROM issue_closure_events e
+    JOIN issue_pr_links l ON l.issue_number = e.issue_number
+    JOIN pull_request_fixes p ON p.pr_number = l.pr_number
+    JOIN release_commits rc ON rc.tag = target.tag
+    WHERE e.issue_number = i.number
+      AND e.state_reason = 'COMPLETED'
+      AND p.merged = 1
+      AND p.merged_at IS NOT NULL
+      AND rc.committed_at IS NOT NULL
+      AND p.merged_at <= rc.committed_at
+  )
+ORDER BY i.closed_at DESC
+`);
+
+export function unverifiedClosedForRelease(tag: string): JoinedIssue[] {
+  return unverifiedClosedForReleaseStmt.all(tag) as unknown as JoinedIssue[];
+}
+
 // Issues OPENED during a release's reign — the "regressions introduced" signal.
 // An issue counts as opened-during-R if its created_at falls inside R's reign
 // window. Mirror of closedDuringReign. We don't currently penalise the score

@@ -70,6 +70,8 @@ import {
   upsertClassification,
   upsertIssue,
   upsertRelease,
+  unverifiedClosedForRelease,
+  verifiedFixedForRelease,
 } from './db';
 
 const BACKFILL_FLAG = 'backfill_completed_at';
@@ -387,6 +389,8 @@ export async function refresh(): Promise<{
       }
       const openedReign = openedDuringReign(rel.tag);
       const closedReign = closedDuringReign(rel.tag);
+      const verifiedFixed = verifiedFixedForRelease(rel.tag);
+      const unverifiedClosed = unverifiedClosedForRelease(rel.tag);
       const debtInputs = attributed.map((row) => ({
           ...classify(row),
           issueNumber: row.number,
@@ -400,10 +404,10 @@ export async function refresh(): Promise<{
       const activeDebt = explainOpenDebtLoad(debtInputs);
       // core-serious counts: kept for the informational API/DB stats.
       const openedSerious = countCoreSerious(openedReign);
-      const closedSerious = countCoreSerious(closedReign);
+      const closedSerious = countCoreSerious(verifiedFixed);
       // visible-bug ("felt") reach-weighted load drives the score's regression term.
       const feltOpenedWeight = feltLoad(openedReign.map(classify));
-      const feltClosedWeight = feltLoad(closedReign.map(classify));
+      const feltClosedWeight = feltLoad(verifiedFixed.map(classify));
       // WHAT it breaks: still-open visible regressions introduced during the reign,
       // grouped by named surface (Discord, Ollama, …) for the UI.
       const brokenSurfaces = JSON.stringify(
@@ -465,7 +469,10 @@ export async function refresh(): Promise<{
           .filter(isOpenFeltSeriousIssue)
           .slice(0, 25)
           .map((row) => summarizeIssue(row)),
-        closedDuringReign: closedReign
+        verifiedFixed: verifiedFixed
+          .slice(0, 25)
+          .map((row) => summarizeIssue(row)),
+        unverifiedClosed: unverifiedClosed
           .slice(0, 25)
           .map((row) => summarizeIssue(row)),
       };
@@ -476,6 +483,10 @@ export async function refresh(): Promise<{
         breakingCount: rel.breaking_count,
         hoursToNextStable: rel.hours_to_next_stable,
         hasHotfixSuccessor: input.hasHotfixSuccessor,
+        fixProvenance: {
+          verifiedFixedCount: verifiedFixed.length,
+          unverifiedClosedCount: unverifiedClosed.length,
+        },
       };
       return { rel, conf, input, debtEvidence, gateEvidence, neg, pos, openedSerious, closedSerious, brokenSurfaces };
     });

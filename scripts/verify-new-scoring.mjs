@@ -4,7 +4,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { cveDecayLoad, feltLoad, installConfidence, openDebtLoad, pickRecommended } from '../src/lib/score.ts';
 import {
-  listReleasesDb, closedDuringReign, openedDuringReign, issueCountForVersion, issuesForVersion, listAdvisories,
+  listReleasesDb, openedDuringReign, issueCountForVersion, issuesForVersion, listAdvisories, verifiedFixedForRelease,
 } from '../src/lib/db.ts';
 import { computeHoursToNextStable, hasHotfixSuccessor } from '../src/lib/releaseNotes.ts';
 import { matchesRange, stableDistance } from '../src/lib/versionMatch.ts';
@@ -46,7 +46,7 @@ const scored = releases.map((rel, idx) => {
     betaCount: rel.beta_count,
     breakingCount: rel.breaking_count,
     feltOpenedWeight: feltLoad(openedDuringReign(rel.tag).map(classify)),
-    feltClosedWeight: feltLoad(closedDuringReign(rel.tag).map(classify)),
+    feltClosedWeight: feltLoad(verifiedFixedForRelease(rel.tag).map(classify)),
     verifiedDebtWeight: debt.verified,
     carryoverDebtWeight: debt.carryover,
     staleDebtWeight: debt.stale,
