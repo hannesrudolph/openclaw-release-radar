@@ -14,6 +14,9 @@ export const knownProofStatuses = new Set([
   'unknown',
 ]);
 
+const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
+const fullCommitOidRe = /^[0-9a-f]{40}$/;
+
 export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10 }) {
   const releases = reader.listReleases(limit);
   const failures = [];
@@ -67,6 +70,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     for (const row of proofRows) {
       expect(failures, tag, knownProofStatuses.has(row.status), `unknown proof status ${row.status} for issue #${row.issue_number}`);
       const evidence = parseJson(row.evidence_json, {});
+      verifyProofEvidenceShape({ failures, tag, row, evidence });
       if (row.status === 'fixed_in_release') {
         expect(failures, tag, evidence.hasReachableClosingPr === true || evidence.hasReachableFixCommit === true,
           `fixed_in_release issue #${row.issue_number} must have reachable PR or commit evidence`);
@@ -129,6 +133,76 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   return { releases, rows, failures };
 }
 
+function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
+  expect(failures, tag, isObject(evidence),
+    `proof issue #${row.issue_number} evidence_json must parse to an object`);
+  if (!isObject(evidence)) return;
+
+  if ('stateReasons' in evidence) {
+    expect(failures, tag, isStringArray(evidence.stateReasons),
+      `proof issue #${row.issue_number} stateReasons must be a string array`);
+  }
+  for (const flag of ['hasReachableFixCommit', 'hasNotReachableFixCommit']) {
+    expect(failures, tag, typeof evidence[flag] === 'boolean',
+      `proof issue #${row.issue_number} ${flag} must be boolean`);
+  }
+
+  const reachableFixCommits = normalizeStringArray(evidence.reachableFixCommits);
+  const notReachableFixCommits = normalizeStringArray(evidence.notReachableFixCommits);
+  const fixCommitProof = Array.isArray(evidence.fixCommitProof) ? evidence.fixCommitProof : [];
+
+  expect(failures, tag, Array.isArray(evidence.reachableFixCommits),
+    `proof issue #${row.issue_number} reachableFixCommits must be an array`);
+  expect(failures, tag, Array.isArray(evidence.notReachableFixCommits),
+    `proof issue #${row.issue_number} notReachableFixCommits must be an array`);
+  expect(failures, tag, Array.isArray(evidence.fixCommitProof),
+    `proof issue #${row.issue_number} fixCommitProof must be an array`);
+
+  verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'reachableFixCommits', commits: reachableFixCommits });
+  verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'notReachableFixCommits', commits: notReachableFixCommits });
+  expect(failures, tag, intersection(reachableFixCommits, notReachableFixCommits).length === 0,
+    `proof issue #${row.issue_number} reachable and not-reachable fix commit arrays must not overlap`);
+
+  const proofReachable = [];
+  const proofNotReachable = [];
+  for (const proof of fixCommitProof) {
+    expect(failures, tag, isObject(proof),
+      `proof issue #${row.issue_number} fixCommitProof entries must be objects`);
+    if (!isObject(proof)) continue;
+    expect(failures, tag, proof.issueNumber === row.issue_number,
+      `proof issue #${row.issue_number} fixCommitProof issueNumber (${proof.issueNumber}) must match proof row`);
+    expect(failures, tag, Number.isInteger(proof.sourceIssueNumber) && proof.sourceIssueNumber > 0,
+      `proof issue #${row.issue_number} fixCommitProof sourceIssueNumber must be a positive integer`);
+    expect(failures, tag, typeof proof.commitOid === 'string' && fullCommitOidRe.test(proof.commitOid),
+      `proof issue #${row.issue_number} fixCommitProof commitOid must be a full lowercase 40-hex SHA`);
+    expect(failures, tag, knownCommitProofStatuses.has(proof.status),
+      `proof issue #${row.issue_number} fixCommitProof has unknown status ${proof.status}`);
+    expect(failures, tag, proof.tagCommitOid == null || (typeof proof.tagCommitOid === 'string' && fullCommitOidRe.test(proof.tagCommitOid)),
+      `proof issue #${row.issue_number} fixCommitProof tagCommitOid must be null or full lowercase 40-hex SHA`);
+    expect(failures, tag, typeof proof.evidence === 'string' && proof.evidence.length > 0,
+      `proof issue #${row.issue_number} fixCommitProof evidence must be present`);
+    expect(failures, tag, typeof proof.snippet === 'string' && proof.snippet.length > 0,
+      `proof issue #${row.issue_number} fixCommitProof snippet must be present`);
+    if (proof.status === 'reachable' && typeof proof.commitOid === 'string') proofReachable.push(proof.commitOid);
+    if (proof.status === 'not_reachable' && typeof proof.commitOid === 'string') proofNotReachable.push(proof.commitOid);
+  }
+
+  expectArrayEqual(failures, tag, `proof issue #${row.issue_number} reachableFixCommits`, reachableFixCommits, uniqueSorted(proofReachable));
+  expectArrayEqual(failures, tag, `proof issue #${row.issue_number} notReachableFixCommits`, notReachableFixCommits, uniqueSorted(proofNotReachable));
+  expect(failures, tag, evidence.hasReachableFixCommit === (reachableFixCommits.length > 0),
+    `proof issue #${row.issue_number} hasReachableFixCommit must match reachableFixCommits`);
+  expect(failures, tag, evidence.hasNotReachableFixCommit === (notReachableFixCommits.length > 0),
+    `proof issue #${row.issue_number} hasNotReachableFixCommit must match notReachableFixCommits`);
+}
+
+function verifyCommitArray({ failures, tag, issueNumber, name, commits }) {
+  for (const commit of commits) {
+    expect(failures, tag, fullCommitOidRe.test(commit),
+      `proof issue #${issueNumber} ${name} entries must be full lowercase 40-hex SHAs`);
+  }
+  expectArrayEqual(failures, tag, `proof issue #${issueNumber} ${name}`, commits, uniqueSorted(commits));
+}
+
 function parseJson(raw, fallback) {
   try {
     return raw ? JSON.parse(raw) : fallback;
@@ -139,6 +213,32 @@ function parseJson(raw, fallback) {
 
 function expect(failures, tag, condition, message) {
   if (!condition) failures.push(`${tag}: ${message}`);
+}
+
+function expectArrayEqual(failures, tag, label, actual, expected) {
+  expect(failures, tag, actual.length === expected.length && actual.every((item, idx) => item === expected[idx]),
+    `${label} must equal sorted unique proof commits; got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
+}
+
+function isObject(value) {
+  return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isStringArray(value) {
+  return Array.isArray(value) && value.every((item) => typeof item === 'string');
+}
+
+function normalizeStringArray(value) {
+  return Array.isArray(value) ? value.filter((item) => typeof item === 'string') : [];
+}
+
+function uniqueSorted(values) {
+  return [...new Set(values)].sort();
+}
+
+function intersection(left, right) {
+  const rightSet = new Set(right);
+  return left.filter((item) => rightSet.has(item));
 }
 
 async function verifyApi({ apiBase, fetchJson, releases, failures }) {

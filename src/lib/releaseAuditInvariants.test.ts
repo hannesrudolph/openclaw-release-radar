@@ -21,6 +21,11 @@ function reader(overrides: Partial<{
       status: 'fixed_in_release',
       evidence_json: JSON.stringify({
         hasReachableClosingPr: true,
+        hasReachableFixCommit: false,
+        hasNotReachableFixCommit: false,
+        reachableFixCommits: [],
+        notReachableFixCommits: [],
+        fixCommitProof: [],
         stateReasons: ['COMPLETED'],
       }),
     }],
@@ -154,7 +159,14 @@ describe('verifyReleaseAudit', () => {
         proofRows: [{
           issue_number: 1,
           status: 'duplicate_to_open_canonical',
-          evidence_json: JSON.stringify({ canonicalResolution: { terminalIssue: { state: 'closed' } } }),
+          evidence_json: JSON.stringify({
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            canonicalResolution: { terminalIssue: { state: 'closed' } },
+          }),
         }],
         audit: {
           gate_evidence_json: JSON.stringify({
@@ -170,5 +182,65 @@ describe('verifyReleaseAudit', () => {
     });
     assert.equal(result.failures.length, 1);
     assert.match(result.failures[0], /open terminal/);
+  });
+
+  it('fails when commit proof uses short hashes or mismatched flags', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'fixed_in_release',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: ['cfeaf6897fd8'],
+            notReachableFixCommits: [],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: 'cfeaf6897fd8',
+              status: 'reachable',
+              tagCommitOid: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+              evidence: 'fix_commit_in_release_history',
+              snippet: 'Fix evidence commit cfeaf6897fd8',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /40-hex SHA/.test(failure)));
+    assert.ok(result.failures.some((failure) => /hasReachableFixCommit/.test(failure)));
+  });
+
+  it('fails when reachable commit arrays do not match proof entry statuses', async () => {
+    const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'fixed_in_release',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: true,
+            hasNotReachableFixCommit: false,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: commit,
+              status: 'reachable',
+              tagCommitOid: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+              evidence: 'fix_commit_in_release_history',
+              snippet: 'Fix evidence commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /reachableFixCommits must equal/.test(failure)));
   });
 });
