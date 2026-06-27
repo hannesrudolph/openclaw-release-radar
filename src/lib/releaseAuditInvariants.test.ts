@@ -64,7 +64,17 @@ describe('verifyReleaseAudit', () => {
       const explanation = {
         title: 'Why not 10?',
         positives: ['The release is eligible and recommended.'],
+        positiveDetails: [{
+          code: 'release_recommended',
+          text: 'The release is eligible and recommended.',
+        }],
         limits: ['One closed issue still needs release proof.'],
+        limitDetails: [{
+          code: 'closed_issues_not_counted_as_release_fixes',
+          text: 'One closed issue still needs release proof.',
+          metrics: { notCountedClosedCount: 1 },
+          issueRefs: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
+        }],
         verdict: 'This means the release looks safe to install, but the audit still contains evidence.',
       };
       if (url.endsWith('/api/status')) {

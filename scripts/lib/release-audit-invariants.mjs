@@ -406,6 +406,22 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
     `${source} score explanation positives must be a non-empty string array`);
   expect(failures, tag, isStringArray(explanation.limits) && explanation.limits.length > 0,
     `${source} score explanation limits must be a non-empty string array`);
+  verifyExplanationDetails({
+    failures,
+    tag,
+    source,
+    label: 'positiveDetails',
+    details: explanation.positiveDetails,
+    text: explanation.positives,
+  });
+  verifyExplanationDetails({
+    failures,
+    tag,
+    source,
+    label: 'limitDetails',
+    details: explanation.limitDetails,
+    text: explanation.limits,
+  });
   expect(failures, tag, typeof explanation.verdict === 'string' && explanation.verdict.length > 0,
     `${source} score explanation verdict must be present`);
   if (recommended) {
@@ -419,5 +435,45 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
   }
   for (const line of [...explanation.positives, ...explanation.limits]) {
     expect(failures, tag, !/\.\.\.\./.test(line), `${source} score explanation lines must not contain four-dot truncation`);
+  }
+}
+
+function verifyExplanationDetails({ failures, tag, source, label, details, text }) {
+  expect(failures, tag, Array.isArray(details),
+    `${source} score explanation ${label} must be an array`);
+  if (!Array.isArray(details)) return;
+  expect(failures, tag, details.length === text.length,
+    `${source} score explanation ${label} length (${details.length}) must match text length (${text.length})`);
+  for (let idx = 0; idx < details.length; idx++) {
+    const detail = details[idx];
+    expect(failures, tag, isObject(detail),
+      `${source} score explanation ${label}[${idx}] must be an object`);
+    if (!isObject(detail)) continue;
+    expect(failures, tag, typeof detail.code === 'string' && /^[a-z0-9_]+$/.test(detail.code),
+      `${source} score explanation ${label}[${idx}] code must be snake_case`);
+    expect(failures, tag, detail.text === text[idx],
+      `${source} score explanation ${label}[${idx}] text must match prose line`);
+    if ('metrics' in detail) {
+      expect(failures, tag, isObject(detail.metrics),
+        `${source} score explanation ${label}[${idx}] metrics must be an object when present`);
+    }
+    if ('buckets' in detail) {
+      expect(failures, tag, isObject(detail.buckets),
+        `${source} score explanation ${label}[${idx}] buckets must be an object when present`);
+    }
+    if ('issueRefs' in detail) {
+      expect(failures, tag, Array.isArray(detail.issueRefs),
+        `${source} score explanation ${label}[${idx}] issueRefs must be an array when present`);
+      if (Array.isArray(detail.issueRefs)) {
+        for (const issue of detail.issueRefs) {
+          expect(failures, tag, isObject(issue) && Number.isInteger(issue.number) && issue.number > 0,
+            `${source} score explanation ${label}[${idx}] issueRefs entries must include a positive issue number`);
+          expect(failures, tag, isObject(issue) && typeof issue.title === 'string' && issue.title.length > 0,
+            `${source} score explanation ${label}[${idx}] issueRefs entries must include a title`);
+          expect(failures, tag, isObject(issue) && (issue.url == null || typeof issue.url === 'string'),
+            `${source} score explanation ${label}[${idx}] issueRefs url must be null or string`);
+        }
+      }
+    }
   }
 }

@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { __releaseScoringTest } from './releaseScoring.ts';
+import { buildReleaseScoreRun, __releaseScoringTest } from './releaseScoring.ts';
 
 describe('release score explanations', () => {
   it('truncates issue titles at useful boundaries', () => {
@@ -16,5 +16,30 @@ describe('release score explanations', () => {
       __releaseScoringTest.shortIssueTitle({ title: '[Bug]: web_search providers stopped working after upgrade' }),
       'web_search providers stopped working after upgrade',
     );
+  });
+
+  it('includes machine-readable detail entries beside prose', () => {
+    const run = buildReleaseScoreRun({
+      releaseLimit: 1,
+      allFetchedTags: ['v2026.6.10'],
+      stableTagsNewestFirst: ['v2026.6.10'],
+      nowForRelease: (release) => Date.parse(release.scored_at ?? '2026-06-27T22:00:00Z'),
+    });
+    const explanation = run.scored[0].explanation;
+
+    assert.equal(explanation.limits.length, explanation.limitDetails.length);
+    assert.equal(explanation.positives.length, explanation.positiveDetails.length);
+    assert.ok(explanation.limitDetails.every((detail, idx) => detail.text === explanation.limits[idx]));
+    assert.ok(explanation.positiveDetails.every((detail, idx) => detail.text === explanation.positives[idx]));
+
+    const closure = explanation.limitDetails.find((detail) => detail.code === 'closed_issues_not_counted_as_release_fixes');
+    assert.ok(closure);
+    assert.equal(typeof closure.metrics?.notCountedClosedCount, 'number');
+    assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
+
+    const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
+    assert.ok(carryover);
+    assert.ok((carryover.issueRefs?.length ?? 0) > 0);
+    assert.ok(carryover.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
   });
 });

@@ -63,8 +63,26 @@ export interface ReleaseScoreRun {
 export interface ScoreExplanation {
   title: string;
   positives: string[];
+  positiveDetails: ScoreExplanationDetail[];
   limits: string[];
+  limitDetails: ScoreExplanationDetail[];
   verdict: string;
+}
+
+export interface ScoreExplanationDetail {
+  code: string;
+  text: string;
+  metrics?: Record<string, number | string | boolean | null>;
+  buckets?: Record<string, number>;
+  issueRefs?: ScoreExplanationIssueRef[];
+}
+
+export interface ScoreExplanationIssueRef {
+  number: number;
+  title: string;
+  url: string | null;
+  state?: string | null;
+  status?: string | null;
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -305,7 +323,7 @@ function scoreRelease(args: {
     rel,
     conf,
     input,
-    explanation: { title: 'Why not 10?', positives: [], limits: [], verdict: '' },
+    explanation: { title: 'Why not 10?', positives: [], positiveDetails: [], limits: [], limitDetails: [], verdict: '' },
     debtEvidence,
     gateEvidence,
     neg,
@@ -329,62 +347,179 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const stale = Array.isArray(evidence.staleDebt) ? evidence.staleDebt : [];
   const verified = Array.isArray(evidence.verifiedDebt) ? evidence.verifiedDebt : [];
   const limits: string[] = [];
+  const limitDetails: ScoreExplanationDetail[] = [];
+  const addLimit = (
+    code: string,
+    text: string,
+    extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
+  ) => {
+    limits.push(text);
+    limitDetails.push({ code, text, ...extra });
+  };
 
   if (opened.length) {
-    const example = issueListText(openedStillOpen.length ? openedStillOpen : opened);
-    limits.push(
+    const examples = openedStillOpen.length ? openedStillOpen : opened;
+    const example = issueListText(examples);
+    addLimit(
+      'field_visible_reports_opened',
       `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.` +
       (example ? ` Examples: ${example}.` : ''),
+      {
+        metrics: { openedCount: opened.length, stillOpenCount: openedStillOpen.length },
+        issueRefs: issueRefs(examples),
+      },
     );
   }
 
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
-    limits.push(
+    addLimit(
+      'source_carryover_risk',
       `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${penaltyText(components.carryoverDebt)}.` +
       (example ? ` Top examples: ${example}.` : ''),
+      {
+        metrics: {
+          rawWeight: roundMetric(input.carryoverDebtWeight),
+          cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
+        },
+        issueRefs: issueRefs(carryover),
+      },
     );
   }
 
   if ((input.staleDebtWeight ?? 0) > 0) {
-    limits.push(`${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.`);
+    addLimit(
+      'stale_low_confidence_evidence',
+      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.`,
+      {
+        metrics: {
+          count: stale.length,
+          rawWeight: roundMetric(input.staleDebtWeight),
+          cappedPenalty: Math.abs(numberOrZero(components.staleDebt)),
+        },
+      },
+    );
   }
 
   const fix = gate.fixProvenance ?? {};
   const closureProof = fix.closureProof;
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
-    limits.push(
+    const buckets = proofBucketsExceptFixed(closureProof.byStatus);
+    addLimit(
+      'closed_issues_not_counted_as_release_fixes',
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.` +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
+      {
+        metrics: {
+          countedClosedCount: Number(closureProof.creditedCount ?? 0),
+          notCountedClosedCount: Number(closureProof.notCreditedCount ?? 0),
+          analyzedClosedCount: Number(closureProof.analyzedClosedCount ?? 0),
+        },
+        buckets,
+        issueRefs: issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release')),
+      },
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
-    limits.push(`${fix.unverifiedClosedCount} closed issues are not counted as fixes yet because release-tag reachability has not been analyzed for them.`);
+    addLimit(
+      'unverified_closed_fix_reachability',
+      `${fix.unverifiedClosedCount} closed issues are not counted as fixes yet because release-tag reachability has not been analyzed for them.`,
+      { metrics: { unverifiedClosedCount: Number(fix.unverifiedClosedCount ?? 0) } },
+    );
   }
 
   const artifact = gate.artifactVerification;
   if (artifact?.ciReportMismatch) {
-    limits.push(`The npm package is verified, but the linked full release evidence report is missing: ${artifact.ciReportMismatch}.`);
+    addLimit(
+      'missing_full_release_evidence_report',
+      `The npm package is verified, but the linked full release evidence report is missing: ${artifact.ciReportMismatch}.`,
+      { metrics: { ciReportMismatch: artifact.ciReportMismatch } },
+    );
   }
 
   if (!limits.length && !verified.length) {
-    limits.push('No field-blocker evidence is currently holding this release down; the remaining gap comes from the model ceiling and capped confidence signals.');
+    addLimit(
+      'model_ceiling_and_capped_confidence',
+      'No field-blocker evidence is currently holding this release down; the remaining gap comes from the model ceiling and capped confidence signals.',
+    );
   }
 
   const positives: string[] = [];
-  if (!verified.length) positives.push('No verified field-blocker debt is currently scoring against this release.');
+  const positiveDetails: ScoreExplanationDetail[] = [];
+  const addPositive = (
+    code: string,
+    text: string,
+    extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
+  ) => {
+    positives.push(text);
+    positiveDetails.push({ code, text, ...extra });
+  };
+  if (!verified.length) {
+    addPositive(
+      'no_verified_field_blocker_debt',
+      'No verified field-blocker debt is currently scoring against this release.',
+      { metrics: { verifiedDebtCount: verified.length } },
+    );
+  }
   const checks = gate.releaseChecks;
-  if (checks?.failure === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed checks.`);
-  if (artifact?.verified) positives.push('The npm package integrity, tarball, and release SHA match.');
-  if (recommended) positives.push('The release is eligible and recommended.');
-  else if (result.conf.status === 'eligible') positives.push('The release passed hard install gates.');
+  if (checks?.failure === 0 && checks?.success > 0) {
+    addPositive(
+      'release_checks_passed',
+      `${checks.success} release checks passed with no failed checks.`,
+      { metrics: { success: Number(checks.success ?? 0), failure: Number(checks.failure ?? 0), pending: Number(checks.pending ?? 0) } },
+    );
+  }
+  if (artifact?.verified) {
+    addPositive(
+      'artifact_verified',
+      'The npm package integrity, tarball, and release SHA match.',
+      { metrics: { artifactVerified: true, releaseShaMatches: artifact.releaseShaMatches === true } },
+    );
+  }
+  if (recommended) {
+    addPositive('release_recommended', 'The release is eligible and recommended.');
+  } else if (result.conf.status === 'eligible') {
+    addPositive('hard_gates_passed', 'The release passed hard install gates.');
+  }
 
   return {
     title: 'Why not 10?',
     positives,
+    positiveDetails,
     limits,
+    limitDetails,
     verdict: installVerdictText(result.conf.status, recommended),
   };
+}
+
+function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
+  return items
+    .slice(0, limit)
+    .map((item) => ({
+      number: Number(item?.number ?? item?.issue?.number),
+      title: shortIssueTitle(item?.issue ?? item),
+      url: item?.url ?? item?.issue?.url ?? null,
+      state: item?.state ?? item?.issue?.state ?? null,
+      status: item?.status ?? null,
+    }))
+    .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function proofBucketsExceptFixed(byStatus: unknown): Record<string, number> {
+  if (!byStatus || typeof byStatus !== 'object' || Array.isArray(byStatus)) return {};
+  const entries = Object.entries(byStatus as Record<string, unknown>)
+    .filter(([status]) => status !== 'fixed_in_release')
+    .map(([status, count]) => [status, Number(count)] as const)
+    .filter(([, count]) => Number.isFinite(count) && count > 0);
+  return Object.fromEntries(entries);
+}
+
+function numberOrZero(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : 0;
+}
+
+function roundMetric(value: unknown): number {
+  return Math.round(numberOrZero(value) * 1000) / 1000;
 }
 
 function installVerdictText(status: string, recommended: boolean): string {
