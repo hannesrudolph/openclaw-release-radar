@@ -5,6 +5,7 @@ import {
   pickRecommended,
   bandFor,
   cveDecayLoad,
+  explainOpenDebtLoad,
   feltLoad,
   openDebtLoad,
   REC_THRESHOLD,
@@ -319,6 +320,58 @@ describe('openDebtLoad — current issue debt', () => {
       }),
     ]);
     assert.ok(clustered.verified > 0);
+  });
+
+  it('does not promote old duplicate clusters to release-local verified debt', () => {
+    const clustered = openDebtLoad([
+      dc({
+        issueNumber: 211,
+        duplicateCluster: 'old-root-fresh-dupe',
+        author: 'alice',
+        labels: ['P0'],
+        releaseLocal: false,
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+      }),
+      dc({
+        issueNumber: 212,
+        duplicateCluster: 'old-root-fresh-dupe',
+        author: 'bob',
+        labels: ['P0'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+      }),
+    ]);
+    assert.equal(clustered.verified, 0);
+    assert.ok(clustered.carryover > 0);
+  });
+
+  it('keeps one debt entry per duplicate cluster across tiers', () => {
+    const explanation = explainOpenDebtLoad([
+      dc({
+        issueNumber: 213,
+        duplicateCluster: 'mixed-tier-cluster',
+        labels: ['stale'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+      dc({
+        issueNumber: 214,
+        duplicateCluster: 'mixed-tier-cluster',
+        labels: [],
+        releaseLocal: false,
+        functionality: 'core',
+        severity: 'critical',
+        scope: 'broad',
+      }),
+    ]);
+    assert.equal(explanation.evidence.filter((item) => item.duplicateCluster === 'mixed-tier-cluster').length, 1);
+    assert.equal(explanation.evidence.find((item) => item.duplicateCluster === 'mixed-tier-cluster')?.tier, 'carryover');
   });
 
   it('uses unique human commenters as field/community evidence for source-repro findings', () => {

@@ -37,7 +37,8 @@ The normal score starts from a base value, then applies bounded components:
 
 Issue evidence is cluster-aware:
 
-- Duplicate clusters are deduplicated.
+- Duplicate clusters are deduplicated globally across debt tiers.
+- A duplicate cluster only counts as release-local when every report in that cluster is release-local; fresh duplicate reports can add field breadth to an older bug, but they do not turn that older carryover bug into a new release-local blocker.
 - Independent human reporters increase field/community confidence.
 - Unique human commenters increase field/community confidence. Refresh cursor-paginates issue comments until exhausted, so commenter counts and comment-derived fix proof are not capped to the most recent page.
 - Reactions only provide a small weight lift; they never make a source-only issue verified.

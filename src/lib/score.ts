@@ -135,6 +135,7 @@ interface IssueSignalFields {
   clusterContributorCommenterCount?: number;
   clusterReactionTotal?: number;
   clusterPositiveReactionCount?: number;
+  clusterReleaseLocal?: boolean;
   installImpactClass?: string;
 }
 
@@ -181,6 +182,7 @@ export interface DebtEvidenceItem {
   positiveReactionCount?: number;
   commenterScanTruncated?: boolean;
   installImpactClass?: string;
+  clusterReleaseLocal?: boolean;
 }
 
 export interface DebtExplanation {
@@ -249,6 +251,7 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
     contributorCommenters: number;
     reactions: number;
     positiveReactions: number;
+    releaseLocalValues: boolean[];
   }>();
   items.forEach((item, index) => {
     const key = issueKey(item, index);
@@ -260,6 +263,7 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
       contributorCommenters: 0,
       reactions: 0,
       positiveReactions: 0,
+      releaseLocalValues: [],
     };
     if (!isBotIssue(item) && item.author) current.reporters.add(item.author);
     current.comments += Math.max(0, item.comments ?? 0);
@@ -268,6 +272,8 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
     current.contributorCommenters += Math.max(0, item.contributorCommenterCount ?? 0);
     current.reactions += Math.max(0, item.reactionTotal ?? 0);
     current.positiveReactions += Math.max(0, item.positiveReactionCount ?? 0);
+    const releaseLocal = (item as IssueSignalFields & { releaseLocal?: boolean }).releaseLocal;
+    if (typeof releaseLocal === 'boolean') current.releaseLocalValues.push(releaseLocal);
     stats.set(key, current);
   });
   return items.map((item, index) => {
@@ -281,6 +287,9 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
       clusterContributorCommenterCount: current?.contributorCommenters ?? 0,
       clusterReactionTotal: current?.reactions ?? 0,
       clusterPositiveReactionCount: current?.positiveReactions ?? 0,
+      clusterReleaseLocal: current?.releaseLocalValues.length
+        ? current.releaseLocalValues.every(Boolean)
+        : undefined,
     };
   });
 }
@@ -380,7 +389,7 @@ function isSourceOnlySignal(item: IssueSignalFields & { labels?: string[] }): bo
 }
 
 function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
-  const releaseSpecific = item.releaseLocal === true;
+  const releaseSpecific = (item.clusterReleaseLocal ?? item.releaseLocal) === true;
   const defaultPathImpact =
     item.functionality === 'core' &&
     (item.scope === 'broad' || item.affectedUsers === 'many' || hasAnyLabel(item, ['P0', 'beta-blocker']));
@@ -401,22 +410,15 @@ function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
 // become hard debt. Source-only/static findings remain visible as capped context.
 export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanation {
   const enrichedItems = enrichIssueSignals(items);
-  const buckets = {
-    verified: new Map<string, number>(),
-    carryover: new Map<string, number>(),
-    stale: new Map<string, number>(),
-  };
   const evidenceByKey = new Map<string, DebtEvidenceItem>();
   for (const [index, item] of enrichedItems.entries()) {
     const weight = issueDebtWeight(item);
     if (weight <= 0) continue;
     const tier = classifyDebtTier(item);
-    const bucket = buckets[tier];
     const key = issueKey(item, index);
-    const previous = bucket.get(key) ?? 0;
-    if (weight > previous) {
-      bucket.set(key, weight);
-      evidenceByKey.set(`${tier}:${key}`, {
+    const previous = evidenceByKey.get(key);
+    if (!previous || shouldReplaceDebtEvidence({ tier, weight }, previous)) {
+      evidenceByKey.set(key, {
         issueNumber: item.issueNumber,
         duplicateCluster: item.duplicateCluster,
         tier,
@@ -431,18 +433,31 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         positiveReactionCount: item.clusterPositiveReactionCount,
         commenterScanTruncated: item.commenterScanTruncated === true || item.commenterScanTruncated === 1,
         installImpactClass: installImpactClass(item),
+        clusterReleaseLocal: item.clusterReleaseLocal,
       });
     }
   }
+  const evidence = [...evidenceByKey.values()];
   const loads = {
-    verified: [...buckets.verified.values()].reduce((sum, weight) => sum + weight, 0),
-    carryover: [...buckets.carryover.values()].reduce((sum, weight) => sum + weight, 0),
-    stale: [...buckets.stale.values()].reduce((sum, weight) => sum + weight, 0),
+    verified: evidence.filter((item) => item.tier === 'verified').reduce((sum, item) => sum + item.weight, 0),
+    carryover: evidence.filter((item) => item.tier === 'carryover').reduce((sum, item) => sum + item.weight, 0),
+    stale: evidence.filter((item) => item.tier === 'stale').reduce((sum, item) => sum + item.weight, 0),
   };
   return {
     loads,
-    evidence: [...evidenceByKey.values()].sort((a, b) => b.weight - a.weight),
+    evidence: evidence.sort((a, b) => b.weight - a.weight),
   };
+}
+
+const DEBT_TIER_RANK: Record<keyof DebtLoads, number> = { verified: 3, carryover: 2, stale: 1 };
+
+function shouldReplaceDebtEvidence(
+  candidate: Pick<DebtEvidenceItem, 'tier' | 'weight'>,
+  previous: Pick<DebtEvidenceItem, 'tier' | 'weight'>,
+): boolean {
+  const rankDiff = DEBT_TIER_RANK[candidate.tier] - DEBT_TIER_RANK[previous.tier];
+  if (rankDiff !== 0) return rankDiff > 0;
+  return candidate.weight > previous.weight;
 }
 
 export function openDebtLoad(items: DebtClassification[]): DebtLoads {
