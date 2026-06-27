@@ -68,6 +68,7 @@ export interface ScoreExplanation {
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
+const SHORT_ISSUE_TITLE_LENGTH = 110;
 
 export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseScoreRun {
   const releases = options.releases ?? listReleasesDb(options.releaseLimit ?? 20);
@@ -441,7 +442,7 @@ function issueRef(issue: any): string {
 
 function shortIssueTitle(issue: any): string {
   const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
-  return title.length > 88 ? `${title.slice(0, 85)}...` : title;
+  return truncateAtWordBoundary(title, SHORT_ISSUE_TITLE_LENGTH);
 }
 
 function penaltyText(value: unknown): string {
@@ -449,6 +450,21 @@ function penaltyText(value: unknown): string {
   const abs = Math.abs(value);
   return `a ${abs} point penalty`;
 }
+
+function truncateAtWordBoundary(text: string, maxLength: number): string {
+  if (text.length <= maxLength) return text;
+  const suffix = '...';
+  const limit = Math.max(0, maxLength - suffix.length);
+  const slice = text.slice(0, limit).trimEnd();
+  const boundary = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf('/'), slice.lastIndexOf('-'));
+  if (boundary >= Math.floor(limit * 0.65)) return `${slice.slice(0, boundary).trimEnd()}${suffix}`;
+  return `${slice}${suffix}`;
+}
+
+export const __releaseScoringTest = {
+  shortIssueTitle,
+  truncateAtWordBoundary,
+};
 
 function isCoreSerious(classification: IssueClassification): boolean {
   return classification.sentiment === 'negative' &&

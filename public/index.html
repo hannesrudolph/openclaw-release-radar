@@ -1661,7 +1661,17 @@ function scoreSignalSummary(local) {
 
 function shortIssueTitle(issue) {
   const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
-  return title.length > 88 ? `${title.slice(0, 85)}...` : title;
+  return truncateAtWordBoundary(title, 110);
+}
+
+function truncateAtWordBoundary(text, maxLength) {
+  if (text.length <= maxLength) return text;
+  const suffix = '...';
+  const limit = Math.max(0, maxLength - suffix.length);
+  const slice = text.slice(0, limit).trimEnd();
+  const boundary = Math.max(slice.lastIndexOf(' '), slice.lastIndexOf('/'), slice.lastIndexOf('-'));
+  if (boundary >= Math.floor(limit * 0.65)) return `${slice.slice(0, boundary).trimEnd()}${suffix}`;
+  return `${slice}${suffix}`;
 }
 
 function issueRef(issue) {

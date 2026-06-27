@@ -38,6 +38,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /structured\.limits/);
   });
 
+  it('issue title truncation is word-boundary aware in the UI fallback', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    assert.match(html, /function truncateAtWordBoundary/);
+    assert.doesNotMatch(html, /slice\(0,\s*85\)/);
+  });
+
   it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {
     const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
     assert.match(script, /--allow-overwrite-local-releases/);
