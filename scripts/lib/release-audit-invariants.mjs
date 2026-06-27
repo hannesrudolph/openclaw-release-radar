@@ -220,6 +220,20 @@ function expectArrayEqual(failures, tag, label, actual, expected) {
     `${label} must equal sorted unique proof commits; got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
 }
 
+function expectJsonEqual(failures, tag, message, actual, expected) {
+  expect(failures, tag, stableJson(actual) === stableJson(expected), message);
+}
+
+function stableJson(value) {
+  return JSON.stringify(sortJson(value));
+}
+
+function sortJson(value) {
+  if (Array.isArray(value)) return value.map(sortJson);
+  if (!isObject(value)) return value;
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortJson(value[key])]));
+}
+
 function isObject(value) {
   return !!value && typeof value === 'object' && !Array.isArray(value);
 }
@@ -332,6 +346,18 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       recommended: release.recommended === 1,
       source: 'review',
     });
+    if (releaseApi) {
+      expectJsonEqual(failures, release.tag, 'releases explanation must match review explanation',
+        releaseApi.explanation, review.local?.components?.explanation);
+    }
+    if (publicRelease) {
+      expectJsonEqual(failures, release.tag, 'public explanation must match review explanation',
+        publicRelease.explanation, review.local?.components?.explanation);
+    }
+    if (comparison?.local) {
+      expectJsonEqual(failures, release.tag, 'comparison local explanation must match review explanation',
+        comparison.local.components?.explanation, review.local?.components?.explanation);
+    }
 
     const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;

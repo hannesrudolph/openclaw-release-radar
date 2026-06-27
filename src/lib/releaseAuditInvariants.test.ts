@@ -114,6 +114,7 @@ describe('verifyReleaseAudit', () => {
           releases: [{
             tag: 'v1',
             local: {
+              components: { explanation },
               gateEvidence: {
                 fixProvenance: {
                   closureProof: { creditedCount: 1, notCreditedCount: 0 },
