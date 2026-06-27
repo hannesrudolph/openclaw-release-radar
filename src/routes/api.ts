@@ -235,7 +235,7 @@ api.get('/comparison', (_req, res) => {
         modelVersion: audit?.score_model_version ?? null,
         components: parseJson(audit?.components_json, null),
         input: parseJson(audit?.input_json, null),
-        gateEvidence: parseJson(audit?.gate_evidence_json, null),
+        gateEvidence: enrichedGateEvidence(release.tag, parseJson(audit?.gate_evidence_json, null)),
       },
       upstream,
       delta: {
@@ -260,17 +260,7 @@ api.get('/releases/:tag/review', (req, res) => {
   const snapshot = latestComparisonSnapshot();
   const upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   const audit = getReleaseScoreAudit(tag);
-  const gateEvidence = parseJson(audit?.gate_evidence_json, null) as any;
-  const closureProof = closureProofPayload(tag);
-  if (gateEvidence && closureProof) {
-    gateEvidence.fixProvenance ??= {};
-    gateEvidence.fixProvenance.closureProof = closureProof;
-    gateEvidence.fixProvenance.releaseFixCredit = {
-      countedClosedCount: closureProof.creditedCount,
-      notCountedClosedCount: closureProof.notCreditedCount,
-      analyzedClosedCount: closureProof.analyzedClosedCount,
-    };
-  }
+  const gateEvidence = enrichedGateEvidence(tag, parseJson(audit?.gate_evidence_json, null));
   res.json({
     tag,
     local: {
@@ -292,6 +282,20 @@ api.get('/releases/:tag/review', (req, res) => {
     upstream: upstream ? { ...upstream, snapshot } : null,
   });
 });
+
+function enrichedGateEvidence(tag: string, gateEvidence: any) {
+  const closureProof = closureProofPayload(tag);
+  if (gateEvidence && closureProof) {
+    gateEvidence.fixProvenance ??= {};
+    gateEvidence.fixProvenance.closureProof = closureProof;
+    gateEvidence.fixProvenance.releaseFixCredit = {
+      countedClosedCount: closureProof.creditedCount,
+      notCountedClosedCount: closureProof.notCreditedCount,
+      analyzedClosedCount: closureProof.analyzedClosedCount,
+    };
+  }
+  return gateEvidence;
+}
 
 function closureProofPayload(tag: string) {
   const summaryRows = closureProofSummary(tag);

@@ -44,6 +44,23 @@ describe('verifyReleaseAudit', () => {
         return { refreshing: false, lastError: null, lastRefreshAt: 't', lastScoredAt: 't' };
       }
       if (url.endsWith('/api/public')) return { repo: 'x/y', releases: [] };
+      if (url.endsWith('/api/comparison')) {
+        return {
+          releases: [{
+            tag: 'v1',
+            local: {
+              gateEvidence: {
+                fixProvenance: {
+                  closureProof: { creditedCount: 1, notCreditedCount: 0 },
+                  releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+                },
+              },
+            },
+            upstream: null,
+            delta: { score: null, negativeIssues: null },
+          }],
+        };
+      }
       if (url.endsWith('/api/releases/v1/review')) {
         return {
           local: {

@@ -138,7 +138,14 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('comparison'), 'public payload must not include comparison data');
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('upstream'), 'public payload must not include upstream data');
 
+  const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
+  const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
+
   for (const release of releases) {
+    const comparison = comparisonByTag.get(release.tag);
+    expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
+      'comparison payload must include local, upstream, and delta objects');
+
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
     expect(failures, release.tag, review.local?.score === release.final_score,
       `review score (${review.local?.score}) must match DB final_score (${release.final_score})`);
@@ -159,6 +166,20 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         'releaseFixCredit analyzedClosedCount must equal credited + notCredited');
       expect(failures, release.tag, (proof.byStatus?.fixed_in_release ?? 0) === proof.creditedCount,
         'closureProof creditedCount must equal fixed_in_release bucket');
+
+      const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
+      const comparisonProof = comparisonFix?.closureProof;
+      const comparisonCredit = comparisonFix?.releaseFixCredit;
+      expect(failures, release.tag, !!comparisonProof && !!comparisonCredit,
+        'comparison local gateEvidence must expose closureProof and releaseFixCredit when review does');
+      expect(failures, release.tag, comparisonCredit?.countedClosedCount === credit.countedClosedCount,
+        'comparison countedClosedCount must match review countedClosedCount');
+      expect(failures, release.tag, comparisonCredit?.notCountedClosedCount === credit.notCountedClosedCount,
+        'comparison notCountedClosedCount must match review notCountedClosedCount');
+      expect(failures, release.tag, comparisonProof?.creditedCount === proof.creditedCount,
+        'comparison closureProof creditedCount must match review');
+      expect(failures, release.tag, comparisonProof?.notCreditedCount === proof.notCreditedCount,
+        'comparison closureProof notCreditedCount must match review');
     }
   }
 }
