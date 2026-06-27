@@ -4,6 +4,7 @@ export type ClosureProofStatus =
   | 'duplicate_or_superseded'
   | 'not_planned'
   | 'already_present_claim'
+  | 'main_only_claim'
   | 'no_code_proof'
   | 'no_timeline_event'
   | 'non_bug_neutral'
@@ -30,6 +31,7 @@ export interface ClosureProofResult {
 
 const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|broader .*tracker|belongs under)\b/i;
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|current main|tagged releases? already|already contains|already covered|implemented in current)\b/i;
+const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
 const CANONICAL_LINE_RE = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
 
@@ -79,10 +81,10 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
-  if (ALREADY_PRESENT_RE.test(combinedComments)) {
+  if (MAIN_ONLY_RE.test(combinedComments)) {
     return {
-      status: 'already_present_claim',
-      summary: 'Closure comment claims the behavior is already implemented, but no reachable closing PR proof is attached.',
+      status: 'main_only_claim',
+      summary: 'Closure claims the fix exists on current main, but also indicates this release does not contain it or lacks release proof.',
       evidence,
     };
   }
@@ -91,6 +93,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     return {
       status: 'duplicate_or_superseded',
       summary: 'Closed as duplicate, superseded, or moved under a broader tracker.',
+      evidence,
+    };
+  }
+
+  if (ALREADY_PRESENT_RE.test(combinedComments)) {
+    return {
+      status: 'already_present_claim',
+      summary: 'Closure comment claims the behavior is already implemented, but no reachable closing PR proof is attached.',
       evidence,
     };
   }
