@@ -44,6 +44,8 @@ describe('static scoring/UI contracts', () => {
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
+    assert.match(verifier, /buildReleaseScoreRun/);
+    assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);
     assert.match(verifier, /process\.exit\(1\)/);
     assert.match(readme, /npm run verify:score/);

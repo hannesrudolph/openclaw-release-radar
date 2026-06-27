@@ -1,27 +1,7 @@
 // Offline validation of the real scoring path against the real DB. This reads
 // existing classifications/evidence only; it does not call GitHub or the LLM.
 import { DatabaseSync } from 'node:sqlite';
-import {
-  cveDecayLoad,
-  feltLoad,
-  feltSignalMask,
-  installConfidence,
-  openDebtLoad,
-  pickRecommended,
-} from '../src/lib/score.ts';
-import { topBrokenSurfaces } from '../src/lib/surfaces.ts';
-import {
-  labelsForIssueAt,
-  listReleasesDb,
-  openedDuringReign,
-  issueCountForVersion,
-  issuesForVersion,
-  listAdvisories,
-  verifiedFixedForRelease,
-} from '../src/lib/db.ts';
-import { hasHotfixSuccessor } from '../src/lib/releaseNotes.ts';
-import { matchesRange, stableDistance } from '../src/lib/versionMatch.ts';
-import { applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from '../src/lib/labelOverrides.ts';
+import { buildReleaseScoreRun } from '../src/lib/releaseScoring.ts';
 
 const args = parseArgs(process.argv.slice(2));
 const limit = Number(args.limit ?? 10);
@@ -33,95 +13,29 @@ db.exec('PRAGMA query_only = ON');
 const allRel = db.prepare(
   `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`,
 ).all().map((r) => ({ tag: r.tag, published_at: r.published_at, prerelease: r.prerelease === 1 }));
-const commitStmt = db.prepare(`SELECT * FROM release_commits WHERE tag=?`);
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 const allFetchedTags = allRel.map((r) => r.tag);
 const stableTagsNewestFirst = allRel.filter((r) => !r.prerelease).map((r) => r.tag);
 
-const advisories = listAdvisories();
-const SEV = { critical: 4, high: 3, medium: 2, low: 1 };
-const cveFor = (tag) => {
-  const matching = advisories.filter((a) => matchesRange(tag, a.vulnerable_version_range));
-  return {
-    affected: matching.some((a) => (SEV[a.severity] ?? 0) >= 2),
-    load: cveDecayLoad(
-      matching
-        .map((a) => ({
-          severity: a.severity,
-          distance: stableDistance(tag, a.patched_versions, stableTagsNewestFirst),
-        }))
-        .filter((x) => x.distance <= 0),
-    ),
-  };
-};
-
-function safeLabels(json) {
-  try {
-    const value = JSON.parse(json);
-    return Array.isArray(value) ? value.filter((x) => typeof x === 'string') : [];
-  } catch {
-    return [];
-  }
-}
-
-function rowToClassification(row) {
-  const knownWorkaround = ['none', 'partial', 'confirmed', 'unknown'];
-  const workaroundStatus = knownWorkaround.includes(row.workaround_status)
-    ? row.workaround_status
-    : (row.has_workaround === 1 ? 'confirmed' : 'unknown');
-  return {
-    sentiment: row.sentiment,
-    severity: row.severity,
-    scope: row.scope,
-    functionality: row.functionality,
-    affectedUsers: row.affected_users,
-    workaroundStatus,
-    duplicateCluster: row.duplicate_cluster,
-    affectsVersion: row.affects_version,
-    confidence: row.confidence,
-    rationale: row.rationale ?? '',
-  };
-}
-
-const classify = (row, labels = safeLabels(row.labels)) =>
-  applyTitleIssueShapeHint(
-    applyLabelOverrides(applyTitleFunctionalityHint(rowToClassification(row), row.title), labels),
-    row.title,
-    labels,
-  );
-
-const isCoreSerious = (classification) =>
-  classification.sentiment === 'negative' &&
-  classification.functionality === 'core' &&
-  (classification.severity === 'critical' || classification.severity === 'high');
-
-const releaseLabelCutoff = (rel) => rel.published_at && rel.hours_to_next_stable != null
-  ? new Date(Date.parse(rel.published_at) + rel.hours_to_next_stable * 3_600_000).toISOString()
-  : null;
-
-const releases = listReleasesDb(limit);
-const scored = releases.map((rel, index) => scoreRelease(rel, index));
-const recommendedTag = pickRecommended(scored.map((s) => ({
-  tag: s.rel.tag,
-  status: s.conf.status,
-  score: s.conf.score,
-})));
-
 const failures = [];
+const { scored, recommendedTag } = buildReleaseScoreRun({
+  releaseLimit: limit,
+  allFetchedTags,
+  stableTagsNewestFirst,
+  nowForRelease: (rel) => scoredAtMillis(rel, auditStmt.get(rel.tag), failures),
+});
 const rows = scored.map((s) => {
   const audit = auditStmt.get(s.rel.tag);
-  const now = scoredAtMillis(s.rel, audit, failures);
-  const conf = installConfidence(s.input, now);
   const recommended = s.rel.tag === recommendedTag;
-  comparePersisted({ failures, rel: s.rel, audit, input: s.input, conf, recommended, stats: s.stats });
+  comparePersisted({ failures, result: s, audit, recommended });
   return {
     tag: s.rel.tag,
-    score: conf.score == null ? '-' : conf.score,
+    score: s.conf.score == null ? '-' : s.conf.score,
     persisted: s.rel.final_score == null ? '-' : s.rel.final_score,
-    band: conf.band,
-    status: conf.status,
+    band: s.conf.band,
+    status: s.conf.status,
     rec: recommended ? '*' : '',
-    reason: conf.reason,
+    reason: s.conf.reason,
   };
 });
 
@@ -136,109 +50,8 @@ if (check && failures.length > 0) {
 
 if (check) console.log(`Score verification passed for ${scored.length} release(s).`);
 
-function scoreRelease(rel, index) {
-  const labelCutoff = releaseLabelCutoff(rel);
-  const labelsFor = (row) => labelsForIssueAt(row.number, safeLabels(row.labels), labelCutoff);
-  const classifyAt = (row) => classify(row, labelsFor(row));
-  const countCoreSerious = (rows) => rows.reduce((count, row) => count + (isCoreSerious(classifyAt(row)) ? 1 : 0), 0);
-
-  const attributed = issuesForVersion(rel.tag);
-  const openedReign = openedDuringReign(rel.tag);
-  const verifiedFixed = verifiedFixedForRelease(rel.tag);
-  const verifiedFixedNumbers = new Set(verifiedFixed.map((row) => row.number));
-  const releaseStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
-
-  let negativeCount = 0;
-  let positiveCount = 0;
-  for (const row of attributed) {
-    const sentiment = classifyAt(row).sentiment;
-    if (sentiment === 'negative') negativeCount++;
-    else if (sentiment === 'positive') positiveCount++;
-  }
-
-  const scoreStateForIssue = (row) => {
-    if (verifiedFixedNumbers.has(row.number)) return 'closed';
-    return row.state === 'open' ? 'open' : 'closed-unverified';
-  };
-
-  const scoredIssue = (row) => ({
-    ...classifyAt(row),
-    issueNumber: row.number,
-    title: row.title,
-    duplicateCluster: row.duplicate_cluster,
-    author: row.author,
-    authorAssociation: row.author_association,
-    isBot: row.is_bot,
-    comments: row.comments,
-    uniqueHumanCommenterCount: row.unique_human_commenters,
-    maintainerCommenterCount: row.maintainer_commenters,
-    contributorCommenterCount: row.contributor_commenters,
-    commenterScanTruncated: row.commenter_scan_truncated,
-    reactionTotal: row.reaction_total,
-    positiveReactionCount: row.positive_reactions,
-    labels: labelsFor(row),
-  });
-
-  const debtInputs = attributed.map((row) => ({
-    ...scoredIssue(row),
-    issueNumber: row.number,
-    state: scoreStateForIssue(row),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    affectsVersion: row.affects_version,
-    releaseLocal: Number.isFinite(releaseStart) ? Date.parse(row.created_at) >= releaseStart : false,
-  }));
-  const debt = openDebtLoad(debtInputs);
-  const openedFeltInputs = openedReign.map(scoredIssue);
-  const openedFeltMask = feltSignalMask(openedFeltInputs);
-  const openedFeltRows = openedReign.filter((_, rowIndex) => openedFeltMask[rowIndex]);
-  const cve = cveFor(rel.tag);
-  const commit = commitStmt.get(rel.tag);
-
-  const input = {
-    publishedAt: rel.published_at,
-    isLatest: index === 0,
-    hoursToNextStable: rel.hours_to_next_stable,
-    hasHotfixSuccessor: hasHotfixSuccessor(allFetchedTags, rel.tag),
-    betaCount: rel.beta_count,
-    breakingCount: rel.breaking_count,
-    feltOpenedWeight: feltLoad(openedFeltInputs),
-    feltClosedWeight: feltLoad(verifiedFixed.map(scoredIssue)),
-    verifiedDebtWeight: debt.verified,
-    carryoverDebtWeight: debt.carryover,
-    staleDebtWeight: debt.stale,
-    rawIssueCount: issueCountForVersion(rel.tag),
-    classifiedIssueCount: attributed.length,
-    cveAffected: cve.affected,
-    cveLoad: cve.load,
-    releaseCheckState: commit?.check_state ?? null,
-    releaseCheckTotal: commit?.check_total ?? 0,
-    releaseCheckSuccess: commit?.check_success ?? 0,
-    releaseCheckFailure: commit?.check_failure ?? 0,
-    releaseCheckPending: commit?.check_pending ?? 0,
-    artifactVerified: rel.artifact_verified === 1,
-    artifactMismatch: rel.artifact_mismatch,
-    ciReportVerified: rel.ci_report_verified === 1,
-    ciReportMismatch: rel.ci_report_mismatch,
-    releaseIntegrityPresent: !!rel.release_integrity,
-    releaseShaMatches: rel.release_sha && commit?.tag_commit_oid ? rel.release_sha === commit.tag_commit_oid : undefined,
-  };
-
-  return {
-    rel,
-    input,
-    conf: installConfidence(input, Date.now()),
-    stats: {
-      negativeCount,
-      positiveCount,
-      openedSerious: countCoreSerious(openedReign),
-      closedSerious: countCoreSerious(verifiedFixed),
-      brokenSurfaces: JSON.stringify(topBrokenSurfaces(openedFeltRows.map((row) => row.title))),
-    },
-  };
-}
-
-function comparePersisted({ failures, rel, audit, input, conf, recommended, stats }) {
+function comparePersisted({ failures, result, audit, recommended }) {
+  const { rel, conf, input } = result;
   const tag = rel.tag;
   if (!audit) {
     failures.push(`${tag}: missing release_score_audits row`);
@@ -254,11 +67,11 @@ function comparePersisted({ failures, rel, audit, input, conf, recommended, stat
   expectEqual(failures, tag, 'audit recommended', Number(audit.recommended ?? 0), recommended ? 1 : 0);
   expectEqual(failures, tag, 'release reason', rel.score_reason, conf.reason);
 
-  expectEqual(failures, tag, 'negative issue count', Number(rel.negative_issues ?? 0), stats.negativeCount);
-  expectEqual(failures, tag, 'positive issue count', Number(rel.positive_issues ?? 0), stats.positiveCount);
-  expectEqual(failures, tag, 'opened serious count', Number(rel.opened_serious_during_reign ?? 0), stats.openedSerious);
-  expectEqual(failures, tag, 'closed serious count', Number(rel.closed_serious_fixed ?? 0), stats.closedSerious);
-  expectJson(failures, tag, 'broken surfaces', parseJson(rel.broken_surfaces, []), parseJson(stats.brokenSurfaces, []));
+  expectEqual(failures, tag, 'negative issue count', Number(rel.negative_issues ?? 0), result.neg);
+  expectEqual(failures, tag, 'positive issue count', Number(rel.positive_issues ?? 0), result.pos);
+  expectEqual(failures, tag, 'opened serious count', Number(rel.opened_serious_during_reign ?? 0), result.openedSerious);
+  expectEqual(failures, tag, 'closed serious count', Number(rel.closed_serious_fixed ?? 0), result.closedSerious);
+  expectJson(failures, tag, 'broken surfaces', parseJson(rel.broken_surfaces, []), parseJson(result.brokenSurfaces, []));
 
   expectJson(failures, tag, 'audit input_json', parseJson(audit.input_json, null), normalizeJson(input));
   const components = parseJson(audit.components_json, null);
