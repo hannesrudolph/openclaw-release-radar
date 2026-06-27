@@ -10,6 +10,7 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "tsx --test 'src/lib/*.test.ts'",
+    "scrape:upstream": "tsx scripts/scrape-upstream-webui.mjs",
     "import:public-snapshot": "tsx scripts/import-public-snapshot.mjs"
   },
   "engines": {
@@ -22,6 +23,7 @@
   "devDependencies": {
     "@types/express": "^5.0.0",
     "@types/node": "^22.7.5",
+    "playwright": "^1.61.1",
     "tsx": "^4.19.1",
     "typescript": "^5.6.3"
   }

@@ -8,7 +8,7 @@ import {
   paginateIssues,
 } from './github';
 import { classifyIssue, type IssueClassification, PROMPT_VERSION } from './llm';
-import { applyLabelOverrides, applyTitleFunctionalityHint } from './labelOverrides';
+import { applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
 import {
   computeAggregateBreaking,
   computeBetaCount,
@@ -20,10 +20,9 @@ import {
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 
-// Limited concurrency for LLM classification — keeps wall time tractable on cold-cache
-// back-fill (≈1400 issues at ~1s each serially → ~25 min; 5-wide pool → ~5 min) while
-// staying well under GitHub's secondary rate limit and OpenAI's per-minute token caps.
-const CLASSIFY_CONCURRENCY = 5;
+// Limited concurrency for LLM classification. During scoring calibration we may
+// intentionally raise this through CLASSIFY_CONCURRENCY to burn tokens for speed.
+const CLASSIFY_CONCURRENCY = config.refresh.classifyConcurrency;
 
 async function runWithConcurrency<T>(
   items: T[],
@@ -40,7 +39,15 @@ async function runWithConcurrency<T>(
   });
   await Promise.all(pool);
 }
-import { cveDecayLoad, feltLoad, installConfidence, pickRecommended, type InstallInput } from './score';
+import {
+  cveDecayLoad,
+  explainOpenDebtLoad,
+  feltLoad,
+  installConfidence,
+  pickRecommended,
+  SCORE_MODEL_VERSION,
+  type InstallInput,
+} from './score';
 import {
   closedDuringReign,
   countStaleClassifications,
@@ -50,6 +57,7 @@ import {
   getLastScoredAt,
   getMeta,
   getRelease,
+  issueCountForVersion,
   issuesForVersion,
   listAdvisories,
   listReleasesDb,
@@ -57,6 +65,7 @@ import {
   setMeta,
   updateReleaseDerivedStats,
   updateReleaseScore,
+  upsertReleaseScoreAudit,
   upsertAdvisory,
   upsertClassification,
   upsertIssue,
@@ -180,12 +189,11 @@ export async function refresh(): Promise<{
       console.warn(`[advisories] fetch failed (continuing): ${(e as Error).message}`);
     }
 
-    // 2. Stream issues sorted by updated_at desc, paginating until we either:
-    //    (a) see a full page where every issue is already classified at its current
-    //        updated_at and prompt version — nothing newer below this point;
-    //    (b) cross the published_at of the oldest monitored release — anything older
-    //        can't affect a release we display on the dashboard;
-    //    (c) hit MAX_PAGES as a safety belt against pathological data.
+    // 2. Stream issues sorted by updated_at desc.
+    //
+    // FULL_ISSUE_BACKFILL=true deliberately walks the entire issue connection so
+    // release attribution has all open/closed history. Normal mode keeps the
+    // incremental early-stop behavior for later operational refreshes.
     //
     // First run (no backfill flag yet) IGNORES condition (a). Otherwise a fresh deploy
     // on top of an existing DB stops on page 1 the moment every visible issue is "known
@@ -200,6 +208,21 @@ export async function refresh(): Promise<{
       .filter((ms) => Number.isFinite(ms));
     const oldestMonitoredMs = publishedAts.length > 0 ? Math.min(...publishedAts) : -Infinity;
     const backfillDone = getMeta(BACKFILL_FLAG) !== null;
+    const monitoredWindows = releases
+      .map((release) => {
+        const start = release.published_at ? Date.parse(release.published_at) : NaN;
+        const next = releases
+          .map((candidate) => candidate.published_at ? Date.parse(candidate.published_at) : NaN)
+          .filter((ms) => Number.isFinite(ms) && ms > start)
+          .sort((a, b) => a - b)[0];
+        return { start, end: next ?? Infinity };
+      })
+      .filter((window) => Number.isFinite(window.start));
+    const issueOverlapsMonitoredWindow = (issue: GhIssue): boolean => {
+      const created = Date.parse(issue.created_at);
+      const closed = issue.closed_at ? Date.parse(issue.closed_at) : Infinity;
+      return monitoredWindows.some((window) => created < window.end && closed > window.start);
+    };
 
     // After a PROMPT_VERSION bump, rows written under the old prompt are stale but
     // sit behind the oldest-monitored cutoff — the normal early-stop would skip
@@ -211,7 +234,8 @@ export async function refresh(): Promise<{
       console.log(`[refresh] prompt-sweep: ${staleRows} stale classifications, ignoring early-stop this run`);
     }
 
-    const MAX_PAGES = 50; // 50 × 100 raw items ≈ several months of openclaw history
+    const fullIssueBackfill = config.refresh.fullIssueBackfill;
+    const MAX_PAGES = config.refresh.maxIssuePages;
     let pagesFetched = 0;
     let classifiedCount = 0;
     let crossedOldestEver = false;
@@ -244,6 +268,11 @@ export async function refresh(): Promise<{
         });
 
         if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
+
+        // Full history is fetched for accurate open/closed linkage, but spend
+        // classification tokens only on issues whose lifetime overlaps a release
+        // being scored. Closed-before-release issues cannot affect that score.
+        if (!issueOverlapsMonitoredWindow(issue)) continue;
 
         const existing = getClassification(issue.number);
         const skip = existing && (
@@ -278,20 +307,17 @@ export async function refresh(): Promise<{
 
       if (crossedOldest) crossedOldestEver = true;
 
-      // During the initial back-fill (or after a PROMPT_VERSION bump that left
-      // stale rows behind the oldest-monitored cutoff) we ignore the early-stop
-      // shortcuts and walk the full pagination up to MAX_PAGES, so we actually
-      // reach older issues that would otherwise stay frozen on the old prompt.
-      const canEarlyStop = backfillDone && !promptSweep && allUnchanged;
-      const canCrossedOldestStop = !promptSweep && crossedOldest;
+      // During a full backfill, do not stop on timestamps or page sameness:
+      // older still-open issues are part of the release's current debt.
+      const canEarlyStop = !fullIssueBackfill && backfillDone && !promptSweep && allUnchanged;
+      const canCrossedOldestStop = !fullIssueBackfill && !promptSweep && crossedOldest;
       if (canEarlyStop || canCrossedOldestStop) break paginate;
       if (pagesFetched >= MAX_PAGES) break paginate;
     }
 
-    // Mark back-fill complete the first time we actually paginated past the oldest
-    // monitored release (or hit MAX_PAGES). After this, the "all unchanged" early
-    // stop kicks in on subsequent runs.
-    if (!backfillDone && (crossedOldestEver || pagesFetched >= MAX_PAGES)) {
+    // Mark a full backfill complete after walking the connection (or hitting its
+    // explicit safety cap). Normal mode marks it after crossing the release cutoff.
+    if (!backfillDone && (fullIssueBackfill || crossedOldestEver || pagesFetched >= MAX_PAGES)) {
       setMeta(BACKFILL_FLAG, new Date().toISOString());
     }
 
@@ -353,13 +379,25 @@ export async function refresh(): Promise<{
       // negative/positive counts are display-only context (not part of the score).
       let neg = 0;
       let pos = 0;
-      for (const r of issuesForVersion(rel.tag)) {
+      const attributed = issuesForVersion(rel.tag);
+      for (const r of attributed) {
         const s = classify(r).sentiment;
         if (s === 'negative') neg++;
         else if (s === 'positive') pos++;
       }
       const openedReign = openedDuringReign(rel.tag);
       const closedReign = closedDuringReign(rel.tag);
+      const debtInputs = attributed.map((row) => ({
+          ...classify(row),
+          issueNumber: row.number,
+          state: row.state,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          affectsVersion: row.affects_version,
+          releaseLocal: rel.published_at ? Date.parse(row.created_at) >= Date.parse(rel.published_at) : false,
+          labels: safeParseLabels(row.labels),
+        }));
+      const activeDebt = explainOpenDebtLoad(debtInputs);
       // core-serious counts: kept for the informational API/DB stats.
       const openedSerious = countCoreSerious(openedReign);
       const closedSerious = countCoreSerious(closedReign);
@@ -383,10 +421,63 @@ export async function refresh(): Promise<{
         breakingCount: rel.breaking_count,
         feltOpenedWeight,
         feltClosedWeight,
+        verifiedDebtWeight: activeDebt.loads.verified,
+        carryoverDebtWeight: activeDebt.loads.carryover,
+        staleDebtWeight: activeDebt.loads.stale,
+        rawIssueCount: issueCountForVersion(rel.tag),
+        classifiedIssueCount: attributed.length,
         cveAffected: cve.affected,
         cveLoad: cve.load,
       };
-      return { rel, conf: installConfidence(input), neg, pos, openedSerious, closedSerious, brokenSurfaces };
+      const conf = installConfidence(input);
+      const issueByNumber = new Map(attributed.map((row) => [row.number, row]));
+      const summarizeIssue = (row: ReturnType<typeof issuesForVersion>[number] | undefined) => {
+        if (!row) return null;
+        const classification = classify(row);
+        return {
+          number: row.number,
+          title: row.title,
+          url: row.html_url,
+          state: row.state,
+          createdAt: row.created_at,
+          updatedAt: row.updated_at,
+          closedAt: row.closed_at,
+          labels: safeParseLabels(row.labels),
+          affectsVersion: row.affects_version,
+          duplicateCluster: row.duplicate_cluster,
+          classification,
+        };
+      };
+      const debtEvidence = {
+        verifiedDebt: activeDebt.evidence
+          .filter((item) => item.tier === 'verified')
+          .slice(0, 25)
+          .map((item) => ({ ...item, issue: summarizeIssue(item.issueNumber ? issueByNumber.get(item.issueNumber) : undefined) })),
+        carryoverDebt: activeDebt.evidence
+          .filter((item) => item.tier === 'carryover')
+          .slice(0, 25)
+          .map((item) => ({ ...item, issue: summarizeIssue(item.issueNumber ? issueByNumber.get(item.issueNumber) : undefined) })),
+        staleDebt: activeDebt.evidence
+          .filter((item) => item.tier === 'stale')
+          .slice(0, 25)
+          .map((item) => ({ ...item, issue: summarizeIssue(item.issueNumber ? issueByNumber.get(item.issueNumber) : undefined) })),
+        openedFeltSerious: openedReign
+          .filter(isOpenFeltSeriousIssue)
+          .slice(0, 25)
+          .map((row) => summarizeIssue(row)),
+        closedDuringReign: closedReign
+          .slice(0, 25)
+          .map((row) => summarizeIssue(row)),
+      };
+      const gateEvidence = {
+        cve,
+        stableTagsNewestFirst,
+        betaCount: rel.beta_count,
+        breakingCount: rel.breaking_count,
+        hoursToNextStable: rel.hours_to_next_stable,
+        hasHotfixSuccessor: input.hasHotfixSuccessor,
+      };
+      return { rel, conf, input, debtEvidence, gateEvidence, neg, pos, openedSerious, closedSerious, brokenSurfaces };
     });
 
     // Recommended install: newest release that passed all gates and scores ≥ threshold.
@@ -395,6 +486,7 @@ export async function refresh(): Promise<{
     );
 
     for (const s of scored) {
+      const scoredAt = new Date().toISOString();
       updateReleaseScore({
         tag: s.rel.tag,
         final_score: s.conf.score,
@@ -406,6 +498,26 @@ export async function refresh(): Promise<{
         broken_surfaces: s.brokenSurfaces,
         closed_serious_fixed: s.closedSerious,
         opened_serious_during_reign: s.openedSerious,
+        scored_at: scoredAt,
+      });
+      upsertReleaseScoreAudit({
+        release_tag: s.rel.tag,
+        scored_at: scoredAt,
+        score_model_version: SCORE_MODEL_VERSION,
+        prompt_version: PROMPT_VERSION,
+        final_score: s.conf.score,
+        status: s.conf.status,
+        band: s.conf.band,
+        recommended: s.rel.tag === recommendedTag ? 1 : 0,
+        input_json: JSON.stringify(s.input),
+        components_json: JSON.stringify({
+          components: s.conf.components,
+          evidenceCoverage: s.conf.evidenceCoverage,
+          hotfix: s.conf.hotfix,
+          reason: s.conf.reason,
+        }),
+        issue_evidence_json: JSON.stringify(s.debtEvidence),
+        gate_evidence_json: JSON.stringify(s.gateEvidence),
       });
     }
 
@@ -471,9 +583,14 @@ function rowToClassification(row: {
 // re-export for routes
 
 export function classifyIssueRow(row: ReturnType<typeof issuesForVersion>[number]): IssueClassification {
-  return applyLabelOverrides(
-    applyTitleFunctionalityHint(rowToClassification(row), row.title),
-    safeParseLabels(row.labels),
+  const labels = safeParseLabels(row.labels);
+  return applyTitleIssueShapeHint(
+    applyLabelOverrides(
+      applyTitleFunctionalityHint(rowToClassification(row), row.title),
+      labels,
+    ),
+    row.title,
+    labels,
   );
 }
 

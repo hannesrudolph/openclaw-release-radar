@@ -118,6 +118,57 @@ CREATE TABLE IF NOT EXISTS advisories (
   patched_versions TEXT,
   fetched_at TEXT NOT NULL
 );
+
+-- Rendered upstream web UI snapshots used for side-by-side model comparison.
+-- These are deliberately separate from radar data so clearing/rebuilding the
+-- local model never destroys the external benchmark.
+CREATE TABLE IF NOT EXISTS comparison_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  source_url TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  page_title TEXT NOT NULL,
+  page_text TEXT NOT NULL,
+  raw_html TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS comparison_releases (
+  snapshot_id INTEGER NOT NULL,
+  tag TEXT NOT NULL,
+  name TEXT,
+  published_at TEXT,
+  html_url TEXT NOT NULL,
+  displayed_date TEXT,
+  score REAL,
+  band TEXT,
+  status TEXT,
+  recommended INTEGER NOT NULL DEFAULT 0,
+  reason TEXT,
+  negative_issues INTEGER,
+  positive_issues INTEGER,
+  total_attributed_issues INTEGER,
+  visible_issues_json TEXT NOT NULL DEFAULT '[]',
+  raw_card_text TEXT NOT NULL,
+  PRIMARY KEY (snapshot_id, tag),
+  FOREIGN KEY (snapshot_id) REFERENCES comparison_snapshots(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_comparison_releases_tag ON comparison_releases(tag);
+
+CREATE TABLE IF NOT EXISTS release_score_audits (
+  release_tag TEXT PRIMARY KEY,
+  scored_at TEXT NOT NULL,
+  score_model_version TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  final_score REAL,
+  status TEXT NOT NULL,
+  band TEXT NOT NULL,
+  recommended INTEGER NOT NULL DEFAULT 0,
+  input_json TEXT NOT NULL,
+  components_json TEXT,
+  issue_evidence_json TEXT NOT NULL,
+  gate_evidence_json TEXT NOT NULL,
+  FOREIGN KEY (release_tag) REFERENCES releases(tag) ON DELETE CASCADE
+);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -277,8 +328,60 @@ export function updateReleaseScore(args: {
   broken_surfaces: string;
   closed_serious_fixed: number;
   opened_serious_during_reign: number;
+  scored_at?: string;
 }): void {
-  updateScoreStmt.run({ ...args, scored_at: new Date().toISOString() });
+  updateScoreStmt.run({ ...args, scored_at: args.scored_at ?? new Date().toISOString() });
+}
+
+export interface ReleaseScoreAuditInput {
+  release_tag: string;
+  scored_at: string;
+  score_model_version: string;
+  prompt_version: number;
+  final_score: number | null;
+  status: string;
+  band: string;
+  recommended: number;
+  input_json: string;
+  components_json: string | null;
+  issue_evidence_json: string;
+  gate_evidence_json: string;
+}
+
+const upsertReleaseScoreAuditStmt = db.prepare(`
+INSERT INTO release_score_audits (
+  release_tag, scored_at, score_model_version, prompt_version, final_score,
+  status, band, recommended, input_json, components_json, issue_evidence_json,
+  gate_evidence_json
+)
+VALUES (
+  :release_tag, :scored_at, :score_model_version, :prompt_version, :final_score,
+  :status, :band, :recommended, :input_json, :components_json, :issue_evidence_json,
+  :gate_evidence_json
+)
+ON CONFLICT(release_tag) DO UPDATE SET
+  scored_at=excluded.scored_at,
+  score_model_version=excluded.score_model_version,
+  prompt_version=excluded.prompt_version,
+  final_score=excluded.final_score,
+  status=excluded.status,
+  band=excluded.band,
+  recommended=excluded.recommended,
+  input_json=excluded.input_json,
+  components_json=excluded.components_json,
+  issue_evidence_json=excluded.issue_evidence_json,
+  gate_evidence_json=excluded.gate_evidence_json
+`);
+
+export function upsertReleaseScoreAudit(input: ReleaseScoreAuditInput): void {
+  upsertReleaseScoreAuditStmt.run(input as unknown as Record<string, string | number | null>);
+}
+
+export interface ReleaseScoreAuditRow extends ReleaseScoreAuditInput {}
+
+const getReleaseScoreAuditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
+export function getReleaseScoreAudit(tag: string): ReleaseScoreAuditRow | undefined {
+  return getReleaseScoreAuditStmt.get(tag) as ReleaseScoreAuditRow | undefined;
 }
 
 // Stable-only view. Prereleases live in the DB for derived-stat computation
@@ -480,6 +583,24 @@ export function issuesForVersion(tag: string): JoinedIssue[] {
   return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
 }
 
+const issueCountForVersionStmt = db.prepare(`
+SELECT COUNT(*) AS count
+FROM issues i
+JOIN releases target ON target.tag = ?
+WHERE
+  target.published_at IS NOT NULL
+  AND i.created_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at),
+        '9999-12-31T23:59:59Z'
+      )
+  AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
+`);
+
+export function issueCountForVersion(tag: string): number {
+  return Number((issueCountForVersionStmt.get(tag) as { count: number }).count ?? 0);
+}
+
 // Issues CLOSED during a release's reign — the "fixes credit" for that release.
 // An issue counts as fixed-by-R if its closed_at falls inside R's reign window
 // [R.published_at, next_release.published_at). This is what the release shipped
@@ -616,4 +737,127 @@ export function getMeta(key: string): string | null {
 
 export function setMeta(key: string, value: string): void {
   setMetaStmt.run(key, value);
+}
+
+// ---------- upstream comparison snapshots ----------
+export interface ComparisonReleaseInput {
+  tag: string;
+  name: string | null;
+  published_at: string | null;
+  html_url: string;
+  displayed_date: string | null;
+  score: number | null;
+  band: string | null;
+  status: string | null;
+  recommended: boolean;
+  reason: string | null;
+  negative_issues: number | null;
+  positive_issues: number | null;
+  total_attributed_issues: number | null;
+  visible_issues: unknown[];
+  raw_card_text: string;
+}
+
+export interface ComparisonSnapshotInput {
+  source_url: string;
+  captured_at: string;
+  page_title: string;
+  page_text: string;
+  raw_html: string;
+  releases: ComparisonReleaseInput[];
+}
+
+const insertComparisonSnapshotStmt = db.prepare(`
+INSERT INTO comparison_snapshots (source_url, captured_at, page_title, page_text, raw_html)
+VALUES (:source_url, :captured_at, :page_title, :page_text, :raw_html)
+`);
+
+const insertComparisonReleaseStmt = db.prepare(`
+INSERT INTO comparison_releases (
+  snapshot_id, tag, name, published_at, html_url, displayed_date, score, band,
+  status, recommended, reason, negative_issues, positive_issues,
+  total_attributed_issues, visible_issues_json, raw_card_text
+)
+VALUES (
+  :snapshot_id, :tag, :name, :published_at, :html_url, :displayed_date, :score, :band,
+  :status, :recommended, :reason, :negative_issues, :positive_issues,
+  :total_attributed_issues, :visible_issues_json, :raw_card_text
+)
+`);
+
+export function saveComparisonSnapshot(input: ComparisonSnapshotInput): number {
+  db.exec('BEGIN');
+  try {
+    const result = insertComparisonSnapshotStmt.run({
+      source_url: input.source_url,
+      captured_at: input.captured_at,
+      page_title: input.page_title,
+      page_text: input.page_text,
+      raw_html: input.raw_html,
+    });
+    const snapshotId = Number(result.lastInsertRowid);
+
+    for (const release of input.releases) {
+      insertComparisonReleaseStmt.run({
+        snapshot_id: snapshotId,
+        tag: release.tag,
+        name: release.name,
+        published_at: release.published_at,
+        html_url: release.html_url,
+        displayed_date: release.displayed_date,
+        score: release.score,
+        band: release.band,
+        status: release.status,
+        recommended: release.recommended ? 1 : 0,
+        reason: release.reason,
+        negative_issues: release.negative_issues,
+        positive_issues: release.positive_issues,
+        total_attributed_issues: release.total_attributed_issues,
+        visible_issues_json: JSON.stringify(release.visible_issues),
+        raw_card_text: release.raw_card_text,
+      });
+    }
+
+    db.exec('COMMIT');
+    return snapshotId;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+export function latestComparisonSnapshot(): {
+  id: number;
+  source_url: string;
+  captured_at: string;
+  page_title: string;
+  page_text: string;
+} | undefined {
+  return db.prepare(`
+    SELECT id, source_url, captured_at, page_title, page_text
+    FROM comparison_snapshots
+    ORDER BY id DESC
+    LIMIT 1
+  `).get() as {
+    id: number;
+    source_url: string;
+    captured_at: string;
+    page_title: string;
+    page_text: string;
+  } | undefined;
+}
+
+export function comparisonReleases(snapshotId?: number): Array<Record<string, unknown>> {
+  if (snapshotId !== undefined) {
+    return db.prepare(`
+      SELECT * FROM comparison_releases
+      WHERE snapshot_id=?
+      ORDER BY published_at DESC, tag DESC
+    `).all(snapshotId) as Array<Record<string, unknown>>;
+  }
+  return db.prepare(`
+    SELECT * FROM comparison_releases
+    WHERE snapshot_id=(SELECT MAX(id) FROM comparison_snapshots)
+    ORDER BY published_at DESC, tag DESC
+  `).all() as Array<Record<string, unknown>>;
 }

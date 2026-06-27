@@ -39,10 +39,12 @@ export const config = {
     path: env('DB_PATH', './data/radar.db'),
   },
   refresh: {
-    // Minutes between automatic refreshes. Hard-bounded 1..600 so an env-var typo
-    // can't accidentally hammer GitHub / OpenAI every second, and can't silently
-    // stop refreshes by being set to 0.
-    intervalMinutes: intInRange('REFRESH_MINUTES', 30, 1, 600),
+    // Set to 0 while calibrating the model so only the startup refresh runs.
+    intervalMinutes: intInRange('REFRESH_MINUTES', 30, 0, 600),
+    fullIssueBackfill: process.env.FULL_ISSUE_BACKFILL === 'true',
+    maxIssuePages: intInRange('MAX_ISSUE_PAGES', 500, 1, 500),
+    classifyConcurrency: intInRange('CLASSIFY_CONCURRENCY', 5, 1, 50),
+    githubPageDelayMs: intInRange('GITHUB_GRAPHQL_PAGE_DELAY_MS', 0, 0, 60_000),
   },
   limits: {
     releases: num('RELEASES_LIMIT', 10),

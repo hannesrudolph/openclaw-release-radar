@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { applyLabelOverrides } from './labelOverrides.ts';
+import { applyLabelOverrides, applyTitleIssueShapeHint } from './labelOverrides.ts';
 import type { IssueClassification } from './llm.ts';
 
 // Baseline classification — represents typical LLM output: "medium, moderate, integration".
@@ -211,5 +211,28 @@ describe('applyLabelOverrides', () => {
   it('regression + impact:data-loss → critical (regression bump caps at critical)', () => {
     const out = applyLabelOverrides(mk({ severity: 'medium' }), ['regression', 'impact:data-loss']);
     assert.equal(out.severity, 'critical');
+  });
+});
+
+describe('applyTitleIssueShapeHint', () => {
+  it('neutralizes feature-shaped issues without strong bug labels', () => {
+    const out = applyTitleIssueShapeHint(
+      mk({ sentiment: 'negative', severity: 'critical', confidence: 0.95 }),
+      'Feature: fire session-memory hook on session reset/prune',
+      ['clawsweeper:needs-product-decision'],
+    );
+    assert.equal(out.sentiment, 'neutral');
+    assert.equal(out.severity, 'medium');
+    assert.ok(out.confidence <= 0.65);
+  });
+
+  it('does not neutralize feature-shaped titles when regression is explicit', () => {
+    const base = mk({ sentiment: 'negative', severity: 'high', confidence: 0.9 });
+    const out = applyTitleIssueShapeHint(
+      base,
+      '[Feature]: login flow regression',
+      ['regression'],
+    );
+    assert.deepEqual(out, base);
   });
 });

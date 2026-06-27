@@ -109,6 +109,8 @@ const PROVIDER_RE = /\b(ollama|openai|anthropic|claude|llama\.cpp|llama\b|codex|
 // surfaces, not the core engine. A broken dashboard or WebChat channel adapter
 // doesn't break OpenClaw's gateway/CLI itself.
 const EXTENSION_RE = /\b(plugin|subagent|mcp|control[- ]ui|dashboard|webchat|skills?[- ]ui)\b/i;
+const NON_BUG_TITLE_RE = /\b(feature|feedback|roadmap|proposal|support|question|how do i|should support|preserve or explicitly support)\b|^\s*\[(feature|feedback|proposal|backup)\]/i;
+const STRONG_BUG_LABELS = new Set(['bug', 'regression', 'P0', 'beta-blocker']);
 
 export function inferFunctionalityFromTitle(title: string): Functionality | undefined {
   if (CHANNEL_RE.test(title))   return 'integration';
@@ -127,6 +129,23 @@ export function applyTitleFunctionalityHint(
   if (c.functionality !== 'core') return c;
   const hint = inferFunctionalityFromTitle(title);
   return hint ? { ...c, functionality: hint } : c;
+}
+
+export function applyTitleIssueShapeHint(
+  c: IssueClassification,
+  title: string,
+  labelNames: string[] = [],
+): IssueClassification {
+  const hasStrongBugLabel = labelNames.some((label) => STRONG_BUG_LABELS.has(label));
+  if (!hasStrongBugLabel && NON_BUG_TITLE_RE.test(title)) {
+    return {
+      ...c,
+      sentiment: 'neutral',
+      severity: c.severity === 'critical' || c.severity === 'high' ? 'medium' : c.severity,
+      confidence: Math.min(c.confidence, 0.65),
+    };
+  }
+  return c;
 }
 
 export function applyLabelOverrides(

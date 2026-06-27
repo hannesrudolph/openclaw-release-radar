@@ -6,6 +6,7 @@ import {
   bandFor,
   cveDecayLoad,
   feltLoad,
+  openDebtLoad,
   REC_THRESHOLD,
   type InstallInput,
 } from './score.ts';
@@ -28,6 +29,11 @@ function mk(over: Partial<InstallInput> = {}): InstallInput {
     breakingCount: 0,
     feltOpenedWeight: 0,
     feltClosedWeight: 0,
+    verifiedDebtWeight: 0,
+    carryoverDebtWeight: 0,
+    staleDebtWeight: 0,
+    rawIssueCount: 0,
+    classifiedIssueCount: 0,
     cveAffected: false,
     cveLoad: 0,
     ...over,
@@ -94,10 +100,10 @@ describe('installConfidence — gates', () => {
 });
 
 describe('installConfidence — graded signals', () => {
-  it('eligible baseline (typical lifetime, no other signal) sits at neutral ~6', () => {
+  it('eligible baseline (typical lifetime, no other signal) starts in the ok band', () => {
     const r = installConfidence(mk(), NOW);
     assert.equal(r.status, 'eligible');
-    assert.ok(Math.abs(r.score! - 6) < 0.3, `expected ~6, got ${r.score}`);
+    assert.ok(r.score! >= 7 && r.score! < 8, `expected ok baseline, got ${r.score}`);
   });
 
   it('longer survival before the next stable scores higher', () => {
@@ -123,6 +129,27 @@ describe('installConfidence — graded signals', () => {
 
   it('breaking changes lower the score', () => {
     assert.ok(score({ breakingCount: 3 }) < score({ breakingCount: 0 }));
+  });
+
+  it('verified open debt lowers the score even when reign balance is neutral', () => {
+    assert.ok(score({ verifiedDebtWeight: 1 }) > score({ verifiedDebtWeight: 30 }));
+  });
+
+  it('carryover and stale debt are capped below verified blocker debt', () => {
+    const base = score();
+    const verified = score({ verifiedDebtWeight: 100 });
+    const carryover = score({ carryoverDebtWeight: 100 });
+    const stale = score({ staleDebtWeight: 100 });
+    assert.ok(verified < carryover);
+    assert.ok(carryover < base);
+    assert.ok(stale > verified);
+  });
+
+  it('incomplete evidence coverage lowers confidence', () => {
+    const complete = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 100 }), NOW);
+    const partial = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 40 }), NOW);
+    assert.ok(partial.score! < complete.score!);
+    assert.equal(partial.evidenceCoverage, 0.4);
   });
 
   it('score never leaves [0,10] under extreme inputs', () => {
@@ -190,6 +217,72 @@ describe('feltLoad — reach-weighted visible bugs', () => {
     const broad = feltLoad([fc({ scope: 'broad', affectedUsers: 'many' })]);
     const niche = feltLoad([fc({ scope: 'niche', affectedUsers: 'few' })]);
     assert.ok(broad > niche * 3, `broad ${broad} should be >3× niche ${niche}`);
+  });
+});
+
+describe('openDebtLoad — current issue debt', () => {
+  const dc = (over = {}) => ({
+    issueNumber: 1,
+    state: 'open',
+    sentiment: 'negative',
+    severity: 'high',
+    functionality: 'core',
+    scope: 'moderate',
+    affectedUsers: 'some',
+    workaroundStatus: 'unknown',
+    confidence: 0.9,
+    duplicateCluster: null,
+    ...over,
+  });
+
+  it('ignores closed, positive, docs, and low-severity rows', () => {
+    assert.deepEqual(openDebtLoad([dc({ state: 'closed' })]), { verified: 0, carryover: 0, stale: 0 });
+    assert.deepEqual(openDebtLoad([dc({ sentiment: 'positive' })]), { verified: 0, carryover: 0, stale: 0 });
+    assert.deepEqual(openDebtLoad([dc({ functionality: 'docs' })]), { verified: 0, carryover: 0, stale: 0 });
+    assert.deepEqual(openDebtLoad([dc({ severity: 'low' })]), { verified: 0, carryover: 0, stale: 0 });
+  });
+
+  it('deduplicates repeated reports by cluster', () => {
+    const one = openDebtLoad([dc({ duplicateCluster: 'same-bug', affectsVersion: 'v2026.6.10' })]).verified;
+    const repeated = openDebtLoad([
+      dc({ issueNumber: 1, duplicateCluster: 'same-bug', affectsVersion: 'v2026.6.10' }),
+      dc({ issueNumber: 2, duplicateCluster: 'same-bug', affectsVersion: 'v2026.6.10' }),
+    ]).verified;
+    assert.equal(repeated, one);
+  });
+
+  it('reduces debt for confirmed workarounds', () => {
+    const blocker = { affectsVersion: 'v2026.6.10', labels: ['clawsweeper:source-repro'], functionality: 'core', severity: 'high', scope: 'broad' };
+    const none = openDebtLoad([dc({ ...blocker, workaroundStatus: 'none' })]).verified;
+    const confirmed = openDebtLoad([dc({ ...blocker, workaroundStatus: 'confirmed' })]).verified;
+    assert.ok(confirmed < none);
+  });
+
+  it('does not treat old source-repro carryover as verified release debt', () => {
+    const carryover = openDebtLoad([
+      dc({
+        issueNumber: 99,
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: false,
+        affectsVersion: null,
+      }),
+    ]);
+    assert.equal(carryover.verified, 0);
+    assert.ok(carryover.carryover > 0);
+  });
+
+  it('does treat release-local source-repro issues as verified debt', () => {
+    const local = openDebtLoad([
+      dc({
+        issueNumber: 100,
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.ok(local.verified > 0);
   });
 });
 

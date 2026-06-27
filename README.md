@@ -49,8 +49,10 @@ OPENAI_MODEL=gpt-5.5
 
 PORT=8787
 DB_PATH=./data/radar.db
-REFRESH_MINUTES=30
+REFRESH_MINUTES=0
 RELEASES_LIMIT=10
+FULL_ISSUE_BACKFILL=false
+MAX_ISSUE_PAGES=500
 ```
 
 Secrets can live in your shell/global environment instead of `.env`:
@@ -76,21 +78,25 @@ http://127.0.0.1:8787
 
 The first refresh can take a few minutes because it backfills GitHub data and classifies issues. Later refreshes only process changed issues.
 
-## Seed From The Old Public API
+`REFRESH_MINUTES=0` disables automatic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
 
-You can seed local release scores from the old public endpoint:
+## Capture Upstream Comparison
+
+Capture the rendered upstream web UI for a side-by-side comparison benchmark:
 
 ```bash
-npm run import:public-snapshot
+npm run scrape:upstream
 ```
 
-Or pass an explicit URL:
+The comparison snapshot is stored separately from local model data. It is used for review only; it does not overwrite local release scores.
+
+The older public JSON snapshot importer is still available as a one-off utility:
 
 ```bash
 npm run import:public-snapshot -- https://isitstable.iclaw.digital/api/public
 ```
 
-This is a snapshot import, not a full DB restore. It imports release tags, publish times, scores, statuses, recommendation, score reasons, and issue counts. The public endpoint does not include the full GitHub issue history, comments, labels, advisory rows, release-note bodies, or every classification row, so a normal refresh is still required for a complete local database.
+Do not use that importer as a benchmark source; it writes into the local release table. Prefer `scrape:upstream`.
 
 ## Tokens
 
@@ -131,6 +137,13 @@ Main public payload:
 
 ```bash
 curl http://127.0.0.1:8787/api/public
+```
+
+Score review and comparison:
+
+```bash
+curl http://127.0.0.1:8787/api/comparison
+curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 ```
 
 A healthy completed refresh has:

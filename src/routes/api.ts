@@ -8,7 +8,14 @@ import {
   listReleasesDb,
   openedDuringReign,
 } from '../lib/refresh';
-import { listAdvisories, type AdvisoryRow } from '../lib/db';
+import {
+  comparisonReleases,
+  getRelease,
+  getReleaseScoreAudit,
+  latestComparisonSnapshot,
+  listAdvisories,
+  type AdvisoryRow,
+} from '../lib/db';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, type InstallStatus } from '../lib/score';
 import { surfaceOf } from '../lib/surfaces';
@@ -72,6 +79,33 @@ function summarizeAdvisories(list: AdvisoryRow[]) {
       url: a.html_url,
       patchedVersion: firstPatchedVersion(a.patched_versions),
     })),
+  };
+}
+
+function parseJson<T>(json: string | null | undefined, fallback: T): T {
+  if (!json) return fallback;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return fallback;
+  }
+}
+
+function normalizeComparison(row: Record<string, unknown> | undefined) {
+  if (!row) return null;
+  return {
+    snapshotId: row.snapshot_id,
+    tag: row.tag,
+    score: row.score,
+    band: row.band,
+    status: row.status,
+    recommended: row.recommended === 1,
+    reason: row.reason,
+    negativeIssues: row.negative_issues,
+    positiveIssues: row.positive_issues,
+    totalAttributedIssues: row.total_attributed_issues,
+    visibleIssues: parseJson(String(row.visible_issues_json ?? '[]'), [] as unknown[]),
+    rawCardText: row.raw_card_text,
   };
 }
 
@@ -167,6 +201,74 @@ api.get('/releases/history', (_req, res) => {
       finalScore: r.final_score,
     })),
   );
+});
+
+api.get('/comparison', (_req, res) => {
+  const snapshot = latestComparisonSnapshot();
+  const upstreamByTag = new Map(comparisonReleases().map((row) => [String(row.tag), row]));
+  const releases = listReleasesDb(config.limits.releases).map((release) => {
+    const audit = getReleaseScoreAudit(release.tag);
+    const upstream = normalizeComparison(upstreamByTag.get(release.tag));
+    const localScore = release.final_score;
+    const upstreamScore = typeof upstream?.score === 'number' ? upstream.score : null;
+    return {
+      tag: release.tag,
+      local: {
+        score: localScore,
+        band: bandFor(localScore, (release.state ?? 'eligible') as InstallStatus),
+        status: release.state,
+        recommended: release.recommended === 1,
+        reason: release.score_reason,
+        negativeIssues: release.negative_issues,
+        positiveIssues: release.positive_issues,
+        scoredAt: release.scored_at,
+        modelVersion: audit?.score_model_version ?? null,
+        components: parseJson(audit?.components_json, null),
+        input: parseJson(audit?.input_json, null),
+      },
+      upstream,
+      delta: {
+        score: localScore != null && upstreamScore != null ? Math.round((localScore - upstreamScore) * 10) / 10 : null,
+        negativeIssues:
+          release.negative_issues != null && typeof upstream?.negativeIssues === 'number'
+            ? release.negative_issues - upstream.negativeIssues
+            : null,
+      },
+    };
+  });
+  res.json({ snapshot, releases });
+});
+
+api.get('/releases/:tag/review', (req, res) => {
+  const tag = req.params.tag;
+  const release = getRelease(tag);
+  if (!release) {
+    res.status(404).json({ error: 'release not found', tag });
+    return;
+  }
+  const snapshot = latestComparisonSnapshot();
+  const upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
+  const audit = getReleaseScoreAudit(tag);
+  res.json({
+    tag,
+    local: {
+      score: release.final_score,
+      band: bandFor(release.final_score, (release.state ?? 'eligible') as InstallStatus),
+      status: release.state,
+      recommended: release.recommended === 1,
+      reason: release.score_reason,
+      negativeIssues: release.negative_issues,
+      positiveIssues: release.positive_issues,
+      scoredAt: release.scored_at,
+      modelVersion: audit?.score_model_version ?? null,
+      promptVersion: audit?.prompt_version ?? null,
+      input: parseJson(audit?.input_json, null),
+      components: parseJson(audit?.components_json, null),
+      issueEvidence: parseJson(audit?.issue_evidence_json, null),
+      gateEvidence: parseJson(audit?.gate_evidence_json, null),
+    },
+    upstream: upstream ? { ...upstream, snapshot } : null,
+  });
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────

@@ -2,13 +2,13 @@
 // scoring block in refresh.ts but reads existing classifications (no network/LLM).
 // Confirms score.ts + the next-stable reign SQL produce the expected verdicts.
 import { DatabaseSync } from 'node:sqlite';
-import { cveDecayLoad, feltLoad, installConfidence, pickRecommended } from '../src/lib/score.ts';
+import { cveDecayLoad, feltLoad, installConfidence, openDebtLoad, pickRecommended } from '../src/lib/score.ts';
 import {
-  listReleasesDb, closedDuringReign, openedDuringReign, issuesForVersion, listAdvisories,
+  listReleasesDb, closedDuringReign, openedDuringReign, issueCountForVersion, issuesForVersion, listAdvisories,
 } from '../src/lib/db.ts';
 import { computeHoursToNextStable, hasHotfixSuccessor } from '../src/lib/releaseNotes.ts';
 import { matchesRange, stableDistance } from '../src/lib/versionMatch.ts';
-import { applyLabelOverrides, applyTitleFunctionalityHint } from '../src/lib/labelOverrides.ts';
+import { applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from '../src/lib/labelOverrides.ts';
 
 const db = new DatabaseSync('./data/radar.db');
 const allRel = db.prepare(
@@ -29,13 +29,15 @@ const cveFor = (tag) => {
 function safeLabels(j){ try{ const v=JSON.parse(j); return Array.isArray(v)?v.filter(x=>typeof x==='string'):[]; }catch{ return []; } }
 function rowToCls(r){ const ok=['none','partial','confirmed','unknown']; const ws=ok.includes(r.workaround_status)?r.workaround_status:(r.has_workaround===1?'confirmed':'unknown');
   return { sentiment:r.sentiment, severity:r.severity, scope:r.scope, functionality:r.functionality, affectedUsers:r.affected_users, workaroundStatus:ws, duplicateCluster:r.duplicate_cluster, affectsVersion:r.affects_version, confidence:r.confidence, rationale:r.rationale??'' }; }
-const classify = (r)=>applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), safeLabels(r.labels));
+const classify = (r)=>{ const labels=safeLabels(r.labels); return applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels); };
 const isCoreSerious = (c)=>c.sentiment==='negative'&&c.functionality==='core'&&(c.severity==='critical'||c.severity==='high');
 const countCS = (rows)=>rows.reduce((n,r)=>isCoreSerious(classify(r))?n+1:n,0);
 
 const releases = listReleasesDb(10);
 const scored = releases.map((rel, idx) => {
-  let neg=0,pos=0; for(const r of issuesForVersion(rel.tag)){ const s=classify(r).sentiment; if(s==='negative')neg++; else if(s==='positive')pos++; }
+  const attributed = issuesForVersion(rel.tag);
+  const relStart = rel.published_at ? Date.parse(rel.published_at) : NaN;
+  const debt = openDebtLoad(attributed.map(r => ({ ...classify(r), issueNumber: r.number, state: r.state, createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false, labels: safeLabels(r.labels) })));
   const conf = installConfidence({
     publishedAt: rel.published_at,
     isLatest: idx === 0,
@@ -45,6 +47,11 @@ const scored = releases.map((rel, idx) => {
     breakingCount: rel.breaking_count,
     feltOpenedWeight: feltLoad(openedDuringReign(rel.tag).map(classify)),
     feltClosedWeight: feltLoad(closedDuringReign(rel.tag).map(classify)),
+    verifiedDebtWeight: debt.verified,
+    carryoverDebtWeight: debt.carryover,
+    staleDebtWeight: debt.stale,
+    rawIssueCount: issueCountForVersion(rel.tag),
+    classifiedIssueCount: attributed.length,
     cveAffected: cveFor(rel.tag).affected,
     cveLoad: cveFor(rel.tag).load,
   });

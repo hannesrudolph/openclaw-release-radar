@@ -14,19 +14,23 @@ app.listen(config.server.port, '127.0.0.1', () => {
   console.log(`[radar] watching ${config.github.owner}/${config.github.repo}`);
 });
 
-// Periodic refresh — fire and forget; refresh() guards against overlap so a slow
-// run won't be re-entered by the next tick.
-const intervalMs = config.refresh.intervalMinutes * 60_000;
-setInterval(() => {
-  refresh()
-    .then((r) =>
-      console.log(
-        `[refresh] ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
-      ),
-    )
-    .catch((e) => console.error('[refresh] failed:', (e as Error).message));
-}, intervalMs);
-console.log(`[refresh] every ${config.refresh.intervalMinutes} min`);
+// Periodic refresh is deliberately optional while the scoring model is being
+// calibrated. A slow full backfill must not overlap with another refresh.
+if (config.refresh.intervalMinutes > 0) {
+  const intervalMs = config.refresh.intervalMinutes * 60_000;
+  setInterval(() => {
+    refresh()
+      .then((r) =>
+        console.log(
+          `[refresh] ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
+        ),
+      )
+      .catch((e) => console.error('[refresh] failed:', (e as Error).message));
+  }, intervalMs);
+  console.log(`[refresh] every ${config.refresh.intervalMinutes} min`);
+} else {
+  console.log('[refresh] automatic refresh disabled');
+}
 
 // Initial refresh on startup (non-blocking).
 refresh()

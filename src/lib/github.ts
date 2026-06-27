@@ -141,32 +141,54 @@ function headers(): Record<string, string> {
   };
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function retryDelayMs(attempt: number, res?: Response): number {
+  const retryAfter = res?.headers.get('retry-after');
+  const parsedRetryAfter = retryAfter ? Number(retryAfter) : NaN;
+  if (Number.isFinite(parsedRetryAfter) && parsedRetryAfter > 0) {
+    return Math.min(parsedRetryAfter * 1000, 300_000);
+  }
+  return Math.min(300_000, 15_000 * Math.pow(2, attempt));
+}
+
 async function gh<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
-  const res = await fetch(API, {
-    method: 'POST',
-    headers: headers(),
-    body: JSON.stringify({ query, variables }),
-  });
-  const body = await res.text();
-  if (!res.ok) {
-    throw new Error(`GitHub GraphQL ${res.status}: ${body.slice(0, 300)}`);
-  }
+  for (let attempt = 0; ; attempt++) {
+    const res = await fetch(API, {
+      method: 'POST',
+      headers: headers(),
+      body: JSON.stringify({ query, variables }),
+    });
+    const body = await res.text();
+    if (!res.ok) {
+      const retryable = res.status === 403 || res.status === 429 || res.status >= 500;
+      if (retryable && attempt < 8) {
+        const delay = retryDelayMs(attempt, res);
+        console.warn(`[github] ${res.status}; retrying in ${Math.round(delay / 1000)}s`);
+        await sleep(delay);
+        continue;
+      }
+      throw new Error(`GitHub GraphQL ${res.status}: ${body.slice(0, 300)}`);
+    }
 
-  let parsed: GraphqlResponse<T>;
-  try {
-    parsed = JSON.parse(body) as GraphqlResponse<T>;
-  } catch {
-    throw new Error(`GitHub GraphQL returned non-JSON: ${body.slice(0, 300)}`);
-  }
+    let parsed: GraphqlResponse<T>;
+    try {
+      parsed = JSON.parse(body) as GraphqlResponse<T>;
+    } catch {
+      throw new Error(`GitHub GraphQL returned non-JSON: ${body.slice(0, 300)}`);
+    }
 
-  if (parsed.errors?.length) {
-    const details = parsed.errors
-      .map((e) => [e.type, e.path?.join('.'), e.message].filter(Boolean).join(' '))
-      .join('; ');
-    throw new Error(`GitHub GraphQL error: ${details}`);
+    if (parsed.errors?.length) {
+      const details = parsed.errors
+        .map((e) => [e.type, e.path?.join('.'), e.message].filter(Boolean).join(' '))
+        .join('; ');
+      throw new Error(`GitHub GraphQL error: ${details}`);
+    }
+    if (!parsed.data) throw new Error('GitHub GraphQL response did not include data');
+    return parsed.data;
   }
-  if (!parsed.data) throw new Error('GitHub GraphQL response did not include data');
-  return parsed.data;
 }
 
 function repoVars(extra: Record<string, unknown> = {}): Record<string, unknown> {
@@ -306,6 +328,9 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
   let after: string | null = null;
 
   for (;;) {
+    if (after && config.refresh.githubPageDelayMs > 0) {
+      await sleep(config.refresh.githubPageDelayMs);
+    }
     const data: IssuesQueryData = await gh<IssuesQueryData>(
       `query Issues($owner: String!, $repo: String!, $first: Int!, $after: String) {
         repository(owner: $owner, name: $repo) {
