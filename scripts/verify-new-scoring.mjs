@@ -3,7 +3,6 @@
 import { DatabaseSync } from 'node:sqlite';
 
 const args = parseArgs(process.argv.slice(2));
-const limit = Number(args.limit ?? 10);
 const check = args.check !== false && args['print-only'] !== true;
 const dbPath = process.env.DB_PATH ?? './data/radar.db';
 process.env.RADAR_DB_READ_ONLY = '1';
@@ -17,8 +16,15 @@ const allRel = db.prepare(
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 const allFetchedTags = allRel.map((r) => r.tag);
 const stableTagsNewestFirst = allRel.filter((r) => !r.prerelease).map((r) => r.tag);
+const scoredStableCount = Number((db.prepare(`
+  SELECT COUNT(*) AS count
+  FROM releases
+  WHERE prerelease=0 AND final_score IS NOT NULL
+`).get()).count ?? 0);
+const limit = args.all ? scoredStableCount : Number(args.limit ?? 10);
 
 const failures = [];
+verifyScoredReleaseCoverage(failures);
 const { scored, recommendedTag } = buildReleaseScoreRun({
   releaseLimit: limit,
   allFetchedTags,
@@ -50,6 +56,40 @@ if (check && failures.length > 0) {
 }
 
 if (check) console.log(`Score verification passed for ${scored.length} release(s).`);
+
+function verifyScoredReleaseCoverage(failures) {
+  const missingAudits = db.prepare(`
+    SELECT r.tag
+    FROM releases r
+    LEFT JOIN release_score_audits a ON a.release_tag=r.tag
+    WHERE r.prerelease=0
+      AND r.final_score IS NOT NULL
+      AND a.release_tag IS NULL
+    ORDER BY r.published_at DESC
+  `).all();
+  for (const row of missingAudits) failures.push(`${row.tag}: scored stable release is missing release_score_audits row`);
+
+  const orphanAudits = db.prepare(`
+    SELECT a.release_tag
+    FROM release_score_audits a
+    LEFT JOIN releases r ON r.tag=a.release_tag
+    WHERE r.tag IS NULL OR r.prerelease != 0
+    ORDER BY a.release_tag
+  `).all();
+  for (const row of orphanAudits) failures.push(`${row.release_tag}: score audit points at missing or non-stable release`);
+
+  const recommended = db.prepare(`
+    SELECT tag
+    FROM releases
+    WHERE prerelease=0
+      AND final_score IS NOT NULL
+      AND recommended=1
+    ORDER BY published_at DESC
+  `).all();
+  if (scoredStableCount > 0 && recommended.length !== 1) {
+    failures.push(`expected exactly one recommended scored stable release, found ${recommended.length}`);
+  }
+}
 
 function comparePersisted({ failures, result, audit, recommended }) {
   const { rel, conf, input } = result;
@@ -167,6 +207,7 @@ function parseArgs(argv) {
     if (arg === '--check') parsed.check = true;
     else if (arg === '--no-check') parsed.check = false;
     else if (arg === '--print-only') parsed['print-only'] = true;
+    else if (arg === '--all') parsed.all = true;
     else if (arg === '--limit') parsed.limit = argv[++i];
     else if (arg.startsWith('--limit=')) parsed.limit = arg.slice('--limit='.length);
   }

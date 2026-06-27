@@ -162,6 +162,8 @@ npm run verify:live
 npm run ui:smoke
 ```
 
+`verify:local` and `verify:live` use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit.
+
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
 A healthy completed refresh has:
@@ -211,9 +213,9 @@ npm start
 
 `npm run verify:scripts` syntax-checks every `.mjs` maintenance script.
 
-`npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency.
+`npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency for every scored stable release.
 
-`npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts.
+`npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts for every scored stable release.
 
 `npm run dev` runs TypeScript directly with watch mode.
 

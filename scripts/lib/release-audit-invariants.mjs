@@ -35,8 +35,8 @@ const knownExplanationCodes = new Set([
   'hard_gates_passed',
 ]);
 
-export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10 }) {
-  const releases = reader.listReleases(limit);
+export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10, scoredOnly = false }) {
+  const releases = reader.listReleases(limit, { scoredOnly });
   const failures = [];
   const rows = [];
 

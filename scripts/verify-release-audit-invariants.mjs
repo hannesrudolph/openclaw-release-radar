@@ -2,14 +2,14 @@ import { openReleaseAuditReader } from './lib/release-audit-reader.mjs';
 import { verifyReleaseAudit } from './lib/release-audit-invariants.mjs';
 
 const args = parseArgs(process.argv.slice(2));
-const limit = Number(args.limit ?? process.env.RELEASES_LIMIT ?? 10);
 const dbPath = args['db-path'] ?? process.env.DB_PATH ?? './data/radar.db';
 const apiBase = args['api-base'] ?? process.env.API_BASE ?? null;
 
 let reader;
 try {
   reader = openReleaseAuditReader(dbPath);
-  const result = await verifyReleaseAudit({ reader, apiBase, limit });
+  const limit = args.all ? reader.scoredStableReleaseCount() : Number(args.limit ?? process.env.RELEASES_LIMIT ?? 10);
+  const result = await verifyReleaseAudit({ reader, apiBase, limit, scoredOnly: args.all === true });
   console.table(result.rows);
   if (result.failures.length) {
     console.error(`\n${result.failures.length} release audit invariant failure(s):`);

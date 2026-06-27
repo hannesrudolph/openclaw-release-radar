@@ -72,10 +72,12 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
     assert.equal(pkg.scripts['verify:scripts'], 'for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done');
     assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run verify:scripts && npm run build');
-    assert.equal(pkg.scripts['verify:local'], 'npm run verify:score && npm run verify:release-audit');
-    assert.equal(pkg.scripts['verify:live'], 'npm run verify:score && npm run verify:release-audit -- --api-base http://127.0.0.1:8787 && npm run ui:smoke');
+    assert.equal(pkg.scripts['verify:local'], 'npm run verify:score -- --all && npm run verify:release-audit -- --all');
+    assert.equal(pkg.scripts['verify:live'], 'npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.match(verifier, /buildReleaseScoreRun/);
     assert.match(verifier, /RADAR_DB_READ_ONLY = '1'/);
+    assert.match(verifier, /verifyScoredReleaseCoverage/);
+    assert.match(verifier, /--all/);
     assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);
     assert.match(verifier, /process\.exit\(1\)/);

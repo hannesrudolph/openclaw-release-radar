@@ -22,14 +22,25 @@ export class ReleaseAuditReader {
     this.db.close();
   }
 
-  listReleases(limit = 10) {
+  listReleases(limit = 10, options = {}) {
     return this.db.prepare(`
       SELECT *
       FROM releases
       WHERE prerelease = 0
+        AND (? = 0 OR final_score IS NOT NULL)
       ORDER BY published_at IS NULL, published_at DESC
       LIMIT ?
-    `).all(limit);
+    `).all(options.scoredOnly ? 1 : 0, limit);
+  }
+
+  scoredStableReleaseCount() {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM releases
+      WHERE prerelease = 0
+        AND final_score IS NOT NULL
+    `).get();
+    return Number(row?.count ?? 0);
   }
 
   closedDuringReign(tag) {

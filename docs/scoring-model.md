@@ -120,6 +120,8 @@ npm run verify:release-audit
 npm run ui:smoke
 ```
 
+`verify:local` and `verify:live` run score and release-audit checks in `--all` mode, covering every scored stable release rather than only the newest display window.
+
 ## Release Checks
 
 The model reads the release tag commit's GitHub `statusCheckRollup`.
