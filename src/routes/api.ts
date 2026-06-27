@@ -12,6 +12,7 @@ import {
   closureProofExamples,
   closureProofSummary,
   comparisonReleases,
+  getLastScoredAt,
   getRelease,
   getReleaseScoreAudit,
   latestComparisonSnapshot,
@@ -124,7 +125,14 @@ api.get('/config', (_req, res) => {
 });
 
 api.get('/status', (_req, res) => {
-  res.json(getRefreshState());
+  const state = getRefreshState();
+  const lastScoredAt = getLastScoredAt();
+  res.json({
+    ...state,
+    lastRefreshAt: lastScoredAt ?? state.lastRefreshAt,
+    processLastRefreshAt: state.lastRefreshAt,
+    lastScoredAt,
+  });
 });
 
 // Maintainer-signal counts mined from the release-notes body + neighbouring releases.
@@ -256,6 +264,11 @@ api.get('/releases/:tag/review', (req, res) => {
   const closureProof = closureProofPayload(tag);
   if (gateEvidence?.fixProvenance && closureProof) {
     gateEvidence.fixProvenance.closureProof = closureProof;
+    gateEvidence.fixProvenance.releaseFixCredit = {
+      countedClosedCount: closureProof.creditedCount,
+      notCountedClosedCount: closureProof.notCreditedCount,
+      analyzedClosedCount: closureProof.analyzedClosedCount,
+    };
   }
   res.json({
     tag,
@@ -303,6 +316,7 @@ function closureProofPayload(tag: string) {
   return {
     creditedCount,
     notCreditedCount,
+    analyzedClosedCount: creditedCount + notCreditedCount,
     byStatus,
     examples,
   };
@@ -338,6 +352,7 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
+  const lastScoredAt = getLastScoredAt();
   // Only the focused window (config.limits.releases, default 10) carries full
   // evidence + My-install scoring. The chart still plots SCORE_HISTORY_CHART_LIMIT
   // (20) points, but releases 11–20 are frozen rows from past runs: on the client
@@ -391,7 +406,7 @@ function buildPublicPayload() {
 
   return {
     repo:      `${config.github.owner}/${config.github.repo}`,
-    updatedAt: lastRefreshAt,
+    updatedAt: lastScoredAt ?? lastRefreshAt,
     releases,
   };
 }

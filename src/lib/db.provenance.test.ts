@@ -318,7 +318,7 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.verifiedFixedForRelease('v1').map((row: any) => row.number), [1]);
   });
 
-  it('credits closure-comment PR mentions only when merged and reachable', async () => {
+  it('credits closure-comment fix proof only when merged and reachable', async () => {
     const db = await freshDb('comment-mentioned-pr');
     seedRelease(db, 'v-comment');
 
@@ -339,7 +339,7 @@ describe('release fix provenance', () => {
       db.upsertIssuePrLink({
         issue_number: issue,
         pr_number: pr,
-        source: 'ClosureComment.prMention',
+        source: 'ClosureComment.fixProof',
         will_close_target: null,
         referenced_at: '2026-06-02T00:00:00Z',
       });
@@ -355,6 +355,81 @@ describe('release fix provenance', () => {
     }
 
     assert.deepEqual(db.verifiedFixedForRelease('v-comment').map((row: any) => row.number), [11]);
+  });
+
+  it('does not credit broad closure-comment PR mentions as fix proof', async () => {
+    const db = await freshDb('comment-pr-reference');
+    seedRelease(db, 'v-reference', '2026-08-01T00:00:00Z');
+    seedIssue(db, 21, '2026-08-02T00:00:00Z', '2026-08-01T12:00:00Z');
+    seedClosure(db, 21, 'COMPLETED', '2026-08-02T00:00:00Z');
+    seedPr(db, 221, true);
+    db.upsertIssuePrLink({
+      issue_number: 21,
+      pr_number: 221,
+      source: 'ClosureComment.prMention',
+      will_close_target: null,
+      referenced_at: '2026-06-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-reference',
+      pr_number: 221,
+      tag_commit_oid: 'v-reference-commit',
+      merge_commit_oid: 'merge-221',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-reference').map((row: any) => row.number), []);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-reference').map((row: any) => row.number), [21]);
+  });
+
+  it('uses the final closure event for fix credit', async () => {
+    const db = await freshDb('final-closure');
+    seedRelease(db, 'v-final', '2026-09-01T00:00:00Z');
+    seedIssue(db, 31, '2026-09-03T00:00:00Z', '2026-09-01T12:00:00Z');
+    seedPr(db, 231, true);
+    db.upsertIssueClosureEvent({
+      issue_number: 31,
+      event_id: 'closed-31-first',
+      closed_at: '2026-09-02T00:00:00Z',
+      actor_login: 'maintainer',
+      state_reason: 'COMPLETED',
+      closer_type: null,
+      closer_number: null,
+      closer_oid: null,
+      raw_json: '{}',
+    });
+    db.upsertIssueClosureEvent({
+      issue_number: 31,
+      event_id: 'closed-31-final',
+      closed_at: '2026-09-03T00:00:00Z',
+      actor_login: 'maintainer',
+      state_reason: 'NOT_PLANNED',
+      closer_type: null,
+      closer_number: null,
+      closer_oid: null,
+      raw_json: '{}',
+    });
+    db.upsertIssuePrLink({
+      issue_number: 31,
+      pr_number: 231,
+      source: 'ClosureComment.fixProof',
+      will_close_target: null,
+      referenced_at: '2026-09-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-final',
+      pr_number: 231,
+      tag_commit_oid: 'v-final-commit',
+      merge_commit_oid: 'merge-231',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-final').map((row: any) => row.number), []);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-final').map((row: any) => row.number), [31]);
   });
 
   it('keeps unverified closures visible but excludes verified fixes', async () => {

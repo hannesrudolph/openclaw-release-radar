@@ -1,9 +1,10 @@
 export const CLOSURE_COMMENT_PR_MENTION_SOURCE = 'ClosureComment.prMention';
+export const CLOSURE_COMMENT_FIX_PROOF_SOURCE = 'ClosureComment.fixProof';
 
 export const CREDITED_FIX_LINK_SOURCES = [
   'closedByPullRequestsReferences',
   'ClosedEvent.closer',
-  CLOSURE_COMMENT_PR_MENTION_SOURCE,
+  CLOSURE_COMMENT_FIX_PROOF_SOURCE,
 ] as const;
 
 export function creditedFixLinkSql(alias = 'l'): string {

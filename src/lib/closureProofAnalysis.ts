@@ -1,6 +1,6 @@
 import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertPullRequestFix } from './db';
-import { classifyClosureProof } from './closureProof';
-import { CLOSURE_COMMENT_PR_MENTION_SOURCE, creditedFixLinkSql } from './fixProvenance';
+import { classifyClosureProof, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
+import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
 import { closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch } from './github';
 
 export interface ClosureProofAnalysisResult {
@@ -17,39 +17,24 @@ export interface ClosureProofAnalysisResult {
 const closedIssueRowsStmt = db.prepare(`
 WITH target AS (
   SELECT * FROM releases WHERE tag=?
-),
-closed AS (
-  SELECT DISTINCT
-    i.number,
-    i.title,
-    i.closed_at,
-    c.sentiment
-  FROM issues i
-  JOIN classifications c ON c.issue_number=i.number
-  JOIN target
-  WHERE i.closed_at IS NOT NULL
-    AND target.published_at IS NOT NULL
-    AND i.closed_at >= target.published_at
-    AND i.closed_at < COALESCE(
-      (SELECT MIN(next.published_at) FROM releases next
-       WHERE next.published_at > target.published_at AND next.prerelease=0),
-      '9999-12-31T23:59:59Z'
-    )
-    AND NOT EXISTS (
-      SELECT 1
-      FROM issue_closure_events e
-      JOIN issue_pr_links l ON l.issue_number=e.issue_number
-      JOIN pull_request_fixes p ON p.pr_number=l.pr_number
-      JOIN release_pr_reachability rpr ON rpr.tag=target.tag AND rpr.pr_number=p.pr_number
-      WHERE e.issue_number=i.number
-        AND e.state_reason='COMPLETED'
-        AND p.merged=1
-        AND rpr.status='reachable'
-        AND ${creditedFixLinkSql('l')}
-    )
 )
-SELECT * FROM closed
-ORDER BY closed_at DESC
+SELECT DISTINCT
+  i.number,
+  i.title,
+  i.closed_at,
+  c.sentiment
+FROM issues i
+JOIN classifications c ON c.issue_number=i.number
+JOIN target
+WHERE i.closed_at IS NOT NULL
+  AND target.published_at IS NOT NULL
+  AND i.closed_at >= target.published_at
+  AND i.closed_at < COALESCE(
+    (SELECT MIN(next.published_at) FROM releases next
+     WHERE next.published_at > target.published_at AND next.prerelease=0),
+    '9999-12-31T23:59:59Z'
+  )
+ORDER BY i.closed_at DESC
 `);
 
 const allClosedIssueRowsStmt = db.prepare(`
@@ -74,6 +59,18 @@ ORDER BY i.number DESC
 const aggregateRowsStmt = db.prepare(`
 WITH selected(issue_number) AS (
   SELECT value FROM json_each(?)
+),
+latest_closure AS (
+  SELECT issue_number, MAX(closed_at) AS closed_at
+  FROM issue_closure_events
+  GROUP BY issue_number
+),
+final_closure AS (
+  SELECT e.*
+  FROM issue_closure_events e
+  JOIN latest_closure latest
+    ON latest.issue_number=e.issue_number
+   AND latest.closed_at=e.closed_at
 )
 SELECT
   i.number,
@@ -84,35 +81,40 @@ SELECT
   GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
   COUNT(DISTINCT e.event_id) AS closure_events,
   COUNT(DISTINCT CASE
-    WHEN ${creditedFixLinkSql('l')}
+    WHEN e.state_reason='COMPLETED'
+     AND ${creditedFixLinkSql('l')}
     THEN l.pr_number END
   ) AS closing_links,
   COUNT(DISTINCT CASE
-    WHEN ${creditedFixLinkSql('l')}
+    WHEN e.state_reason='COMPLETED'
+     AND ${creditedFixLinkSql('l')}
      AND p.merged=1
     THEN p.pr_number END
   ) AS merged_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN ${creditedFixLinkSql('l')}
+    WHEN e.state_reason='COMPLETED'
+     AND ${creditedFixLinkSql('l')}
      AND p.merged=1
      AND rpr.status='reachable'
     THEN p.pr_number END
   ) AS reachable_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN ${creditedFixLinkSql('l')}
+    WHEN e.state_reason='COMPLETED'
+     AND ${creditedFixLinkSql('l')}
      AND p.merged=1
      AND rpr.status='not_reachable'
     THEN p.pr_number END
   ) AS not_reachable_closing_prs,
   GROUP_CONCAT(DISTINCT CASE
-    WHEN ${creditedFixLinkSql('l')}
+    WHEN e.state_reason='COMPLETED'
+     AND ${creditedFixLinkSql('l')}
     THEN p.pr_number || ':' || COALESCE(p.title, '')
     END
   ) AS closing_prs
 FROM selected
 JOIN issues i ON i.number=selected.issue_number
 LEFT JOIN classifications c ON c.issue_number=i.number
-LEFT JOIN issue_closure_events e ON e.issue_number=i.number
+LEFT JOIN final_closure e ON e.issue_number=i.number
 LEFT JOIN issue_pr_links l ON l.issue_number=i.number
 LEFT JOIN pull_request_fixes p ON p.pr_number=l.pr_number
 LEFT JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_number=l.pr_number
@@ -123,13 +125,18 @@ ORDER BY i.closed_at DESC
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
-  const rawEvidence = await refreshRawClosureEvidence(issueNumbers);
+  const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
   const aggregateRows = issueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
   const counts = new Map<string, number>();
   deleteIssueClosureProofsForRelease(releaseTag);
+  const preparedRows: Array<{
+    issueNumber: number;
+    result: ClosureProofResult;
+    evidence: Record<string, unknown>;
+  }> = [];
 
   for (const row of aggregateRows) {
     const comments = (commentsByIssue.get(row.number) ?? []).map((comment) => ({
@@ -149,21 +156,34 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       hasNotReachableClosingPr: Number(row.not_reachable_closing_prs ?? 0) > 0,
       comments,
     });
-    const evidence = {
+    const evidence: Record<string, unknown> = {
       ...result.evidence,
       title: row.title,
       closedAt: row.closed_at,
       closingPrs: splitCsv(row.closing_prs),
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
+    preparedRows.push({ issueNumber: row.number, result, evidence });
+  }
+
+  const canonicalGraph = new Map<number, number[]>();
+  for (const item of preparedRows) {
+    const canonicalIssues = Array.isArray(item.evidence.canonicalIssues)
+      ? (item.evidence.canonicalIssues as unknown[]).filter((n): n is number => typeof n === 'number')
+      : [];
+    canonicalGraph.set(item.issueNumber, canonicalIssues);
+  }
+
+  for (const item of preparedRows) {
+    const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph);
     upsertIssueClosureProof({
       release_tag: releaseTag,
-      issue_number: row.number,
-      status: result.status,
-      summary: result.summary,
-      evidence_json: JSON.stringify(evidence),
+      issue_number: item.issueNumber,
+      status: adjusted.status,
+      summary: adjusted.summary,
+      evidence_json: JSON.stringify(adjusted.evidence),
     });
-    counts.set(result.status, (counts.get(result.status) ?? 0) + 1);
+    counts.set(adjusted.status, (counts.get(adjusted.status) ?? 0) + 1);
   }
 
   return {
@@ -174,6 +194,90 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   };
 }
 
+function adjustCanonicalDuplicateStatus(
+  sourceIssueNumber: number,
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+  canonicalGraph: Map<number, number[]>,
+): ClosureProofResult {
+  if (result.status !== 'duplicate_or_superseded') return { ...result, evidence };
+  const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph);
+  const nextEvidence = { ...evidence, canonicalResolution: resolution };
+  if (resolution.cycle || resolution.selfReference) {
+    return {
+      status: 'canonical_cycle_or_self_reference',
+      summary: 'Closed as duplicate/superseded, but canonical reference loops back to the same issue.',
+      evidence: nextEvidence,
+    };
+  }
+  if (resolution.terminalIssue?.state === 'open') {
+    return {
+      status: 'duplicate_to_open_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue remains open.',
+      evidence: nextEvidence,
+    };
+  }
+  if (resolution.terminalIssue?.state === 'closed') {
+    return {
+      status: 'duplicate_to_closed_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue is also closed.',
+      evidence: nextEvidence,
+    };
+  }
+  return { ...result, evidence: nextEvidence };
+}
+
+function canonicalResolution(
+  sourceIssueNumber: number,
+  graph: Map<number, number[]>,
+): {
+  path: number[];
+  terminalIssue: { number: number; title: string | null; state: string | null; url: string | null } | null;
+  cycle: boolean;
+  selfReference: boolean;
+} {
+  const path = [sourceIssueNumber];
+  const seen = new Set(path);
+  let current = sourceIssueNumber;
+  let selfReference = false;
+  for (let depth = 0; depth < 8; depth++) {
+    const targets = (graph.get(current) ?? []).filter((number) => Number.isInteger(number));
+    const next = targets.find((number) => number !== current);
+    if (!next) {
+      selfReference = targets.includes(current);
+      break;
+    }
+    if (seen.has(next)) {
+      path.push(next);
+      return { path, terminalIssue: issueDetails(next), cycle: true, selfReference: next === sourceIssueNumber };
+    }
+    path.push(next);
+    seen.add(next);
+    current = next;
+  }
+  return {
+    path,
+    terminalIssue: path.length > 1 ? issueDetails(path[path.length - 1]) : null,
+    cycle: false,
+    selfReference,
+  };
+}
+
+function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {
+  const row = db.prepare(`SELECT number, title, state, html_url FROM issues WHERE number=?`).get(number) as {
+    number: number;
+    title: string;
+    state: string;
+    html_url: string | null;
+  } | undefined;
+  return row ? { number: row.number, title: row.title, state: row.state, url: row.html_url ?? null } : {
+    number,
+    title: null,
+    state: null,
+    url: null,
+  };
+}
+
 export async function refreshClosureEvidenceForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult['rawEvidence'] & {
   issueCount: number;
 }> {
@@ -181,6 +285,32 @@ export async function refreshClosureEvidenceForRelease(releaseTag: string): Prom
   const issueNumbers = rows.map((row) => row.number);
   const rawEvidence = await refreshRawClosureEvidence(issueNumbers);
   return { issueCount: issueNumbers.length, ...rawEvidence };
+}
+
+function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisResult['rawEvidence'] {
+  if (!issueNumbers.length) return { closureEvents: 0, prLinks: 0, pullRequests: 0 };
+  const selected = JSON.stringify(issueNumbers);
+  const row = db.prepare(`
+    WITH selected(issue_number) AS (
+      SELECT value FROM json_each(?)
+    )
+    SELECT
+      (SELECT COUNT(DISTINCT e.event_id)
+       FROM issue_closure_events e
+       JOIN selected s ON s.issue_number=e.issue_number) AS closureEvents,
+      (SELECT COUNT(*)
+       FROM issue_pr_links l
+       JOIN selected s ON s.issue_number=l.issue_number) AS prLinks,
+      (SELECT COUNT(DISTINCT p.pr_number)
+       FROM pull_request_fixes p
+       JOIN issue_pr_links l ON l.pr_number=p.pr_number
+       JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests
+  `).get(selected) as { closureEvents: number; prLinks: number; pullRequests: number } | undefined;
+  return {
+    closureEvents: Number(row?.closureEvents ?? 0),
+    prLinks: Number(row?.prLinks ?? 0),
+    pullRequests: Number(row?.pullRequests ?? 0),
+  };
 }
 
 async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<ClosureProofAnalysisResult['rawEvidence']> {
@@ -242,7 +372,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       upsertIssuePrLink({
         issue_number: mention.issueNumber,
         pr_number: mention.prNumber,
-        source: CLOSURE_COMMENT_PR_MENTION_SOURCE,
+        source: CLOSURE_COMMENT_FIX_PROOF_SOURCE,
         will_close_target: null,
         referenced_at: mention.referencedAt,
       });

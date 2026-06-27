@@ -874,6 +874,7 @@ export function closureCommentPrMentions(
 function extractClosureCommentPrNumbers(body: string): number[] {
   const numbers = new Set<number>();
   const text = body.replace(/\s+/g, ' ');
+  if (!isClosureFixProofComment(text)) return [];
 
   for (const match of text.matchAll(/https?:\/\/(?:api\.)?github\.com\/repos\/openclaw\/openclaw\/pulls?\/(\d+)|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/(\d+)/gi)) {
     addPrNumber(numbers, match[1] ?? match[2]);
@@ -885,6 +886,15 @@ function extractClosureCommentPrNumbers(body: string): number[] {
   }
 
   return [...numbers].sort((a, b) => a - b);
+}
+
+function isClosureFixProofComment(text: string): boolean {
+  return (
+    /\bfound\s+the\s+merged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
+    /\bmerged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
+    /\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b.{0,160}\bmerged\s+(?:pr|pull request)\b/i.test(text) ||
+    /\b(?:pr|pull request)\s*#?\d+\b.{0,120}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\s+(?:this|the report|the issue)\b/i.test(text)
+  );
 }
 
 function addPrNumber(numbers: Set<number>, raw: string | undefined): void {

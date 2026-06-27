@@ -781,11 +781,14 @@ LEFT JOIN classifications c ON c.issue_number=p.issue_number
 WHERE p.release_tag=?
 ORDER BY
   CASE p.status
-    WHEN 'fixed_after_release' THEN 0
-    WHEN 'already_present_claim' THEN 1
-    WHEN 'duplicate_or_superseded' THEN 2
-    WHEN 'no_code_proof' THEN 3
-    ELSE 4
+    WHEN 'duplicate_to_open_canonical' THEN 0
+    WHEN 'fixed_after_release' THEN 1
+    WHEN 'already_present_claim' THEN 2
+    WHEN 'duplicate_to_closed_canonical' THEN 3
+    WHEN 'canonical_cycle_or_self_reference' THEN 4
+    WHEN 'duplicate_or_superseded' THEN 5
+    WHEN 'no_code_proof' THEN 6
+    ELSE 7
   END,
   i.closed_at DESC
 LIMIT ?
@@ -1210,13 +1213,25 @@ export function closedDuringReign(tag: string): JoinedIssue[] {
 }
 
 const verifiedFixedForReleaseStmt = db.prepare(`
+WITH latest_closure AS (
+  SELECT issue_number, MAX(closed_at) AS closed_at
+  FROM issue_closure_events
+  GROUP BY issue_number
+),
+final_closure AS (
+  SELECT e.*
+  FROM issue_closure_events e
+  JOIN latest_closure latest
+    ON latest.issue_number=e.issue_number
+   AND latest.closed_at=e.closed_at
+)
 SELECT DISTINCT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
        c.confidence, c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
-JOIN issue_closure_events e ON e.issue_number = i.number
+JOIN final_closure e ON e.issue_number = i.number
 JOIN issue_pr_links l ON l.issue_number = i.number
 JOIN pull_request_fixes p ON p.pr_number = l.pr_number
 JOIN release_pr_reachability rpr ON rpr.tag = ? AND rpr.pr_number = p.pr_number
@@ -1250,8 +1265,20 @@ WHERE
         '9999-12-31T23:59:59Z'
       )
   AND NOT EXISTS (
+    WITH latest_closure AS (
+      SELECT issue_number, MAX(closed_at) AS closed_at
+      FROM issue_closure_events
+      GROUP BY issue_number
+    ),
+    final_closure AS (
+      SELECT e.*
+      FROM issue_closure_events e
+      JOIN latest_closure latest
+        ON latest.issue_number=e.issue_number
+       AND latest.closed_at=e.closed_at
+    )
     SELECT 1
-    FROM issue_closure_events e
+    FROM final_closure e
     JOIN issue_pr_links l ON l.issue_number = e.issue_number
     JOIN pull_request_fixes p ON p.pr_number = l.pr_number
     JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number

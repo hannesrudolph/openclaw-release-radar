@@ -1680,6 +1680,9 @@ function closureStatusLabel(status) {
   return ({
     fixed_in_release: 'fixed in this release',
     fixed_after_release: 'fixed after this release',
+    duplicate_to_open_canonical: 'moved to open canonical',
+    duplicate_to_closed_canonical: 'moved to closed canonical',
+    canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
     main_only_claim: 'main-only claim',
@@ -1719,10 +1722,18 @@ function closureProofHtml(closureProof) {
             : esc(label);
         }).join(', ')}`
       : '';
+    const resolution = item.evidence?.canonicalResolution;
+    const terminal = resolution?.terminalIssue;
+    const resolutionLine = terminal
+      ? `Canonical resolution: ${terminal.url
+          ? `<a href="${esc(terminal.url)}" target="_blank" rel="noopener">#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}</a>`
+          : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${Array.isArray(resolution.path) && resolution.path.length > 1 ? ` · path ${resolution.path.map((n) => `#${esc(n)}`).join(' → ')}` : ''}`
+      : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
     return `<li class="evidence__item">${link}`
       + `<span class="evidence__meta">${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
+      + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
       + `</li>`;
   }).join('');
@@ -1775,7 +1786,7 @@ function whyNotTenHtml(local) {
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
     reasons.push(
-      `${closureProof.notCreditedCount} closed issues are not counted as fixes for this release.`
+      `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.`
       + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
@@ -1819,6 +1830,12 @@ function scoreReviewHtml(r) {
   const closureProof = fix.closureProof;
   const releaseChecks = local.gateEvidence?.releaseChecks;
   const artifact = local.gateEvidence?.artifactVerification;
+  const releaseFixCredit = fix.releaseFixCredit;
+  const countedClosed = releaseFixCredit?.countedClosedCount ?? closureProof?.creditedCount ?? fix.verifiedFixedCount ?? 0;
+  const notCountedClosed = releaseFixCredit?.notCountedClosedCount ?? closureProof?.notCreditedCount ?? fix.unverifiedClosedCount ?? 0;
+  const analyzedClosed = releaseFixCredit?.analyzedClosedCount ?? (
+    closureProof ? (closureProof.creditedCount ?? 0) + (closureProof.notCreditedCount ?? 0) : null
+  );
   const signalSummary = scoreSignalSummary(local);
   const componentEntries = Object.entries(components);
   const compHtml = componentEntries.length
@@ -1836,7 +1853,7 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? closureProof?.creditedCount ?? 0)} counted · ${esc(closureProof?.notCreditedCount ?? fix.unverifiedClosedCount ?? 0)} not counted</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
     + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}</span></div>` : '')

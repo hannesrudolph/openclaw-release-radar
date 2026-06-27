@@ -89,11 +89,15 @@ describe('GitHub GraphQL mapping', () => {
         body: 'The release note points at https://github.com/openclaw/openclaw/pull/96025.',
         created_at: '2026-06-24T12:00:00Z',
       },
+      {
+        body: 'The merged PR #96040 fixes this report.',
+        created_at: '2026-06-24T13:00:00Z',
+      },
     ]);
 
     assert.deepEqual(mentions, [
       { issueNumber: 9000, prNumber: 95532, referencedAt: '2026-06-24T10:00:00Z' },
-      { issueNumber: 9000, prNumber: 96025, referencedAt: '2026-06-24T12:00:00Z' },
+      { issueNumber: 9000, prNumber: 96040, referencedAt: '2026-06-24T13:00:00Z' },
     ]);
   });
 

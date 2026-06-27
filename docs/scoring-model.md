@@ -65,16 +65,22 @@ A closed issue does not automatically count as fixed for a release.
 Fix credit requires:
 
 - GitHub closure reason is `COMPLETED`.
-- Closing PR is linked through GitHub closure/reference evidence or a verified same-repo PR mention in a closure comment.
+- The final GitHub close event is the `COMPLETED` close. Older close events do not count after reopen/reclose.
+- Closing PR is linked through GitHub closure/reference evidence or a high-confidence same-repo closure/fix proof comment.
 - PR is merged.
 - PR merge commit is reachable from the release tag commit.
 
 Closed issues without a merged linked PR reachable from the release tag remain visible in audit evidence, but they do not reduce release risk.
 
+Broad PR mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix wording such as a maintainer/bot note identifying the merged PR that closed or fixed the report.
+
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
 - `fixed_in_release`: merged closing PR is reachable from this release tag.
 - `fixed_after_release`: merged closing PR exists, but is not reachable from this release tag.
+- `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
+- `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
+- `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR is reachable from the scored release tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
@@ -84,6 +90,14 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `not_planned`: closure reason or comment says the issue was not planned/actionable.
 
 Only `fixed_in_release` receives fix credit. Other buckets preserve the closure context in the audit, but they do not reduce release risk for this tag.
+
+The API exposes a coherent `releaseFixCredit` object:
+
+- `countedClosedCount`: closed issues counted as release fixes.
+- `notCountedClosedCount`: closed issues in the release window not counted as release fixes.
+- `analyzedClosedCount`: total closed issues analyzed for the release window.
+
+The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCount`.
 
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 

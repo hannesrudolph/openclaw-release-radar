@@ -1,6 +1,9 @@
 export type ClosureProofStatus =
   | 'fixed_in_release'
   | 'fixed_after_release'
+  | 'duplicate_to_open_canonical'
+  | 'duplicate_to_closed_canonical'
+  | 'canonical_cycle_or_self_reference'
   | 'duplicate_or_superseded'
   | 'not_planned'
   | 'already_present_claim'
@@ -65,7 +68,9 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
-  if (input.hasReachableClosingPr) {
+  const hasCompletedClosure = reasons.has('COMPLETED');
+
+  if (hasCompletedClosure && input.hasReachableClosingPr) {
     return {
       status: 'fixed_in_release',
       summary: 'Closed by a merged PR reachable from this release tag.',
@@ -73,7 +78,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
-  if (input.hasMergedClosingPr && input.hasNotReachableClosingPr) {
+  if (hasCompletedClosure && input.hasMergedClosingPr && input.hasNotReachableClosingPr) {
     return {
       status: 'fixed_after_release',
       summary: 'Closed by a merged PR, but that PR is not reachable from this release tag.',

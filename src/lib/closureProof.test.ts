@@ -37,6 +37,21 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'fixed_after_release');
   });
 
+  it('does not credit reachable PRs when the closure reason is not completed', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: true,
+      comments: [{
+        author: 'bot',
+        body: 'Close as superseded.\nCanonical: #95750',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [95750]);
+  });
+
   it('recognizes duplicate or superseded closure comments', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],
