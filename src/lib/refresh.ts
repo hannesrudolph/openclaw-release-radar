@@ -21,9 +21,8 @@ import {
 import { verifyNpmArtifact } from './npmRegistry';
 import { verifyEvidenceReportUrl } from './releaseEvidence';
 import { analyzeClosureProofsForRelease, refreshClosureEvidenceForRelease } from './closureProofAnalysis';
-import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { checkReleasePrReachability } from './releaseReachability';
-import { buildReleaseScoreRun, SCORE_MODEL_VERSION } from './releaseScoring';
+import { buildReleaseScoreRun, persistReleaseScoreRun } from './releaseScoring';
 
 // Limited concurrency for LLM classification. During scoring calibration we may
 // intentionally raise this through CLASSIFY_CONCURRENCY to burn tokens for speed.
@@ -59,8 +58,6 @@ import {
   setMeta,
   updateReleaseDerivedStats,
   updateReleaseArtifactVerification,
-  updateReleaseScore,
-  upsertReleaseScoreAudit,
   upsertAdvisory,
   upsertClassification,
   upsertIssue,
@@ -468,50 +465,12 @@ export async function refresh(): Promise<{
     const allFetchedTags = fetched.map((r) => r.tag_name);
 
     const stableTagsNewestFirst = fetched.filter((r) => !r.prerelease).map((r) => r.tag_name);
-    const { scored, recommendedTag } = buildReleaseScoreRun({
+    const scoreRun = buildReleaseScoreRun({
       releases: allReleases,
       allFetchedTags,
       stableTagsNewestFirst,
     });
-
-    for (const s of scored) {
-      const scoredAt = new Date().toISOString();
-      updateReleaseScore({
-        tag: s.rel.tag,
-        final_score: s.conf.score,
-        negative_issues: s.neg,
-        positive_issues: s.pos,
-        state: s.conf.status,
-        recommended: s.rel.tag === recommendedTag ? 1 : 0,
-        score_reason: s.conf.reason,
-        broken_surfaces: s.brokenSurfaces,
-        closed_serious_fixed: s.closedSerious,
-        opened_serious_during_reign: s.openedSerious,
-        scored_at: scoredAt,
-      });
-      upsertReleaseScoreAudit({
-        release_tag: s.rel.tag,
-        scored_at: scoredAt,
-        score_model_version: SCORE_MODEL_VERSION,
-        prompt_version: PROMPT_VERSION,
-        final_score: s.conf.score,
-        status: s.conf.status,
-        band: s.conf.band,
-        recommended: s.rel.tag === recommendedTag ? 1 : 0,
-        input_json: JSON.stringify(s.input),
-        components_json: JSON.stringify({
-          components: s.conf.components,
-          evidenceCoverage: s.conf.evidenceCoverage,
-          hotfix: s.conf.hotfix,
-          reason: s.conf.reason,
-          explanation: s.explanation,
-        }),
-        issue_evidence_json: JSON.stringify(s.debtEvidence),
-        gate_evidence_json: JSON.stringify(s.gateEvidence),
-      });
-    }
-
-    for (const s of scored) persistClosureProofInScoreAudit(s.rel.tag);
+    persistReleaseScoreRun(scoreRun);
 
     lastRefreshAt = new Date().toISOString();
     invalidateCache();

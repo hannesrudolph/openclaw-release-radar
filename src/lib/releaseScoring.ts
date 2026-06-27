@@ -25,6 +25,8 @@ import {
   listAdvisories,
   listReleasesDb,
   openedDuringReign,
+  updateReleaseScore,
+  upsertReleaseScoreAudit,
   unverifiedClosedForRelease,
   verifiedFixedForRelease,
   type JoinedIssue,
@@ -143,6 +145,46 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     explanation: buildScoreExplanation(result, result.rel.tag === recommendedTag),
   }));
   return { scored, recommendedTag };
+}
+
+export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
+  for (const result of run.scored) {
+    const scoredAt = new Date().toISOString();
+    const recommended = result.rel.tag === run.recommendedTag ? 1 : 0;
+    updateReleaseScore({
+      tag: result.rel.tag,
+      final_score: result.conf.score,
+      negative_issues: result.neg,
+      positive_issues: result.pos,
+      state: result.conf.status,
+      recommended,
+      score_reason: result.conf.reason,
+      broken_surfaces: result.brokenSurfaces,
+      closed_serious_fixed: result.closedSerious,
+      opened_serious_during_reign: result.openedSerious,
+      scored_at: scoredAt,
+    });
+    upsertReleaseScoreAudit({
+      release_tag: result.rel.tag,
+      scored_at: scoredAt,
+      score_model_version: SCORE_MODEL_VERSION,
+      prompt_version: PROMPT_VERSION,
+      final_score: result.conf.score,
+      status: result.conf.status,
+      band: result.conf.band,
+      recommended,
+      input_json: JSON.stringify(result.input),
+      components_json: JSON.stringify({
+        components: result.conf.components,
+        evidenceCoverage: result.conf.evidenceCoverage,
+        hotfix: result.conf.hotfix,
+        reason: result.conf.reason,
+        explanation: result.explanation,
+      }),
+      issue_evidence_json: JSON.stringify(result.debtEvidence),
+      gate_evidence_json: JSON.stringify(result.gateEvidence),
+    });
+  }
 }
 
 function scoreRelease(args: {

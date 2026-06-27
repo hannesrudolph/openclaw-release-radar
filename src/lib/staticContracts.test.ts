@@ -63,6 +63,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:score/);
   });
 
+  it('offline score writers use the shared release scorer', () => {
+    const populate = readFileSync(join(root, 'scripts/populate-db.mjs'), 'utf8');
+    assert.match(populate, /buildReleaseScoreRun/);
+    assert.match(populate, /persistReleaseScoreRun/);
+    assert.doesNotMatch(populate, /installConfidence/);
+    assert.doesNotMatch(populate, /openDebtLoad/);
+    assert.doesNotMatch(populate, /feltLoad/);
+  });
+
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
