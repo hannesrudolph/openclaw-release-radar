@@ -118,6 +118,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const audit = reader.getReleaseScoreAudit(tag);
     if (audit) {
     const gate = parseJson(audit.gate_evidence_json, {});
+    verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
     const fix = gate.fixProvenance ?? {};
     expect(failures, tag, fix.verifiedFixedCount === verified.length,
       `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
@@ -149,6 +150,28 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   }
 
   return { releases, rows, failures };
+}
+
+function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
+  expect(failures, tag, isObject(labelTimeline), 'persisted audit gateEvidence must include labelTimeline coverage');
+  if (!isObject(labelTimeline)) return;
+  for (const key of ['issueCount', 'currentLabelCount', 'timelineLabelCount', 'missingTimelineCount', 'missingTimelineWithCurrentLabelsCount']) {
+    expect(failures, tag, Number.isInteger(labelTimeline[key]) && labelTimeline[key] >= 0,
+      `labelTimeline ${key} must be a non-negative integer`);
+  }
+  const sourceTotal = Number(labelTimeline.currentLabelCount ?? -1) +
+    Number(labelTimeline.timelineLabelCount ?? -1) +
+    Number(labelTimeline.missingTimelineCount ?? -1);
+  expect(failures, tag, sourceTotal === labelTimeline.issueCount,
+    `labelTimeline source counts (${sourceTotal}) must equal issueCount (${labelTimeline.issueCount})`);
+  expect(failures, tag, labelTimeline.missingTimelineWithCurrentLabelsCount <= labelTimeline.missingTimelineCount,
+    'labelTimeline missingTimelineWithCurrentLabelsCount must not exceed missingTimelineCount');
+  expect(failures, tag, typeof labelTimeline.historicalCurrentLabelFallbackAllowed === 'boolean',
+    'labelTimeline historicalCurrentLabelFallbackAllowed must be boolean');
+  if (labelTimeline.cutoffAt != null) {
+    expect(failures, tag, labelTimeline.historicalCurrentLabelFallbackAllowed === false,
+      'historical label cutoffs must not allow current-label fallback');
+  }
 }
 
 function verifyProofEvidenceShape({ failures, tag, row, evidence }) {

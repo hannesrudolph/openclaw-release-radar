@@ -1687,6 +1687,11 @@ function issueListText(issues, limit = 2) {
     .join('; ');
 }
 
+function sentenceSuffix(label, text) {
+  if (!text) return '';
+  return ` ${label}: ${text}${/[.!?]$/.test(text) ? '' : '.'}`;
+}
+
 function closureStatusLabel(status) {
   return ({
     fixed_in_release: 'fixed in this release',
@@ -1803,7 +1808,7 @@ function whyNotTenHtml(local) {
     const example = issueListText(openedStillOpen.length ? openedStillOpen : opened);
     reasons.push(
       `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.`
-      + (example ? ` Examples: ${example}.` : '')
+      + sentenceSuffix('Examples', example)
     );
   }
 
@@ -1811,7 +1816,7 @@ function whyNotTenHtml(local) {
     const example = issueListText(carryover);
     reasons.push(
       `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${esc(components.carryoverDebt ?? 0)} points.`
-      + (example ? ` Top examples: ${example}.` : '')
+      + sentenceSuffix('Top examples', example)
     );
   }
 

@@ -2,6 +2,16 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { verifyReleaseAudit } from '../../scripts/lib/release-audit-invariants.mjs';
 
+const labelTimelineFixture = {
+  cutoffAt: null,
+  issueCount: 1,
+  currentLabelCount: 1,
+  timelineLabelCount: 0,
+  missingTimelineCount: 0,
+  missingTimelineWithCurrentLabelsCount: 0,
+  historicalCurrentLabelFallbackAllowed: true,
+};
+
 function reader(overrides: Partial<{
   releases: any[];
   closed: any[];
@@ -31,6 +41,7 @@ function reader(overrides: Partial<{
     }],
     audit: {
       gate_evidence_json: JSON.stringify({
+        labelTimeline: labelTimelineFixture,
         fixProvenance: {
           verifiedFixedCount: 1,
           unverifiedClosedCount: 0,
@@ -157,6 +168,7 @@ describe('verifyReleaseAudit', () => {
       reader: reader({
         audit: {
           gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
             fixProvenance: {
               verifiedFixedCount: 2,
               unverifiedClosedCount: 0,
@@ -191,6 +203,7 @@ describe('verifyReleaseAudit', () => {
         }],
         audit: {
           gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
             fixProvenance: {
               verifiedFixedCount: 0,
               unverifiedClosedCount: 1,

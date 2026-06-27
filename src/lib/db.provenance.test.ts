@@ -278,6 +278,10 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.labelsForIssueAt(7101, ['fallback'], '2026-06-02T12:00:00Z').sort(), ['P1', 'bug']);
     assert.deepEqual(db.labelsForIssueAt(7101, ['fallback'], '2026-06-04T00:00:00Z'), ['bug']);
     assert.deepEqual(db.labelsForIssueAt(9999, ['fallback'], '2026-06-04T00:00:00Z'), ['fallback']);
+    assert.deepEqual(
+      db.labelsForIssueAt(9999, ['fallback'], '2026-06-04T00:00:00Z', { useFallbackWhenNoEvents: false }),
+      [],
+    );
   });
 
   it('counts only completed issues fixed by merged reachable PRs or proof rows', async () => {

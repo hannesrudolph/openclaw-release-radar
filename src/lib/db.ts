@@ -733,9 +733,18 @@ ORDER BY created_at ASC, event_id ASC
 
 const issueLabelEventCountStmt = db.prepare(`SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?`);
 
-export function labelsForIssueAt(issueNumber: number, fallbackLabels: string[], cutoff: string | null): string[] {
-  const eventCount = Number((issueLabelEventCountStmt.get(issueNumber) as { count: number }).count ?? 0);
-  if (eventCount === 0) return fallbackLabels;
+export function issueLabelEventCount(issueNumber: number): number {
+  return Number((issueLabelEventCountStmt.get(issueNumber) as { count: number }).count ?? 0);
+}
+
+export function labelsForIssueAt(
+  issueNumber: number,
+  fallbackLabels: string[],
+  cutoff: string | null,
+  options: { useFallbackWhenNoEvents?: boolean } = {},
+): string[] {
+  const eventCount = issueLabelEventCount(issueNumber);
+  if (eventCount === 0) return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
   const labels = new Set<string>();
   const rows = issueLabelEventsUntilStmt.all(issueNumber, cutoff, cutoff) as Array<{ action: string; label_name: string }>;
   for (const row of rows) {

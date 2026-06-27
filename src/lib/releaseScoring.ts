@@ -19,6 +19,7 @@ import { topBrokenSurfaces } from './surfaces';
 import { enrichGateEvidenceWithClosureProof } from './closureProofPayload';
 import {
   getReleaseCommit,
+  issueLabelEventCount,
   issueCountForVersion,
   issuesForVersion,
   labelsForIssueAt,
@@ -197,8 +198,30 @@ function scoreRelease(args: {
 }): ReleaseScoreResult {
   const { release: rel } = args;
   const labelCutoff = releaseLabelCutoff(rel);
-  const effectiveLabels = (row: JoinedIssue): string[] =>
-    labelsForIssueAt(row.number, safeParseLabels(row.labels), labelCutoff);
+  const labelInfoByIssue = new Map<number, {
+    labels: string[];
+    currentLabels: string[];
+    timelineEventCount: number;
+    source: 'current' | 'timeline' | 'missing_timeline';
+  }>();
+  const labelInfo = (row: JoinedIssue) => {
+    const cached = labelInfoByIssue.get(row.number);
+    if (cached) return cached;
+    const currentLabels = safeParseLabels(row.labels);
+    const timelineEventCount = issueLabelEventCount(row.number);
+    const labels = labelsForIssueAt(row.number, currentLabels, labelCutoff, {
+      useFallbackWhenNoEvents: labelCutoff == null,
+    });
+    const source: 'current' | 'timeline' | 'missing_timeline' = labelCutoff == null
+      ? 'current'
+      : timelineEventCount > 0
+        ? 'timeline'
+        : 'missing_timeline';
+    const info = { labels, currentLabels, timelineEventCount, source };
+    labelInfoByIssue.set(row.number, info);
+    return info;
+  };
+  const effectiveLabels = (row: JoinedIssue): string[] => labelInfo(row).labels;
   const classify = (row: JoinedIssue): IssueClassification =>
     classifyIssueRowWithLabels(row, effectiveLabels(row));
   const countCoreSerious = (rows: JoinedIssue[]): number =>
@@ -310,9 +333,11 @@ function scoreRelease(args: {
       commenterScanTruncated: row.commenter_scan_truncated,
       reactionTotal: row.reaction_total,
       positiveReactions: row.positive_reactions,
-      labels: effectiveLabels(row),
-      currentLabels: safeParseLabels(row.labels),
+      labels: labelInfo(row).labels,
+      currentLabels: labelInfo(row).currentLabels,
       labelCutoffAt: labelCutoff,
+      labelTimelineEventCount: labelInfo(row).timelineEventCount,
+      labelSource: labelInfo(row).source,
       affectsVersion: row.affects_version,
       duplicateCluster: row.duplicate_cluster,
       classification,
@@ -342,6 +367,11 @@ function scoreRelease(args: {
       .slice(0, 25)
       .map((row) => summarizeIssue(row)),
   };
+  const labelTimeline = labelTimelineCoverage(
+    [...attributed, ...openedReign, ...verifiedFixed, ...unverifiedClosed],
+    labelInfo,
+    labelCutoff,
+  );
   const gateEvidence = enrichGateEvidenceWithClosureProof(rel.tag, {
     cve,
     stableTagsNewestFirst: args.stableTagsNewestFirst,
@@ -375,6 +405,7 @@ function scoreRelease(args: {
       verified: rel.artifact_verified === 1,
       mismatch: rel.artifact_mismatch,
     },
+    labelTimeline,
     fixProvenance: {
       verifiedFixedCount: verifiedFixed.length,
       unverifiedClosedCount: unverifiedClosed.length,
@@ -433,7 +464,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     addLimit(
       'field_visible_reports_opened',
       `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.` +
-      (example ? ` Examples: ${example}.` : ''),
+      sentenceSuffix('Examples', example),
       {
         metrics: { openedCount: opened.length, stillOpenCount: openedStillOpen.length },
         issueRefs: issueRefs(examples),
@@ -446,7 +477,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     addLimit(
       'source_carryover_risk',
       `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${penaltyText(components.carryoverDebt)}.` +
-      (example ? ` Top examples: ${example}.` : ''),
+      sentenceSuffix('Top examples', example),
       {
         metrics: {
           rawWeight: roundMetric(input.carryoverDebtWeight),
@@ -579,6 +610,42 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
 }
 
+function labelTimelineCoverage(
+  rows: JoinedIssue[],
+  labelInfo: (row: JoinedIssue) => {
+    labels: string[];
+    currentLabels: string[];
+    timelineEventCount: number;
+    source: 'current' | 'timeline' | 'missing_timeline';
+  },
+  cutoffAt: string | null,
+): Record<string, unknown> {
+  const byIssue = new Map<number, JoinedIssue>();
+  for (const row of rows) byIssue.set(row.number, row);
+  let current = 0;
+  let timeline = 0;
+  let missingTimeline = 0;
+  let missingTimelineWithCurrentLabels = 0;
+  for (const row of byIssue.values()) {
+    const info = labelInfo(row);
+    if (info.source === 'current') current++;
+    else if (info.source === 'timeline') timeline++;
+    else {
+      missingTimeline++;
+      if (info.currentLabels.length > 0) missingTimelineWithCurrentLabels++;
+    }
+  }
+  return {
+    cutoffAt,
+    issueCount: byIssue.size,
+    currentLabelCount: current,
+    timelineLabelCount: timeline,
+    missingTimelineCount: missingTimeline,
+    missingTimelineWithCurrentLabelsCount: missingTimelineWithCurrentLabels,
+    historicalCurrentLabelFallbackAllowed: cutoffAt == null,
+  };
+}
+
 function proofBucketsExceptFixed(byStatus: unknown): Record<string, number> {
   if (!byStatus || typeof byStatus !== 'object' || Array.isArray(byStatus)) return {};
   const entries = Object.entries(byStatus as Record<string, unknown>)
@@ -645,6 +712,11 @@ function issueListText(issues: any[], limit = 2): string {
     .map(issueRef)
     .filter(Boolean)
     .join('; ');
+}
+
+function sentenceSuffix(label: string, text: string): string {
+  if (!text) return '';
+  return ` ${label}: ${text}${/[.!?]$/.test(text) ? '' : '.'}`;
 }
 
 function issueRef(issue: any): string {
