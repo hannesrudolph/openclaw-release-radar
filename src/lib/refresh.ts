@@ -504,6 +504,7 @@ export async function refresh(): Promise<{
           evidenceCoverage: s.conf.evidenceCoverage,
           hotfix: s.conf.hotfix,
           reason: s.conf.reason,
+          explanation: s.explanation,
         }),
         issue_evidence_json: JSON.stringify(s.debtEvidence),
         gate_evidence_json: JSON.stringify(s.gateEvidence),

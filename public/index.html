@@ -1759,6 +1759,22 @@ function installVerdictText(local) {
 }
 
 function whyNotTenHtml(local) {
+  const structured = local?.components?.explanation;
+  if (structured && Array.isArray(structured.limits)) {
+    const positives = Array.isArray(structured.positives) ? structured.positives : [];
+    const limits = structured.limits.length ? structured.limits : ['No specific limiting evidence was provided for this score.'];
+    const verdict = structured.verdict || installVerdictText(local);
+    return '<div class="score-explain">'
+      + `<div class="score-explain__title">${esc(structured.title || 'Why not 10?')}</div>`
+      + (positives.length
+        ? `<p><strong>What looks good:</strong> ${esc(positives.join(' '))}</p>`
+        : '')
+      + '<p><strong>What keeps it below perfect:</strong></p>'
+      + '<ul>' + limits.map((reason) => `<li>${esc(reason)}</li>`).join('') + '</ul>'
+      + `<p>${esc(verdict)}</p>`
+      + '</div>';
+  }
+
   const evidence = local?.issueEvidence ?? {};
   const gate = local?.gateEvidence ?? {};
   const input = local?.input ?? {};

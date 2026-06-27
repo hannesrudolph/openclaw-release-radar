@@ -16,6 +16,7 @@ import {
 import { hasHotfixSuccessor } from './releaseNotes';
 import { stableDistance, matchesRange } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
+import { enrichGateEvidenceWithClosureProof } from './closureProofPayload';
 import {
   getReleaseCommit,
   issueCountForVersion,
@@ -44,6 +45,7 @@ export interface ReleaseScoreResult {
   rel: ReleaseRow;
   conf: InstallConfidence;
   input: InstallInput;
+  explanation: ScoreExplanation;
   debtEvidence: Record<string, unknown>;
   gateEvidence: Record<string, unknown>;
   neg: number;
@@ -56,6 +58,13 @@ export interface ReleaseScoreResult {
 export interface ReleaseScoreRun {
   scored: ReleaseScoreResult[];
   recommendedTag: string | null;
+}
+
+export interface ScoreExplanation {
+  title: string;
+  positives: string[];
+  limits: string[];
+  verdict: string;
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -77,7 +86,7 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     return { affected, load };
   };
 
-  const scored = releases.map((release, idx) =>
+  const scoredWithoutExplanation = releases.map((release, idx) =>
     scoreRelease({
       release,
       idx,
@@ -88,8 +97,12 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     }),
   );
   const recommendedTag = pickRecommended(
-    scored.map((s) => ({ tag: s.rel.tag, status: s.conf.status, score: s.conf.score })),
+    scoredWithoutExplanation.map((s) => ({ tag: s.rel.tag, status: s.conf.status, score: s.conf.score })),
   );
+  const scored = scoredWithoutExplanation.map((result) => ({
+    ...result,
+    explanation: buildScoreExplanation(result, result.rel.tag === recommendedTag),
+  }));
   return { scored, recommendedTag };
 }
 
@@ -248,7 +261,7 @@ function scoreRelease(args: {
       .slice(0, 25)
       .map((row) => summarizeIssue(row)),
   };
-  const gateEvidence = {
+  const gateEvidence = enrichGateEvidenceWithClosureProof(rel.tag, {
     cve,
     stableTagsNewestFirst: args.stableTagsNewestFirst,
     betaCount: rel.beta_count,
@@ -285,9 +298,156 @@ function scoreRelease(args: {
       verifiedFixedCount: verifiedFixed.length,
       unverifiedClosedCount: unverifiedClosed.length,
     },
-  };
+  });
 
-  return { rel, conf, input, debtEvidence, gateEvidence, neg, pos, openedSerious, closedSerious, brokenSurfaces };
+  return {
+    rel,
+    conf,
+    input,
+    explanation: { title: 'Why not 10?', positives: [], limits: [], verdict: '' },
+    debtEvidence,
+    gateEvidence,
+    neg,
+    pos,
+    openedSerious,
+    closedSerious,
+    brokenSurfaces,
+  };
+}
+
+function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean): ScoreExplanation {
+  const evidence = result.debtEvidence as any;
+  const gate = result.gateEvidence as any;
+  const input = result.input;
+  const components = (result.conf.components ?? {}) as Partial<Record<string, number>>;
+  const opened = Array.isArray(evidence.openedFeltSerious) ? evidence.openedFeltSerious : [];
+  const openedStillOpen = opened.filter((issue: any) => issue?.state === 'open');
+  const carryover = (Array.isArray(evidence.carryoverDebt) ? evidence.carryoverDebt : [])
+    .map((row: any) => row.issue)
+    .filter(Boolean);
+  const stale = Array.isArray(evidence.staleDebt) ? evidence.staleDebt : [];
+  const verified = Array.isArray(evidence.verifiedDebt) ? evidence.verifiedDebt : [];
+  const limits: string[] = [];
+
+  if (opened.length) {
+    const example = issueListText(openedStillOpen.length ? openedStillOpen : opened);
+    limits.push(
+      `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.` +
+      (example ? ` Examples: ${example}.` : ''),
+    );
+  }
+
+  if ((input.carryoverDebtWeight ?? 0) > 0) {
+    const example = issueListText(carryover);
+    limits.push(
+      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${penaltyText(components.carryoverDebt)}.` +
+      (example ? ` Top examples: ${example}.` : ''),
+    );
+  }
+
+  if ((input.staleDebtWeight ?? 0) > 0) {
+    limits.push(`${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.`);
+  }
+
+  const fix = gate.fixProvenance ?? {};
+  const closureProof = fix.closureProof;
+  if (closureProof?.notCreditedCount > 0) {
+    const bucketText = closureProofSummaryText(closureProof);
+    limits.push(
+      `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.` +
+      (bucketText ? ` Breakdown: ${bucketText}.` : ''),
+    );
+  } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
+    limits.push(`${fix.unverifiedClosedCount} closed issues are not counted as fixes yet because release-tag reachability has not been analyzed for them.`);
+  }
+
+  const artifact = gate.artifactVerification;
+  if (artifact?.ciReportMismatch) {
+    limits.push(`The npm package is verified, but the linked full release evidence report is missing: ${artifact.ciReportMismatch}.`);
+  }
+
+  if (!limits.length && !verified.length) {
+    limits.push('No field-blocker evidence is currently holding this release down; the remaining gap comes from the model ceiling and capped confidence signals.');
+  }
+
+  const positives: string[] = [];
+  if (!verified.length) positives.push('No verified field-blocker debt is currently scoring against this release.');
+  const checks = gate.releaseChecks;
+  if (checks?.failure === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed checks.`);
+  if (artifact?.verified) positives.push('The npm package integrity, tarball, and release SHA match.');
+  if (recommended) positives.push('The release is eligible and recommended.');
+  else if (result.conf.status === 'eligible') positives.push('The release passed hard install gates.');
+
+  return {
+    title: 'Why not 10?',
+    positives,
+    limits,
+    verdict: installVerdictText(result.conf.status, recommended),
+  };
+}
+
+function installVerdictText(status: string, recommended: boolean): string {
+  if (recommended) {
+    return 'This means the release looks safe to install, but the audit still contains field reports, source-derived risk, or closed issues that are not tied to this release tag, so the model will not score it as flawless.';
+  }
+  if (status === 'eligible') {
+    return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';
+  }
+  if (status === 'wait') {
+    return 'This release is not scored yet because it has not had enough time to settle.';
+  }
+  return 'This release is not recommended to install because a hard safety gate is active.';
+}
+
+function closureProofSummaryText(closureProof: any): string {
+  const byStatus = closureProof?.byStatus ?? {};
+  return Object.entries(byStatus)
+    .filter(([status]) => status !== 'fixed_in_release')
+    .sort((a, b) => Number(b[1]) - Number(a[1]))
+    .map(([status, count]) => `${count} ${closureStatusLabel(status)}`)
+    .join(' · ');
+}
+
+function closureStatusLabel(status: string): string {
+  return ({
+    fixed_in_release: 'fixed in this release',
+    fixed_after_release: 'fixed after this release',
+    duplicate_to_open_canonical: 'moved to open canonical',
+    duplicate_to_closed_canonical: 'moved to closed canonical',
+    canonical_cycle_or_self_reference: 'bad canonical reference',
+    duplicate_or_superseded: 'duplicate/superseded',
+    already_present_claim: 'already-present claim',
+    main_only_claim: 'main-only claim',
+    no_code_proof: 'no linked release fix',
+    no_timeline_event: 'close event not fetched',
+    non_bug_neutral: 'not bug evidence',
+    not_planned: 'not planned',
+    unknown: 'not enough release evidence',
+  } as Record<string, string>)[status] ?? String(status ?? 'unknown');
+}
+
+function issueListText(issues: any[], limit = 2): string {
+  return issues
+    .slice(0, limit)
+    .map(issueRef)
+    .filter(Boolean)
+    .join('; ');
+}
+
+function issueRef(issue: any): string {
+  if (!issue?.number) return '';
+  return `#${issue.number} ${shortIssueTitle(issue)}`;
+}
+
+function shortIssueTitle(issue: any): string {
+  const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
+  return title.length > 88 ? `${title.slice(0, 85)}...` : title;
+}
+
+function penaltyText(value: unknown): string {
+  if (typeof value !== 'number') return 'a 0 point penalty';
+  const abs = Math.abs(value);
+  return `a ${abs} point penalty`;
 }
 
 function isCoreSerious(classification: IssueClassification): boolean {

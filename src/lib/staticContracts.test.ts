@@ -32,6 +32,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed hard install gates/);
   });
 
+  it('score explanation prefers backend audit text', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    assert.match(html, /local\?\.components\?\.explanation/);
+    assert.match(html, /structured\.limits/);
+  });
+
   it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {
     const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
     assert.match(script, /--allow-overwrite-local-releases/);
