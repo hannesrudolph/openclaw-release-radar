@@ -278,6 +278,13 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, releaseApi.scoredAt === release.scored_at,
         `releases scoredAt (${releaseApi.scoredAt}) must match DB scored_at (${release.scored_at})`);
       verifyScoreAuditSummary({ failures, tag: release.tag, summary: releaseApi.scoreAudit });
+      verifyScoreExplanation({
+        failures,
+        tag: release.tag,
+        explanation: releaseApi.explanation,
+        recommended: release.recommended === 1,
+        source: 'releases',
+      });
     }
 
     const publicRelease = publicByTag.get(release.tag);
@@ -297,6 +304,13 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         expect(failures, release.tag, issueCount > 0,
           'public release with attributed issues must expose capped issue summaries');
       }
+      verifyScoreExplanation({
+        failures,
+        tag: release.tag,
+        explanation: publicRelease.explanation,
+        recommended: release.recommended === 1,
+        source: 'public',
+      });
     }
 
     const comparison = comparisonByTag.get(release.tag);
@@ -316,6 +330,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       tag: release.tag,
       explanation: review.local?.components?.explanation,
       recommended: release.recommended === 1,
+      source: 'review',
     });
 
     const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
@@ -382,27 +397,27 @@ function verifyScoreAuditSummary({ failures, tag, summary }) {
     `scoreAudit classifiedIssueCount must be a non-negative integer, got ${summary.classifiedIssueCount}`);
 }
 
-function verifyScoreExplanation({ failures, tag, explanation, recommended }) {
-  expect(failures, tag, isObject(explanation), 'review score explanation must be present');
+function verifyScoreExplanation({ failures, tag, explanation, recommended, source }) {
+  expect(failures, tag, isObject(explanation), `${source} score explanation must be present`);
   if (!isObject(explanation)) return;
   expect(failures, tag, explanation.title === 'Why not 10?',
-    `review score explanation title must be "Why not 10?", got ${JSON.stringify(explanation.title)}`);
+    `${source} score explanation title must be "Why not 10?", got ${JSON.stringify(explanation.title)}`);
   expect(failures, tag, isStringArray(explanation.positives) && explanation.positives.length > 0,
-    'review score explanation positives must be a non-empty string array');
+    `${source} score explanation positives must be a non-empty string array`);
   expect(failures, tag, isStringArray(explanation.limits) && explanation.limits.length > 0,
-    'review score explanation limits must be a non-empty string array');
+    `${source} score explanation limits must be a non-empty string array`);
   expect(failures, tag, typeof explanation.verdict === 'string' && explanation.verdict.length > 0,
-    'review score explanation verdict must be present');
+    `${source} score explanation verdict must be present`);
   if (recommended) {
     expect(failures, tag, explanation.positives.some((line) => /recommended/i.test(line)),
-      'recommended release explanation must include a recommended positive signal');
+      `${source} recommended release explanation must include a recommended positive signal`);
     expect(failures, tag, /looks safe to install/i.test(explanation.verdict),
-      'recommended release explanation verdict must include safe-to-install wording');
+      `${source} recommended release explanation verdict must include safe-to-install wording`);
   } else {
     expect(failures, tag, !/looks safe to install/i.test(explanation.verdict),
-      'non-recommended release explanation verdict must not use safe-to-install wording');
+      `${source} non-recommended release explanation verdict must not use safe-to-install wording`);
   }
   for (const line of [...explanation.positives, ...explanation.limits]) {
-    expect(failures, tag, !/\.\.\.\./.test(line), 'score explanation lines must not contain four-dot truncation');
+    expect(failures, tag, !/\.\.\.\./.test(line), `${source} score explanation lines must not contain four-dot truncation`);
   }
 }

@@ -81,6 +81,7 @@ describe('verifyReleaseAudit', () => {
             recommended: true,
             scoredAt: 't',
             scoreAudit,
+            explanation,
             totalAttributedIssues: 1,
             issues: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
           }],
@@ -94,6 +95,7 @@ describe('verifyReleaseAudit', () => {
           recommended: true,
           scoredAt: 't',
           scoreAudit,
+          explanation,
         }];
       }
       if (url.endsWith('/api/comparison')) {

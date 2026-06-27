@@ -191,6 +191,12 @@ function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   };
 }
 
+function scoreExplanation(audit: ReturnType<typeof getReleaseScoreAudit>) {
+  if (!audit) return null;
+  const components = parseJson(audit.components_json, null) as any;
+  return components?.explanation ?? null;
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
@@ -216,6 +222,7 @@ api.get('/releases', (_req, res) => {
         openedSeriousDuringReign: r.opened_serious_during_reign,
         scoredAt: r.scored_at,
         scoreAudit: scoreAuditSummary(audit),
+        explanation: scoreExplanation(audit),
         advisories: {
           affected: summarizeAdvisories(status.affected),
           patched: summarizeAdvisories(status.patched),
@@ -387,6 +394,7 @@ function buildPublicPayload() {
       positiveIssues:    r.positive_issues ?? 0,
       scoredAt:          r.scored_at,
       scoreAudit:        auditSummary,
+      explanation:       scoreExplanation(audit),
       totalAttributedIssues: all.length,
       issues:            topIssues,
       watchIssues,
