@@ -318,7 +318,7 @@ api.get('/releases/:tag/review', (req, res) => {
 // ── Public API ────────────────────────────────────────────────────────────────
 // Single endpoint answering "which stable should I install right now?".
 //
-// score:       Install Confidence 0–10 (higher = safer to install). null when 'wait'.
+// score:       Install Confidence 0–10 (higher = stronger install confidence under current audit gates). null when 'wait'.
 // band:        solid | ok | caution | weak | skip | wait
 // status:      eligible | skip-cve | skip-hotfix | wait
 // recommended: true for the single newest release that passed all gates and scores

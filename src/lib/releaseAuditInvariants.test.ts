@@ -76,7 +76,7 @@ describe('verifyReleaseAudit', () => {
           metrics: { notCountedClosedCount: 1 },
           issueRefs: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
         }],
-        verdict: 'This means the release looks safe to install, but the audit still contains evidence.',
+        verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
       };
       if (url.endsWith('/api/status')) {
         return { refreshing: false, lastError: null, lastRefreshAt: 't', lastScoredAt: 't' };

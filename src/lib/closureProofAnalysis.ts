@@ -113,7 +113,14 @@ SELECT
      AND ${creditedFixLinkSql('l')}
     THEN p.pr_number || ':' || COALESCE(p.title, '')
     END
-  ) AS closing_prs
+  ) AS closing_prs,
+  GROUP_CONCAT(DISTINCT CASE
+    WHEN e.state_reason='COMPLETED'
+     AND e.closer_type='Commit'
+     AND e.closer_oid IS NOT NULL
+    THEN e.closer_oid
+    END
+  ) AS direct_closer_commits
 FROM selected
 JOIN issues i ON i.number=selected.issue_number
 LEFT JOIN classifications c ON c.issue_number=i.number
@@ -159,6 +166,11 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     commitMentionsByIssue.set(issueNumber, mentions);
     for (const mention of mentions) allCommitOids.add(mention.commitOid);
   }
+  for (const row of aggregateRows) {
+    for (const commitOid of splitCsv(row.direct_closer_commits)) {
+      if (fullCommitOidRe.test(commitOid)) allCommitOids.add(commitOid.toLowerCase());
+    }
+  }
   const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids]);
   const counts = new Map<string, number>();
   deleteIssueClosureProofsForRelease(releaseTag);
@@ -174,7 +186,10 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       body: comment.body,
       createdAt: comment.created_at,
     }));
-    const commitProof = commitProofEvidence(commitMentionsByIssue.get(row.number) ?? [], commitReachability);
+    const commitProof = commitProofEvidence([
+      ...(commitMentionsByIssue.get(row.number) ?? []),
+      ...directClosureCommitMentions(row.number, row.direct_closer_commits, row.closed_at),
+    ], commitReachability);
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
     const result = classifyClosureProof({
@@ -251,6 +266,24 @@ function commitProofEvidence(
       evidence: result?.evidence ?? 'reachability_not_checked',
     };
   });
+}
+
+const fullCommitOidRe = /^[0-9a-f]{40}$/i;
+
+function directClosureCommitMentions(
+  issueNumber: number,
+  rawCommitOids: unknown,
+  referencedAt: string | null,
+): ClosureCommentCommitMention[] {
+  return unique(splitCsv(rawCommitOids).map((commitOid) => commitOid.toLowerCase()))
+    .filter((commitOid) => fullCommitOidRe.test(commitOid))
+    .map((commitOid) => ({
+      issueNumber,
+      commitOid,
+      referencedAt,
+      sourceIssueNumber: issueNumber,
+      snippet: `GitHub ClosedEvent closer commit ${commitOid}`,
+    }));
 }
 
 function canonicalIssueNumbersFromComments(comments: GhComment[], sourceIssueNumber: number): number[] {

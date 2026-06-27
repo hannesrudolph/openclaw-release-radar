@@ -26,10 +26,17 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /if \(n >= 5\) return 'var\(--warn\)'/);
   });
 
-  it('safe-to-install wording is limited to recommended releases', () => {
+  it('install wording does not overclaim safety', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
-    assert.match(html, /if \(local\?\.recommended\)[\s\S]*release looks safe to install/);
+    assert.doesNotMatch(html, /release looks safe to install|No safe target|broadly safe/i);
+    assert.match(html, /if \(local\?\.recommended\)[\s\S]*recommended install candidate under the audit gates/);
     assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed hard install gates/);
+  });
+
+  it('empty watchIssues does not hide capped issue evidence', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    assert.match(html, /Array\.isArray\(detail\?\.watchIssues\) && detail\.watchIssues\.length/);
+    assert.doesNotMatch(html, /if \(Array\.isArray\(detail\?\.watchIssues\)\) return detail\.watchIssues/);
   });
 
   it('score explanation prefers backend audit text', () => {
@@ -104,6 +111,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /analyzeClosureProofsForRelease/);
     assert.doesNotMatch(script, /listIssueFixEvidenceBatch/);
     assert.doesNotMatch(script, /upsertIssueClosureEvent/);
+  });
+
+  it('closure proof analysis checks direct commit closers for release reachability', () => {
+    const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    assert.match(analysis, /direct_closer_commits/);
+    assert.match(analysis, /e\.closer_type='Commit'/);
+    assert.match(analysis, /directClosureCommitMentions/);
+    assert.match(analysis, /GitHub ClosedEvent closer commit/);
+    assert.match(analysis, /allCommitOids\.add\(commitOid\.toLowerCase\(\)\)/);
   });
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {

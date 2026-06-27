@@ -532,17 +532,20 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     );
   }
   const checks = gate.releaseChecks;
-  if (checks?.failure === 0 && checks?.success > 0) {
+  if (checks?.failure === 0 && checks?.pending === 0 && checks?.success > 0) {
     addPositive(
       'release_checks_passed',
-      `${checks.success} release checks passed with no failed checks.`,
+      `${checks.success} release checks passed with no failed or pending checks.`,
       { metrics: { success: Number(checks.success ?? 0), failure: Number(checks.failure ?? 0), pending: Number(checks.pending ?? 0) } },
     );
   }
   if (artifact?.verified) {
+    const text = artifact.releaseShaMatches === true
+      ? 'The npm package integrity, tarball, and release SHA match.'
+      : 'The npm package integrity and tarball metadata are verified.';
     addPositive(
       'artifact_verified',
-      'The npm package integrity, tarball, and release SHA match.',
+      text,
       { metrics: { artifactVerified: true, releaseShaMatches: artifact.releaseShaMatches === true } },
     );
   }
@@ -595,7 +598,7 @@ function roundMetric(value: unknown): number {
 
 function installVerdictText(status: string, recommended: boolean): string {
   if (recommended) {
-    return 'This means the release looks safe to install, but the audit still contains field reports, source-derived risk, or closed issues that are not tied to this release tag, so the model will not score it as flawless.';
+    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, source-derived risk, or closed issues not tied to this release tag keep it below a perfect score.';
   }
   if (status === 'eligible') {
     return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';

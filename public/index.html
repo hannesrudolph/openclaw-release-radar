@@ -775,7 +775,7 @@ footer a:hover{color:var(--text)}
           <summary class="help-button" title="Explain the score" aria-label="Explain the score">?</summary>
           <div class="score-explain">
             <div class="score-explain__title">What this score means</div>
-            <p><strong>Global score</strong> estimates whether this stable release is broadly safe to install. It combines hard gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
+            <p><strong>Global score</strong> estimates whether this stable release is a recommended install candidate under the current audit gates. It combines hard gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
             <p><strong>My install</strong> appears after you select a meaningful profile. It keeps global/core issues, keeps issues for your selected surfaces, and filters out unrelated surfaced issues so the trend reflects your setup instead of everyone else's.</p>
             <p>The score is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
           </div>
@@ -953,7 +953,7 @@ function enrichIssue(issue) {
 }
 
 function evidenceIssuesForRelease(detail) {
-  if (Array.isArray(detail?.watchIssues)) return detail.watchIssues.map(enrichIssue);
+  if (Array.isArray(detail?.watchIssues) && detail.watchIssues.length) return detail.watchIssues.map(enrichIssue);
   if (Array.isArray(detail?.issues)) return detail.issues.map(enrichIssue);
   return [];
 }
@@ -1757,7 +1757,7 @@ function closureProofHtml(closureProof) {
 
 function installVerdictText(local) {
   if (local?.recommended) {
-    return 'This means the release looks safe to install, but the audit still contains field reports, source-derived risk, or closed issues that are not tied to this release tag, so the model will not score it as flawless.';
+    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, source-derived risk, or closed issues not tied to this release tag keep it below a perfect score.';
   }
   if (local?.status === 'eligible') {
     return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';
@@ -1845,8 +1845,10 @@ function whyNotTenHtml(local) {
   const positives = [];
   if (!verified.length) positives.push('No verified field-blocker debt is currently scoring against this release.');
   const checks = gate.releaseChecks;
-  if (checks?.failure === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed checks.`);
-  if (artifact?.verified) positives.push('The npm package integrity, tarball, and release SHA match.');
+  if (checks?.failure === 0 && checks?.pending === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed or pending checks.`);
+  if (artifact?.verified) positives.push(artifact.releaseShaMatches === true
+    ? 'The npm package integrity, tarball, and release SHA match.'
+    : 'The npm package integrity and tarball metadata are verified.');
   if (local?.recommended) positives.push('The release is eligible and recommended.');
   else if (local?.status === 'eligible') positives.push('The release passed hard install gates.');
 
@@ -2080,7 +2082,7 @@ function renderPackageCard() {
         </div>
         ${altBlock}
       </a>
-      ${recommended ? `<div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>` : '<div class="pkg-card__cmd state">No safe target right now</div>'}
+      ${recommended ? `<div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>` : '<div class="pkg-card__cmd state">No recommended target right now</div>'}
     </div>`;
   bindInstallCopy();
 }
@@ -2227,7 +2229,7 @@ function categorizeReleases(rows) {
 function renderTarget(categorized) {
   // The recommended release is flagged inline in the list (green row + pill),
   // so there's no prominent callout. We only surface a banner when there is
-  // NO safe target — that's the case worth interrupting the user for.
+  // no recommended target — that's the case worth interrupting the user for.
   const target = categorized.find(c => c.category === 'recommended');
   const targetEl = document.getElementById('recTarget');
   if (target) {
@@ -2238,10 +2240,9 @@ function renderTarget(categorized) {
   targetEl.hidden = false;
   targetEl.className = 'rec-target rec-target--none';
   targetEl.innerHTML = `
-    <div class="rec-target__label">No safe target right now</div>
+    <div class="rec-target__label">No recommended target right now</div>
     <div class="rec-target__reason">
-      All recent releases either have heavy bug-load or haven't settled yet.
-      Wait a few days and check again.
+      None of the loaded releases passed the recommendation gates. Review the rows below or refresh evidence before installing.
     </div>
   `;
 }

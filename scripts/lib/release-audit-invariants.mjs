@@ -473,12 +473,9 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
   if (recommended) {
     expect(failures, tag, explanation.positives.some((line) => /recommended/i.test(line)),
       `${source} recommended release explanation must include a recommended positive signal`);
-    expect(failures, tag, /looks safe to install/i.test(explanation.verdict),
-      `${source} recommended release explanation verdict must include safe-to-install wording`);
-  } else {
-    expect(failures, tag, !/looks safe to install/i.test(explanation.verdict),
-      `${source} non-recommended release explanation verdict must not use safe-to-install wording`);
   }
+  expect(failures, tag, !/looks safe to install|safe target|broadly safe/i.test(explanation.verdict),
+    `${source} score explanation verdict must not overclaim safety`);
   for (const line of [...explanation.positives, ...explanation.limits]) {
     expect(failures, tag, !/\.\.\.\./.test(line), `${source} score explanation lines must not contain four-dot truncation`);
   }
