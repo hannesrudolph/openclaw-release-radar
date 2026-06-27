@@ -217,6 +217,9 @@ export interface ClosureCommentPrMention {
   issueNumber: number;
   prNumber: number;
   referencedAt: string | null;
+  author: string | null;
+  authorAssociation: string | null;
+  trustedSource: boolean;
 }
 
 export interface ClosureCommentCommitMention {
@@ -225,6 +228,10 @@ export interface ClosureCommentCommitMention {
   referencedAt: string | null;
   sourceIssueNumber: number;
   snippet: string;
+  source: 'ClosureComment.fixProof' | 'ClosedEvent.closer';
+  author: string | null;
+  authorAssociation: string | null;
+  trustedSource: boolean;
 }
 
 export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
@@ -966,17 +973,27 @@ function isMissingPullRequestError(e: unknown): boolean {
 
 export function closureCommentPrMentions(
   issueNumber: number,
-  comments: Array<{ body?: string | null; created_at?: string | null; createdAt?: string | null }>,
+  comments: Array<{
+    body?: string | null;
+    created_at?: string | null;
+    createdAt?: string | null;
+    user?: { login?: string | null } | null;
+    author?: string | null;
+    author_association?: string | null;
+    authorAssociation?: string | null;
+  }>,
 ): ClosureCommentPrMention[] {
   const byPr = new Map<number, ClosureCommentPrMention>();
   for (const comment of comments) {
     const body = comment.body ?? '';
+    const trust = closureProofCommentTrust(comment);
+    if (!trust.trustedSource) continue;
     for (const prNumber of extractClosureCommentPrNumbers(body)) {
       if (prNumber === issueNumber) continue;
       const existing = byPr.get(prNumber);
       const referencedAt = comment.created_at ?? comment.createdAt ?? null;
       if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
-        byPr.set(prNumber, { issueNumber, prNumber, referencedAt });
+        byPr.set(prNumber, { issueNumber, prNumber, referencedAt, ...trust });
       }
     }
   }
@@ -985,13 +1002,23 @@ export function closureCommentPrMentions(
 
 export function closureCommentCommitMentions(
   issueNumber: number,
-  comments: Array<{ body?: string | null; created_at?: string | null; createdAt?: string | null }>,
+  comments: Array<{
+    body?: string | null;
+    created_at?: string | null;
+    createdAt?: string | null;
+    user?: { login?: string | null } | null;
+    author?: string | null;
+    author_association?: string | null;
+    authorAssociation?: string | null;
+  }>,
   sourceIssueNumber = issueNumber,
 ): ClosureCommentCommitMention[] {
   const byCommit = new Map<string, ClosureCommentCommitMention>();
   for (const comment of comments) {
     const body = comment.body ?? '';
     const text = body.replace(/\s+/g, ' ');
+    const trust = closureProofCommentTrust(comment);
+    if (!trust.trustedSource) continue;
     if (!isClosureCommitFixProofComment(text)) continue;
     const referencedAt = comment.created_at ?? comment.createdAt ?? null;
     for (const commitOid of extractCommitOids(text)) {
@@ -1003,11 +1030,29 @@ export function closureCommentCommitMentions(
           referencedAt,
           sourceIssueNumber,
           snippet: text.slice(0, 500),
+          source: 'ClosureComment.fixProof',
+          ...trust,
         });
       }
     }
   }
   return [...byCommit.values()].sort((a, b) => a.commitOid.localeCompare(b.commitOid));
+}
+
+const TRUSTED_CLOSURE_PROOF_AUTHORS = new Set(['clawsweeper']);
+const TRUSTED_CLOSURE_PROOF_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+function closureProofCommentTrust(comment: {
+  user?: { login?: string | null } | null;
+  author?: string | null;
+  author_association?: string | null;
+  authorAssociation?: string | null;
+}): { author: string | null; authorAssociation: string | null; trustedSource: boolean } {
+  const author = comment.user?.login ?? comment.author ?? null;
+  const authorAssociation = comment.author_association ?? comment.authorAssociation ?? null;
+  const trustedSource = TRUSTED_CLOSURE_PROOF_ASSOCIATIONS.has(authorAssociation ?? '') ||
+    TRUSTED_CLOSURE_PROOF_AUTHORS.has(String(author ?? '').toLowerCase());
+  return { author, authorAssociation, trustedSource };
 }
 
 function extractClosureCommentPrNumbers(body: string): number[] {

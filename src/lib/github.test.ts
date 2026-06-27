@@ -87,24 +87,46 @@ describe('GitHub GraphQL mapping', () => {
       {
         body: 'I found the merged PR that appears to have closed this: [#95532: fix path](https://api.github.com/repos/openclaw/openclaw/pulls/95532).',
         created_at: '2026-06-24T10:00:00Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
       },
       {
         body: 'See also #12345 and issue #95532 for context; neither line says this is a PR.',
         created_at: '2026-06-24T11:00:00Z',
+        user: { login: 'reporter' },
+        author_association: 'NONE',
       },
       {
         body: 'The release note points at https://github.com/openclaw/openclaw/pull/96025.',
         created_at: '2026-06-24T12:00:00Z',
+        user: { login: 'reporter' },
+        author_association: 'NONE',
       },
       {
         body: 'The merged PR #96040 fixes this report.',
         created_at: '2026-06-24T13:00:00Z',
+        user: { login: 'maintainer' },
+        author_association: 'MEMBER',
       },
     ]);
 
     assert.deepEqual(mentions, [
-      { issueNumber: 9000, prNumber: 95532, referencedAt: '2026-06-24T10:00:00Z' },
-      { issueNumber: 9000, prNumber: 96040, referencedAt: '2026-06-24T13:00:00Z' },
+      {
+        issueNumber: 9000,
+        prNumber: 95532,
+        referencedAt: '2026-06-24T10:00:00Z',
+        author: 'clawsweeper',
+        authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
+      },
+      {
+        issueNumber: 9000,
+        prNumber: 96040,
+        referencedAt: '2026-06-24T13:00:00Z',
+        author: 'maintainer',
+        authorAssociation: 'MEMBER',
+        trustedSource: true,
+      },
     ]);
   });
 
@@ -113,10 +135,20 @@ describe('GitHub GraphQL mapping', () => {
       {
         body: 'Fix provenance: Commit `cfeaf6897fd89201b71ff7d5285e48c5a382ac9a` is titled `fix(cron): clear payload model overrides`. Release provenance: v2026.6.10 contains the same behavior.',
         created_at: '2026-06-27T09:04:25Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
       },
       {
         body: 'Codex review notes: reviewed against c5d34c8376f8aa32744786cae0473c60e39ef444.',
         created_at: '2026-06-27T09:05:25Z',
+        user: { login: 'reporter' },
+        author_association: 'NONE',
+      },
+      {
+        body: 'Fixed by commit bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.',
+        created_at: '2026-06-27T09:06:25Z',
+        user: { login: 'reporter' },
+        author_association: 'NONE',
       },
     ]);
 
@@ -127,6 +159,10 @@ describe('GitHub GraphQL mapping', () => {
         referencedAt: '2026-06-27T09:04:25Z',
         sourceIssueNumber: 97222,
         snippet: 'Fix provenance: Commit `cfeaf6897fd89201b71ff7d5285e48c5a382ac9a` is titled `fix(cron): clear payload model overrides`. Release provenance: v2026.6.10 contains the same behavior.',
+        source: 'ClosureComment.fixProof',
+        author: 'clawsweeper',
+        authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
       },
     ]);
   });

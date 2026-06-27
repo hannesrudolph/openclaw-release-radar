@@ -283,6 +283,10 @@ function directClosureCommitMentions(
       referencedAt,
       sourceIssueNumber: issueNumber,
       snippet: `GitHub ClosedEvent closer commit ${commitOid}`,
+      source: 'ClosedEvent.closer' as const,
+      author: null,
+      authorAssociation: null,
+      trustedSource: true,
     }));
 }
 

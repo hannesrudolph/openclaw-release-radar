@@ -224,6 +224,12 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
       `proof issue #${row.issue_number} fixCommitProof evidence must be present`);
     expect(failures, tag, typeof proof.snippet === 'string' && proof.snippet.length > 0,
       `proof issue #${row.issue_number} fixCommitProof snippet must be present`);
+    if (proof.source === 'ClosureComment.fixProof') {
+      expect(failures, tag, proof.trustedSource === true,
+        `proof issue #${row.issue_number} closure-comment commit proof must come from a trusted source`);
+      expect(failures, tag, typeof proof.author === 'string' && proof.author.length > 0,
+        `proof issue #${row.issue_number} closure-comment commit proof must record an author`);
+    }
     if (proof.status === 'reachable' && typeof proof.commitOid === 'string') proofReachable.push(proof.commitOid);
     if (proof.status === 'not_reachable' && typeof proof.commitOid === 'string') proofNotReachable.push(proof.commitOid);
   }
