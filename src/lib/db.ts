@@ -58,6 +58,16 @@ CREATE TABLE IF NOT EXISTS releases (
   recommended INTEGER NOT NULL DEFAULT 0,
   -- Short human explanation of the Install Confidence verdict, from lib/score.ts.
   score_reason TEXT,
+  npm_package_url TEXT,
+  release_tarball_url TEXT,
+  release_integrity TEXT,
+  release_sha TEXT,
+  full_release_ci_report_url TEXT,
+  registry_version TEXT,
+  registry_integrity TEXT,
+  registry_tarball_url TEXT,
+  artifact_verified INTEGER NOT NULL DEFAULT 0,
+  artifact_mismatch TEXT,
   -- JSON array of the top product surfaces this release breaks (visible regressions),
   -- e.g. [{"label":"Discord","icon":"discord","count":11}]. See lib/surfaces.ts.
   broken_surfaces TEXT
@@ -290,6 +300,16 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN hours_to_next_stable REAL`,
   `ALTER TABLE releases ADD COLUMN recommended INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN score_reason TEXT`,
+  `ALTER TABLE releases ADD COLUMN npm_package_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_tarball_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_integrity TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_sha TEXT`,
+  `ALTER TABLE releases ADD COLUMN full_release_ci_report_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN registry_version TEXT`,
+  `ALTER TABLE releases ADD COLUMN registry_integrity TEXT`,
+  `ALTER TABLE releases ADD COLUMN registry_tarball_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN artifact_verified INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN artifact_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
@@ -372,6 +392,16 @@ export interface ReleaseRow {
   hours_to_next_stable: number | null;
   recommended: number;
   score_reason: string | null;
+  npm_package_url: string | null;
+  release_tarball_url: string | null;
+  release_integrity: string | null;
+  release_sha: string | null;
+  full_release_ci_report_url: string | null;
+  registry_version: string | null;
+  registry_integrity: string | null;
+  registry_tarball_url: string | null;
+  artifact_verified: number;
+  artifact_mismatch: string | null;
   broken_surfaces: string | null;
 }
 
@@ -406,7 +436,12 @@ UPDATE releases SET
   pr_refs_count=:pr_refs_count,
   beta_count=:beta_count,
   hours_to_next_release=:hours_to_next_release,
-  hours_to_next_stable=:hours_to_next_stable
+  hours_to_next_stable=:hours_to_next_stable,
+  npm_package_url=:npm_package_url,
+  release_tarball_url=:release_tarball_url,
+  release_integrity=:release_integrity,
+  release_sha=:release_sha,
+  full_release_ci_report_url=:full_release_ci_report_url
 WHERE tag=:tag
 `);
 
@@ -420,8 +455,41 @@ export function updateReleaseDerivedStats(args: {
   beta_count: number;
   hours_to_next_release: number | null;
   hours_to_next_stable: number | null;
+  npm_package_url?: string | null;
+  release_tarball_url?: string | null;
+  release_integrity?: string | null;
+  release_sha?: string | null;
+  full_release_ci_report_url?: string | null;
 }): void {
-  updateReleaseDerivedStatsStmt.run(args);
+  updateReleaseDerivedStatsStmt.run({
+    ...args,
+    npm_package_url: args.npm_package_url ?? null,
+    release_tarball_url: args.release_tarball_url ?? null,
+    release_integrity: args.release_integrity ?? null,
+    release_sha: args.release_sha ?? null,
+    full_release_ci_report_url: args.full_release_ci_report_url ?? null,
+  });
+}
+
+const updateReleaseArtifactVerificationStmt = db.prepare(`
+UPDATE releases SET
+  registry_version=:registry_version,
+  registry_integrity=:registry_integrity,
+  registry_tarball_url=:registry_tarball_url,
+  artifact_verified=:artifact_verified,
+  artifact_mismatch=:artifact_mismatch
+WHERE tag=:tag
+`);
+
+export function updateReleaseArtifactVerification(args: {
+  tag: string;
+  registry_version: string | null;
+  registry_integrity: string | null;
+  registry_tarball_url: string | null;
+  artifact_verified: number;
+  artifact_mismatch: string | null;
+}): void {
+  updateReleaseArtifactVerificationStmt.run(args);
 }
 
 // Install Confidence score writer. final_score is the 0–10 IC (NULL when 'wait').

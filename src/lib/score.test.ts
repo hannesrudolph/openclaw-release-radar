@@ -145,6 +145,19 @@ describe('installConfidence — graded signals', () => {
     assert.ok(failed < pending, `failed ${failed} should be below pending ${pending}`);
   });
 
+  it('verified artifacts add a small capped confidence bump', () => {
+    const unchecked = score();
+    const verified = score({ artifactVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
+    assert.ok(verified > unchecked);
+    assert.ok(verified - unchecked <= 0.5);
+  });
+
+  it('artifact mismatches penalize release confidence', () => {
+    const verified = score({ artifactVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
+    const mismatch = score({ artifactVerified: false, artifactMismatch: 'registry integrity mismatch' });
+    assert.ok(mismatch < verified);
+  });
+
   it('verified open debt lowers the score even when reign balance is neutral', () => {
     assert.ok(score({ verifiedDebtWeight: 1 }) > score({ verifiedDebtWeight: 30 }));
   });

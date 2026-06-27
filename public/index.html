@@ -1682,6 +1682,7 @@ function scoreReviewHtml(r) {
   const input = row.local.input ?? {};
   const fix = row.local.gateEvidence?.fixProvenance ?? {};
   const releaseChecks = row.local.gateEvidence?.releaseChecks;
+  const artifact = row.local.gateEvidence?.artifactVerification;
   const signalSummary = scoreSignalSummary(row.local);
   const upstream = row.upstream;
   const componentEntries = Object.entries(components);
@@ -1702,6 +1703,7 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? 0)} credited · ${esc(fix.unverifiedClosedCount ?? 0)} unverified</span></div>`
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
+    + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'verified' : 'not verified'}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}</span></div>` : '')
     + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
     + '</div>'
     + compHtml

@@ -28,6 +28,11 @@ export interface ReleaseNotesStats {
   // Distinct `#NNNNN` PR references mentioned anywhere in the body. Deduped so
   // a single PR mentioned in two bullets counts once.
   prRefsCount: number;
+  npmPackageUrl: string | null;
+  registryTarballUrl: string | null;
+  integrity: string | null;
+  releaseSha: string | null;
+  fullReleaseCiReportUrl: string | null;
 }
 
 const EMPTY: ReleaseNotesStats = {
@@ -36,6 +41,11 @@ const EMPTY: ReleaseNotesStats = {
   changesCount: 0,
   highlightsCount: 0,
   prRefsCount: 0,
+  npmPackageUrl: null,
+  registryTarballUrl: null,
+  integrity: null,
+  releaseSha: null,
+  fullReleaseCiReportUrl: null,
 };
 
 // A bullet line: leading `- ` after optional indentation. We intentionally
@@ -51,6 +61,7 @@ const SECTION_LINE = /^#{3,4}\s+(.+?)\s*$/;
 // `#1` is too common as a false positive (e.g. "#1 priority"). Require at
 // least 2 digits — openclaw PR numbers are ≥5 digits anyway.
 const PR_REF = /#(\d{2,})\b/g;
+const RELEASE_VERIFICATION_LINE = /^-\s+([^:]+):\s+(.+?)\s*$/;
 
 export function parseReleaseNotes(body: string | null | undefined): ReleaseNotesStats {
   if (!body) return { ...EMPTY };
@@ -73,6 +84,7 @@ export function parseReleaseNotes(body: string | null | undefined): ReleaseNotes
 
   const prRefs = new Set<string>();
   for (const match of body.matchAll(PR_REF)) prRefs.add(match[1]);
+  const verification = parseReleaseVerification(lines);
 
   return {
     breakingCount:   counts['breaking']   ?? 0,
@@ -80,7 +92,48 @@ export function parseReleaseNotes(body: string | null | undefined): ReleaseNotes
     changesCount:    counts['changes']    ?? 0,
     highlightsCount: counts['highlights'] ?? 0,
     prRefsCount:     prRefs.size,
+    ...verification,
   };
+}
+
+function parseReleaseVerification(lines: string[]): Pick<ReleaseNotesStats,
+  'npmPackageUrl' |
+  'registryTarballUrl' |
+  'integrity' |
+  'releaseSha' |
+  'fullReleaseCiReportUrl'
+> {
+  const result: Pick<ReleaseNotesStats,
+    'npmPackageUrl' |
+    'registryTarballUrl' |
+    'integrity' |
+    'releaseSha' |
+    'fullReleaseCiReportUrl'
+  > = {
+    npmPackageUrl: null,
+    registryTarballUrl: null,
+    integrity: null,
+    releaseSha: null,
+    fullReleaseCiReportUrl: null,
+  };
+  for (const line of lines) {
+    const match = line.match(RELEASE_VERIFICATION_LINE);
+    if (!match) continue;
+    const key = match[1].trim().toLowerCase();
+    const value = stripMarkdownValue(match[2].trim());
+    if (key === 'npm package') result.npmPackageUrl = value;
+    else if (key === 'registry tarball') result.registryTarballUrl = value;
+    else if (key === 'integrity') result.integrity = value;
+    else if (key === 'release sha') result.releaseSha = value;
+    else if (key === 'full release ci report') result.fullReleaseCiReportUrl = value;
+  }
+  return result;
+}
+
+function stripMarkdownValue(value: string): string {
+  const link = value.match(/^\[.*?\]\((.*?)\)$/);
+  if (link) return link[1];
+  return value.replace(/^`|`$/g, '');
 }
 
 // Count how many prereleases sit between a stable release and the previous

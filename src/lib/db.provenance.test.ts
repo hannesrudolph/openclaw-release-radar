@@ -204,6 +204,43 @@ describe('release fix provenance', () => {
     assert.equal(row.check_contexts_json, '[{"name":"build","conclusion":"SUCCESS"}]');
   });
 
+  it('stores release artifact metadata and registry verification', async () => {
+    const db = await freshDb('release-artifacts');
+    seedRelease(db, 'v1');
+
+    db.updateReleaseDerivedStats({
+      tag: 'v1',
+      breaking_count: 0,
+      fixes_count: 0,
+      changes_count: 0,
+      highlights_count: 0,
+      pr_refs_count: 0,
+      beta_count: 0,
+      hours_to_next_release: null,
+      hours_to_next_stable: null,
+      npm_package_url: 'https://www.npmjs.com/package/openclaw/v/1.0.0',
+      release_tarball_url: 'https://registry.npmjs.org/openclaw/-/openclaw-1.0.0.tgz',
+      release_integrity: 'sha512-test',
+      release_sha: 'commit-1',
+      full_release_ci_report_url: 'https://example.test/report.md',
+    });
+    db.updateReleaseArtifactVerification({
+      tag: 'v1',
+      registry_version: '1.0.0',
+      registry_integrity: 'sha512-test',
+      registry_tarball_url: 'https://registry.npmjs.org/openclaw/-/openclaw-1.0.0.tgz',
+      artifact_verified: 1,
+      artifact_mismatch: null,
+    });
+
+    const row = db.getRelease('v1') as any;
+    assert.equal(row.release_integrity, 'sha512-test');
+    assert.equal(row.release_sha, 'commit-1');
+    assert.equal(row.registry_version, '1.0.0');
+    assert.equal(row.registry_integrity, 'sha512-test');
+    assert.equal(row.artifact_verified, 1);
+  });
+
   it('reconstructs issue labels at a cutoff from label timeline events', async () => {
     const db = await freshDb('label-events');
     seedRelease(db, 'v1');

@@ -20,6 +20,7 @@ import {
   hasHotfixSuccessor,
   parseReleaseNotes,
 } from './releaseNotes';
+import { verifyNpmArtifact } from './npmRegistry';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 
@@ -72,6 +73,7 @@ import {
   openedDuringReign,
   setMeta,
   updateReleaseDerivedStats,
+  updateReleaseArtifactVerification,
   updateReleaseScore,
   upsertReleaseScoreAudit,
   upsertAdvisory,
@@ -211,7 +213,33 @@ export async function refresh(): Promise<{
         beta_count: computeBetaCount(releasesForCalc, r.tag_name),
         hours_to_next_release: computeHoursToNextRelease(releasesForCalc, r.tag_name),
         hours_to_next_stable: computeHoursToNextStable(releasesForCalc, r.tag_name),
+        npm_package_url: stats.npmPackageUrl,
+        release_tarball_url: stats.registryTarballUrl,
+        release_integrity: stats.integrity,
+        release_sha: stats.releaseSha,
+        full_release_ci_report_url: stats.fullReleaseCiReportUrl,
       });
+    }
+
+    for (const r of releases) {
+      const stats = parseReleaseNotes(r.body);
+      try {
+        const artifact = await verifyNpmArtifact({
+          tag: r.tag_name,
+          expectedIntegrity: stats.integrity,
+          expectedTarballUrl: stats.registryTarballUrl,
+        });
+        updateReleaseArtifactVerification({
+          tag: r.tag_name,
+          registry_version: artifact.version,
+          registry_integrity: artifact.integrity,
+          registry_tarball_url: artifact.tarballUrl,
+          artifact_verified: artifact.verified ? 1 : 0,
+          artifact_mismatch: artifact.mismatch,
+        });
+      } catch (e) {
+        console.warn(`[artifacts] ${r.tag_name} npm verification failed (continuing): ${(e as Error).message}`);
+      }
     }
 
     for (const r of releases) {
@@ -561,6 +589,12 @@ export async function refresh(): Promise<{
         releaseCheckSuccess: releaseCommit?.check_success ?? 0,
         releaseCheckFailure: releaseCommit?.check_failure ?? 0,
         releaseCheckPending: releaseCommit?.check_pending ?? 0,
+        artifactVerified: rel.artifact_verified === 1,
+        artifactMismatch: rel.artifact_mismatch,
+        releaseIntegrityPresent: !!rel.release_integrity,
+        releaseShaMatches: rel.release_sha && releaseCommit?.tag_commit_oid
+          ? rel.release_sha === releaseCommit.tag_commit_oid
+          : undefined,
       };
       const conf = installConfidence(input);
       const issueByNumber = new Map(attributed.map((row) => [row.number, row]));
@@ -630,6 +664,21 @@ export async function refresh(): Promise<{
           skipped: releaseCommit.check_skipped,
           contexts: parseJsonArray(releaseCommit.check_contexts_json).slice(0, 25),
         } : null,
+        artifactVerification: {
+          npmPackageUrl: rel.npm_package_url,
+          releaseTarballUrl: rel.release_tarball_url,
+          releaseIntegrity: rel.release_integrity,
+          releaseSha: rel.release_sha,
+          releaseShaMatches: rel.release_sha && releaseCommit?.tag_commit_oid
+            ? rel.release_sha === releaseCommit.tag_commit_oid
+            : null,
+          ciReportUrl: rel.full_release_ci_report_url,
+          registryVersion: rel.registry_version,
+          registryIntegrity: rel.registry_integrity,
+          registryTarballUrl: rel.registry_tarball_url,
+          verified: rel.artifact_verified === 1,
+          mismatch: rel.artifact_mismatch,
+        },
         fixProvenance: {
           verifiedFixedCount: verifiedFixed.length,
           unverifiedClosedCount: unverifiedClosed.length,

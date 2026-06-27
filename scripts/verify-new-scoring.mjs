@@ -86,6 +86,10 @@ const scored = releases.map((rel, idx) => {
     releaseCheckSuccess: commit?.check_success ?? 0,
     releaseCheckFailure: commit?.check_failure ?? 0,
     releaseCheckPending: commit?.check_pending ?? 0,
+    artifactVerified: rel.artifact_verified === 1,
+    artifactMismatch: rel.artifact_mismatch,
+    releaseIntegrityPresent: !!rel.release_integrity,
+    releaseShaMatches: rel.release_sha && commit?.tag_commit_oid ? rel.release_sha === commit.tag_commit_oid : undefined,
   });
   return { rel, conf };
 });

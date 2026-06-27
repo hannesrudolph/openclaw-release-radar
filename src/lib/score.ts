@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v8-label-timeline';
+export const SCORE_MODEL_VERSION = 'evidence-v9-artifact-verification';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -30,6 +30,8 @@ const REGRESSION_DOWN = -0.8;
 const REGRESSION_UP = 0.4;
 const RELEASE_CHECK_UP = 0.4;
 const RELEASE_CHECK_DOWN = -1.4;
+const ARTIFACT_UP = 0.35;
+const ARTIFACT_DOWN = -1.2;
 const PRIOR = 12;
 
 const SEVERITY_WEIGHT: Record<string, number> = {
@@ -80,6 +82,10 @@ export interface InstallInput {
   releaseCheckSuccess?: number;
   releaseCheckFailure?: number;
   releaseCheckPending?: number;
+  artifactVerified?: boolean;
+  artifactMismatch?: string | null;
+  releaseIntegrityPresent?: boolean;
+  releaseShaMatches?: boolean;
 }
 
 export interface InstallComponents {
@@ -93,6 +99,7 @@ export interface InstallComponents {
   regression: number;
   breaking: number;
   releaseVerification: number;
+  artifactVerification: number;
 }
 
 export interface InstallConfidence {
@@ -496,6 +503,14 @@ function releaseVerificationPoints(input: InstallInput): number {
   return 0;
 }
 
+function artifactVerificationPoints(input: InstallInput): number {
+  if (input.artifactMismatch) return ARTIFACT_DOWN;
+  if (input.artifactVerified && input.releaseIntegrityPresent && input.releaseShaMatches !== false) {
+    return ARTIFACT_UP;
+  }
+  return 0;
+}
+
 export function cveDecayLoad(items: Array<{ severity: string; distance: number }>): number {
   const severityWeight: Record<string, number> = {
     critical: 4,
@@ -558,6 +573,11 @@ function reasonFor(
   } else if ((input.releaseCheckSuccess ?? 0) > 0 && (input.releaseCheckState ?? '').toUpperCase() === 'SUCCESS') {
     bits.push(`${input.releaseCheckSuccess} release checks passed`);
   }
+  if (input.artifactMismatch) {
+    bits.push('artifact verification mismatch');
+  } else if (input.artifactVerified) {
+    bits.push('npm artifact verified');
+  }
   if (input.betaCount > 0) bits.push(`${input.betaCount} betas baked`);
   if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);
   if (coverage < 0.95) bits.push(`${Math.round(coverage * 100)}% evidence coverage`);
@@ -613,8 +633,9 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
   const regression = regressionPoints(input.feltOpenedWeight, input.feltClosedWeight);
   const breaking = breakingPoints(input.breakingCount);
   const releaseVerification = releaseVerificationPoints(input);
+  const artifactVerification = artifactVerificationPoints(input);
   let score = clamp(
-    BASE + verifiedDebt + carryoverDebt + staleDebt + coverage.points + survival + shakeout + regression + breaking + releaseVerification,
+    BASE + verifiedDebt + carryoverDebt + staleDebt + coverage.points + survival + shakeout + regression + breaking + releaseVerification + artifactVerification,
     0,
     10,
   );
@@ -637,6 +658,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
       regression: round1(regression),
       breaking: round1(breaking),
       releaseVerification: round1(releaseVerification),
+      artifactVerification: round1(artifactVerification),
     },
     evidenceCoverage: coverage.ratio,
     reason: reasonFor(input, hotfix ? 'skip-hotfix' : 'eligible', age, coverage.ratio, {
