@@ -39,7 +39,7 @@ Issue evidence is cluster-aware:
 
 - Duplicate clusters are deduplicated.
 - Independent human reporters increase field/community confidence.
-- Unique human commenters increase field/community confidence.
+- Unique human commenters increase field/community confidence. Refresh cursor-paginates issue comments until exhausted, so commenter counts and comment-derived fix proof are not capped to the most recent page.
 - Reactions only provide a small weight lift; they never make a source-only issue verified.
 - Bot-only activity does not establish field evidence.
 - Raw comment volume alone does not establish field evidence.

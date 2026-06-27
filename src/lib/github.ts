@@ -4,7 +4,7 @@ import { firstPatchedVersion } from './versionMatch';
 const API = 'https://api.github.com/graphql';
 const GRAPHQL_PAGE_SIZE = 100;
 const COMMENT_BATCH_SIZE = 25;
-const RECENT_COMMENT_LIMIT = 100;
+const COMMENT_PAGE_SIZE = 100;
 
 export interface GhRelease {
   tag_name: string;
@@ -133,7 +133,7 @@ interface IssuesQueryData {
 }
 
 interface IssueCommentsQueryData {
-  repository: Record<string, { comments: { nodes: Array<CommentNode | null> | null } } | null> | null;
+  repository: Record<string, { comments: { nodes: Array<CommentNode | null> | null; pageInfo: PageInfo } } | null> | null;
 }
 
 interface SecurityVulnerabilitiesQueryData {
@@ -578,23 +578,36 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
   for (let offset = 0; offset < uniqueIssueNumbers.length; offset += COMMENT_BATCH_SIZE) {
     const chunk = uniqueIssueNumbers.slice(offset, offset + COMMENT_BATCH_SIZE);
     if (chunk.length === 0) continue;
-    const data: IssueCommentsQueryData = await gh<IssueCommentsQueryData>(
-      buildIssueCommentsBatchQuery(chunk.length),
-      repoVars({
-        last: RECENT_COMMENT_LIMIT,
-        ...Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber])),
-      }),
-    );
-
-    const repo = assertRepo(data.repository);
-    for (let idx = 0; idx < chunk.length; idx++) {
-      const issue = repo[`issue${idx}`];
-      all.set(
-        chunk[idx],
-        (issue?.comments.nodes ?? [])
-          .filter((node): node is CommentNode => !!node)
-          .map(mapComment),
+    const cursors = new Map<number, string | null>(chunk.map((issueNumber) => [issueNumber, null]));
+    const done = new Set<number>();
+    while (done.size < chunk.length) {
+      const active = chunk.filter((issueNumber) => !done.has(issueNumber));
+      const data: IssueCommentsQueryData = await gh<IssueCommentsQueryData>(
+        buildIssueCommentsBatchQuery(active.length),
+        repoVars({
+          first: COMMENT_PAGE_SIZE,
+          ...Object.fromEntries(active.flatMap((issueNumber, idx) => [
+            [`number${idx}`, issueNumber],
+            [`after${idx}`, cursors.get(issueNumber) ?? null],
+          ])),
+        }),
       );
+
+      const repo = assertRepo(data.repository);
+      for (let idx = 0; idx < active.length; idx++) {
+        const issueNumber = active[idx];
+        const issue = repo[`issue${idx}`];
+        const comments = all.get(issueNumber) ?? [];
+        comments.push(...((issue?.comments.nodes ?? [])
+          .filter((node): node is CommentNode => !!node)
+          .map(mapComment)));
+        all.set(issueNumber, comments);
+        if (issue?.comments.pageInfo.hasNextPage && issue.comments.pageInfo.endCursor) {
+          cursors.set(issueNumber, issue.comments.pageInfo.endCursor);
+        } else {
+          done.add(issueNumber);
+        }
+      }
     }
   }
 
@@ -602,10 +615,10 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
 }
 
 function buildIssueCommentsBatchQuery(size: number): string {
-  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!, $after${idx}: String`).join(', ');
   const fields = Array.from({ length: size }, (_, idx) => `
     issue${idx}: issue(number: $number${idx}) {
-      comments(last: $last, orderBy: {field: UPDATED_AT, direction: ASC}) {
+      comments(first: $first, after: $after${idx}, orderBy: {field: UPDATED_AT, direction: ASC}) {
         nodes {
           databaseId
           author { login }
@@ -613,10 +626,11 @@ function buildIssueCommentsBatchQuery(size: number): string {
           body
           createdAt
         }
+        pageInfo { hasNextPage endCursor }
       }
     }`).join('\n');
 
-  return `query IssueComments($owner: String!, $repo: String!, $last: Int!, ${vars}) {
+  return `query IssueComments($owner: String!, $repo: String!, $first: Int!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}
     }

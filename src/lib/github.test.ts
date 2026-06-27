@@ -59,9 +59,12 @@ describe('GitHub GraphQL mapping', () => {
 
     assert.match(query, /\$number0: Int!/);
     assert.match(query, /\$number1: Int!/);
+    assert.match(query, /\$after0: String/);
+    assert.match(query, /\$after1: String/);
     assert.match(query, /issue0: issue\(number: \$number0\)/);
     assert.match(query, /issue1: issue\(number: \$number1\)/);
-    assert.match(query, /comments\(last: \$last, orderBy: \{field: UPDATED_AT, direction: ASC\}\)/);
+    assert.match(query, /comments\(first: \$first, after: \$after0, orderBy: \{field: UPDATED_AT, direction: ASC\}\)/);
+    assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(query, /authorAssociation/);
   });
 
