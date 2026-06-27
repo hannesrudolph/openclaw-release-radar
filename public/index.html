@@ -362,11 +362,6 @@ main.main-home{max-width:880px}
   font-size:var(--text-xs);color:var(--muted);line-height:1.45;
 }
 .release--skip .release__reason{color:var(--danger)}
-.comparison-line{
-  font-size:var(--text-xs);color:var(--muted);line-height:1.45;
-  display:flex;gap:var(--space-3);flex-wrap:wrap;
-}
-.comparison-line strong{color:var(--text);font-weight:650}
 /* ── affected-area surface chips ─────────────────────────────────────── */
 /* vertical list — caption and items share the same text colour; icons stay muted */
 .surfaces{
@@ -1640,18 +1635,6 @@ function issueEvidenceHtml(r) {
     );
 }
 
-function comparisonLineHtml(tag) {
-  const row = comparisonByTag.get(tag);
-  if (!row?.upstream || row.local?.score == null || row.upstream?.score == null) return '';
-  const delta = row.delta?.score;
-  const deltaText = delta == null ? '' : `delta ${delta > 0 ? '+' : ''}${delta.toFixed ? delta.toFixed(1) : delta}`;
-  return '<div class="comparison-line">'
-    + `<span>local <strong>${esc(formatScore10(row.local.score) ?? '—')}</strong></span>`
-    + `<span>upstream <strong>${esc(formatScore10(row.upstream.score) ?? '—')}</strong></span>`
-    + (deltaText ? `<span>${esc(deltaText)}</span>` : '')
-    + `</div>`;
-}
-
 function scoreSignalSummary(local) {
   const evidence = local?.issueEvidence ?? {};
   const rows = [
@@ -1676,15 +1659,15 @@ function scoreSignalSummary(local) {
 }
 
 function scoreReviewHtml(r) {
-  const row = comparisonByTag.get(r.tag);
-  if (!row?.local) return '';
-  const components = row.local.components?.components ?? {};
-  const input = row.local.input ?? {};
-  const fix = row.local.gateEvidence?.fixProvenance ?? {};
-  const releaseChecks = row.local.gateEvidence?.releaseChecks;
-  const artifact = row.local.gateEvidence?.artifactVerification;
-  const signalSummary = scoreSignalSummary(row.local);
-  const upstream = row.upstream;
+  const review = reviewByTag.get(r.tag);
+  const local = review?.local;
+  if (!local) return '';
+  const components = local.components?.components ?? {};
+  const input = local.input ?? {};
+  const fix = local.gateEvidence?.fixProvenance ?? {};
+  const releaseChecks = local.gateEvidence?.releaseChecks;
+  const artifact = local.gateEvidence?.artifactVerification;
+  const signalSummary = scoreSignalSummary(local);
   const componentEntries = Object.entries(components);
   const compHtml = componentEntries.length
     ? '<div class="score-review__components">'
@@ -1695,10 +1678,9 @@ function scoreReviewHtml(r) {
     : '';
   return '<div class="score-review">'
     + '<div class="score-review__grid">'
-    + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(row.local.modelVersion ?? 'unknown')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Local score</span><span class="score-review__value">${esc(formatScore10(row.local.score) ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Upstream score</span><span class="score-review__value">${esc(formatScore10(upstream?.score) ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((row.local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(local.modelVersion ?? 'unknown')}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Score</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? 0)} credited · ${esc(fix.unverifiedClosedCount ?? 0)} unverified</span></div>`
@@ -1708,7 +1690,7 @@ function scoreReviewHtml(r) {
     + '</div>'
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. Only fixes whose closing PR is reachable from this release tag are credited.</div>`
-    + `<div class="evidence__meta">${esc(row.local.reason ?? '')}</div>`
+    + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + '</div>';
 }
 
@@ -1816,20 +1798,22 @@ async function api(path, opts) {
 let allReleases = [];
 let chartReleases = [];
 let publicReleaseDetails = new Map();
-let comparisonByTag = new Map();
+let reviewByTag = new Map();
 
 async function loadReleases() {
   try {
-    const [releases, history, publicPayload, comparisonPayload] = await Promise.all([
+    const [releases, history, publicPayload] = await Promise.all([
       api('/releases'),
       api('/releases/history'),
       api('/public').catch(() => null),
-      api('/comparison').catch(() => null),
     ]);
     allReleases = releases;
     chartReleases = history;
     publicReleaseDetails = new Map((publicPayload?.releases ?? []).map((r) => [r.tag, r]));
-    comparisonByTag = new Map((comparisonPayload?.releases ?? []).map((r) => [r.tag, r]));
+    const reviewPayloads = await Promise.all(
+      releases.map((release) => api(`/releases/${encodeURIComponent(release.tag)}/review`).catch(() => null)),
+    );
+    reviewByTag = new Map(reviewPayloads.filter(Boolean).map((review) => [review.tag, review]));
   }
   catch (e) {
     const msg = `Could not load releases — ${esc(e.message)}`;
@@ -1957,8 +1941,6 @@ function renderReleases() {
 
 	    const surfaces = issueBackedSurfaces(r);
 	    const surfacesLine = affectedAreasHtml(surfaces);
-	    const compareLine = comparisonLineHtml(r.tag);
-
     row.innerHTML = `
       <div class="release__left">
         <div class="release__head">
@@ -1969,7 +1951,6 @@ function renderReleases() {
         </div>
 	        ${reasonLine}
 	        ${surfacesLine}
-	        ${compareLine}
 	      </div>
       <div class="release__right" title="${esc(si.main.label)}">
         <span class="score-dot"></span>

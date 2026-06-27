@@ -80,15 +80,15 @@ The first refresh can take a few minutes because it backfills GitHub data and cl
 
 `REFRESH_MINUTES=0` disables automatic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
 
-## Capture Upstream Comparison
+## Internal Calibration Snapshot
 
-Capture the rendered upstream web UI for a side-by-side comparison benchmark:
+During model calibration, you can capture an external rendered UI snapshot as a temporary internal benchmark:
 
 ```bash
 npm run scrape:upstream
 ```
 
-The comparison snapshot is stored separately from local model data. It is used for review only; it does not overwrite local release scores.
+The snapshot is stored separately from local model data. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores.
 
 The older public JSON snapshot importer is still available as a one-off utility:
 
@@ -139,10 +139,9 @@ Main public payload:
 curl http://127.0.0.1:8787/api/public
 ```
 
-Score review and comparison:
+Score review:
 
 ```bash
-curl http://127.0.0.1:8787/api/comparison
 curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 ```
 
