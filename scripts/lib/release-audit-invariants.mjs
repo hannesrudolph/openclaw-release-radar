@@ -164,6 +164,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const gate = parseJson(audit.gate_evidence_json, {});
     verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
     verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
+    verifyProofFreshness({ failures, tag, proofRows, audit });
     const fix = gate.fixProvenance ?? {};
     expect(failures, tag, fix.verifiedFixedCount === verified.length,
       `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
@@ -227,6 +228,27 @@ function verifyClosedClassificationPromptVersion({ failures, tag, closed, audit 
   for (const row of closed) {
     expect(failures, tag, Number(row.prompt_version) === expected,
       `closed issue #${row.number} classification prompt_version (${row.prompt_version}) must match audit prompt_version (${expected})`);
+  }
+}
+
+function verifyProofFreshness({ failures, tag, proofRows, audit }) {
+  const scoredAt = Date.parse(audit.scored_at ?? '');
+  expect(failures, tag, Number.isFinite(scoredAt),
+    `audit scored_at must be a valid timestamp, got ${audit.scored_at}`);
+  if (!Number.isFinite(scoredAt)) return;
+  for (const row of proofRows) {
+    const checkedAt = Date.parse(row.checked_at ?? '');
+    expect(failures, tag, Number.isFinite(checkedAt),
+      `proof issue #${row.issue_number} checked_at must be a valid timestamp`);
+    if (!Number.isFinite(checkedAt)) continue;
+    expect(failures, tag, checkedAt <= scoredAt,
+      `proof issue #${row.issue_number} checked_at (${row.checked_at}) must not be newer than audit scored_at (${audit.scored_at})`);
+    const evidence = parseJson(row.evidence_json, {});
+    const closedAt = evidence?.closedAt ? Date.parse(evidence.closedAt) : NaN;
+    if (Number.isFinite(closedAt)) {
+      expect(failures, tag, checkedAt >= closedAt,
+        `proof issue #${row.issue_number} checked_at (${row.checked_at}) must be newer than closure time (${evidence.closedAt})`);
+    }
   }
 }
 

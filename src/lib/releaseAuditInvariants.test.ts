@@ -11,6 +11,8 @@ const labelTimelineFixture = {
   missingTimelineWithCurrentLabelsCount: 0,
   historicalCurrentLabelFallbackAllowed: true,
 };
+const proofCheckedAt = '2026-01-02T00:00:00Z';
+const auditScoredAt = '2026-01-02T00:00:01Z';
 
 function reader(overrides: Partial<{
   releases: any[];
@@ -22,7 +24,7 @@ function reader(overrides: Partial<{
   audit: any;
 }> = {}) {
   const data = {
-    releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1, scored_at: 't' }],
+    releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1, scored_at: auditScoredAt }],
     rawClosed: [{ number: 1 }],
     closed: [{ number: 1, prompt_version: 6 }],
     verified: [{ number: 1, sentiment: 'negative', prompt_version: 6 }],
@@ -31,6 +33,7 @@ function reader(overrides: Partial<{
       release_tag: 'v1',
       issue_number: 1,
       status: 'fixed_in_release',
+      checked_at: proofCheckedAt,
       evidence_json: JSON.stringify({
         hasReachableClosingPr: true,
         hasReachableFixCommit: false,
@@ -43,6 +46,7 @@ function reader(overrides: Partial<{
     }],
     audit: {
       prompt_version: 6,
+      scored_at: auditScoredAt,
       gate_evidence_json: JSON.stringify({
         labelTimeline: labelTimelineFixture,
         fixProvenance: {
@@ -61,7 +65,7 @@ function reader(overrides: Partial<{
     closedDuringReign: () => data.closed,
     verifiedFixedForRelease: () => data.verified,
     unverifiedClosedForRelease: () => data.unverified,
-    proofRowsFor: () => data.proofRows,
+    proofRowsFor: () => data.proofRows.map((row: any) => ({ checked_at: proofCheckedAt, ...row })),
     getReleaseScoreAudit: () => data.audit,
   };
 }
@@ -94,18 +98,18 @@ describe('verifyReleaseAudit', () => {
         verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
       };
       if (url.endsWith('/api/status')) {
-        return { refreshing: false, lastError: null, lastRefreshAt: 't', lastScoredAt: 't' };
+        return { refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt };
       }
       if (url.endsWith('/api/public')) {
         return {
           repo: 'x/y',
-          updatedAt: 't',
+          updatedAt: auditScoredAt,
           releases: [{
             tag: 'v1',
             score: 7.5,
             status: 'eligible',
             recommended: true,
-            scoredAt: 't',
+            scoredAt: auditScoredAt,
             scoreAudit,
             explanation,
             totalAttributedIssues: 1,
@@ -119,7 +123,7 @@ describe('verifyReleaseAudit', () => {
           finalScore: 7.5,
           status: 'eligible',
           recommended: true,
-          scoredAt: 't',
+          scoredAt: auditScoredAt,
           scoreAudit,
           explanation,
         }];
@@ -172,6 +176,7 @@ describe('verifyReleaseAudit', () => {
       reader: reader({
         audit: {
           prompt_version: 6,
+          scored_at: auditScoredAt,
           gate_evidence_json: JSON.stringify({
             labelTimeline: labelTimelineFixture,
             fixProvenance: {
@@ -208,6 +213,29 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /classification prompt_version/.test(failure)));
   });
 
+  it('fails when proof rows are newer than their score audit', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'fixed_in_release',
+          checked_at: '2026-01-02T00:00:02Z',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: true,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /must not be newer than audit scored_at/.test(failure)));
+  });
+
   it('fails when canonical-open proof does not resolve to open terminal', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
@@ -228,6 +256,7 @@ describe('verifyReleaseAudit', () => {
         }],
         audit: {
           prompt_version: 6,
+          scored_at: auditScoredAt,
           gate_evidence_json: JSON.stringify({
             labelTimeline: labelTimelineFixture,
             fixProvenance: {
