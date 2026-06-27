@@ -194,6 +194,7 @@ A healthy completed refresh has:
 
 ```bash
 npm run verify:ci
+npm run verify:scripts
 npm run verify:local
 npm run verify:live
 npm run typecheck
@@ -208,6 +209,8 @@ npm start
 
 `npm run verify:ci` is CI-safe and does not require a local DB or running server.
 
+`npm run verify:scripts` syntax-checks every `.mjs` maintenance script.
+
 `npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency.
 
 `npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts.
@@ -217,6 +220,8 @@ npm start
 `npm start` runs the compiled app from `dist/`.
 
 Refresh computes closure proof automatically. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging.
+
+`npm run ingest:fix-provenance -- <tag>` is kept as a compatibility alias and now runs the same full closure-proof/reachability pipeline.
 
 ## Local Data
 

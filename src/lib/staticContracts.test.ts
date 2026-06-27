@@ -62,7 +62,8 @@ describe('static scoring/UI contracts', () => {
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
-    assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run build');
+    assert.equal(pkg.scripts['verify:scripts'], 'for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done');
+    assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run verify:scripts && npm run build');
     assert.equal(pkg.scripts['verify:local'], 'npm run verify:score && npm run verify:release-audit');
     assert.equal(pkg.scripts['verify:live'], 'npm run verify:score && npm run verify:release-audit -- --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.match(verifier, /buildReleaseScoreRun/);
@@ -70,6 +71,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /scoredAtMillis/);
     assert.match(verifier, /process\.exit\(1\)/);
     assert.match(readme, /npm run verify:ci/);
+    assert.match(readme, /npm run verify:scripts/);
     assert.match(readme, /npm run verify:local/);
     assert.match(readme, /npm run verify:live/);
   });
@@ -88,6 +90,15 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(populate, /installConfidence/);
     assert.doesNotMatch(populate, /openDebtLoad/);
     assert.doesNotMatch(populate, /feltLoad/);
+  });
+
+  it('legacy fix provenance ingestion runs the full proof pipeline', () => {
+    const script = readFileSync(join(root, 'scripts/ingest-fix-provenance.mjs'), 'utf8');
+    assert.match(script, /refreshClosureEvidenceForRelease/);
+    assert.match(script, /checkReleasePrReachability/);
+    assert.match(script, /analyzeClosureProofsForRelease/);
+    assert.doesNotMatch(script, /listIssueFixEvidenceBatch/);
+    assert.doesNotMatch(script, /upsertIssueClosureEvent/);
   });
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
