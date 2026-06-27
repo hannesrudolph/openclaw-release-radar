@@ -32,17 +32,25 @@ describe('GitHub GraphQL mapping', () => {
       body: null,
       state: 'CLOSED',
       author: { login: 'maintainer' },
+      authorAssociation: 'MEMBER',
       createdAt: '2026-06-20T00:00:00Z',
       updatedAt: '2026-06-21T00:00:00Z',
       closedAt: '2026-06-22T00:00:00Z',
       url: 'https://github.com/openclaw/openclaw/issues/42',
       comments: { totalCount: 3 },
+      reactionGroups: [
+        { content: 'THUMBS_UP', reactors: { totalCount: 4 } },
+        { content: 'CONFUSED', reactors: { totalCount: 1 } },
+      ],
       labels: { nodes: [{ name: 'bug' }, null, { name: 'impact:discord' }] },
     });
 
     assert.equal(issue.state, 'closed');
     assert.equal(issue.user?.login, 'maintainer');
+    assert.equal(issue.author_association, 'MEMBER');
     assert.equal(issue.comments, 3);
+    assert.equal(issue.reaction_total, 5);
+    assert.equal(issue.positive_reactions, 4);
     assert.deepEqual(issue.labels, [{ name: 'bug' }, { name: 'impact:discord' }]);
   });
 
@@ -54,6 +62,7 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /issue0: issue\(number: \$number0\)/);
     assert.match(query, /issue1: issue\(number: \$number1\)/);
     assert.match(query, /comments\(last: \$last, orderBy: \{field: UPDATED_AT, direction: ASC\}\)/);
+    assert.match(query, /authorAssociation/);
   });
 
   it('groups active security vulnerability nodes by advisory', () => {

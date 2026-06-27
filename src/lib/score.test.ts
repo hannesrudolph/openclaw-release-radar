@@ -282,11 +282,11 @@ describe('openDebtLoad — current issue debt', () => {
     assert.ok(clustered.verified > 0);
   });
 
-  it('uses substantial discussion as field/community evidence for source-repro findings', () => {
+  it('uses unique human commenters as field/community evidence for source-repro findings', () => {
     const discussed = openDebtLoad([
       dc({
         issueNumber: 203,
-        comments: 6,
+        uniqueHumanCommenterCount: 2,
         labels: ['clawsweeper:source-repro'],
         releaseLocal: true,
         functionality: 'core',
@@ -295,6 +295,23 @@ describe('openDebtLoad — current issue debt', () => {
       }),
     ]);
     assert.ok(discussed.verified > 0);
+  });
+
+  it('does not use raw comment volume alone as field/community evidence', () => {
+    const discussed = openDebtLoad([
+      dc({
+        issueNumber: 204,
+        comments: 12,
+        uniqueHumanCommenterCount: 0,
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.equal(discussed.verified, 0);
+    assert.ok(discussed.carryover > 0);
   });
 
   it('reduces debt for confirmed workarounds', () => {
@@ -438,6 +455,24 @@ describe('openDebtLoad — current issue debt', () => {
     ]);
     assert.equal(solo, 0);
     assert.ok(clustered > 0);
+  });
+
+  it('lets reactions lift weight without verifying source-only findings', () => {
+    const plain = openDebtLoad([
+      dc({ labels: ['clawsweeper:source-repro'], releaseLocal: true, functionality: 'core', severity: 'high', scope: 'broad' }),
+    ]);
+    const reacted = openDebtLoad([
+      dc({
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        positiveReactionCount: 10,
+      }),
+    ]);
+    assert.equal(reacted.verified, 0);
+    assert.ok(reacted.carryover > plain.carryover);
   });
 });
 

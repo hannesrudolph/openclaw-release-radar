@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v5-community-risk';
+export const SCORE_MODEL_VERSION = 'evidence-v6-graphql-community';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -101,10 +101,22 @@ interface IssueSignalFields {
   issueNumber?: number;
   duplicateCluster?: string | null;
   author?: string | null;
+  authorAssociation?: string | null;
   isBot?: boolean | number;
   comments?: number;
+  uniqueHumanCommenterCount?: number;
+  maintainerCommenterCount?: number;
+  contributorCommenterCount?: number;
+  commenterScanTruncated?: boolean | number;
+  reactionTotal?: number;
+  positiveReactionCount?: number;
   clusterHumanReporterCount?: number;
   clusterCommentCount?: number;
+  clusterHumanCommenterCount?: number;
+  clusterMaintainerCommenterCount?: number;
+  clusterContributorCommenterCount?: number;
+  clusterReactionTotal?: number;
+  clusterPositiveReactionCount?: number;
 }
 
 export interface FeltClassification extends IssueSignalFields {
@@ -143,6 +155,12 @@ export interface DebtEvidenceItem {
   humanReporterCount?: number;
   commentCount?: number;
   fieldConfirmed?: boolean;
+  humanCommenterCount?: number;
+  maintainerCommenterCount?: number;
+  contributorCommenterCount?: number;
+  reactionTotal?: number;
+  positiveReactionCount?: number;
+  commenterScanTruncated?: boolean;
 }
 
 export interface DebtExplanation {
@@ -194,13 +212,42 @@ function isBotIssue(item: IssueSignalFields): boolean {
   return /\[bot\]$/i.test(item.author ?? '');
 }
 
-function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & Required<Pick<IssueSignalFields, 'clusterHumanReporterCount' | 'clusterCommentCount'>>> {
-  const stats = new Map<string, { reporters: Set<string>; comments: number }>();
+function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & Required<Pick<IssueSignalFields,
+  'clusterHumanReporterCount' |
+  'clusterCommentCount' |
+  'clusterHumanCommenterCount' |
+  'clusterMaintainerCommenterCount' |
+  'clusterContributorCommenterCount' |
+  'clusterReactionTotal' |
+  'clusterPositiveReactionCount'
+>>> {
+  const stats = new Map<string, {
+    reporters: Set<string>;
+    comments: number;
+    humanCommenters: number;
+    maintainerCommenters: number;
+    contributorCommenters: number;
+    reactions: number;
+    positiveReactions: number;
+  }>();
   items.forEach((item, index) => {
     const key = issueKey(item, index);
-    const current = stats.get(key) ?? { reporters: new Set<string>(), comments: 0 };
+    const current = stats.get(key) ?? {
+      reporters: new Set<string>(),
+      comments: 0,
+      humanCommenters: 0,
+      maintainerCommenters: 0,
+      contributorCommenters: 0,
+      reactions: 0,
+      positiveReactions: 0,
+    };
     if (!isBotIssue(item) && item.author) current.reporters.add(item.author);
     current.comments += Math.max(0, item.comments ?? 0);
+    current.humanCommenters += Math.max(0, item.uniqueHumanCommenterCount ?? 0);
+    current.maintainerCommenters += Math.max(0, item.maintainerCommenterCount ?? 0);
+    current.contributorCommenters += Math.max(0, item.contributorCommenterCount ?? 0);
+    current.reactions += Math.max(0, item.reactionTotal ?? 0);
+    current.positiveReactions += Math.max(0, item.positiveReactionCount ?? 0);
     stats.set(key, current);
   });
   return items.map((item, index) => {
@@ -209,20 +256,29 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
       ...item,
       clusterHumanReporterCount: current?.reporters.size ?? 0,
       clusterCommentCount: current?.comments ?? 0,
+      clusterHumanCommenterCount: current?.humanCommenters ?? 0,
+      clusterMaintainerCommenterCount: current?.maintainerCommenters ?? 0,
+      clusterContributorCommenterCount: current?.contributorCommenters ?? 0,
+      clusterReactionTotal: current?.reactions ?? 0,
+      clusterPositiveReactionCount: current?.positiveReactions ?? 0,
     };
   });
 }
 
 function hasCommunityConfirmation(item: IssueSignalFields): boolean {
-  return (item.clusterHumanReporterCount ?? 0) >= 2 || (item.clusterCommentCount ?? item.comments ?? 0) >= 6;
+  return (item.clusterHumanReporterCount ?? 0) >= 2 || (item.clusterHumanCommenterCount ?? 0) >= 2;
 }
 
 function communityMultiplier(item: IssueSignalFields): number {
   const reporters = Math.max(0, item.clusterHumanReporterCount ?? (isBotIssue(item) ? 0 : item.author ? 1 : 0));
-  const comments = Math.max(0, item.clusterCommentCount ?? item.comments ?? 0);
+  const commenters = Math.max(0, item.clusterHumanCommenterCount ?? item.uniqueHumanCommenterCount ?? 0);
+  const contributors = Math.max(0, item.clusterContributorCommenterCount ?? item.contributorCommenterCount ?? 0);
+  const positiveReactions = Math.max(0, item.clusterPositiveReactionCount ?? item.positiveReactionCount ?? 0);
   const reporterLift = Math.log1p(Math.max(0, reporters - 1)) * 0.25;
-  const commentLift = Math.log1p(comments) * 0.08;
-  return clamp(1 + reporterLift + commentLift, 0.75, 1.6);
+  const commenterLift = Math.log1p(commenters) * 0.18;
+  const contributorLift = Math.log1p(contributors) * 0.08;
+  const reactionLift = Math.log1p(positiveReactions) * 0.04;
+  return clamp(1 + reporterLift + commenterLift + contributorLift + reactionLift, 0.75, 1.65);
 }
 
 function issueDebtWeight(item: DebtClassification): number {
@@ -322,6 +378,12 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         humanReporterCount: item.clusterHumanReporterCount,
         commentCount: item.clusterCommentCount,
         fieldConfirmed: hasFieldConfirmation(item),
+        humanCommenterCount: item.clusterHumanCommenterCount,
+        maintainerCommenterCount: item.clusterMaintainerCommenterCount,
+        contributorCommenterCount: item.clusterContributorCommenterCount,
+        reactionTotal: item.clusterReactionTotal,
+        positiveReactionCount: item.clusterPositiveReactionCount,
+        commenterScanTruncated: item.commenterScanTruncated === true || item.commenterScanTruncated === 1,
       });
     }
   }

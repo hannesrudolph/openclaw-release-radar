@@ -1662,12 +1662,16 @@ function scoreSignalSummary(local) {
   ];
   if (!rows.length) return '';
   const maxReporters = rows.reduce((max, row) => Math.max(max, Number(row.humanReporterCount ?? 0)), 0);
-  const maxComments = rows.reduce((max, row) => Math.max(max, Number(row.commentCount ?? row.issue?.comments ?? row.comments ?? 0)), 0);
+  const maxHumanCommenters = rows.reduce((max, row) => Math.max(max, Number(row.humanCommenterCount ?? row.issue?.uniqueHumanCommenters ?? 0)), 0);
+  const maxPositiveReactions = rows.reduce((max, row) => Math.max(max, Number(row.positiveReactionCount ?? row.issue?.positiveReactions ?? 0)), 0);
+  const truncated = rows.some((row) => row.commenterScanTruncated || row.issue?.commenterScanTruncated);
   const fieldConfirmed = rows.filter((row) => row.fieldConfirmed).length;
   const parts = [];
   if (fieldConfirmed) parts.push(`${fieldConfirmed} field-confirmed`);
   if (maxReporters) parts.push(`up to ${maxReporters} reporters`);
-  if (maxComments) parts.push(`up to ${maxComments} comments`);
+  if (maxHumanCommenters) parts.push(`up to ${maxHumanCommenters} human commenters`);
+  if (maxPositiveReactions) parts.push(`up to ${maxPositiveReactions} positive reactions`);
+  if (truncated) parts.push('comment scan sampled');
   return parts.join(' · ');
 }
 

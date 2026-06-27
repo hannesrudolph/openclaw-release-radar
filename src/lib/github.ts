@@ -24,11 +24,16 @@ export interface GhIssue {
   body: string | null;
   state: 'open' | 'closed';
   user: { login: string } | null;
+  author_association?: string | null;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
   html_url: string;
   comments: number;
+  maintainer_commenters?: number;
+  contributor_commenters?: number;
+  reaction_total?: number;
+  positive_reactions?: number;
   labels: { name: string }[];
   pull_request?: unknown; // REST compatibility; GraphQL repository.issues never returns PRs.
 }
@@ -36,6 +41,7 @@ export interface GhIssue {
 export interface GhComment {
   id: number;
   user: { login: string } | null;
+  author_association?: string | null;
   body: string;
   created_at: string;
 }
@@ -70,19 +76,27 @@ interface IssueNode {
   body: string | null;
   state: 'OPEN' | 'CLOSED';
   author: ActorNode | null;
+  authorAssociation: string | null;
   createdAt: string;
   updatedAt: string;
   closedAt: string | null;
   url: string;
   comments: { totalCount: number };
+  reactionGroups: Array<ReactionGroupNode | null> | null;
   labels: { nodes: Array<{ name: string } | null> | null } | null;
 }
 
 interface CommentNode {
   databaseId: number | null;
   author: ActorNode | null;
+  authorAssociation: string | null;
   body: string;
   createdAt: string;
+}
+
+interface ReactionGroupNode {
+  content: string;
+  reactors: { totalCount: number };
 }
 
 interface SecurityVulnerabilityNode {
@@ -257,17 +271,21 @@ function mapRelease(node: ReleaseNode): GhRelease {
 }
 
 function mapIssue(node: IssueNode): GhIssue {
+  const reactions = summarizeReactions(node.reactionGroups ?? []);
   return {
     number: node.number,
     title: node.title,
     body: node.body,
     state: node.state === 'OPEN' ? 'open' : 'closed',
     user: node.author ? { login: node.author.login } : null,
+    author_association: node.authorAssociation,
     created_at: node.createdAt,
     updated_at: node.updatedAt,
     closed_at: node.closedAt,
     html_url: node.url,
     comments: node.comments.totalCount,
+    reaction_total: reactions.total,
+    positive_reactions: reactions.positive,
     labels: (node.labels?.nodes ?? [])
       .filter((label): label is { name: string } => !!label)
       .map((label) => ({ name: label.name })),
@@ -278,9 +296,26 @@ function mapComment(node: CommentNode): GhComment {
   return {
     id: node.databaseId ?? 0,
     user: node.author ? { login: node.author.login } : null,
+    author_association: node.authorAssociation,
     body: node.body,
     created_at: node.createdAt,
   };
+}
+
+function summarizeReactions(nodes: Array<ReactionGroupNode | null>): {
+  total: number;
+  positive: number;
+} {
+  let total = 0;
+  let positive = 0;
+  for (const node of nodes) {
+    const count = node?.reactors.totalCount ?? 0;
+    total += count;
+    if (['THUMBS_UP', 'HOORAY', 'HEART', 'ROCKET'].includes(node?.content ?? '')) {
+      positive += count;
+    }
+  }
+  return { total, positive };
 }
 
 function severityFromGraphql(severity: SecurityVulnerabilityNode['advisory']['severity']): GhAdvisory['severity'] {
@@ -390,11 +425,13 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
               body
               state
               author { login }
+              authorAssociation
               createdAt
               updatedAt
               closedAt
               url
               comments { totalCount }
+              reactionGroups { content reactors { totalCount } }
               labels(first: 100) { nodes { name } }
             }
             pageInfo { hasNextPage endCursor }
@@ -460,6 +497,7 @@ function buildIssueCommentsBatchQuery(size: number): string {
         nodes {
           databaseId
           author { login }
+          authorAssociation
           body
           createdAt
         }

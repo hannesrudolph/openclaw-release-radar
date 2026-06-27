@@ -96,6 +96,45 @@ function seedClosure(db: any, issue: number, reason = 'COMPLETED', closedAt = '2
 }
 
 describe('release fix provenance', () => {
+  it('round-trips issue community signal columns through issue and release views', async () => {
+    const db = await freshDb('issue-community');
+    seedRelease(db, 'v1');
+    db.upsertIssue({
+      number: 9001,
+      state: 'open',
+      title: 'community-backed issue',
+      author: 'reporter',
+      author_association: 'NONE',
+      html_url: 'https://example.test/issues/9001',
+      created_at: '2026-06-01T12:00:00Z',
+      updated_at: '2026-06-02T12:00:00Z',
+      closed_at: null,
+      comments: 12,
+      unique_human_commenters: 4,
+      maintainer_commenters: 1,
+      contributor_commenters: 2,
+      commenter_scan_truncated: 1,
+      reaction_total: 9,
+      positive_reactions: 7,
+      labels: '["bug"]',
+      is_bot: 0,
+    });
+    db.upsertClassification(9001, classification(), '2026-06-02T12:00:00Z', 1);
+
+    const issue = db.getIssue(9001) as any;
+    assert.equal(issue.author_association, 'NONE');
+    assert.equal(issue.unique_human_commenters, 4);
+    assert.equal(issue.maintainer_commenters, 1);
+    assert.equal(issue.contributor_commenters, 2);
+    assert.equal(issue.commenter_scan_truncated, 1);
+    assert.equal(issue.reaction_total, 9);
+    assert.equal(issue.positive_reactions, 7);
+
+    const releaseIssue = db.issuesForVersion('v1').find((row: any) => row.number === 9001);
+    assert.equal(releaseIssue?.unique_human_commenters, 4);
+    assert.equal(releaseIssue?.positive_reactions, 7);
+  });
+
   it('stores reachability per tag and updates by tag/pr', async () => {
     const db = await freshDb('reachability');
     seedRelease(db, 'v1');

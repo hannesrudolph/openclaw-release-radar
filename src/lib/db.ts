@@ -68,11 +68,18 @@ CREATE TABLE IF NOT EXISTS issues (
   state TEXT NOT NULL,
   title TEXT NOT NULL,
   author TEXT,
+  author_association TEXT,
   html_url TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   closed_at TEXT,
   comments INTEGER NOT NULL,
+  unique_human_commenters INTEGER NOT NULL DEFAULT 0,
+  maintainer_commenters INTEGER NOT NULL DEFAULT 0,
+  contributor_commenters INTEGER NOT NULL DEFAULT 0,
+  commenter_scan_truncated INTEGER NOT NULL DEFAULT 0,
+  reaction_total INTEGER NOT NULL DEFAULT 0,
+  positive_reactions INTEGER NOT NULL DEFAULT 0,
   labels TEXT NOT NULL DEFAULT '[]',
   is_bot INTEGER NOT NULL DEFAULT 0
 );
@@ -234,6 +241,13 @@ CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachab
 // column already exists, so we swallow the error rather than guard it.
 for (const sql of [
   `ALTER TABLE issues ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN author_association TEXT`,
+  `ALTER TABLE issues ADD COLUMN unique_human_commenters INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN maintainer_commenters INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN contributor_commenters INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN commenter_scan_truncated INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN reaction_total INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN positive_reactions INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
   `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN state TEXT`,
@@ -643,33 +657,64 @@ export interface IssueRow {
   state: string;
   title: string;
   author: string | null;
+  author_association?: string | null;
   html_url: string;
   created_at: string;
   updated_at: string;
   closed_at: string | null;
   comments: number;
+  unique_human_commenters?: number;
+  maintainer_commenters?: number;
+  contributor_commenters?: number;
+  commenter_scan_truncated?: number;
+  reaction_total?: number;
+  positive_reactions?: number;
   labels: string;
   is_bot: number; // 0/1; computed at write time via detectBot()
 }
 
 const upsertIssueStmt = db.prepare(`
-INSERT INTO issues (number, state, title, author, html_url, created_at, updated_at, closed_at, comments, labels, is_bot)
-VALUES (:number, :state, :title, :author, :html_url, :created_at, :updated_at, :closed_at, :comments, :labels, :is_bot)
+INSERT INTO issues (
+  number, state, title, author, author_association, html_url, created_at, updated_at, closed_at,
+  comments, unique_human_commenters, maintainer_commenters, contributor_commenters, commenter_scan_truncated,
+  reaction_total, positive_reactions, labels, is_bot
+)
+VALUES (
+  :number, :state, :title, :author, :author_association, :html_url, :created_at, :updated_at, :closed_at,
+  :comments, :unique_human_commenters, :maintainer_commenters, :contributor_commenters, :commenter_scan_truncated,
+  :reaction_total, :positive_reactions, :labels, :is_bot
+)
 ON CONFLICT(number) DO UPDATE SET
   state=excluded.state,
   title=excluded.title,
   author=excluded.author,
+  author_association=excluded.author_association,
   html_url=excluded.html_url,
   created_at=excluded.created_at,
   updated_at=excluded.updated_at,
   closed_at=excluded.closed_at,
   comments=excluded.comments,
+  unique_human_commenters=excluded.unique_human_commenters,
+  maintainer_commenters=excluded.maintainer_commenters,
+  contributor_commenters=excluded.contributor_commenters,
+  commenter_scan_truncated=excluded.commenter_scan_truncated,
+  reaction_total=excluded.reaction_total,
+  positive_reactions=excluded.positive_reactions,
   labels=excluded.labels,
   is_bot=excluded.is_bot
 `);
 
 export function upsertIssue(i: IssueRow): void {
-  upsertIssueStmt.run(i as unknown as Record<string, string | number | null>);
+  upsertIssueStmt.run({
+    ...i,
+    author_association: i.author_association ?? null,
+    unique_human_commenters: i.unique_human_commenters ?? 0,
+    maintainer_commenters: i.maintainer_commenters ?? 0,
+    contributor_commenters: i.contributor_commenters ?? 0,
+    commenter_scan_truncated: i.commenter_scan_truncated ?? 0,
+    reaction_total: i.reaction_total ?? 0,
+    positive_reactions: i.positive_reactions ?? 0,
+  } as unknown as Record<string, string | number | null>);
 }
 
 const getIssueStmt = db.prepare(`SELECT * FROM issues WHERE number=?`);

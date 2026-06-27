@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { invalidateCache } from './cache';
 import {
+  GhComment,
   GhIssue,
   listIssueCommentsBatch,
   listReleases,
@@ -39,6 +40,7 @@ async function runWithConcurrency<T>(
   });
   await Promise.all(pool);
 }
+
 import {
   cveDecayLoad,
   explainOpenDebtLoad,
@@ -75,6 +77,38 @@ import {
   unverifiedClosedForRelease,
   verifiedFixedForRelease,
 } from './db';
+
+function isMaintainerAssociation(association: string | null | undefined): boolean {
+  return ['OWNER', 'MEMBER', 'COLLABORATOR'].includes(association ?? '');
+}
+
+function isContributorAssociation(association: string | null | undefined): boolean {
+  return isMaintainerAssociation(association) || association === 'CONTRIBUTOR';
+}
+
+function commentStats(issue: GhIssue, comments: GhComment[]): {
+  unique_human_commenters: number;
+  maintainer_commenters: number;
+  contributor_commenters: number;
+  commenter_scan_truncated: number;
+} {
+  const humans = new Set<string>();
+  const maintainers = new Set<string>();
+  const contributors = new Set<string>();
+  for (const comment of comments) {
+    const login = comment.user?.login;
+    if (!login || detectBot(login, '[]')) continue;
+    humans.add(login);
+    if (isMaintainerAssociation(comment.author_association)) maintainers.add(login);
+    if (isContributorAssociation(comment.author_association)) contributors.add(login);
+  }
+  return {
+    unique_human_commenters: humans.size,
+    maintainer_commenters: maintainers.size,
+    contributor_commenters: contributors.size,
+    commenter_scan_truncated: comments.length < issue.comments ? 1 : 0,
+  };
+}
 
 const BACKFILL_FLAG = 'backfill_completed_at';
 
@@ -252,21 +286,33 @@ export async function refresh(): Promise<{
       let allUnchanged = page.length > 0;
       let crossedOldest = false;
       const toClassify: GhIssue[] = [];
+      const commentsByIssue = await listIssueCommentsBatch(
+        page.filter((issue) => issue.comments > 0).map((issue) => issue.number),
+      );
 
       // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
       for (const issue of page) {
         const author = issue.user?.login ?? null;
         const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
+        const comments = commentsByIssue.get(issue.number) ?? [];
+        const stats = commentStats(issue, comments);
         upsertIssue({
           number: issue.number,
           state: issue.state,
           title: issue.title,
           author,
+          author_association: issue.author_association ?? null,
           html_url: issue.html_url,
           created_at: issue.created_at,
           updated_at: issue.updated_at,
           closed_at: issue.closed_at,
           comments: issue.comments,
+          unique_human_commenters: stats.unique_human_commenters,
+          maintainer_commenters: stats.maintainer_commenters,
+          contributor_commenters: stats.contributor_commenters,
+          commenter_scan_truncated: stats.commenter_scan_truncated,
+          reaction_total: issue.reaction_total ?? 0,
+          positive_reactions: issue.positive_reactions ?? 0,
           labels: labelsJson,
           is_bot: detectBot(author, labelsJson) ? 1 : 0,
         });
@@ -295,9 +341,6 @@ export async function refresh(): Promise<{
       // Pass 2: pull recent comments in one GraphQL batch, then classify pending
       // issues in parallel. Per-issue failures are isolated — one issue erroring
       // out doesn't kill the rest of the page or the back-fill.
-      const commentsByIssue = await listIssueCommentsBatch(
-        toClassify.filter((issue) => issue.comments > 0).map((issue) => issue.number),
-      );
       await runWithConcurrency(toClassify, CLASSIFY_CONCURRENCY, async (issue) => {
         try {
           const comments = commentsByIssue.get(issue.number) ?? [];
@@ -403,8 +446,15 @@ export async function refresh(): Promise<{
         issueNumber: row.number,
         duplicateCluster: row.duplicate_cluster,
         author: row.author,
+        authorAssociation: row.author_association,
         isBot: row.is_bot,
         comments: row.comments,
+        uniqueHumanCommenterCount: row.unique_human_commenters,
+        maintainerCommenterCount: row.maintainer_commenters,
+        contributorCommenterCount: row.contributor_commenters,
+        commenterScanTruncated: row.commenter_scan_truncated,
+        reactionTotal: row.reaction_total,
+        positiveReactionCount: row.positive_reactions,
         labels: safeParseLabels(row.labels),
       });
       const debtInputs = attributed.map((row) => ({
@@ -469,6 +519,12 @@ export async function refresh(): Promise<{
           closedAt: row.closed_at,
           author: row.author,
           comments: row.comments,
+          uniqueHumanCommenters: row.unique_human_commenters,
+          maintainerCommenters: row.maintainer_commenters,
+          contributorCommenters: row.contributor_commenters,
+          commenterScanTruncated: row.commenter_scan_truncated,
+          reactionTotal: row.reaction_total,
+          positiveReactions: row.positive_reactions,
           labels: safeParseLabels(row.labels),
           affectsVersion: row.affects_version,
           duplicateCluster: row.duplicate_cluster,
@@ -634,8 +690,15 @@ export function isOpenFeltSeriousIssue(row: ReturnType<typeof issuesForVersion>[
     issueNumber: row.number,
     duplicateCluster: row.duplicate_cluster,
     author: row.author,
+    authorAssociation: row.author_association,
     isBot: row.is_bot,
     comments: row.comments,
+    uniqueHumanCommenterCount: row.unique_human_commenters,
+    maintainerCommenterCount: row.maintainer_commenters,
+    contributorCommenterCount: row.contributor_commenters,
+    commenterScanTruncated: row.commenter_scan_truncated,
+    reactionTotal: row.reaction_total,
+    positiveReactionCount: row.positive_reactions,
     labels: safeParseLabels(row.labels),
   });
 }

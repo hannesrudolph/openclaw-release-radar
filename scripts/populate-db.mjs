@@ -46,8 +46,15 @@ const scored = releases.map((rel, idx) => {
     issueNumber: r.number,
     duplicateCluster: r.duplicate_cluster,
     author: r.author,
+    authorAssociation: r.author_association,
     isBot: r.is_bot,
     comments: r.comments,
+    uniqueHumanCommenterCount: r.unique_human_commenters,
+    maintainerCommenterCount: r.maintainer_commenters,
+    contributorCommenterCount: r.contributor_commenters,
+    commenterScanTruncated: r.commenter_scan_truncated,
+    reactionTotal: r.reaction_total,
+    positiveReactionCount: r.positive_reactions,
     labels: safeLabels(r.labels),
   });
   const debt = openDebtLoad(attributed.map(r => ({ ...scoredIssue(r), issueNumber: r.number, state: scoreState(r), createdAt: r.created_at, updatedAt: r.updated_at, affectsVersion: r.affects_version, releaseLocal: Number.isFinite(relStart) ? Date.parse(r.created_at) >= relStart : false })));
