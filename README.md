@@ -181,6 +181,12 @@ A healthy completed refresh has:
 | `/api/releases/history` | Score history |
 | `/api/public` | Main install recommendation payload |
 
+`/api/releases`, `/api/public`, `/api/comparison`, and `/api/releases/:tag/review` expose the same structured `explanation` object for each scored release. It contains:
+
+- `positives` / `limits`: human-readable evidence lines for the UI.
+- `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets`, and `issueRefs`.
+- `verdict`: install-facing interpretation of the score.
+
 ## Development Commands
 
 ```bash

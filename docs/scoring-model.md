@@ -144,27 +144,29 @@ The model verifies npm registry metadata against the release notes:
 
 It also checks whether the linked release evidence report exists and is non-empty. A verified npm artifact adds confidence. A missing linked evidence report offsets part of that confidence instead of being treated like an npm integrity mismatch.
 
-For `v2026.6.10`, npm metadata matches the release notes and release SHA, but the linked release evidence report currently returns `404`, so artifact confidence is partial.
+## Inspecting Current Evidence
 
-## Current `v2026.6.10` Snapshot
+Do not hardcode a "current" score in docs. The current recommendation changes as GitHub issues, labels, releases, advisories, and package metadata change.
 
-As of the latest local refresh:
+Use the live local API instead:
 
-- Score: `7.5`
-- Band: `ok`
-- Model: `evidence-v10-evidence-report`
-- Reason: `latest - stood 3.7d with no hotfix, 518 source/carryover risk, net-opening field-visible bugs, 4 release checks passed, npm artifact verified, release evidence report missing, 2 betas baked`
+```bash
+curl -s http://127.0.0.1:8787/api/public \
+  | jq '.releases[0] | {tag, score, band, status, recommended, reason, explanation}'
 
-Key component values:
+curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
+  | jq '{score: .local.score, explanation: .local.components.explanation, fix: .local.gateEvidence.fixProvenance.releaseFixCredit}'
+```
 
-- `verifiedDebt`: `0`
-- `carryoverDebt`: `-0.6`
-- `staleDebt`: `-0.2`
-- `survival`: `0.4`
-- `shakeout`: `0.4`
-- `regression`: `-0.3`
-- `releaseVerification`: `0.3`
-- `artifactVerification`: `0.1`
+`components.explanation` is the stable "Why not 10?" contract:
+
+- `positives`: human-readable favorable evidence lines.
+- `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.
+- `limits`: human-readable limiting evidence lines.
+- `limitDetails`: machine-readable entries aligned 1:1 with `limits`.
+- `verdict`: install-facing interpretation of the score.
+
+Each detail entry has a stable `code`, matching `text`, and may include `metrics`, `buckets`, and `issueRefs`.
 
 ## Validation Commands
 

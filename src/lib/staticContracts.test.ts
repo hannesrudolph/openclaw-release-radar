@@ -62,4 +62,16 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /process\.exit\(1\)/);
     assert.match(readme, /npm run verify:score/);
   });
+
+  it('docs avoid hardcoded current score snapshots and document explanation details', () => {
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    assert.doesNotMatch(scoringDoc, /Current `v20\d{2}\.\d+\.\d+` Snapshot/);
+    assert.doesNotMatch(scoringDoc, /Score:\s*`[0-9.]+`/);
+    assert.match(scoringDoc, /components\.explanation/);
+    assert.match(scoringDoc, /positiveDetails/);
+    assert.match(scoringDoc, /limitDetails/);
+    assert.match(readme, /structured `explanation` object/);
+    assert.match(readme, /stable reason `code`/);
+  });
 });
