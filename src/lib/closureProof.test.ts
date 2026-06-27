@@ -47,9 +47,22 @@ describe('classifyClosureProof', () => {
 
   it('recognizes already-present claims without treating them as release proof', () => {
     const result = classifyClosureProof(input({
-      comments: [{ author: 'bot', body: 'Current main and tagged releases already implement this behavior.' }],
+      comments: [{ author: 'bot', body: 'Current main and tagged releases already implement this behavior.\nCanonical: https://github.com/openclaw/openclaw/issues/91298' }],
     }));
     assert.equal(result.status, 'already_present_claim');
+    assert.deepEqual(result.evidence.canonicalIssues, [91298]);
+  });
+
+  it('prioritizes already-present claims over generic duplicate wording', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['COMPLETED'],
+      comments: [{
+        author: 'bot',
+        body: 'Current main already contains the fix. Root-cause cluster relationship: duplicate.\nCanonical: #96660',
+      }],
+    }));
+    assert.equal(result.status, 'already_present_claim');
+    assert.deepEqual(result.evidence.canonicalIssues, [96660]);
   });
 
   it('separates neutral closed items from bug evidence', () => {

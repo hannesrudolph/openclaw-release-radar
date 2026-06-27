@@ -1710,9 +1710,18 @@ function closureProofHtml(closureProof) {
     const prLine = (item.evidence?.closingPrs ?? []).length
       ? ` · PRs: ${(item.evidence.closingPrs ?? []).slice(0, 3).map((pr) => String(pr).split(':')[0]).join(', ')}`
       : '';
+    const canonicalLine = (item.evidence?.canonicalIssueDetails ?? []).length
+      ? `Canonical: ${(item.evidence.canonicalIssueDetails ?? []).slice(0, 3).map((issue) => {
+          const label = `#${issue.number}${issue.state ? ` ${issue.state}` : ''}`;
+          return issue.url
+            ? `<a href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+            : esc(label);
+        }).join(', ')}`
+      : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
     return `<li class="evidence__item">${link}`
       + `<span class="evidence__meta">${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
+      + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
       + `</li>`;
   }).join('');

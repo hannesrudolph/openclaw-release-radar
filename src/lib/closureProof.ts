@@ -31,6 +31,7 @@ export interface ClosureProofResult {
 const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|broader .*tracker|belongs under)\b/i;
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|current main|tagged releases? already|already contains|already covered|implemented in current)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
+const CANONICAL_LINE_RE = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
 
 export function classifyClosureProof(input: ClosureProofInput): ClosureProofResult {
   const combinedComments = input.comments.map((comment) => comment.body ?? '').join('\n');
@@ -43,6 +44,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     hasReachableClosingPr: input.hasReachableClosingPr,
     hasNotReachableClosingPr: input.hasNotReachableClosingPr,
     matchingComments: matchingCommentSnippets(input.comments),
+    canonicalIssues: canonicalIssueNumbers(combinedComments),
   };
 
   if (input.sentiment && input.sentiment !== 'negative') {
@@ -77,6 +79,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (ALREADY_PRESENT_RE.test(combinedComments)) {
+    return {
+      status: 'already_present_claim',
+      summary: 'Closure comment claims the behavior is already implemented, but no reachable closing PR proof is attached.',
+      evidence,
+    };
+  }
+
   if (reasons.has('DUPLICATE') || DUPLICATE_RE.test(combinedComments)) {
     return {
       status: 'duplicate_or_superseded',
@@ -89,14 +99,6 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     return {
       status: 'not_planned',
       summary: 'Closed as not planned or not actionable as a direct fix.',
-      evidence,
-    };
-  }
-
-  if (ALREADY_PRESENT_RE.test(combinedComments)) {
-    return {
-      status: 'already_present_claim',
-      summary: 'Closure comment claims the behavior is already implemented, but no reachable closing PR proof is attached.',
       evidence,
     };
   }
@@ -114,6 +116,16 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     summary: 'Closed without code proof tied to this release.',
     evidence,
   };
+}
+
+function canonicalIssueNumbers(text: string): number[] {
+  const numbers = new Set<number>();
+  CANONICAL_LINE_RE.lastIndex = 0;
+  for (const match of text.matchAll(CANONICAL_LINE_RE)) {
+    const number = Number(match[1]);
+    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  }
+  return [...numbers].sort((a, b) => a - b);
 }
 
 function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array<{

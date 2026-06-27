@@ -134,6 +134,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       title: row.title,
       closedAt: row.closed_at,
       closingPrs: splitCsv(row.closing_prs),
+      canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
     upsertIssueClosureProof({
       release_tag: releaseTag,
@@ -206,4 +207,24 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
 function splitCsv(value: unknown): string[] {
   if (!value) return [];
   return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function canonicalIssueDetails(sourceIssueNumber: number, numbers: number[]): Array<{
+  number: number;
+  title: string | null;
+  state: string | null;
+  url: string | null;
+}> {
+  const stmt = db.prepare(`SELECT number, title, state, html_url FROM issues WHERE number=?`);
+  return numbers
+    .filter((number) => number !== sourceIssueNumber)
+    .map((number) => {
+      const row = stmt.get(number) as { number: number; title: string; state: string; html_url: string | null } | undefined;
+      return {
+        number,
+        title: row?.title ?? null,
+        state: row?.state ?? null,
+        url: row?.html_url ?? null,
+      };
+    });
 }
