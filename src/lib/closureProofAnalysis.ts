@@ -51,6 +51,25 @@ SELECT * FROM closed
 ORDER BY closed_at DESC
 `);
 
+const allClosedIssueRowsStmt = db.prepare(`
+WITH target AS (
+  SELECT * FROM releases WHERE tag=?
+)
+SELECT DISTINCT i.number
+FROM issues i
+JOIN classifications c ON c.issue_number=i.number
+JOIN target
+WHERE i.closed_at IS NOT NULL
+  AND target.published_at IS NOT NULL
+  AND i.closed_at >= target.published_at
+  AND i.closed_at < COALESCE(
+    (SELECT MIN(next.published_at) FROM releases next
+     WHERE next.published_at > target.published_at AND next.prerelease=0),
+    '9999-12-31T23:59:59Z'
+  )
+ORDER BY i.number DESC
+`);
+
 const aggregateRowsStmt = db.prepare(`
 WITH selected(issue_number) AS (
   SELECT value FROM json_each(?)
@@ -152,6 +171,15 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     buckets: Object.fromEntries([...counts.entries()].sort((a, b) => b[1] - a[1])),
     rawEvidence,
   };
+}
+
+export async function refreshClosureEvidenceForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult['rawEvidence'] & {
+  issueCount: number;
+}> {
+  const rows = allClosedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
+  const issueNumbers = rows.map((row) => row.number);
+  const rawEvidence = await refreshRawClosureEvidence(issueNumbers);
+  return { issueCount: issueNumbers.length, ...rawEvidence };
 }
 
 async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<ClosureProofAnalysisResult['rawEvidence']> {

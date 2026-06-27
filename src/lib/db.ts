@@ -925,6 +925,11 @@ export function upsertReleasePrReachability(input: ReleasePrReachabilityInput): 
   });
 }
 
+const deleteReleasePrReachabilityForReleaseStmt = db.prepare(`DELETE FROM release_pr_reachability WHERE tag=?`);
+export function deleteReleasePrReachabilityForRelease(tag: string): void {
+  deleteReleasePrReachabilityForReleaseStmt.run(tag);
+}
+
 // Stable-only view. Prereleases live in the DB for derived-stat computation
 // (beta_count, hours_to_next_release) but are not surfaced to scoring or the
 // API — the UI is "should I install this stable release?", betas don't get

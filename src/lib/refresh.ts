@@ -22,7 +22,8 @@ import {
 } from './releaseNotes';
 import { verifyNpmArtifact } from './npmRegistry';
 import { verifyEvidenceReportUrl } from './releaseEvidence';
-import { analyzeClosureProofsForRelease } from './closureProofAnalysis';
+import { analyzeClosureProofsForRelease, refreshClosureEvidenceForRelease } from './closureProofAnalysis';
+import { checkReleasePrReachability } from './releaseReachability';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 
@@ -463,12 +464,28 @@ export async function refresh(): Promise<{
       }
     }
 
+    const allReleases = listReleasesDb(monitoredReleaseCount);
+
+    for (const rel of allReleases) {
+      try {
+        const closure = await refreshClosureEvidenceForRelease(rel.tag);
+        console.log(`[closure-evidence] ${rel.tag}: ${closure.issueCount} closed issues inspected`);
+      } catch (e) {
+        console.warn(`[closure-evidence] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+      }
+      try {
+        const reachability = await checkReleasePrReachability(rel.tag);
+        console.log(`[reachability] ${rel.tag}: ${reachability.reachable}/${reachability.candidates} reachable`);
+      } catch (e) {
+        console.warn(`[reachability] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+      }
+    }
+
     // 4. Score every monitored release with the Install Confidence model — a single
     //    pass answering "should I install this stable?" from age/cadence-invariant
     //    signals (CVE, settle age, hotfix succession, stable-to-stable survival, beta
     //    shakeout, serious-regression balance). No peer median, no carry-forward
     //    attribution in the score itself. See lib/score.ts for the full rationale.
-    const allReleases = listReleasesDb(monitoredReleaseCount);
     const allFetchedTags = fetched.map((r) => r.tag_name);
 
     // CVE exposure per tag. `affected` (medium+ advisory matches) drives the
