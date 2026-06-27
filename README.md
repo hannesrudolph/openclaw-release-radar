@@ -49,6 +49,7 @@ OPENAI_MODEL=gpt-5.5
 
 PORT=8787
 DB_PATH=./data/radar.db
+REFRESH_ON_STARTUP=false
 REFRESH_MINUTES=0
 RELEASES_LIMIT=10
 FULL_ISSUE_BACKFILL=false
@@ -76,9 +77,15 @@ Open:
 http://127.0.0.1:8787
 ```
 
+Refresh the database manually when you want new evidence and scores:
+
+```bash
+REFRESH_MINUTES=0 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=50 npx tsx -e "import { refresh } from './src/lib/refresh.ts'; refresh().then(console.log)"
+```
+
 The first refresh can take a few minutes because it backfills GitHub data and classifies issues. Later refreshes only process changed issues.
 
-`REFRESH_MINUTES=0` disables automatic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
+`REFRESH_ON_STARTUP=false` keeps the web server from writing to the DB when you only want to inspect the UI. `REFRESH_MINUTES=0` disables periodic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
 
 ## Internal Calibration Snapshot
 

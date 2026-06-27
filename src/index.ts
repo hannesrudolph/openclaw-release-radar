@@ -32,11 +32,14 @@ if (config.refresh.intervalMinutes > 0) {
   console.log('[refresh] automatic refresh disabled');
 }
 
-// Initial refresh on startup (non-blocking).
-refresh()
-  .then((r) =>
-    console.log(
-      `[startup] refreshed: ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
-    ),
-  )
-  .catch((e) => console.error('[startup] refresh failed:', (e as Error).message));
+if (config.refresh.onStartup) {
+  refresh()
+    .then((r) =>
+      console.log(
+        `[startup] refreshed: ${r.classifiedCount} classified, ${r.releaseCount} releases, ${r.durationMs}ms`,
+      ),
+    )
+    .catch((e) => console.error('[startup] refresh failed:', (e as Error).message));
+} else {
+  console.log('[startup] refresh disabled');
+}

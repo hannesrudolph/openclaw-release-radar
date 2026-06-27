@@ -84,7 +84,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   if (MAIN_ONLY_RE.test(combinedComments)) {
     return {
       status: 'main_only_claim',
-      summary: 'Closure claims the fix exists on current main, but also indicates this release does not contain it or lacks release proof.',
+      summary: 'Closure says the fix is on current main, but not in this release tag.',
       evidence,
     };
   }
@@ -100,7 +100,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   if (ALREADY_PRESENT_RE.test(combinedComments)) {
     return {
       status: 'already_present_claim',
-      summary: 'Closure comment claims the behavior is already implemented, but no reachable closing PR proof is attached.',
+      summary: 'Closure says the behavior is already implemented, but no linked merged PR is reachable from this release tag.',
       evidence,
     };
   }
@@ -116,14 +116,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   if (input.hasClosingLink && !input.hasMergedClosingPr) {
     return {
       status: 'no_code_proof',
-      summary: 'A closing PR link exists, but the PR is not merged or merge state is unknown.',
+      summary: 'A linked PR exists, but it is not merged or its merge state is unknown.',
       evidence,
     };
   }
 
   return {
     status: 'no_code_proof',
-    summary: 'Closed without code proof tied to this release.',
+    summary: 'Closed without a linked merged PR reachable from this release tag.',
     evidence,
   };
 }

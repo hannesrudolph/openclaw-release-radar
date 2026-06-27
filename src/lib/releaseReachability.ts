@@ -3,6 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { db, deleteReleasePrReachabilityForRelease, upsertReleasePrReachability } from './db';
+import { creditedFixLinkSql } from './fixProvenance';
 
 export interface ReleaseReachabilityResult {
   tag: string;
@@ -24,7 +25,7 @@ JOIN issue_closure_events e ON e.issue_number = l.issue_number
 WHERE e.state_reason='COMPLETED'
   AND p.merged = 1
   AND p.merge_commit_oid IS NOT NULL
-  AND (l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer'))
+  AND ${creditedFixLinkSql('l')}
 `);
 
 const releaseCommitStmt = db.prepare('SELECT tag_commit_oid FROM release_commits WHERE tag=?');

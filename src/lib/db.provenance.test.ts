@@ -318,6 +318,45 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.verifiedFixedForRelease('v1').map((row: any) => row.number), [1]);
   });
 
+  it('credits closure-comment PR mentions only when merged and reachable', async () => {
+    const db = await freshDb('comment-mentioned-pr');
+    seedRelease(db, 'v-comment');
+
+    for (const n of [11, 12, 13, 14]) seedIssue(db, n);
+    for (const n of [11, 12, 13]) seedClosure(db, n);
+    seedClosure(db, 14, 'NOT_PLANNED');
+    seedPr(db, 211, true);
+    seedPr(db, 212, true);
+    seedPr(db, 213, false);
+    seedPr(db, 214, true);
+
+    for (const [issue, pr, status] of [
+      [11, 211, 'reachable'],
+      [12, 212, 'not_reachable'],
+      [13, 213, 'reachable'],
+      [14, 214, 'reachable'],
+    ] as const) {
+      db.upsertIssuePrLink({
+        issue_number: issue,
+        pr_number: pr,
+        source: 'ClosureComment.prMention',
+        will_close_target: null,
+        referenced_at: '2026-06-02T00:00:00Z',
+      });
+      db.upsertReleasePrReachability({
+        tag: 'v-comment',
+        pr_number: pr,
+        tag_commit_oid: 'v-comment-commit',
+        merge_commit_oid: `merge-${pr}`,
+        base_ref_name: 'main',
+        status,
+        evidence_json: '{}',
+      });
+    }
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-comment').map((row: any) => row.number), [11]);
+  });
+
   it('keeps unverified closures visible but excludes verified fixes', async () => {
     const db = await freshDb('unverified-closed');
     seedRelease(db, 'v3', '2026-07-01T00:00:00Z');

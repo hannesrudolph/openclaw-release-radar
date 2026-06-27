@@ -213,6 +213,12 @@ export interface GhIssueFixEvidence {
   pullRequests: GhPullRequestFix[];
 }
 
+export interface ClosureCommentPrMention {
+  issueNumber: number;
+  prNumber: number;
+  referencedAt: string | null;
+}
+
 export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueLabelEvent[]>();
@@ -806,6 +812,86 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
   return all;
 }
 
+export async function listPullRequestFixesBatch(prNumbers: number[]): Promise<Map<number, GhPullRequestFix>> {
+  const uniquePrNumbers = [...new Set(prNumbers)].filter((n) => Number.isInteger(n) && n > 0);
+  const all = new Map<number, GhPullRequestFix>();
+
+  const batchSize = 25;
+  for (let offset = 0; offset < uniquePrNumbers.length; offset += batchSize) {
+    const chunk = uniquePrNumbers.slice(offset, offset + batchSize);
+    let data: { repository: Record<string, any> | null };
+    try {
+      data = await gh<{ repository: Record<string, any> | null }>(
+        buildPullRequestFixesBatchQuery(chunk.length),
+        repoVars(Object.fromEntries(chunk.map((prNumber, idx) => [`number${idx}`, prNumber]))),
+      );
+    } catch (e) {
+      if (chunk.length > 1 && isMissingPullRequestError(e)) {
+        const fallback = await listPullRequestFixesBatch(chunk.slice(0, Math.ceil(chunk.length / 2)));
+        for (const [number, pr] of fallback) all.set(number, pr);
+        const rest = await listPullRequestFixesBatch(chunk.slice(Math.ceil(chunk.length / 2)));
+        for (const [number, pr] of rest) all.set(number, pr);
+        continue;
+      }
+      if (chunk.length === 1 && isMissingPullRequestError(e)) continue;
+      throw e;
+    }
+    const repo = assertRepo(data.repository);
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const pr = repo[`pr${idx}`];
+      if (!pr?.number) continue;
+      all.set(pr.number, mapPullRequestFix(pr));
+    }
+  }
+
+  return all;
+}
+
+function isMissingPullRequestError(e: unknown): boolean {
+  const message = e instanceof Error ? e.message : String(e);
+  return /Could not resolve to a PullRequest with the number/i.test(message);
+}
+
+export function closureCommentPrMentions(
+  issueNumber: number,
+  comments: Array<{ body?: string | null; created_at?: string | null; createdAt?: string | null }>,
+): ClosureCommentPrMention[] {
+  const byPr = new Map<number, ClosureCommentPrMention>();
+  for (const comment of comments) {
+    const body = comment.body ?? '';
+    for (const prNumber of extractClosureCommentPrNumbers(body)) {
+      if (prNumber === issueNumber) continue;
+      const existing = byPr.get(prNumber);
+      const referencedAt = comment.created_at ?? comment.createdAt ?? null;
+      if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
+        byPr.set(prNumber, { issueNumber, prNumber, referencedAt });
+      }
+    }
+  }
+  return [...byPr.values()].sort((a, b) => a.prNumber - b.prNumber);
+}
+
+function extractClosureCommentPrNumbers(body: string): number[] {
+  const numbers = new Set<number>();
+  const text = body.replace(/\s+/g, ' ');
+
+  for (const match of text.matchAll(/https?:\/\/(?:api\.)?github\.com\/repos\/openclaw\/openclaw\/pulls?\/(\d+)|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/(\d+)/gi)) {
+    addPrNumber(numbers, match[1] ?? match[2]);
+  }
+
+  const qualifiedMentionRe = /\b(?:merged\s+PR|merged\s+pull request|PR|pull request)\s*(?:that appears to have closed this:?\s*)?(?:\[)?#(\d+)\b/gi;
+  for (const match of text.matchAll(qualifiedMentionRe)) {
+    addPrNumber(numbers, match[1]);
+  }
+
+  return [...numbers].sort((a, b) => a - b);
+}
+
+function addPrNumber(numbers: Set<number>, raw: string | undefined): void {
+  const n = Number(raw);
+  if (Number.isInteger(n) && n > 0) numbers.add(n);
+}
+
 function mapPullRequestFix(pr: any): GhPullRequestFix {
   return {
     number: pr.number,
@@ -857,6 +943,20 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
       }
     }`).join('\n');
   return `query IssueFixEvidence($owner: String!, $repo: String!, ${vars}) {
+    repository(owner: $owner, name: $repo) {
+      ${fields}
+    }
+  }`;
+}
+
+function buildPullRequestFixesBatchQuery(size: number): string {
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const fields = Array.from({ length: size }, (_, idx) => `
+    pr${idx}: pullRequest(number: $number${idx}) {
+      number title url state merged mergedAt baseRefName
+      mergeCommit { oid }
+    }`).join('\n');
+  return `query PullRequestFixes($owner: String!, $repo: String!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}
     }
@@ -928,6 +1028,8 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 }
 
 export const __githubTest = {
+  buildPullRequestFixesBatchQuery,
+  closureCommentPrMentions,
   buildIssueCommentsBatchQuery,
   buildIssueLabelEventsBatchQuery,
   mapComment,

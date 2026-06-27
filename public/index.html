@@ -1683,11 +1683,11 @@ function closureStatusLabel(status) {
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
     main_only_claim: 'main-only claim',
-    no_code_proof: 'no code proof',
-    no_timeline_event: 'missing timeline event',
+    no_code_proof: 'no linked release fix',
+    no_timeline_event: 'close event not fetched',
     non_bug_neutral: 'not bug evidence',
     not_planned: 'not planned',
-    unknown: 'unknown',
+    unknown: 'not enough release evidence',
   })[status] ?? String(status ?? 'unknown');
 }
 
@@ -1727,9 +1727,9 @@ function closureProofHtml(closureProof) {
       + `</li>`;
   }).join('');
   return evidenceSectionHtml(
-    'Closed issue proof',
+    'Release fix credit',
     rows,
-    'Closed issues only get fix credit when code proof is tied to this release tag.',
+    'Closed issues get score credit only when a merged linked PR is reachable from this release tag.',
   );
 }
 
@@ -1775,11 +1775,11 @@ function whyNotTenHtml(local) {
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
     reasons.push(
-      `${closureProof.notCreditedCount} closed issues did not get fix credit.`
+      `${closureProof.notCreditedCount} closed issues are not counted as fixes for this release.`
       + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
-    reasons.push(`${fix.unverifiedClosedCount} closed issues did not get fix credit because release-level closure proof has not been analyzed yet.`);
+    reasons.push(`${fix.unverifiedClosedCount} closed issues are not counted as fixes yet because release-tag reachability has not been analyzed for them.`);
   }
 
   const artifact = gate.artifactVerification;
@@ -1788,7 +1788,7 @@ function whyNotTenHtml(local) {
   }
 
   if (!reasons.length && !verified.length) {
-    reasons.push('No field-blocker evidence is currently holding this release down; the remaining gap is mostly the model ceiling and normal uncertainty.');
+    reasons.push('No field-blocker evidence is currently holding this release down; the remaining gap comes from the model ceiling and capped confidence signals.');
   }
 
   const positives = [];
@@ -1805,7 +1805,7 @@ function whyNotTenHtml(local) {
       : '')
     + '<p><strong>What keeps it below perfect:</strong></p>'
     + '<ul>' + reasons.map((reason) => `<li>${esc(reason)}</li>`).join('') + '</ul>'
-    + '<p>This means the release looks safe to install, but there is still enough reported breakage, unresolved source risk, or missing proof that the model will not call it flawless.</p>'
+    + '<p>This means the release looks safe to install, but the audit still contains field reports, source-derived risk, or closed issues that are not tied to this release tag, so the model will not score it as flawless.</p>'
     + '</div>';
 }
 
@@ -1836,14 +1836,14 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? closureProof?.creditedCount ?? 0)} credited · ${esc(closureProof?.notCreditedCount ?? fix.unverifiedClosedCount ?? 0)} not credited</span></div>`
-    + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closure proof</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all credited'}</span></div>` : '')
+    + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? closureProof?.creditedCount ?? 0)} counted · ${esc(closureProof?.notCreditedCount ?? fix.unverifiedClosedCount ?? 0)} not counted</span></div>`
+    + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}</span></div>` : '')
     + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
     + '</div>'
     + compHtml
-    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. Only fixes whose closing PR is reachable from this release tag are credited.</div>`
+    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR is reachable from this release tag.</div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';

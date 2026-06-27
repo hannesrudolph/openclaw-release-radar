@@ -3,6 +3,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { config } from '../config';
 import type { IssueClassification } from './llm';
+import { creditedFixLinkSql } from './fixProvenance';
 
 // node:sqlite is built into Node ≥ 22.5 (stable since 24). No native build, no prebuilds.
 
@@ -1223,7 +1224,7 @@ WHERE
   e.state_reason = 'COMPLETED'
   AND p.merged = 1
   AND rpr.status = 'reachable'
-  AND (l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer'))
+  AND ${creditedFixLinkSql('l')}
 ORDER BY i.closed_at DESC
 `);
 
@@ -1258,7 +1259,7 @@ WHERE
       AND e.state_reason = 'COMPLETED'
       AND p.merged = 1
       AND rpr.status = 'reachable'
-      AND (l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer'))
+      AND ${creditedFixLinkSql('l')}
   )
 ORDER BY i.closed_at DESC
 `);

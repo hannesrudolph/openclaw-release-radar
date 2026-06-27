@@ -75,6 +75,38 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /label \{ name \}/);
   });
 
+  it('extracts closure-comment PR evidence without trusting bare issue refs', () => {
+    const mentions = __githubTest.closureCommentPrMentions(9000, [
+      {
+        body: 'I found the merged PR that appears to have closed this: [#95532: fix path](https://api.github.com/repos/openclaw/openclaw/pulls/95532).',
+        created_at: '2026-06-24T10:00:00Z',
+      },
+      {
+        body: 'See also #12345 and issue #95532 for context; neither line says this is a PR.',
+        created_at: '2026-06-24T11:00:00Z',
+      },
+      {
+        body: 'The release note points at https://github.com/openclaw/openclaw/pull/96025.',
+        created_at: '2026-06-24T12:00:00Z',
+      },
+    ]);
+
+    assert.deepEqual(mentions, [
+      { issueNumber: 9000, prNumber: 95532, referencedAt: '2026-06-24T10:00:00Z' },
+      { issueNumber: 9000, prNumber: 96025, referencedAt: '2026-06-24T12:00:00Z' },
+    ]);
+  });
+
+  it('builds one GraphQL query with aliased pull request fix lookups', () => {
+    const query = __githubTest.buildPullRequestFixesBatchQuery(2);
+
+    assert.match(query, /\$number0: Int!/);
+    assert.match(query, /\$number1: Int!/);
+    assert.match(query, /pr0: pullRequest\(number: \$number0\)/);
+    assert.match(query, /pr1: pullRequest\(number: \$number1\)/);
+    assert.match(query, /mergeCommit \{ oid \}/);
+  });
+
   it('groups active security vulnerability nodes by advisory', () => {
     const advisories = __githubTest.mapSecurityVulnerabilities([
       {

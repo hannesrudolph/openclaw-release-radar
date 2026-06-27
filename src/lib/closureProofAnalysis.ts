@@ -1,6 +1,7 @@
 import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertPullRequestFix } from './db';
 import { classifyClosureProof } from './closureProof';
-import { listIssueCommentsBatch, listIssueFixEvidenceBatch } from './github';
+import { CLOSURE_COMMENT_PR_MENTION_SOURCE, creditedFixLinkSql } from './fixProvenance';
+import { closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch } from './github';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -44,7 +45,7 @@ closed AS (
         AND e.state_reason='COMPLETED'
         AND p.merged=1
         AND rpr.status='reachable'
-        AND (l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer'))
+        AND ${creditedFixLinkSql('l')}
     )
 )
 SELECT * FROM closed
@@ -83,28 +84,28 @@ SELECT
   GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
   COUNT(DISTINCT e.event_id) AS closure_events,
   COUNT(DISTINCT CASE
-    WHEN l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer')
+    WHEN ${creditedFixLinkSql('l')}
     THEN l.pr_number END
   ) AS closing_links,
   COUNT(DISTINCT CASE
-    WHEN (l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer'))
+    WHEN ${creditedFixLinkSql('l')}
      AND p.merged=1
     THEN p.pr_number END
   ) AS merged_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN (l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer'))
+    WHEN ${creditedFixLinkSql('l')}
      AND p.merged=1
      AND rpr.status='reachable'
     THEN p.pr_number END
   ) AS reachable_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN (l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer'))
+    WHEN ${creditedFixLinkSql('l')}
      AND p.merged=1
      AND rpr.status='not_reachable'
     THEN p.pr_number END
   ) AS not_reachable_closing_prs,
   GROUP_CONCAT(DISTINCT CASE
-    WHEN l.will_close_target=1 OR l.source IN ('closedByPullRequestsReferences','ClosedEvent.closer')
+    WHEN ${creditedFixLinkSql('l')}
     THEN p.pr_number || ':' || COALESCE(p.title, '')
     END
   ) AS closing_prs
@@ -188,7 +189,10 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
   let pullRequests = 0;
   for (let offset = 0; offset < issueNumbers.length; offset += 20) {
     const chunk = issueNumbers.slice(offset, offset + 20);
-    const evidence = await listIssueFixEvidenceBatch(chunk);
+    const [evidence, commentsByIssue] = await Promise.all([
+      listIssueFixEvidenceBatch(chunk),
+      listIssueCommentsBatch(chunk),
+    ]);
     for (const item of evidence.values()) {
       for (const event of item.closureEvents) {
         upsertIssueClosureEvent({
@@ -227,6 +231,33 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         pullRequests++;
       }
+    }
+    const commentMentions = chunk.flatMap((issueNumber) =>
+      closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+    );
+    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => mention.prNumber));
+    for (const mention of commentMentions) {
+      const pr = mentionedPrs.get(mention.prNumber);
+      if (!pr) continue;
+      upsertIssuePrLink({
+        issue_number: mention.issueNumber,
+        pr_number: mention.prNumber,
+        source: CLOSURE_COMMENT_PR_MENTION_SOURCE,
+        will_close_target: null,
+        referenced_at: mention.referencedAt,
+      });
+      prLinks++;
+      upsertPullRequestFix({
+        pr_number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        state: pr.state,
+        merged: pr.merged ? 1 : 0,
+        merged_at: pr.mergedAt,
+        merge_commit_oid: pr.mergeCommitOid,
+        base_ref_name: pr.baseRefName,
+      });
+      pullRequests++;
     }
   }
   return { closureEvents, prLinks, pullRequests };

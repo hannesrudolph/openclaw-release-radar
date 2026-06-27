@@ -47,7 +47,7 @@ The model deliberately separates:
 - field-confirmed breakage
 - source/static risk
 - weak or stale issue evidence
-- unverified closures
+- closed issues not counted for this release
 - reachable fixes
 
 ## Label Timing
@@ -58,32 +58,32 @@ When scoring a historical release, it reconstructs the label set at that release
 
 Audit rows include both effective labels and current labels where relevant.
 
-## Fix Credit
+## Release Fix Credit
 
 A closed issue does not automatically count as fixed for a release.
 
 Fix credit requires:
 
 - GitHub closure reason is `COMPLETED`.
-- Closing PR is linked through GitHub closure/reference evidence.
+- Closing PR is linked through GitHub closure/reference evidence or a verified same-repo PR mention in a closure comment.
 - PR is merged.
 - PR merge commit is reachable from the release tag commit.
 
-Closed issues without reachable fix proof remain visible in `unverifiedClosed` evidence but do not improve the score.
+Closed issues without a merged linked PR reachable from the release tag remain visible in audit evidence, but they do not reduce release risk.
 
-The closure proof analyzer classifies every closed-but-not-credited issue into one of these buckets:
+The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
 - `fixed_in_release`: merged closing PR is reachable from this release tag.
 - `fixed_after_release`: merged closing PR exists, but is not reachable from this release tag.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
-- `already_present_claim`: closure comment claims the behavior is already implemented, but no reachable code proof is attached.
+- `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR is reachable from the scored release tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
-- `no_code_proof`: closure exists, but there is no merged/reachable code proof.
+- `no_code_proof`: closure exists, but no linked merged PR is reachable from the scored release tag.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_neutral`: closed item is not negative bug evidence.
 - `not_planned`: closure reason or comment says the issue was not planned/actionable.
 
-Only `fixed_in_release` receives fix credit. Other buckets explain closure context without improving the release score.
+Only `fixed_in_release` receives fix credit. Other buckets preserve the closure context in the audit, but they do not reduce release risk for this tag.
 
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
