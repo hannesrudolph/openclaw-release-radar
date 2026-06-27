@@ -236,6 +236,16 @@ CREATE TABLE IF NOT EXISTS issue_label_events (
   fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS issue_closure_proofs (
+  release_tag TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  status TEXT NOT NULL,
+  summary TEXT NOT NULL,
+  evidence_json TEXT NOT NULL,
+  checked_at TEXT NOT NULL,
+  PRIMARY KEY (release_tag, issue_number)
+);
+
 CREATE TABLE IF NOT EXISTS pull_request_fixes (
   pr_number INTEGER PRIMARY KEY,
   title TEXT,
@@ -264,6 +274,7 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
+CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
 CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
 `);
 
@@ -712,6 +723,84 @@ export function labelsForIssueAt(issueNumber: number, fallbackLabels: string[], 
     else if (row.action === 'unlabeled') labels.delete(row.label_name);
   }
   return [...labels];
+}
+
+export interface IssueClosureProofInput {
+  release_tag: string;
+  issue_number: number;
+  status: string;
+  summary: string;
+  evidence_json: string;
+}
+
+const upsertIssueClosureProofStmt = db.prepare(`
+INSERT INTO issue_closure_proofs (
+  release_tag, issue_number, status, summary, evidence_json, checked_at
+)
+VALUES (
+  :release_tag, :issue_number, :status, :summary, :evidence_json, :checked_at
+)
+ON CONFLICT(release_tag, issue_number) DO UPDATE SET
+  status=excluded.status,
+  summary=excluded.summary,
+  evidence_json=excluded.evidence_json,
+  checked_at=excluded.checked_at
+`);
+
+export function upsertIssueClosureProof(input: IssueClosureProofInput): void {
+  upsertIssueClosureProofStmt.run({ ...input, checked_at: new Date().toISOString() });
+}
+
+export interface IssueClosureProofRow extends IssueClosureProofInput {
+  checked_at: string;
+}
+
+const closureProofSummaryStmt = db.prepare(`
+SELECT status, COUNT(*) AS count
+FROM issue_closure_proofs
+WHERE release_tag=?
+GROUP BY status
+ORDER BY count DESC
+`);
+
+export function closureProofSummary(releaseTag: string): Array<{ status: string; count: number }> {
+  return closureProofSummaryStmt.all(releaseTag) as Array<{ status: string; count: number }>;
+}
+
+const closureProofExamplesStmt = db.prepare(`
+SELECT p.*, i.title, i.html_url, i.closed_at, c.sentiment, c.severity, c.functionality
+FROM issue_closure_proofs p
+JOIN issues i ON i.number=p.issue_number
+LEFT JOIN classifications c ON c.issue_number=p.issue_number
+WHERE p.release_tag=?
+ORDER BY
+  CASE p.status
+    WHEN 'fixed_after_release' THEN 0
+    WHEN 'already_present_claim' THEN 1
+    WHEN 'duplicate_or_superseded' THEN 2
+    WHEN 'no_code_proof' THEN 3
+    ELSE 4
+  END,
+  i.closed_at DESC
+LIMIT ?
+`);
+
+export function closureProofExamples(releaseTag: string, limit = 25): Array<IssueClosureProofRow & {
+  title: string;
+  html_url: string | null;
+  closed_at: string | null;
+  sentiment: string | null;
+  severity: string | null;
+  functionality: string | null;
+}> {
+  return closureProofExamplesStmt.all(releaseTag, limit) as unknown as Array<IssueClosureProofRow & {
+    title: string;
+    html_url: string | null;
+    closed_at: string | null;
+    sentiment: string | null;
+    severity: string | null;
+    functionality: string | null;
+  }>;
 }
 
 const upsertIssueClosureEventStmt = db.prepare(`

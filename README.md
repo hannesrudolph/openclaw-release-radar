@@ -172,6 +172,7 @@ A healthy completed refresh has:
 npm run typecheck
 npm test
 npm run build
+npm run analyze:closure-proofs -- v2026.6.10
 npm start
 ```
 

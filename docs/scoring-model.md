@@ -71,6 +71,19 @@ Fix credit requires:
 
 Closed issues without reachable fix proof remain visible in `unverifiedClosed` evidence but do not improve the score.
 
+The closure proof analyzer classifies every closed-but-not-credited issue into one of these buckets:
+
+- `fixed_in_release`: merged closing PR is reachable from this release tag.
+- `fixed_after_release`: merged closing PR exists, but is not reachable from this release tag.
+- `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
+- `already_present_claim`: closure comment claims the behavior is already implemented, but no reachable code proof is attached.
+- `no_code_proof`: closure exists, but there is no merged/reachable code proof.
+- `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
+- `non_bug_neutral`: closed item is not negative bug evidence.
+- `not_planned`: closure reason or comment says the issue was not planned/actionable.
+
+Only `fixed_in_release` receives fix credit. Other buckets explain closure context without improving the release score.
+
 ## Release Checks
 
 The model reads the release tag commit's GitHub `statusCheckRollup`.
@@ -131,5 +144,6 @@ npm test
 npm run typecheck
 npm run build
 npx tsx scripts/verify-new-scoring.mjs
+npm run analyze:closure-proofs -- v2026.6.10
 curl http://127.0.0.1:8787/api/releases/v2026.6.10/review | jq
 ```

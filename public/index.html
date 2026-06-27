@@ -1676,6 +1676,53 @@ function issueListText(issues, limit = 2) {
     .join('; ');
 }
 
+function closureStatusLabel(status) {
+  return ({
+    fixed_in_release: 'fixed in this release',
+    fixed_after_release: 'fixed after this release',
+    duplicate_or_superseded: 'duplicate/superseded',
+    already_present_claim: 'already-present claim',
+    no_code_proof: 'no code proof',
+    no_timeline_event: 'missing timeline event',
+    non_bug_neutral: 'not bug evidence',
+    not_planned: 'not planned',
+    unknown: 'unknown',
+  })[status] ?? String(status ?? 'unknown');
+}
+
+function closureProofSummaryText(closureProof) {
+  const byStatus = closureProof?.byStatus ?? {};
+  const entries = Object.entries(byStatus)
+    .filter(([status]) => status !== 'fixed_in_release')
+    .sort((a, b) => Number(b[1]) - Number(a[1]));
+  if (!entries.length) return '';
+  return entries
+    .map(([status, count]) => `${esc(count)} ${esc(closureStatusLabel(status))}`)
+    .join(' · ');
+}
+
+function closureProofHtml(closureProof) {
+  if (!closureProof?.examples?.length) return '';
+  const rows = closureProof.examples.slice(0, 12).map((item) => {
+    const link = item.url
+      ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">#${esc(item.number)} ${esc(shortIssueTitle(item))}</a>`
+      : `<span>#${esc(item.number)} ${esc(shortIssueTitle(item))}</span>`;
+    const prLine = (item.evidence?.closingPrs ?? []).length
+      ? ` · PRs: ${(item.evidence.closingPrs ?? []).slice(0, 3).map((pr) => String(pr).split(':')[0]).join(', ')}`
+      : '';
+    const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
+    return `<li class="evidence__item">${link}`
+      + `<span class="evidence__meta">${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
+      + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
+      + `</li>`;
+  }).join('');
+  return evidenceSectionHtml(
+    'Closed issue proof',
+    rows,
+    'Closed issues only get fix credit when code proof is tied to this release tag.',
+  );
+}
+
 function whyNotTenHtml(local) {
   const evidence = local?.issueEvidence ?? {};
   const gate = local?.gateEvidence ?? {};
@@ -1714,10 +1761,15 @@ function whyNotTenHtml(local) {
   }
 
   const fix = gate.fixProvenance ?? {};
-  if ((fix.unverifiedClosedCount ?? 0) > 0) {
+  const closureProof = fix.closureProof;
+  if (closureProof?.notCreditedCount > 0) {
+    const bucketText = closureProofSummaryText(closureProof);
     reasons.push(
-      `${fix.unverifiedClosedCount} closed issues did not get fix credit because their closing PR was not proven reachable from this release tag.`
+      `${closureProof.notCreditedCount} closed issues did not get fix credit.`
+      + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );
+  } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
+    reasons.push(`${fix.unverifiedClosedCount} closed issues did not get fix credit because release-level closure proof has not been analyzed yet.`);
   }
 
   const artifact = gate.artifactVerification;
@@ -1754,6 +1806,7 @@ function scoreReviewHtml(r) {
   const components = local.components?.components ?? {};
   const input = local.input ?? {};
   const fix = local.gateEvidence?.fixProvenance ?? {};
+  const closureProof = fix.closureProof;
   const releaseChecks = local.gateEvidence?.releaseChecks;
   const artifact = local.gateEvidence?.artifactVerification;
   const signalSummary = scoreSignalSummary(local);
@@ -1773,7 +1826,8 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? 0)} credited · ${esc(fix.unverifiedClosedCount ?? 0)} unverified</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Fix provenance</span><span class="score-review__value">${esc(fix.verifiedFixedCount ?? closureProof?.creditedCount ?? 0)} credited · ${esc(closureProof?.notCreditedCount ?? fix.unverifiedClosedCount ?? 0)} not credited</span></div>`
+    + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closure proof</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all credited'}</span></div>` : '')
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}</span></div>` : '')
     + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
@@ -1781,6 +1835,7 @@ function scoreReviewHtml(r) {
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. Only fixes whose closing PR is reachable from this release tag are credited.</div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
+    + closureProofHtml(closureProof)
     + '</div>';
 }
 
