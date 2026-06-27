@@ -138,6 +138,15 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /mergeCommit \{ oid \}/);
   });
 
+  it('paginates release status check contexts', () => {
+    const query = __githubTest.buildReleaseCommitQuery();
+
+    assert.match(query, /\$after: String/);
+    assert.match(query, /contexts\(first: 100, after: \$after\)/);
+    assert.match(query, /totalCount/);
+    assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
+  });
+
   it('groups active security vulnerability nodes by advisory', () => {
     const advisories = __githubTest.mapSecurityVulnerabilities([
       {

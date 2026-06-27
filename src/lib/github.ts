@@ -624,77 +624,21 @@ function buildIssueCommentsBatchQuery(size: number): string {
 }
 
 export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
-  const data = await gh<{
-    repository: {
-      release: {
-        tagCommit: {
-          oid: string;
-          committedDate?: string;
-          statusCheckRollup?: {
-            state: string | null;
-            contexts: {
-              totalCount: number;
-              nodes: Array<{
-                __typename: string;
-                name?: string | null;
-                context?: string | null;
-                status?: string | null;
-                conclusion?: string | null;
-                state?: string | null;
-                detailsUrl?: string | null;
-                targetUrl?: string | null;
-                checkSuite?: {
-                  app?: { slug: string } | null;
-                  workflowRun?: { workflow?: { name: string } | null } | null;
-                } | null;
-              } | null> | null;
-            };
-          } | null;
-        } | null;
-      } | null;
-    } | null;
-  }>(
-    `query ReleaseCommit($owner: String!, $repo: String!, $tag: String!) {
-      repository(owner: $owner, name: $repo) {
-        release(tagName: $tag) {
-          tagCommit {
-            oid
-            ... on Commit {
-              committedDate
-              statusCheckRollup {
-                state
-                contexts(first: 100) {
-                  totalCount
-                  nodes {
-                    __typename
-                    ... on CheckRun {
-                      name
-                      status
-                      conclusion
-                      detailsUrl
-                      checkSuite {
-                        app { slug }
-                        workflowRun { workflow { name } }
-                      }
-                    }
-                    ... on StatusContext {
-                      context
-                      state
-                      targetUrl
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    }`,
-    repoVars({ tag }),
-  );
-  const release = assertRepo(data.repository).release;
-  const rollup = release?.tagCommit?.statusCheckRollup ?? null;
-  const contexts = mapReleaseCheckContexts(rollup?.contexts.nodes ?? []);
+  const contexts: GhReleaseCheckContext[] = [];
+  let after: string | null = null;
+  let release: ReleaseCommitRelease | null = null;
+  let rollup: ReleaseCommitRollup | null = null;
+
+  for (;;) {
+    const data: ReleaseCommitQueryData = await gh<ReleaseCommitQueryData>(buildReleaseCommitQuery(), repoVars({ tag, after }));
+    release = assertRepo(data.repository).release;
+    rollup = release?.tagCommit?.statusCheckRollup ?? null;
+    contexts.push(...mapReleaseCheckContexts(rollup?.contexts.nodes ?? []));
+    const pageInfo: PageInfo | undefined = rollup?.contexts.pageInfo;
+    if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
+    after = pageInfo.endCursor;
+  }
+
   const counts = countReleaseCheckContexts(contexts);
   return {
     tag,
@@ -708,6 +652,82 @@ export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
     checkSkipped: counts.skipped,
     checkContexts: contexts,
   };
+}
+
+interface ReleaseCommitQueryData {
+  repository: {
+    release: {
+      tagCommit: {
+        oid: string;
+        committedDate?: string;
+        statusCheckRollup?: {
+          state: string | null;
+          contexts: {
+            totalCount: number;
+            nodes: Array<{
+              __typename: string;
+              name?: string | null;
+              context?: string | null;
+              status?: string | null;
+              conclusion?: string | null;
+              state?: string | null;
+              detailsUrl?: string | null;
+              targetUrl?: string | null;
+              checkSuite?: {
+                app?: { slug: string } | null;
+                workflowRun?: { workflow?: { name: string } | null } | null;
+              } | null;
+            } | null> | null;
+            pageInfo: PageInfo;
+          };
+        } | null;
+      } | null;
+    } | null;
+  } | null;
+}
+
+type ReleaseCommitRepository = NonNullable<ReleaseCommitQueryData['repository']>;
+type ReleaseCommitRelease = ReleaseCommitRepository['release'];
+type ReleaseCommitRollup = NonNullable<NonNullable<NonNullable<ReleaseCommitRelease>['tagCommit']>['statusCheckRollup']>;
+
+function buildReleaseCommitQuery(): string {
+  return `query ReleaseCommit($owner: String!, $repo: String!, $tag: String!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      release(tagName: $tag) {
+        tagCommit {
+          oid
+          ... on Commit {
+            committedDate
+            statusCheckRollup {
+              state
+              contexts(first: 100, after: $after) {
+                totalCount
+                nodes {
+                  __typename
+                  ... on CheckRun {
+                    name
+                    status
+                    conclusion
+                    detailsUrl
+                    checkSuite {
+                      app { slug }
+                      workflowRun { workflow { name } }
+                    }
+                  }
+                  ... on StatusContext {
+                    context
+                    state
+                    targetUrl
+                  }
+                }
+                pageInfo { hasNextPage endCursor }
+              }
+            }
+          }
+        }
+      }
+    }
+  }`;
 }
 
 function mapReleaseCheckContexts(nodes: Array<any | null>): GhReleaseCheckContext[] {
@@ -1110,6 +1130,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 }
 
 export const __githubTest = {
+  buildReleaseCommitQuery,
   buildPullRequestFixesBatchQuery,
   closureCommentCommitMentions,
   closureCommentPrMentions,
