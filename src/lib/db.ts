@@ -66,6 +66,8 @@ CREATE TABLE IF NOT EXISTS releases (
   registry_version TEXT,
   registry_integrity TEXT,
   registry_tarball_url TEXT,
+  ci_report_verified INTEGER NOT NULL DEFAULT 0,
+  ci_report_mismatch TEXT,
   artifact_verified INTEGER NOT NULL DEFAULT 0,
   artifact_mismatch TEXT,
   -- JSON array of the top product surfaces this release breaks (visible regressions),
@@ -308,6 +310,8 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN registry_version TEXT`,
   `ALTER TABLE releases ADD COLUMN registry_integrity TEXT`,
   `ALTER TABLE releases ADD COLUMN registry_tarball_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN ci_report_verified INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN ci_report_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN artifact_verified INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN artifact_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
@@ -400,6 +404,8 @@ export interface ReleaseRow {
   registry_version: string | null;
   registry_integrity: string | null;
   registry_tarball_url: string | null;
+  ci_report_verified: number;
+  ci_report_mismatch: string | null;
   artifact_verified: number;
   artifact_mismatch: string | null;
   broken_surfaces: string | null;
@@ -476,6 +482,8 @@ UPDATE releases SET
   registry_version=:registry_version,
   registry_integrity=:registry_integrity,
   registry_tarball_url=:registry_tarball_url,
+  ci_report_verified=:ci_report_verified,
+  ci_report_mismatch=:ci_report_mismatch,
   artifact_verified=:artifact_verified,
   artifact_mismatch=:artifact_mismatch
 WHERE tag=:tag
@@ -486,6 +494,8 @@ export function updateReleaseArtifactVerification(args: {
   registry_version: string | null;
   registry_integrity: string | null;
   registry_tarball_url: string | null;
+  ci_report_verified: number;
+  ci_report_mismatch: string | null;
   artifact_verified: number;
   artifact_mismatch: string | null;
 }): void {

@@ -229,6 +229,8 @@ describe('release fix provenance', () => {
       registry_version: '1.0.0',
       registry_integrity: 'sha512-test',
       registry_tarball_url: 'https://registry.npmjs.org/openclaw/-/openclaw-1.0.0.tgz',
+      ci_report_verified: 1,
+      ci_report_mismatch: null,
       artifact_verified: 1,
       artifact_mismatch: null,
     });
@@ -238,6 +240,7 @@ describe('release fix provenance', () => {
     assert.equal(row.release_sha, 'commit-1');
     assert.equal(row.registry_version, '1.0.0');
     assert.equal(row.registry_integrity, 'sha512-test');
+    assert.equal(row.ci_report_verified, 1);
     assert.equal(row.artifact_verified, 1);
   });
 

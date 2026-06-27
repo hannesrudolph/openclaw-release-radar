@@ -87,6 +87,8 @@ const scored = releases.map((rel, idx) => {
     releaseCheckPending: commit?.check_pending ?? 0,
     artifactVerified: rel.artifact_verified === 1,
     artifactMismatch: rel.artifact_mismatch,
+    ciReportVerified: rel.ci_report_verified === 1,
+    ciReportMismatch: rel.ci_report_mismatch,
     releaseIntegrityPresent: !!rel.release_integrity,
     releaseShaMatches: rel.release_sha && commit?.tag_commit_oid ? rel.release_sha === commit.tag_commit_oid : undefined,
   });

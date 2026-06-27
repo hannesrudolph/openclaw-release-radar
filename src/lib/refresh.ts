@@ -21,6 +21,7 @@ import {
   parseReleaseNotes,
 } from './releaseNotes';
 import { verifyNpmArtifact } from './npmRegistry';
+import { verifyEvidenceReportUrl } from './releaseEvidence';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 
@@ -229,11 +230,14 @@ export async function refresh(): Promise<{
           expectedIntegrity: stats.integrity,
           expectedTarballUrl: stats.registryTarballUrl,
         });
+        const evidenceReport = await verifyEvidenceReportUrl(stats.fullReleaseCiReportUrl);
         updateReleaseArtifactVerification({
           tag: r.tag_name,
           registry_version: artifact.version,
           registry_integrity: artifact.integrity,
           registry_tarball_url: artifact.tarballUrl,
+          ci_report_verified: evidenceReport.verified ? 1 : 0,
+          ci_report_mismatch: evidenceReport.mismatch,
           artifact_verified: artifact.verified ? 1 : 0,
           artifact_mismatch: artifact.mismatch,
         });
@@ -591,6 +595,8 @@ export async function refresh(): Promise<{
         releaseCheckPending: releaseCommit?.check_pending ?? 0,
         artifactVerified: rel.artifact_verified === 1,
         artifactMismatch: rel.artifact_mismatch,
+        ciReportVerified: rel.ci_report_verified === 1,
+        ciReportMismatch: rel.ci_report_mismatch,
         releaseIntegrityPresent: !!rel.release_integrity,
         releaseShaMatches: rel.release_sha && releaseCommit?.tag_commit_oid
           ? rel.release_sha === releaseCommit.tag_commit_oid
@@ -673,6 +679,8 @@ export async function refresh(): Promise<{
             ? rel.release_sha === releaseCommit.tag_commit_oid
             : null,
           ciReportUrl: rel.full_release_ci_report_url,
+          ciReportVerified: rel.ci_report_verified === 1,
+          ciReportMismatch: rel.ci_report_mismatch,
           registryVersion: rel.registry_version,
           registryIntegrity: rel.registry_integrity,
           registryTarballUrl: rel.registry_tarball_url,

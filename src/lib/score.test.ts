@@ -147,7 +147,7 @@ describe('installConfidence — graded signals', () => {
 
   it('verified artifacts add a small capped confidence bump', () => {
     const unchecked = score();
-    const verified = score({ artifactVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
+    const verified = score({ artifactVerified: true, ciReportVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
     assert.ok(verified > unchecked);
     assert.ok(verified - unchecked <= 0.5);
   });
@@ -156,6 +156,18 @@ describe('installConfidence — graded signals', () => {
     const verified = score({ artifactVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
     const mismatch = score({ artifactVerified: false, artifactMismatch: 'registry integrity mismatch' });
     assert.ok(mismatch < verified);
+  });
+
+  it('missing release evidence report offsets artifact confidence without wiping npm verification', () => {
+    const verified = score({ artifactVerified: true, releaseIntegrityPresent: true, releaseShaMatches: true });
+    const missingReport = score({
+      artifactVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+      ciReportMismatch: 'release evidence report not found',
+    });
+    assert.ok(missingReport < verified);
+    assert.ok(missingReport > score({ artifactMismatch: 'registry integrity mismatch' }));
   });
 
   it('verified open debt lowers the score even when reign balance is neutral', () => {

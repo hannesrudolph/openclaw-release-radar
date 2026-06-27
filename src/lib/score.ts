@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v9-artifact-verification';
+export const SCORE_MODEL_VERSION = 'evidence-v10-evidence-report';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -84,6 +84,8 @@ export interface InstallInput {
   releaseCheckPending?: number;
   artifactVerified?: boolean;
   artifactMismatch?: string | null;
+  ciReportVerified?: boolean;
+  ciReportMismatch?: string | null;
   releaseIntegrityPresent?: boolean;
   releaseShaMatches?: boolean;
 }
@@ -505,10 +507,13 @@ function releaseVerificationPoints(input: InstallInput): number {
 
 function artifactVerificationPoints(input: InstallInput): number {
   if (input.artifactMismatch) return ARTIFACT_DOWN;
+  let points = 0;
   if (input.artifactVerified && input.releaseIntegrityPresent && input.releaseShaMatches !== false) {
-    return ARTIFACT_UP;
+    points += 0.25;
   }
-  return 0;
+  if (input.ciReportVerified) points += 0.1;
+  else if (input.ciReportMismatch) points -= 0.15;
+  return clamp(points, ARTIFACT_DOWN, ARTIFACT_UP);
 }
 
 export function cveDecayLoad(items: Array<{ severity: string; distance: number }>): number {
@@ -578,6 +583,7 @@ function reasonFor(
   } else if (input.artifactVerified) {
     bits.push('npm artifact verified');
   }
+  if (input.ciReportMismatch) bits.push('release evidence report missing');
   if (input.betaCount > 0) bits.push(`${input.betaCount} betas baked`);
   if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);
   if (coverage < 0.95) bits.push(`${Math.round(coverage * 100)}% evidence coverage`);
