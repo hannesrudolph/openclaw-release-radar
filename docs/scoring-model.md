@@ -180,6 +180,7 @@ npm test
 npm run typecheck
 npm run build
 npm run verify:ci
+npm run verify:scripts
 npm run verify:local
 npm run verify:live
 npm run analyze:closure-proofs -- v2026.6.10
