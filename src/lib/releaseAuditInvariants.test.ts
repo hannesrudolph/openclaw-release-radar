@@ -61,6 +61,12 @@ describe('verifyReleaseAudit', () => {
         rawIssueCount: 1,
         classifiedIssueCount: 1,
       };
+      const explanation = {
+        title: 'Why not 10?',
+        positives: ['The release is eligible and recommended.'],
+        limits: ['One closed issue still needs release proof.'],
+        verdict: 'This means the release looks safe to install, but the audit still contains evidence.',
+      };
       if (url.endsWith('/api/status')) {
         return { refreshing: false, lastError: null, lastRefreshAt: 't', lastScoredAt: 't' };
       }
@@ -121,6 +127,7 @@ describe('verifyReleaseAudit', () => {
                 releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
               },
             },
+            components: { explanation },
           },
         };
       }

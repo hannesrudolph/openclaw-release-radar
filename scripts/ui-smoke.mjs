@@ -10,16 +10,22 @@ if (!eligibleNonRecommended) throw new Error('No eligible non-recommended releas
 
 let fixCreditTag = null;
 let fixCreditText = null;
+let explanationText = null;
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
   const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
   if (credit) {
     fixCreditTag = release.tag;
     fixCreditText = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
+    explanationText = (review.local?.components?.explanation?.limits ?? [])
+      .find((line) => /closed issues .* not counted as release fixes/i.test(line))
+      ?? review.local?.components?.explanation?.limits?.[0]
+      ?? null;
     break;
   }
 }
 if (!fixCreditTag) throw new Error('No release exposes releaseFixCredit for UI smoke');
+if (!explanationText) throw new Error(`No score explanation text available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -48,6 +54,10 @@ try {
   await fixPanel.getByText('Evidence coverage', { exact: true }).waitFor();
   await fixPanel.locator('.score-review__label').filter({ hasText: 'Release fix credit' }).first().waitFor();
   await fixPanel.getByText(fixCreditText).waitFor();
+  const fixPanelText = await fixPanel.innerText();
+  if (!fixPanelText.includes(explanationText)) {
+    throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
+  }
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();
