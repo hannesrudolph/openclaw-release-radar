@@ -105,6 +105,7 @@ Run the audit invariant verifier after refreshes:
 
 ```bash
 npm run verify:release-audit
+npm run ui:smoke
 ```
 
 ## Release Checks

@@ -157,6 +157,7 @@ Release audit invariant check:
 ```bash
 npm run verify:release-audit
 npm run verify:release-audit -- --api-base http://127.0.0.1:8787
+npm run ui:smoke
 ```
 
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
@@ -187,6 +188,7 @@ npm run typecheck
 npm test
 npm run build
 npm run verify:release-audit
+npm run ui:smoke
 npm run analyze:closure-proofs -- v2026.6.10
 npm start
 ```

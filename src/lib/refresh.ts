@@ -26,6 +26,7 @@ import { analyzeClosureProofsForRelease, refreshClosureEvidenceForRelease } from
 import { checkReleasePrReachability } from './releaseReachability';
 import { matchesRange, stableDistance } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
+import { releaseLabelCutoff } from './labelCutoff';
 
 // Limited concurrency for LLM classification. During scoring calibration we may
 // intentionally raise this through CLASSIFY_CONCURRENCY to burn tokens for speed.
@@ -119,13 +120,6 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
     contributor_commenters: contributors.size,
     commenter_scan_truncated: comments.length < issue.comments ? 1 : 0,
   };
-}
-
-function releaseLabelCutoff(rel: { published_at: string | null; hours_to_next_release: number | null }): string | null {
-  if (!rel.published_at || rel.hours_to_next_release == null) return null;
-  const publishedAt = Date.parse(rel.published_at);
-  if (!Number.isFinite(publishedAt)) return null;
-  return new Date(publishedAt + rel.hours_to_next_release * 3_600_000).toISOString();
 }
 
 const BACKFILL_FLAG = 'backfill_completed_at';

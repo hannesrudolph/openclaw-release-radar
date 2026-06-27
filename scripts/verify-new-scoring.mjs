@@ -32,8 +32,8 @@ function rowToCls(r){ const ok=['none','partial','confirmed','unknown']; const w
   return { sentiment:r.sentiment, severity:r.severity, scope:r.scope, functionality:r.functionality, affectedUsers:r.affected_users, workaroundStatus:ws, duplicateCluster:r.duplicate_cluster, affectsVersion:r.affects_version, confidence:r.confidence, rationale:r.rationale??'' }; }
 const classify = (r, labels=safeLabels(r.labels))=>applyTitleIssueShapeHint(applyLabelOverrides(applyTitleFunctionalityHint(rowToCls(r), r.title), labels), r.title, labels);
 const isCoreSerious = (c)=>c.sentiment==='negative'&&c.functionality==='core'&&(c.severity==='critical'||c.severity==='high');
-const labelCutoff = (rel) => rel.published_at && rel.hours_to_next_release != null
-  ? new Date(Date.parse(rel.published_at) + rel.hours_to_next_release * 3_600_000).toISOString()
+const labelCutoff = (rel) => rel.published_at && rel.hours_to_next_stable != null
+  ? new Date(Date.parse(rel.published_at) + rel.hours_to_next_stable * 3_600_000).toISOString()
   : null;
 
 const releases = listReleasesDb(10);

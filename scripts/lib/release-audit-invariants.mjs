@@ -1,0 +1,170 @@
+export const knownProofStatuses = new Set([
+  'fixed_in_release',
+  'fixed_after_release',
+  'duplicate_to_open_canonical',
+  'duplicate_to_closed_canonical',
+  'canonical_cycle_or_self_reference',
+  'duplicate_or_superseded',
+  'not_planned',
+  'already_present_claim',
+  'main_only_claim',
+  'no_code_proof',
+  'no_timeline_event',
+  'non_bug_neutral',
+  'unknown',
+]);
+
+export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10 }) {
+  const releases = reader.listReleases(limit);
+  const failures = [];
+  const rows = [];
+
+  for (const release of releases) {
+    const tag = release.tag;
+    const closed = reader.closedDuringReign(tag);
+    const verified = reader.verifiedFixedForRelease(tag);
+    const unverified = reader.unverifiedClosedForRelease(tag);
+    const proofRows = reader.proofRowsFor(tag);
+    const fixedProof = proofRows.filter((row) => row.status === 'fixed_in_release');
+    const notCountedProof = proofRows.filter((row) => row.status !== 'fixed_in_release');
+
+    rows.push({
+      tag,
+      closed: closed.length,
+      verified: verified.length,
+      unverified: unverified.length,
+      proof: proofRows.length,
+      counted: fixedProof.length,
+      notCounted: notCountedProof.length,
+    });
+
+    expect(failures, tag, closed.length === verified.length + unverified.length,
+      `closedDuringReign (${closed.length}) must equal verified + unverified (${verified.length + unverified.length})`);
+    expect(failures, tag, proofRows.length === closed.length,
+      `closure proofs (${proofRows.length}) must cover closed release-window issues (${closed.length})`);
+    expect(failures, tag, fixedProof.length + notCountedProof.length === proofRows.length,
+      'counted + not-counted proof rows must equal all proof rows');
+
+    const verifiedNumbers = new Set(verified.map((row) => row.number));
+    const proofByNumber = new Map(proofRows.map((row) => [row.issue_number, row]));
+    for (const row of fixedProof) {
+      expect(failures, tag, verifiedNumbers.has(row.issue_number),
+        `fixed_in_release issue #${row.issue_number} must be present in verifiedFixedForRelease`);
+    }
+
+    for (const row of verified) {
+      const proof = proofByNumber.get(row.number);
+      if (!proof) continue;
+      const evidence = parseJson(proof.evidence_json, {});
+      if (proof.status !== 'fixed_in_release') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `verified issue #${row.number} has proof status ${proof.status}; only non-negative verified closures may avoid fixed_in_release`);
+      }
+      expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
+        `verified issue #${row.number} must have final COMPLETED closure evidence`);
+    }
+
+    for (const row of proofRows) {
+      expect(failures, tag, knownProofStatuses.has(row.status), `unknown proof status ${row.status} for issue #${row.issue_number}`);
+      const evidence = parseJson(row.evidence_json, {});
+      if (row.status === 'fixed_in_release') {
+        expect(failures, tag, evidence.hasReachableClosingPr === true,
+          `fixed_in_release issue #${row.issue_number} must have reachable PR evidence`);
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
+          `fixed_in_release issue #${row.issue_number} must have COMPLETED state reason`);
+      }
+      if (row.status === 'fixed_after_release') {
+        expect(failures, tag, evidence.hasNotReachableClosingPr === true,
+          `fixed_after_release issue #${row.issue_number} must have not-reachable PR evidence`);
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
+          `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
+      }
+      if (row.status === 'duplicate_to_open_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'open',
+          `duplicate_to_open_canonical issue #${row.issue_number} must resolve to an open terminal`);
+      }
+      if (row.status === 'duplicate_to_closed_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+      }
+      if (row.status === 'canonical_cycle_or_self_reference') {
+        expect(failures, tag, evidence.canonicalResolution?.cycle === true || evidence.canonicalResolution?.selfReference === true,
+          `canonical_cycle_or_self_reference issue #${row.issue_number} must record cycle/self-reference evidence`);
+      }
+    }
+
+    const audit = reader.getReleaseScoreAudit(tag);
+    if (audit) {
+      const gate = parseJson(audit.gate_evidence_json, {});
+      const fix = gate.fixProvenance ?? {};
+      expect(failures, tag, fix.verifiedFixedCount === verified.length,
+        `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
+      expect(failures, tag, fix.unverifiedClosedCount === unverified.length,
+        `audit unverifiedClosedCount (${fix.unverifiedClosedCount}) must match unverifiedClosedForRelease (${unverified.length})`);
+    } else {
+      expect(failures, tag, false, 'release score audit row is missing');
+    }
+  }
+
+  if (apiBase) {
+    await verifyApi({ apiBase: apiBase.replace(/\/$/, ''), fetchJson, releases, failures });
+  }
+
+  return { releases, rows, failures };
+}
+
+function parseJson(raw, fallback) {
+  try {
+    return raw ? JSON.parse(raw) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function expect(failures, tag, condition, message) {
+  if (!condition) failures.push(`${tag}: ${message}`);
+}
+
+async function verifyApi({ apiBase, fetchJson, releases, failures }) {
+  const status = await fetchJson(`${apiBase}/api/status`);
+  expect(failures, 'api/status', status.refreshing === false, `refreshing must be false, got ${status.refreshing}`);
+  expect(failures, 'api/status', status.lastError == null, `lastError must be null, got ${status.lastError}`);
+  if (status.lastScoredAt) {
+    expect(failures, 'api/status', status.lastRefreshAt === status.lastScoredAt,
+      `lastRefreshAt (${status.lastRefreshAt}) must equal lastScoredAt (${status.lastScoredAt})`);
+  }
+
+  const publicPayload = await fetchJson(`${apiBase}/api/public`);
+  expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('comparison'), 'public payload must not include comparison data');
+  expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('upstream'), 'public payload must not include upstream data');
+
+  for (const release of releases) {
+    const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
+    expect(failures, release.tag, review.local?.score === release.final_score,
+      `review score (${review.local?.score}) must match DB final_score (${release.final_score})`);
+    expect(failures, release.tag, review.local?.status === release.state,
+      `review status (${review.local?.status}) must match DB state (${release.state})`);
+    expect(failures, release.tag, review.local?.recommended === (release.recommended === 1),
+      `review recommended (${review.local?.recommended}) must match DB recommended (${release.recommended === 1})`);
+
+    const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
+    const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
+    if (proof || credit) {
+      expect(failures, release.tag, !!proof && !!credit, 'review must expose closureProof and releaseFixCredit together');
+      expect(failures, release.tag, credit.countedClosedCount === proof.creditedCount,
+        'releaseFixCredit countedClosedCount must match closureProof creditedCount');
+      expect(failures, release.tag, credit.notCountedClosedCount === proof.notCreditedCount,
+        'releaseFixCredit notCountedClosedCount must match closureProof notCreditedCount');
+      expect(failures, release.tag, credit.analyzedClosedCount === proof.creditedCount + proof.notCreditedCount,
+        'releaseFixCredit analyzedClosedCount must equal credited + notCredited');
+      expect(failures, release.tag, (proof.byStatus?.fixed_in_release ?? 0) === proof.creditedCount,
+        'closureProof creditedCount must equal fixed_in_release bucket');
+    }
+  }
+}
+
+async function defaultFetchJson(url) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  return res.json();
+}
