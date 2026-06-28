@@ -94,6 +94,8 @@ const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
 const scoreInputSchemaVersion = 1;
 const scoreComponentsSchemaVersion = 1;
+const scoreAuditSummarySchemaVersion = 1;
+const localAuditSchemaVersion = 1;
 const gateEvidenceSchemaVersion = 1;
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
@@ -957,6 +959,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
 
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
     verifyComparisonSnapshot({ failures, label: `${release.tag} review`, snapshot: review.snapshot });
+    expect(failures, release.tag, review.local?.schemaVersion === localAuditSchemaVersion,
+      `review local schemaVersion (${review.local?.schemaVersion}) must equal ${localAuditSchemaVersion}`);
     expect(failures, release.tag, review.local?.score === release.final_score,
       `review score (${review.local?.score}) must match DB final_score (${release.final_score})`);
     expect(failures, release.tag, review.local?.status === release.state,
@@ -1015,6 +1019,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         publicRelease.explanation, review.local?.components?.explanation);
     }
     if (comparison?.local) {
+      expect(failures, release.tag, comparison.local.schemaVersion === localAuditSchemaVersion,
+        `comparison local schemaVersion (${comparison.local.schemaVersion}) must equal ${localAuditSchemaVersion}`);
       for (const [field, expected] of Object.entries({
         score: review.local?.score,
         band: review.local?.band,
@@ -1140,6 +1146,8 @@ async function defaultFetchJson(url) {
 function verifyScoreAuditSummary({ failures, tag, summary }) {
   expect(failures, tag, !!summary, 'scoreAudit summary must be present');
   if (!summary) return;
+  expect(failures, tag, summary.schemaVersion === scoreAuditSummarySchemaVersion,
+    `scoreAudit schemaVersion must be ${scoreAuditSummarySchemaVersion}, got ${JSON.stringify(summary.schemaVersion)}`);
   expect(failures, tag, typeof summary.modelVersion === 'string' && summary.modelVersion.length > 0,
     'scoreAudit modelVersion must be present');
   expect(failures, tag, Number.isInteger(summary.promptVersion),

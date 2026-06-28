@@ -174,6 +174,7 @@ describe('verifyReleaseAudit', () => {
   it('passes coherent DB and API invariants', async () => {
     const fetchJson = async (url: string) => {
       const scoreAudit = {
+        schemaVersion: 1,
         modelVersion: 'test-model',
         promptVersion: 6,
         evidenceCoverage: 1,
@@ -248,6 +249,7 @@ describe('verifyReleaseAudit', () => {
           releases: [{
             tag: 'v1',
             local: {
+              schemaVersion: 1,
               score: 7.5,
               band: 'ok',
               status: 'eligible',
@@ -276,6 +278,7 @@ describe('verifyReleaseAudit', () => {
         return {
           snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
           local: {
+            schemaVersion: 1,
             score: 7.5,
             band: 'ok',
             status: 'eligible',

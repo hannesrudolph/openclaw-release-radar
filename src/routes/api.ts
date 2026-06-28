@@ -181,11 +181,15 @@ function maintainerSignals(r: {
   };
 }
 
+const SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1;
+const LOCAL_AUDIT_SCHEMA_VERSION = 1;
+
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   if (!audit) return null;
   const components = parseJson(audit.components_json, null) as any;
   const input = parseJson(audit.input_json, null) as any;
   return {
+    schemaVersion: SCORE_AUDIT_SUMMARY_SCHEMA_VERSION,
     modelVersion: audit.score_model_version,
     promptVersion: audit.prompt_version,
     evidenceCoverage: components?.evidenceCoverage ?? null,
@@ -258,6 +262,7 @@ api.get('/comparison', (_req, res) => {
     return {
       tag: release.tag,
       local: {
+        schemaVersion: LOCAL_AUDIT_SCHEMA_VERSION,
         score: localScore,
         band: bandFor(localScore, (release.state ?? 'eligible') as InstallStatus),
         status: release.state,
@@ -296,6 +301,7 @@ api.get('/releases/:tag/review', (req, res) => {
   const payload: Record<string, unknown> = {
     tag,
     local: {
+      schemaVersion: LOCAL_AUDIT_SCHEMA_VERSION,
       score: release.final_score,
       band: bandFor(release.final_score, (release.state ?? 'eligible') as InstallStatus),
       status: release.state,

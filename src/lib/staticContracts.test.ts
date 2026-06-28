@@ -236,6 +236,8 @@ describe('static scoring/UI contracts', () => {
   it('public issue summaries use effective scoring classifications', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 1/);
+    assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
+    assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /freshness\.max_scored_at/);
