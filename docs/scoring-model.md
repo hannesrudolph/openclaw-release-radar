@@ -53,6 +53,8 @@ The model deliberately separates:
 - closed issues not counted for this release
 - reachable fixes
 
+Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override.
+
 ## Label Timing
 
 Current labels can be misleading because labels may be added or removed after a release. The model persists GitHub `LabeledEvent` and `UnlabeledEvent` timeline items in `issue_label_events`.

@@ -33,6 +33,7 @@ describe('release score explanations', () => {
     });
     const explanation = run.scored[0].explanation;
     const labelTimeline = run.scored[0].gateEvidence.labelTimeline as any;
+    const evidence = run.scored[0].debtEvidence as any;
 
     assert.equal(explanation.schemaVersion, SCORE_EXPLANATION_SCHEMA_VERSION);
     assert.equal(explanation.limits.length, explanation.limitDetails.length);
@@ -51,6 +52,15 @@ describe('release score explanations', () => {
     assert.ok(carryover);
     assert.ok((carryover.issueRefs?.length ?? 0) > 0);
     assert.ok(carryover.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
+    const sampleEvidenceIssue = [
+      ...(evidence.verifiedDebt ?? []),
+      ...(evidence.carryoverDebt ?? []),
+      ...(evidence.staleDebt ?? []),
+      ...(evidence.openedFeltSerious ?? []),
+    ].map((item: any) => item.issue ?? item).find((issue: any) => issue?.classification);
+    assert.ok(sampleEvidenceIssue?.rawClassification);
+    assert.ok(sampleEvidenceIssue?.classification);
+    assert.equal(typeof sampleEvidenceIssue.classificationDiff, 'object');
     assert.equal(typeof labelTimeline.issueCount, 'number');
     assert.equal(typeof labelTimeline.historicalCurrentLabelFallbackAllowed, 'boolean');
   });

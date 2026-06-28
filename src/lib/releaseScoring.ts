@@ -316,6 +316,7 @@ function scoreRelease(args: {
   const issueByNumber = new Map(attributed.map((row) => [row.number, row]));
   const summarizeIssue = (row: JoinedIssue | undefined) => {
     if (!row) return null;
+    const rawClassification = rowToClassification(row);
     const classification = classify(row);
     return {
       number: row.number,
@@ -340,7 +341,9 @@ function scoreRelease(args: {
       labelSource: labelInfo(row).source,
       affectsVersion: row.affects_version,
       duplicateCluster: row.duplicate_cluster,
+      rawClassification,
       classification,
+      classificationDiff: classificationDiff(rawClassification, classification),
     };
   };
 
@@ -608,6 +611,28 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       status: item?.status ?? null,
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function classificationDiff(
+  raw: IssueClassification,
+  effective: IssueClassification,
+): Record<string, { raw: unknown; effective: unknown }> {
+  const out: Record<string, { raw: unknown; effective: unknown }> = {};
+  const keys: Array<keyof IssueClassification> = [
+    'sentiment',
+    'severity',
+    'scope',
+    'functionality',
+    'affectedUsers',
+    'workaroundStatus',
+    'duplicateCluster',
+    'affectsVersion',
+    'confidence',
+  ];
+  for (const key of keys) {
+    if (raw[key] !== effective[key]) out[key] = { raw: raw[key], effective: effective[key] };
+  }
+  return out;
 }
 
 function labelTimelineCoverage(
