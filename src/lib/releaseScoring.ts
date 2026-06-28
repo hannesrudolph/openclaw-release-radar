@@ -537,7 +537,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
         },
         buckets,
         riskBuckets,
-        issueRefs: issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release')),
+        issueRefs: issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release'), 5),
       },
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {

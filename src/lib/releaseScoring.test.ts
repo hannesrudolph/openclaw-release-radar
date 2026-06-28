@@ -51,6 +51,15 @@ describe('release score explanations', () => {
     assert.equal(typeof closure.metrics?.neutralOrNonActionableCount, 'number');
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
+    assert.ok((closure.issueRefs?.length ?? 0) >= 3);
+    const closureExamples = ((run.scored[0].gateEvidence as any).fixProvenance?.closureProof?.examples ?? [])
+      .filter((item: any) => item.status !== 'fixed_in_release');
+    assert.deepEqual(
+      closure.issueRefs?.map((item) => item.number),
+      closureExamples.slice(0, closure.issueRefs?.length ?? 0).map((item: any) => item.number),
+    );
+    assert.ok(closureExamples.every((item: any, index: number) =>
+      index === 0 || Number(closureExamples[index - 1].riskWeight ?? 0) >= Number(item.riskWeight ?? 0)));
 
     const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
     assert.ok(carryover);
