@@ -498,7 +498,8 @@ function adjustCanonicalDuplicateStatus(
   canonicalGraph: Map<number, number[]>,
   resultByIssue: Map<number, ClosureProofResult> = new Map(),
 ): ClosureProofResult {
-  if (result.status !== 'duplicate_or_superseded') return { ...result, evidence };
+  const nonBugDuplicate = result.status === 'non_bug_duplicate_or_superseded';
+  if (result.status !== 'duplicate_or_superseded' && !nonBugDuplicate) return { ...result, evidence };
   const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph);
   const terminalProof = resolution.terminalIssue?.number == null
     ? null
@@ -523,57 +524,57 @@ function adjustCanonicalDuplicateStatus(
   }
   if (terminalProof?.status === 'fixed_in_release' || hasReachableCanonicalFixCommit) {
     return {
-      status: 'duplicate_to_fixed_in_release',
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_in_release' : 'duplicate_to_fixed_in_release',
       summary: hasReachableCanonicalFixCommit
-        ? 'Closed as duplicate/superseded; canonical fix/source commit is reachable from this release tag.'
-        : 'Closed as duplicate/superseded; canonical issue was fixed in this release tag.',
+        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical fix/source commit is reachable from this release tag.`
+        : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue was fixed in this release tag.`,
       evidence: nextEvidence,
     };
   }
   if (terminalProof?.status === 'fixed_after_release' || hasNotReachableCanonicalFixCommit) {
     return {
-      status: 'duplicate_to_fixed_after_release',
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_after_release' : 'duplicate_to_fixed_after_release',
       summary: hasNotReachableCanonicalFixCommit
-        ? 'Closed as duplicate/superseded; canonical fix/source commit is not reachable from this release tag.'
-        : 'Closed as duplicate/superseded; canonical issue was fixed after this release tag.',
+        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical fix/source commit is not reachable from this release tag.`
+        : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue was fixed after this release tag.`,
       evidence: nextEvidence,
     };
   }
   if (resolution.terminalIssue?.state === 'open') {
     return {
-      status: 'duplicate_to_open_canonical',
-      summary: 'Closed as duplicate/superseded; canonical issue remains open.',
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_open_canonical' : 'duplicate_to_open_canonical',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue remains open.`,
       evidence: nextEvidence,
     };
   }
   const prContext = openPrContext(evidence);
   if (prContext.canonical.length) {
     return {
-      status: 'superseded_to_open_pr',
-      summary: 'Closed as duplicate/superseded; trusted close-time context points to an open, unmerged PR.',
+      status: nonBugDuplicate ? 'non_bug_superseded_to_open_pr' : 'superseded_to_open_pr',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; trusted close-time context points to an open, unmerged PR.`,
       evidence: { ...nextEvidence, canonicalOpenPrs: prContext.canonical },
     };
   }
   if (prContext.related.length) {
     return {
-      status: 'duplicate_with_open_pr_context',
-      summary: 'Closed as duplicate/superseded; related open PR references exist, but no trusted close-time note marks them as canonical.',
+      status: nonBugDuplicate ? 'non_bug_duplicate_with_open_pr_context' : 'duplicate_with_open_pr_context',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; related open PR references exist, but no trusted close-time note marks them as canonical.`,
       evidence: { ...nextEvidence, relatedOpenPrs: prContext.related },
     };
   }
   if (resolution.terminalIssue?.state === 'closed') {
     if (!terminalProof || terminalProof.status === 'no_timeline_event' || terminalProof.status === 'unknown') {
       return {
-        status: 'duplicate_to_closed_canonical_missing_proof',
+        status: nonBugDuplicate ? 'non_bug_duplicate_to_closed_canonical_missing_proof' : 'duplicate_to_closed_canonical_missing_proof',
         summary: terminalProof
-          ? 'Closed as duplicate/superseded; canonical issue is closed, but canonical closure proof is missing or incomplete.'
-          : 'Closed as duplicate/superseded; canonical issue is closed, but no canonical closure proof was available for this release audit.',
+          ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is closed, but canonical closure proof is missing or incomplete.`
+          : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is closed, but no canonical closure proof was available for this release audit.`,
         evidence: nextEvidence,
       };
     }
     return {
-      status: 'duplicate_to_closed_canonical',
-      summary: 'Closed as duplicate/superseded; canonical issue is also closed without reachable release-fix proof.',
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_closed_canonical' : 'duplicate_to_closed_canonical',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is also closed without reachable release-fix proof.`,
       evidence: nextEvidence,
     };
   }

@@ -117,6 +117,13 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
         evidence,
       };
     }
+    if (hasDuplicateOrSupersededSignal(combinedComments, reasons)) {
+      return {
+        status: 'non_bug_duplicate_or_superseded',
+        summary: 'Non-negative item was closed as duplicate, superseded, or moved under another tracker.',
+        evidence,
+      };
+    }
     return {
       status: 'non_bug_neutral',
       summary: 'Closed item is not negative bug evidence.',

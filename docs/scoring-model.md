@@ -133,6 +133,14 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `non_bug_fixed_in_release`: non-negative item has release-reachable fix proof; it remains audit-visible but is not scored as bug fix credit.
 - `non_bug_fixed_after_release`: non-negative item has fix proof that is not reachable from this release tag.
 - `non_bug_linked_without_merge`: non-negative item has a linked closing PR, but it is not merged or merge state is unknown.
+- `non_bug_duplicate_to_fixed_in_release`: non-negative duplicate/superseded item points to canonical release-fix proof.
+- `non_bug_duplicate_to_open_canonical`: non-negative duplicate/superseded item points to an open canonical issue.
+- `non_bug_duplicate_to_closed_canonical`: non-negative duplicate/superseded item points to a closed canonical issue with terminal proof that is not release-fix credit.
+- `non_bug_duplicate_to_closed_canonical_missing_proof`: non-negative duplicate/superseded item points to a closed canonical issue whose terminal closure proof is missing.
+- `non_bug_duplicate_to_fixed_after_release`: non-negative duplicate/superseded item points to canonical fix proof that is not reachable from this release tag.
+- `non_bug_superseded_to_open_pr`: non-negative duplicate/superseded item points to an open, unmerged PR.
+- `non_bug_duplicate_with_open_pr_context`: non-negative duplicate/superseded item has related open PR context that is not marked canonical.
+- `non_bug_duplicate_or_superseded`: non-negative item was closed as duplicate/superseded, but no canonical issue or PR target was resolved.
 - `non_bug_neutral`: closed item is not negative bug evidence.
 - `not_planned`: close-time rationale says the issue is expected, by design, outside the tracked source/repository boundary, or otherwise concretely non-actionable for this release.
 

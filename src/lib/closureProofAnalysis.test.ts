@@ -135,6 +135,40 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.evidence.canonicalOpenPrs, undefined);
   });
 
+  it('classifies non-bug duplicate closures by open canonical target without scoring risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('non_bug_duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [50103] },
+      new Map([[10, [50103]]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'non_bug_duplicate_to_open_canonical');
+    assert.equal((adjusted.evidence.canonicalResolution as any).terminalIssue?.number, 50103);
+  });
+
+  it('classifies non-bug duplicate closures with open PR context without scoring risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('non_bug_duplicate_or_superseded', 'Closed as duplicate.'),
+      {
+        canonicalIssues: [],
+        linkedPrs: [{
+          number: 85651,
+          title: 'feat(continuation): context-pressure-aware continuation',
+          state: 'OPEN',
+          merged: 0,
+          source: 'ClosureComment.prMention',
+        }],
+      },
+      new Map([[10, []]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'non_bug_superseded_to_open_pr');
+  });
+
   it('recognizes common duplicate-of text as canonical graph targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(

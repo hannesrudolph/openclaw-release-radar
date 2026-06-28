@@ -278,6 +278,50 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
           `non_bug_linked_without_merge issue #${row.issue_number} must have an unmerged/unknown linked PR`);
       }
+      if (row.status === 'non_bug_duplicate_to_fixed_in_release') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_in_release' ||
+          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'reachable'),
+          `non_bug_duplicate_to_fixed_in_release issue #${row.issue_number} must resolve to fixed-in-release canonical proof`);
+      }
+      if (row.status === 'non_bug_duplicate_to_fixed_after_release') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release' ||
+          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable'),
+          `non_bug_duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
+      }
+      if (row.status === 'non_bug_duplicate_to_open_canonical') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'open',
+          `non_bug_duplicate_to_open_canonical issue #${row.issue_number} must resolve to an open terminal`);
+      }
+      if (row.status === 'non_bug_duplicate_to_closed_canonical') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed' &&
+          !!evidence.canonicalResolution?.terminalProof,
+          `non_bug_duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal with proof`);
+      }
+      if (row.status === 'non_bug_duplicate_to_closed_canonical_missing_proof') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `non_bug_duplicate_to_closed_canonical_missing_proof issue #${row.issue_number} must resolve to a closed terminal`);
+      }
+      if (row.status === 'non_bug_superseded_to_open_pr') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, Array.isArray(evidence.canonicalOpenPrs) &&
+          evidence.canonicalOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' &&
+            Number(pr?.merged ?? 0) === 0 && pr?.source === 'ClosureComment.prMention'),
+          `non_bug_superseded_to_open_pr issue #${row.issue_number} must include trusted closure-comment open PR evidence`);
+      }
+      if (row.status === 'non_bug_duplicate_with_open_pr_context') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, Array.isArray(evidence.relatedOpenPrs) &&
+          evidence.relatedOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
+          `non_bug_duplicate_with_open_pr_context issue #${row.issue_number} must include related open PR evidence`);
+      }
+      if (row.status === 'non_bug_duplicate_or_superseded') {
+        expectNonNegativeProof({ failures, tag, row });
+      }
       if (isNegativeBareNotPlannedNeutral(row, evidence)) {
         expect(failures, tag, false,
           `negative NOT_PLANNED issue #${row.issue_number} cannot be neutral/non-actionable without concrete close-time rationale`);
@@ -669,6 +713,11 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
 
 function canonicalFixCommitProof(evidence) {
   return Array.isArray(evidence?.canonicalFixCommitProof) ? evidence.canonicalFixCommitProof : [];
+}
+
+function expectNonNegativeProof({ failures, tag, row }) {
+  expect(failures, tag, row.sentiment !== 'negative',
+    `${row.status} issue #${row.issue_number} must not be negative`);
 }
 
 function verifyCommitArray({ failures, tag, issueNumber, name, commits }) {

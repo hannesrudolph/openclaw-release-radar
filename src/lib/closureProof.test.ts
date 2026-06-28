@@ -340,6 +340,16 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'non_bug_linked_without_merge');
   });
 
+  it('preserves duplicate closure shape for neutral items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{ author: 'bot', body: 'Close as duplicate of #1234.' }],
+    }));
+    assert.equal(result.status, 'non_bug_duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [1234]);
+  });
+
   it('keeps missing closure timeline evidence visible even for neutral items', () => {
     const result = classifyClosureProof(input({
       sentiment: 'neutral',
