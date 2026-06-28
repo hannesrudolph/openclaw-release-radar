@@ -245,6 +245,22 @@ CREATE TABLE IF NOT EXISTS issue_pr_links (
   PRIMARY KEY (issue_number, pr_number, source)
 );
 
+CREATE TABLE IF NOT EXISTS issue_commit_references (
+  issue_number INTEGER NOT NULL,
+  event_id TEXT PRIMARY KEY,
+  commit_oid TEXT NOT NULL,
+  commit_message_headline TEXT,
+  commit_repository_owner TEXT,
+  commit_repository_name TEXT,
+  commit_repository_name_with_owner TEXT,
+  is_cross_repository INTEGER NOT NULL DEFAULT 0,
+  is_direct_reference INTEGER NOT NULL DEFAULT 0,
+  referenced_at TEXT,
+  actor_login TEXT,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS issue_label_events (
   issue_number INTEGER NOT NULL,
   event_id TEXT PRIMARY KEY,
@@ -301,6 +317,7 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_reopen_events_issue_time ON issue_reopen_events(issue_number, reopened_at);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
+CREATE INDEX IF NOT EXISTS idx_issue_commit_references_issue ON issue_commit_references(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_issue_label_snapshots_issue_time ON issue_label_snapshots(issue_number, snapshot_at);
 CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
@@ -355,6 +372,7 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN artifact_verified INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN artifact_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
+  `ALTER TABLE issue_commit_references ADD COLUMN commit_message_headline TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -1128,6 +1146,51 @@ ON CONFLICT(issue_number, pr_number, source) DO UPDATE SET
 
 export function upsertIssuePrLink(input: IssuePrLinkInput): void {
   upsertIssuePrLinkStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+export interface IssueCommitReferenceInput {
+  issue_number: number;
+  event_id: string;
+  commit_oid: string;
+  commit_message_headline: string | null;
+  commit_repository_owner: string | null;
+  commit_repository_name: string | null;
+  commit_repository_name_with_owner: string | null;
+  is_cross_repository: number;
+  is_direct_reference: number;
+  referenced_at: string | null;
+  actor_login: string | null;
+  raw_json: string;
+}
+
+const upsertIssueCommitReferenceStmt = db.prepare(`
+INSERT INTO issue_commit_references (
+  issue_number, event_id, commit_oid, commit_message_headline, commit_repository_owner, commit_repository_name,
+  commit_repository_name_with_owner, is_cross_repository, is_direct_reference,
+  referenced_at, actor_login, raw_json, fetched_at
+)
+VALUES (
+  :issue_number, :event_id, :commit_oid, :commit_message_headline, :commit_repository_owner, :commit_repository_name,
+  :commit_repository_name_with_owner, :is_cross_repository, :is_direct_reference,
+  :referenced_at, :actor_login, :raw_json, :fetched_at
+)
+ON CONFLICT(event_id) DO UPDATE SET
+  issue_number=excluded.issue_number,
+  commit_oid=excluded.commit_oid,
+  commit_message_headline=excluded.commit_message_headline,
+  commit_repository_owner=excluded.commit_repository_owner,
+  commit_repository_name=excluded.commit_repository_name,
+  commit_repository_name_with_owner=excluded.commit_repository_name_with_owner,
+  is_cross_repository=excluded.is_cross_repository,
+  is_direct_reference=excluded.is_direct_reference,
+  referenced_at=excluded.referenced_at,
+  actor_login=excluded.actor_login,
+  raw_json=excluded.raw_json,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssueCommitReference(input: IssueCommitReferenceInput): void {
+  upsertIssueCommitReferenceStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
 export interface PullRequestFixInput {

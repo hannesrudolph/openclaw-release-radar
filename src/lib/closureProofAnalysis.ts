@@ -1,4 +1,5 @@
-import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
+import { config } from '../config';
+import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
@@ -14,6 +15,7 @@ export interface ClosureProofAnalysisResult {
     reopenEvents: number;
     prLinks: number;
     pullRequests: number;
+    commitReferences: number;
   };
 }
 
@@ -129,6 +131,27 @@ GROUP BY i.number
 ORDER BY i.closed_at DESC
 `);
 
+const issueCommitReferenceRowsStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT value FROM json_each(?)
+)
+SELECT
+  r.issue_number,
+  r.commit_oid,
+  r.commit_message_headline,
+  r.referenced_at,
+  r.actor_login,
+  r.event_id,
+  i.closed_at
+FROM issue_commit_references r
+JOIN selected s ON s.issue_number=r.issue_number
+JOIN issues i ON i.number=r.issue_number
+WHERE r.is_direct_reference=1
+  AND r.is_cross_repository=0
+  AND r.commit_repository_name_with_owner=?
+ORDER BY r.referenced_at
+`);
+
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
@@ -136,6 +159,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const aggregateRows = issueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
+  const aggregateByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row]));
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
   const allCommentsByIssue = new Map(commentsByIssue);
   const canonicalIssueNumbers = new Set<number>();
@@ -152,6 +176,8 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   await expandCanonicalGraph(canonicalGraph, allCommentsByIssue, [...canonicalIssueNumbers]);
   const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
   const canonicalCommitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
+  const referencedCommitMentionsByIssue = commitReferenceMentionsByIssue(issueNumbers);
+  const useReferencedCommitProofIssues = new Set<number>();
   const allCommitOids = new Set<string>();
   for (const issueNumber of issueNumbers) {
     const directMentions = closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []);
@@ -166,6 +192,13 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     commitMentionsByIssue.set(issueNumber, mentions);
     canonicalCommitMentionsByIssue.set(issueNumber, canonicalMentions);
     for (const mention of mentions) allCommitOids.add(mention.commitOid);
+    const row = aggregateByIssue.get(issueNumber);
+    const hasMergedClosingPr = Number(row?.merged_closing_prs ?? 0) > 0;
+    const hasDirectClosureCommit = splitCsv(row?.direct_closer_commits).some((commitOid) => fullCommitOidRe.test(commitOid));
+    if (directMentions.length === 0 && !hasMergedClosingPr && !hasDirectClosureCommit) {
+      useReferencedCommitProofIssues.add(issueNumber);
+      for (const mention of referencedCommitMentionsByIssue.get(issueNumber) ?? []) allCommitOids.add(mention.commitOid);
+    }
   }
   for (const row of aggregateRows) {
     for (const commitOid of splitCsv(row.direct_closer_commits)) {
@@ -193,9 +226,11 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     );
     const directMentions = (commitMentionsByIssue.get(row.number) ?? [])
       .filter((mention) => !canonicalMentionKeys.has(`${mention.sourceIssueNumber}:${mention.commitOid}`));
+    const closureCommitMentions = directClosureCommitMentions(row.number, row.direct_closer_commits, row.closed_at);
     const directCommitProof = commitProofEvidence([
       ...directMentions,
-      ...directClosureCommitMentions(row.number, row.direct_closer_commits, row.closed_at),
+      ...(useReferencedCommitProofIssues.has(row.number) ? referencedCommitMentionsByIssue.get(row.number) ?? [] : []),
+      ...closureCommitMentions,
     ], commitReachability);
     const canonicalCommitProof = commitProofEvidence(
       canonicalCommitMentionsByIssue.get(row.number) ?? [],
@@ -286,6 +321,51 @@ function commitProofEvidence(
 }
 
 const fullCommitOidRe = /^[0-9a-f]{40}$/i;
+const fixShapedCommitHeadlineRe = /\b(fix(?:e[sd])?|resolv(?:e[sd])?|repair(?:ed)?|patch(?:ed)?|address(?:ed)?)\b/i;
+
+function commitReferenceMentionsByIssue(issueNumbers: number[]): Map<number, ClosureCommentCommitMention[]> {
+  const byIssue = new Map<number, ClosureCommentCommitMention[]>();
+  if (!issueNumbers.length) return byIssue;
+  const repoNameWithOwner = `${config.github.owner}/${config.github.repo}`;
+  const rows = issueCommitReferenceRowsStmt.all(JSON.stringify(issueNumbers), repoNameWithOwner) as Array<{
+    issue_number: number;
+    commit_oid: string;
+    commit_message_headline: string | null;
+    referenced_at: string | null;
+    actor_login: string | null;
+    event_id: string;
+    closed_at: string | null;
+  }>;
+  for (const row of rows) {
+    const commitOid = String(row.commit_oid ?? '').toLowerCase();
+    if (!fullCommitOidRe.test(commitOid)) continue;
+    const headline = row.commit_message_headline ?? '';
+    if (!fixShapedCommitHeadlineRe.test(headline)) continue;
+    const referencedAtMs = row.referenced_at ? Date.parse(row.referenced_at) : NaN;
+    const closedAtMs = row.closed_at ? Date.parse(row.closed_at) : NaN;
+    if (!Number.isFinite(referencedAtMs) || !Number.isFinite(closedAtMs) || referencedAtMs > closedAtMs + 2000) continue;
+    const mention: ClosureCommentCommitMention = {
+      issueNumber: row.issue_number,
+      commitOid,
+      referencedAt: row.referenced_at,
+      sourceIssueNumber: row.issue_number,
+      snippet: `GitHub ReferencedEvent same-repo commit ${commitOid}: ${headline}`.slice(0, 500),
+      source: 'ReferencedEvent.commit',
+      author: row.actor_login,
+      authorAssociation: null,
+      trustedSource: true,
+    };
+    const list = byIssue.get(row.issue_number) ?? [];
+    if (!list.some((item) => item.commitOid === mention.commitOid && item.source === mention.source)) {
+      list.push(mention);
+      byIssue.set(row.issue_number, list);
+    }
+  }
+  for (const [issueNumber, list] of byIssue) {
+    byIssue.set(issueNumber, list.sort((a, b) => a.commitOid.localeCompare(b.commitOid)));
+  }
+  return byIssue;
+}
 
 function directClosureCommitMentions(
   issueNumber: number,
@@ -501,7 +581,7 @@ export async function refreshClosureEvidenceForRelease(releaseTag: string): Prom
 }
 
 function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisResult['rawEvidence'] {
-  if (!issueNumbers.length) return { closureEvents: 0, reopenEvents: 0, prLinks: 0, pullRequests: 0 };
+  if (!issueNumbers.length) return { closureEvents: 0, reopenEvents: 0, prLinks: 0, pullRequests: 0, commitReferences: 0 };
   const selected = JSON.stringify(issueNumbers);
   const row = db.prepare(`
     WITH selected(issue_number) AS (
@@ -520,13 +600,23 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
       (SELECT COUNT(DISTINCT p.pr_number)
        FROM pull_request_fixes p
        JOIN issue_pr_links l ON l.pr_number=p.pr_number
-       JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests
-  `).get(selected) as { closureEvents: number; reopenEvents: number; prLinks: number; pullRequests: number } | undefined;
+       JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests,
+      (SELECT COUNT(DISTINCT c.event_id)
+       FROM issue_commit_references c
+       JOIN selected s ON s.issue_number=c.issue_number) AS commitReferences
+  `).get(selected) as {
+    closureEvents: number;
+    reopenEvents: number;
+    prLinks: number;
+    pullRequests: number;
+    commitReferences: number;
+  } | undefined;
   return {
     closureEvents: Number(row?.closureEvents ?? 0),
     reopenEvents: Number(row?.reopenEvents ?? 0),
     prLinks: Number(row?.prLinks ?? 0),
     pullRequests: Number(row?.pullRequests ?? 0),
+    commitReferences: Number(row?.commitReferences ?? 0),
   };
 }
 
@@ -535,6 +625,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
   let reopenEvents = 0;
   let prLinks = 0;
   let pullRequests = 0;
+  let commitReferences = 0;
   for (let offset = 0; offset < issueNumbers.length; offset += 20) {
     const chunk = issueNumbers.slice(offset, offset + 20);
     const [evidence, commentsByIssue] = await Promise.all([
@@ -575,6 +666,23 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
           referenced_at: link.referencedAt,
         });
         prLinks++;
+      }
+      for (const ref of item.commitReferences) {
+        upsertIssueCommitReference({
+          issue_number: ref.issueNumber,
+          event_id: ref.eventId,
+          commit_oid: ref.commitOid,
+          commit_message_headline: ref.commitMessageHeadline,
+          commit_repository_owner: ref.commitRepositoryOwner,
+          commit_repository_name: ref.commitRepositoryName,
+          commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
+          is_cross_repository: ref.isCrossRepository ? 1 : 0,
+          is_direct_reference: ref.isDirectReference ? 1 : 0,
+          referenced_at: ref.referencedAt,
+          actor_login: ref.actorLogin,
+          raw_json: JSON.stringify(ref.raw),
+        });
+        commitReferences++;
       }
       for (const pr of item.pullRequests) {
         upsertPullRequestFix({
@@ -618,7 +726,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       pullRequests++;
     }
   }
-  return { closureEvents, reopenEvents, prLinks, pullRequests };
+  return { closureEvents, reopenEvents, prLinks, pullRequests, commitReferences };
 }
 
 function splitCsv(value: unknown): string[] {

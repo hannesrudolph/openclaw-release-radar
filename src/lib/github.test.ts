@@ -239,13 +239,17 @@ describe('GitHub GraphQL mapping', () => {
     const timeline = __githubTest.buildIssueFixTimelineQuery();
 
     assert.match(batch, /closedByPullRequestsReferences\(first: 100, includeClosedPrs: true\)/);
-    assert.match(batch, /timelineItems\(first: 100, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(batch, /timelineItems\(first: 100, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT\]\)/);
     assert.match(batch, /\.\.\. on ReopenedEvent \{\s*id createdAt actor \{ login \}\s*\}/);
+    assert.match(batch, /\.\.\. on ReferencedEvent \{\s*id createdAt isCrossRepository isDirectReference actor \{ login \}/);
+    assert.match(batch, /commit \{ oid committedDate url messageHeadline \}/);
+    assert.match(batch, /commitRepository \{\s*name\s*nameWithOwner\s*owner \{ login \}\s*\}/);
     assert.match(batch, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(prRefs, /closedByPullRequestsReferences\(first: 100, after: \$after, includeClosedPrs: true\)/);
     assert.match(prRefs, /pageInfo \{ hasNextPage endCursor \}/);
-    assert.match(timeline, /timelineItems\(first: 100, after: \$after, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(timeline, /timelineItems\(first: 100, after: \$after, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT\]\)/);
     assert.match(timeline, /\.\.\. on ReopenedEvent \{\s*id createdAt actor \{ login \}\s*\}/);
+    assert.match(timeline, /\.\.\. on ReferencedEvent \{\s*id createdAt isCrossRepository isDirectReference actor \{ login \}/);
     assert.match(timeline, /pageInfo \{ hasNextPage endCursor \}/);
   });
 

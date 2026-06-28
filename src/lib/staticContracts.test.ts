@@ -138,10 +138,15 @@ describe('static scoring/UI contracts', () => {
 
   it('closure proof analysis checks direct commit closers for release reachability', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
     assert.match(analysis, /direct_closer_commits/);
     assert.match(analysis, /e\.closer_type='Commit'/);
     assert.match(analysis, /directClosureCommitMentions/);
     assert.match(analysis, /GitHub ClosedEvent closer commit/);
+    assert.match(analysis, /ReferencedEvent\.commit/);
+    assert.match(analysis, /commitReferenceMentionsByIssue/);
+    assert.match(github, /REFERENCED_EVENT/);
+    assert.match(github, /\.\.\. on ReferencedEvent/);
     assert.match(analysis, /allCommitOids\.add\(commitOid\.toLowerCase\(\)\)/);
   });
 

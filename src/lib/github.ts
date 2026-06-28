@@ -205,6 +205,21 @@ export interface GhIssuePrLink {
   referencedAt: string | null;
 }
 
+export interface GhIssueCommitReference {
+  issueNumber: number;
+  eventId: string;
+  commitOid: string;
+  commitMessageHeadline: string | null;
+  commitRepositoryOwner: string | null;
+  commitRepositoryName: string | null;
+  commitRepositoryNameWithOwner: string | null;
+  isCrossRepository: boolean;
+  isDirectReference: boolean;
+  referencedAt: string | null;
+  actorLogin: string | null;
+  raw: unknown;
+}
+
 export interface GhIssueLabelEvent {
   issueNumber: number;
   eventId: string;
@@ -220,6 +235,7 @@ export interface GhIssueFixEvidence {
   reopenEvents: GhIssueReopenEvent[];
   prLinks: GhIssuePrLink[];
   pullRequests: GhPullRequestFix[];
+  commitReferences: GhIssueCommitReference[];
 }
 
 export interface ClosureCommentPrMention {
@@ -237,7 +253,7 @@ export interface ClosureCommentCommitMention {
   referencedAt: string | null;
   sourceIssueNumber: number;
   snippet: string;
-  source: 'ClosureComment.fixProof' | 'ClosedEvent.closer';
+  source: 'ClosureComment.fixProof' | 'ClosedEvent.closer' | 'ReferencedEvent.commit';
   author: string | null;
   authorAssociation: string | null;
   trustedSource: boolean;
@@ -947,7 +963,7 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueFixEvidence>();
   for (const issueNumber of uniqueIssueNumbers) {
-    all.set(issueNumber, { issueNumber, closureEvents: [], reopenEvents: [], prLinks: [], pullRequests: [] });
+    all.set(issueNumber, { issueNumber, closureEvents: [], reopenEvents: [], prLinks: [], pullRequests: [], commitReferences: [] });
   }
 
   const batchSize = 10;
@@ -1044,6 +1060,24 @@ function appendFixTimelineNodes(
           referencedAt: node.createdAt ?? null,
         });
         evidence.pullRequests.push(mapPullRequestFix(source));
+      }
+    } else if (node.__typename === 'ReferencedEvent') {
+      const commitOid = node.commit?.oid;
+      if (typeof commitOid === 'string' && /^[0-9a-f]{40}$/i.test(commitOid)) {
+        evidence.commitReferences.push({
+          issueNumber,
+          eventId: node.id,
+          commitOid: commitOid.toLowerCase(),
+          commitMessageHeadline: node.commit?.messageHeadline ?? null,
+          commitRepositoryOwner: node.commitRepository?.owner?.login ?? null,
+          commitRepositoryName: node.commitRepository?.name ?? null,
+          commitRepositoryNameWithOwner: node.commitRepository?.nameWithOwner ?? null,
+          isCrossRepository: node.isCrossRepository === true,
+          isDirectReference: node.isDirectReference === true,
+          referencedAt: node.createdAt ?? null,
+          actorLogin: node.actor?.login ?? null,
+          raw: node,
+        });
       }
     }
   }
@@ -1290,7 +1324,7 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
         }
         pageInfo { hasNextPage endCursor }
       }
-      timelineItems(first: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
+      timelineItems(first: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT]) {
         nodes {
           __typename
           ... on ClosedEvent {
@@ -1315,6 +1349,15 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
                 number title url state merged mergedAt baseRefName
                 mergeCommit { oid }
               }
+            }
+          }
+          ... on ReferencedEvent {
+            id createdAt isCrossRepository isDirectReference actor { login }
+            commit { oid committedDate url messageHeadline }
+            commitRepository {
+              name
+              nameWithOwner
+              owner { login }
             }
           }
         }
@@ -1348,7 +1391,7 @@ function buildIssueFixTimelineQuery(): string {
   return `query IssueFixTimeline($owner: String!, $repo: String!, $number: Int!, $after: String) {
     repository(owner: $owner, name: $repo) {
       issue(number: $number) {
-        timelineItems(first: 100, after: $after, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT]) {
+        timelineItems(first: 100, after: $after, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT]) {
           nodes {
             __typename
             ... on ClosedEvent {
@@ -1373,6 +1416,15 @@ function buildIssueFixTimelineQuery(): string {
                   number title url state merged mergedAt baseRefName
                   mergeCommit { oid }
                 }
+              }
+            }
+            ... on ReferencedEvent {
+              id createdAt isCrossRepository isDirectReference actor { login }
+              commit { oid committedDate url messageHeadline }
+              commitRepository {
+                name
+                nameWithOwner
+                owner { login }
               }
             }
           }

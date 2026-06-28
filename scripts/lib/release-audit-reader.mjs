@@ -241,7 +241,22 @@ export class ReleaseAuditReader {
     }));
   }
 
+  tableExists(name) {
+    const row = this.db.prepare(`
+      SELECT 1 AS present
+      FROM sqlite_master
+      WHERE type='table' AND name=?
+    `).get(name);
+    return !!row;
+  }
+
   sourceFreshnessFor(tag) {
+    const commitReferenceFreshnessSql = this.tableExists('issue_commit_references')
+      ? `UNION ALL
+      SELECT 'issue_commit_references', MAX(c.fetched_at)
+      FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number`
+      : `UNION ALL
+      SELECT 'issue_commit_references', NULL`;
     return this.db.prepare(`
       WITH target AS (
         SELECT tag, published_at,
@@ -303,6 +318,7 @@ export class ReleaseAuditReader {
       UNION ALL
       SELECT 'issue_pr_links', MAX(l.fetched_at)
       FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
+      ${commitReferenceFreshnessSql}
       UNION ALL
       SELECT 'pull_request_fixes', MAX(p.fetched_at)
       FROM pull_request_fixes p JOIN pr_universe u ON u.pr_number=p.pr_number

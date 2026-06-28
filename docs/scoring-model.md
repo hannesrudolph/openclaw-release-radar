@@ -96,13 +96,16 @@ Fix credit requires:
 - The final GitHub close event is the `COMPLETED` close. Older close events do not count after reopen/reclose.
 - A hard code proof exists:
   - closing PR is linked through GitHub closure/reference evidence or a high-confidence same-repo closure/fix proof comment, the PR is merged, and the PR merge commit is reachable from the release tag commit; or
-  - a high-confidence closure/canonical comment names a fix/source commit, and that commit is reachable from the release tag commit.
+  - a high-confidence closure/canonical comment names a fix/source commit, and that commit is reachable from the release tag commit; or
+  - when no stronger PR, closure-commit, or trusted-comment commit proof exists, a same-repo direct GitHub `ReferencedEvent` commit with fix-shaped wording is reachable from the release tag commit.
 
 Closed issues without a reachable merged PR or reachable named fix/source commit remain visible in audit evidence, but they do not reduce release risk.
 
 Reachability has three states: `reachable`, `not_reachable`, and `unknown`. `not_reachable` is only used when Git can prove exact non-ancestry with `merge-base --is-ancestor` exit status `1`. Missing release commits, missing PR merge commits, unavailable objects, and Git errors are stored as `unknown`; they never receive fix credit and remain auditable instead of being collapsed into proof that the fix is absent.
 
 Broad PR/commit mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix/provenance wording from a trusted source, such as a maintainer or the known ClawSweeper reviewer account, identifying the merged PR or fix/source commit that closed, fixed, or proves the reported behavior is present in the release source.
+
+GitHub `ReferencedEvent` commit references are stored separately from closure events. Fork/cross-repository references are audit context only. Same-repo direct references are used only as fallback commit proof, and only when the commit headline is fix-shaped and the reference happened no later than the final close timestamp tolerance.
 
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
