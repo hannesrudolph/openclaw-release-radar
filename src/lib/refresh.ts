@@ -2,9 +2,11 @@ import { config } from '../config';
 import { invalidateCache } from './cache';
 import {
   GhComment,
+  type GhIssueFixEvidence,
   GhIssue,
   getReleaseCommit as fetchReleaseCommit,
   listIssueCommentsBatch,
+  listIssueFixEvidenceBatch,
   listIssueLabelEventsBatch,
   listReleases,
   listSecurityAdvisories,
@@ -61,7 +63,11 @@ import {
   upsertAdvisory,
   upsertClassification,
   upsertIssue,
+  upsertIssueClosureEvent,
   upsertIssueLabelEvent,
+  upsertIssuePrLink,
+  upsertIssueReopenEvent,
+  upsertPullRequestFix,
   upsertRelease,
   upsertReleaseCommit,
 } from './db';
@@ -72,6 +78,52 @@ function isMaintainerAssociation(association: string | null | undefined): boolea
 
 function isContributorAssociation(association: string | null | undefined): boolean {
   return isMaintainerAssociation(association) || association === 'CONTRIBUTOR';
+}
+
+function persistIssueStateEvidence(evidence: GhIssueFixEvidence): void {
+  for (const event of evidence.closureEvents) {
+    upsertIssueClosureEvent({
+      issue_number: event.issueNumber,
+      event_id: event.eventId,
+      closed_at: event.closedAt,
+      actor_login: event.actorLogin,
+      state_reason: event.stateReason,
+      closer_type: event.closerType,
+      closer_number: event.closerNumber,
+      closer_oid: event.closerOid,
+      raw_json: JSON.stringify(event.raw),
+    });
+  }
+  for (const event of evidence.reopenEvents) {
+    upsertIssueReopenEvent({
+      issue_number: event.issueNumber,
+      event_id: event.eventId,
+      reopened_at: event.reopenedAt,
+      actor_login: event.actorLogin,
+      raw_json: JSON.stringify(event.raw),
+    });
+  }
+  for (const link of evidence.prLinks) {
+    upsertIssuePrLink({
+      issue_number: link.issueNumber,
+      pr_number: link.prNumber,
+      source: link.source,
+      will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
+      referenced_at: link.referencedAt,
+    });
+  }
+  for (const pr of evidence.pullRequests) {
+    upsertPullRequestFix({
+      pr_number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      state: pr.state,
+      merged: pr.merged ? 1 : 0,
+      merged_at: pr.mergedAt,
+      merge_commit_oid: pr.mergeCommitOid,
+      base_ref_name: pr.baseRefName,
+    });
+  }
 }
 
 function commentStats(issue: GhIssue, comments: GhComment[]): {
@@ -323,14 +375,14 @@ export async function refresh(): Promise<{
       let allUnchanged = page.length > 0;
       let crossedOldest = false;
       const toClassify: GhIssue[] = [];
-      const commentsByIssue = await listIssueCommentsBatch(
-        page.filter((issue) => issue.comments > 0).map((issue) => issue.number),
-      );
-      const labelEventsByIssue = await listIssueLabelEventsBatch(
-        page
-          .filter((issue) => issueOverlapsMonitoredWindow(issue))
-          .map((issue) => issue.number),
-      );
+      const monitoredIssueNumbers = page
+        .filter((issue) => issueOverlapsMonitoredWindow(issue))
+        .map((issue) => issue.number);
+      const [commentsByIssue, labelEventsByIssue, stateEvidenceByIssue] = await Promise.all([
+        listIssueCommentsBatch(page.filter((issue) => issue.comments > 0).map((issue) => issue.number)),
+        listIssueLabelEventsBatch(monitoredIssueNumbers),
+        listIssueFixEvidenceBatch(monitoredIssueNumbers),
+      ]);
 
       // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
       for (const issue of page) {
@@ -368,6 +420,8 @@ export async function refresh(): Promise<{
             created_at: event.createdAt,
           });
         }
+        const stateEvidence = stateEvidenceByIssue.get(issue.number);
+        if (stateEvidence) persistIssueStateEvidence(stateEvidence);
 
         if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
 

@@ -95,6 +95,16 @@ function seedClosure(db: any, issue: number, reason = 'COMPLETED', closedAt = '2
   });
 }
 
+function seedReopen(db: any, issue: number, reopenedAt = '2026-06-02T12:00:00Z') {
+  db.upsertIssueReopenEvent({
+    issue_number: issue,
+    event_id: `reopened-${issue}-${reopenedAt}`,
+    reopened_at: reopenedAt,
+    actor_login: 'maintainer',
+    raw_json: '{}',
+  });
+}
+
 describe('release fix provenance', () => {
   it('uses the next stable release, not prereleases, for issue attribution windows', async () => {
     const db = await freshDb('stable-attribution-window');
@@ -105,6 +115,39 @@ describe('release fix provenance', () => {
 
     assert.ok(db.issuesForVersion('v1').some((row: any) => row.number === 7001));
     assert.equal(db.issueCountForVersion('v1'), 1);
+  });
+
+  it('does not attribute issues closed before a release until a reopen interval overlaps it', async () => {
+    const db = await freshDb('reopen-interval-attribution');
+    seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v2', '2026-06-10T00:00:00Z');
+    seedIssue(db, 7002, '2026-06-15T00:00:00Z', '2026-05-01T00:00:00Z');
+    seedClosure(db, 7002, 'COMPLETED', '2026-05-02T00:00:00Z');
+    seedReopen(db, 7002, '2026-06-12T00:00:00Z');
+    db.upsertIssueClosureEvent({
+      issue_number: 7002,
+      event_id: 'closed-7002-final',
+      closed_at: '2026-06-15T00:00:00Z',
+      actor_login: 'maintainer',
+      state_reason: 'COMPLETED',
+      closer_type: null,
+      closer_number: null,
+      closer_oid: null,
+      raw_json: '{}',
+    });
+
+    assert.ok(!db.issuesForVersion('v1').some((row: any) => row.number === 7002));
+    assert.ok(db.issuesForVersion('v2').some((row: any) => row.number === 7002));
+  });
+
+  it('falls back to issue closed_at when closure timeline events are missing', async () => {
+    const db = await freshDb('interval-fallback');
+    seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v2', '2026-06-10T00:00:00Z');
+    seedIssue(db, 7003, '2026-06-02T00:00:00Z', '2026-05-01T00:00:00Z');
+
+    assert.ok(db.issuesForVersion('v1').some((row: any) => row.number === 7003));
+    assert.ok(!db.issuesForVersion('v2').some((row: any) => row.number === 7003));
   });
 
   it('round-trips issue community signal columns through issue and release views', async () => {

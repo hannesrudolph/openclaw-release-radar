@@ -144,10 +144,11 @@ describe('static scoring/UI contracts', () => {
 
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
-    const call = refresh.match(/const labelEventsByIssue = await listIssueLabelEventsBatch\([\s\S]*?\);/);
-    assert.ok(call);
-    assert.match(call[0], /issueOverlapsMonitoredWindow\(issue\)/);
-    assert.doesNotMatch(call[0], /issue\.labels\.length/);
+    assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
+    assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers\)/);
+    assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers\)/);
+    assert.match(refresh, /persistIssueStateEvidence\(stateEvidence\)/);
+    assert.doesNotMatch(refresh, /issue\.labels\.length/);
   });
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {

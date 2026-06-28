@@ -57,6 +57,14 @@ The model deliberately separates:
 
 Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override.
 
+## Issue Open Intervals
+
+Release attribution is based on issue open intervals, not a single created-to-final-closed span.
+
+The initial open interval starts at `issues.created_at` and ends at the first fetched GitHub close event after creation. Each fetched `ReopenedEvent` starts another open interval, ending at the next fetched close event. If timeline evidence is missing, the scorer falls back to `issues.closed_at` rather than treating sparse history as open forever.
+
+An issue is attributed to a release only when one of those open intervals overlaps the release's stable-to-stable reign window. This prevents reports that were already closed before a release from counting against that release merely because they were reopened later.
+
 ## Label Timing
 
 Current labels can be misleading because labels may be added or removed after a release. The model persists GitHub `LabeledEvent` and `UnlabeledEvent` timeline items in `issue_label_events`.

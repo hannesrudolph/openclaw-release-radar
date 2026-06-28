@@ -225,6 +225,15 @@ CREATE TABLE IF NOT EXISTS issue_closure_events (
   fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS issue_reopen_events (
+  issue_number INTEGER NOT NULL,
+  event_id TEXT PRIMARY KEY,
+  reopened_at TEXT,
+  actor_login TEXT,
+  raw_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS issue_pr_links (
   issue_number INTEGER NOT NULL,
   pr_number INTEGER NOT NULL,
@@ -281,6 +290,7 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
 );
 
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
+CREATE INDEX IF NOT EXISTS idx_issue_reopen_events_issue_time ON issue_reopen_events(issue_number, reopened_at);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
@@ -969,6 +979,33 @@ export function upsertIssueClosureEvent(input: IssueClosureEventInput): void {
   upsertIssueClosureEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
+export interface IssueReopenEventInput {
+  issue_number: number;
+  event_id: string;
+  reopened_at: string | null;
+  actor_login: string | null;
+  raw_json: string;
+}
+
+const upsertIssueReopenEventStmt = db.prepare(`
+INSERT INTO issue_reopen_events (
+  issue_number, event_id, reopened_at, actor_login, raw_json, fetched_at
+)
+VALUES (
+  :issue_number, :event_id, :reopened_at, :actor_login, :raw_json, :fetched_at
+)
+ON CONFLICT(event_id) DO UPDATE SET
+  issue_number=excluded.issue_number,
+  reopened_at=excluded.reopened_at,
+  actor_login=excluded.actor_login,
+  raw_json=excluded.raw_json,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssueReopenEvent(input: IssueReopenEventInput): void {
+  upsertIssueReopenEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
 export interface IssuePrLinkInput {
   issue_number: number;
   pr_number: number;
@@ -1240,12 +1277,16 @@ export interface JoinedIssue extends IssueRow, ClassificationRow {}
 
 // Window-based attribution (carry-forward model).
 //
-// An issue affects release R if its existence window overlaps R's reign:
+// An issue affects release R if one of its open intervals overlaps R's reign:
 //   - R reigns from R.published_at until the NEXT stable release is published
 //     (or forever, if R is the latest).
-//   - The issue exists from issue.created_at until issue.closed_at
-//     (or forever, if still open).
-// These two windows must overlap.
+//   - The initial issue-open interval starts at issue.created_at and ends at the
+//     first fetched close event after creation, falling back to issue.closed_at
+//     when timeline evidence is missing.
+//   - Each fetched reopen event starts another open interval, ending at the next
+//     fetched close event after that reopen, again falling back to issue.closed_at
+//     when that is the only available close timestamp.
+// At least one open interval must overlap the release reign.
 //
 // Why this model, not the previous LLM-mention-only approach:
 //   * A bug filed during v5.4's reign and still open today AFFECTS v5.20 too —
@@ -1270,25 +1311,63 @@ export interface JoinedIssue extends IssueRow, ClassificationRow {}
 // LLM's `affects_version` is no longer used for attribution. It's kept in the
 // row for display purposes only (UI can show "user explicitly said v5.18").
 const issuesForVersionStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND c.closed_at > i.created_at),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND c.closed_at > r.reopened_at),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+)
 SELECT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
        c.confidence, c.rationale, c.classified_at, c.classified_updated_at
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
-JOIN releases target ON target.tag = ?
+JOIN target
 WHERE
-  target.published_at IS NOT NULL
-  -- Issue was filed before target's stable reign ended (next stable release published).
-  -- For the latest release there is no "next", so we use a sentinel far future.
-  AND i.created_at < COALESCE(
-	        (SELECT MIN(next.published_at) FROM releases next
-	         WHERE next.published_at > target.published_at AND next.prerelease = 0),
-        '9999-12-31T23:59:59Z'
-      )
-  -- Issue was not closed before target's reign started — i.e., the bug was
-  -- still live when the user installed target, or was filed during R's reign.
-  AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
+  target.start_at IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM issue_open_intervals interval
+    WHERE interval.issue_number=i.number
+      AND interval.open_at < target.end_at
+      AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+  )
 ORDER BY i.updated_at DESC
 `);
 
@@ -1297,17 +1376,59 @@ export function issuesForVersion(tag: string): JoinedIssue[] {
 }
 
 const issueCountForVersionStmt = db.prepare(`
-SELECT COUNT(*) AS count
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND c.closed_at > i.created_at),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND c.closed_at > r.reopened_at),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+)
+SELECT COUNT(DISTINCT i.number) AS count
 FROM issues i
-JOIN releases target ON target.tag = ?
+JOIN target
 WHERE
-  target.published_at IS NOT NULL
-  AND i.created_at < COALESCE(
-	        (SELECT MIN(next.published_at) FROM releases next
-	         WHERE next.published_at > target.published_at AND next.prerelease = 0),
-        '9999-12-31T23:59:59Z'
-      )
-  AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
+  target.start_at IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM issue_open_intervals interval
+    WHERE interval.issue_number=i.number
+      AND interval.open_at < target.end_at
+      AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+  )
 `);
 
 export function issueCountForVersion(tag: string): number {

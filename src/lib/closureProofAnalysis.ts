@@ -1,4 +1,4 @@
-import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertPullRequestFix } from './db';
+import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
@@ -11,6 +11,7 @@ export interface ClosureProofAnalysisResult {
   buckets: Record<string, number>;
   rawEvidence: {
     closureEvents: number;
+    reopenEvents: number;
     prLinks: number;
     pullRequests: number;
   };
@@ -494,7 +495,7 @@ export async function refreshClosureEvidenceForRelease(releaseTag: string): Prom
 }
 
 function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisResult['rawEvidence'] {
-  if (!issueNumbers.length) return { closureEvents: 0, prLinks: 0, pullRequests: 0 };
+  if (!issueNumbers.length) return { closureEvents: 0, reopenEvents: 0, prLinks: 0, pullRequests: 0 };
   const selected = JSON.stringify(issueNumbers);
   const row = db.prepare(`
     WITH selected(issue_number) AS (
@@ -504,6 +505,9 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
       (SELECT COUNT(DISTINCT e.event_id)
        FROM issue_closure_events e
        JOIN selected s ON s.issue_number=e.issue_number) AS closureEvents,
+      (SELECT COUNT(DISTINCT r.event_id)
+       FROM issue_reopen_events r
+       JOIN selected s ON s.issue_number=r.issue_number) AS reopenEvents,
       (SELECT COUNT(*)
        FROM issue_pr_links l
        JOIN selected s ON s.issue_number=l.issue_number) AS prLinks,
@@ -511,9 +515,10 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
        FROM pull_request_fixes p
        JOIN issue_pr_links l ON l.pr_number=p.pr_number
        JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests
-  `).get(selected) as { closureEvents: number; prLinks: number; pullRequests: number } | undefined;
+  `).get(selected) as { closureEvents: number; reopenEvents: number; prLinks: number; pullRequests: number } | undefined;
   return {
     closureEvents: Number(row?.closureEvents ?? 0),
+    reopenEvents: Number(row?.reopenEvents ?? 0),
     prLinks: Number(row?.prLinks ?? 0),
     pullRequests: Number(row?.pullRequests ?? 0),
   };
@@ -521,6 +526,7 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
 
 async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<ClosureProofAnalysisResult['rawEvidence']> {
   let closureEvents = 0;
+  let reopenEvents = 0;
   let prLinks = 0;
   let pullRequests = 0;
   for (let offset = 0; offset < issueNumbers.length; offset += 20) {
@@ -543,6 +549,16 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
           raw_json: JSON.stringify(event.raw),
         });
         closureEvents++;
+      }
+      for (const event of item.reopenEvents) {
+        upsertIssueReopenEvent({
+          issue_number: event.issueNumber,
+          event_id: event.eventId,
+          reopened_at: event.reopenedAt,
+          actor_login: event.actorLogin,
+          raw_json: JSON.stringify(event.raw),
+        });
+        reopenEvents++;
       }
       for (const link of item.prLinks) {
         upsertIssuePrLink({
@@ -596,7 +612,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       pullRequests++;
     }
   }
-  return { closureEvents, prLinks, pullRequests };
+  return { closureEvents, reopenEvents, prLinks, pullRequests };
 }
 
 function splitCsv(value: unknown): string[] {

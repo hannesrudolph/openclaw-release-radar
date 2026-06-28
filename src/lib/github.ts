@@ -189,6 +189,14 @@ export interface GhIssueClosureEvent {
   raw: unknown;
 }
 
+export interface GhIssueReopenEvent {
+  issueNumber: number;
+  eventId: string;
+  reopenedAt: string | null;
+  actorLogin: string | null;
+  raw: unknown;
+}
+
 export interface GhIssuePrLink {
   issueNumber: number;
   prNumber: number;
@@ -209,6 +217,7 @@ export interface GhIssueLabelEvent {
 export interface GhIssueFixEvidence {
   issueNumber: number;
   closureEvents: GhIssueClosureEvent[];
+  reopenEvents: GhIssueReopenEvent[];
   prLinks: GhIssuePrLink[];
   pullRequests: GhPullRequestFix[];
 }
@@ -938,7 +947,7 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueFixEvidence>();
   for (const issueNumber of uniqueIssueNumbers) {
-    all.set(issueNumber, { issueNumber, closureEvents: [], prLinks: [], pullRequests: [] });
+    all.set(issueNumber, { issueNumber, closureEvents: [], reopenEvents: [], prLinks: [], pullRequests: [] });
   }
 
   const batchSize = 10;
@@ -1016,6 +1025,14 @@ function appendFixTimelineNodes(
         });
         evidence.pullRequests.push(mapPullRequestFix(closer));
       }
+    } else if (node.__typename === 'ReopenedEvent') {
+      evidence.reopenEvents.push({
+        issueNumber,
+        eventId: node.id,
+        reopenedAt: node.createdAt ?? null,
+        actorLogin: node.actor?.login ?? null,
+        raw: node,
+      });
     } else if (node.__typename === 'CrossReferencedEvent') {
       const source = node.source;
       if (source?.__typename === 'PullRequest' && typeof source.number === 'number') {
@@ -1281,6 +1298,9 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
               ... on Commit { oid committedDate url }
             }
           }
+          ... on ReopenedEvent {
+            id createdAt actor { login }
+          }
           ... on CrossReferencedEvent {
             id createdAt willCloseTarget
             source {
@@ -1335,6 +1355,9 @@ function buildIssueFixTimelineQuery(): string {
                 }
                 ... on Commit { oid committedDate url }
               }
+            }
+            ... on ReopenedEvent {
+              id createdAt actor { login }
             }
             ... on CrossReferencedEvent {
               id createdAt willCloseTarget

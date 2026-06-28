@@ -226,10 +226,12 @@ describe('GitHub GraphQL mapping', () => {
 
     assert.match(batch, /closedByPullRequestsReferences\(first: 100, includeClosedPrs: true\)/);
     assert.match(batch, /timelineItems\(first: 100, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(batch, /\.\.\. on ReopenedEvent \{\s*id createdAt actor \{ login \}\s*\}/);
     assert.match(batch, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(prRefs, /closedByPullRequestsReferences\(first: 100, after: \$after, includeClosedPrs: true\)/);
     assert.match(prRefs, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(timeline, /timelineItems\(first: 100, after: \$after, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT\]\)/);
+    assert.match(timeline, /\.\.\. on ReopenedEvent \{\s*id createdAt actor \{ login \}\s*\}/);
     assert.match(timeline, /pageInfo \{ hasNextPage endCursor \}/);
   });
 
