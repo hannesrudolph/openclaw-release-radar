@@ -153,6 +153,15 @@ describe('release fix provenance', () => {
 
     db.upsertReleasePrReachability({
       tag: 'v1',
+      pr_number: 11,
+      tag_commit_oid: null,
+      merge_commit_oid: null,
+      base_ref_name: 'main',
+      status: 'unknown',
+      evidence_json: '{"missing":true}',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v1',
       pr_number: 10,
       tag_commit_oid: 'v1-commit',
       merge_commit_oid: 'merge-10',
@@ -180,13 +189,14 @@ describe('release fix provenance', () => {
     });
 
     const rows = db.db.prepare(`
-      SELECT tag, pr_number, status, method, evidence_json
+      SELECT tag, pr_number, tag_commit_oid, merge_commit_oid, status, method, evidence_json
       FROM release_pr_reachability
-      ORDER BY tag
+      ORDER BY tag, pr_number
     `).all().map((row: any) => ({ ...row }));
     assert.deepEqual(rows, [
-      { tag: 'v1', pr_number: 10, status: 'reachable', method: 'git-merge-base', evidence_json: '{"updated":true}' },
-      { tag: 'v2', pr_number: 10, status: 'not_reachable', method: 'git-merge-base', evidence_json: '{}' },
+      { tag: 'v1', pr_number: 10, tag_commit_oid: 'v1-commit', merge_commit_oid: 'merge-10', status: 'reachable', method: 'git-merge-base', evidence_json: '{"updated":true}' },
+      { tag: 'v1', pr_number: 11, tag_commit_oid: null, merge_commit_oid: null, status: 'unknown', method: 'git-merge-base', evidence_json: '{"missing":true}' },
+      { tag: 'v2', pr_number: 10, tag_commit_oid: 'v2-commit', merge_commit_oid: 'merge-10', status: 'not_reachable', method: 'git-merge-base', evidence_json: '{}' },
     ]);
   });
 

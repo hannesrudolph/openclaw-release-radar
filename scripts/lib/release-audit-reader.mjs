@@ -259,6 +259,7 @@ export class ReleaseAuditReader {
              p.merge_commit_oid,
              rpr.status,
              rpr.tag_commit_oid,
+             rpr.evidence_json,
              rc.tag_commit_oid AS release_tag_commit_oid
       FROM issue_pr_links l
       JOIN pull_request_fixes p ON p.pr_number=l.pr_number

@@ -270,8 +270,8 @@ CREATE TABLE IF NOT EXISTS pull_request_fixes (
 CREATE TABLE IF NOT EXISTS release_pr_reachability (
   tag TEXT NOT NULL,
   pr_number INTEGER NOT NULL,
-  tag_commit_oid TEXT NOT NULL,
-  merge_commit_oid TEXT NOT NULL,
+  tag_commit_oid TEXT,
+  merge_commit_oid TEXT,
   base_ref_name TEXT,
   status TEXT NOT NULL,
   method TEXT NOT NULL DEFAULT 'git-merge-base',
@@ -356,6 +356,35 @@ try {
       checked_at TEXT NOT NULL,
       PRIMARY KEY (tag, pr_number)
     )`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
+  }
+  const currentCols = db.prepare(`PRAGMA table_info(release_pr_reachability)`).all() as Array<{ name: string; notnull: number }>;
+  const tagCommit = currentCols.find((col) => col.name === 'tag_commit_oid');
+  const mergeCommit = currentCols.find((col) => col.name === 'merge_commit_oid');
+  if ((tagCommit?.notnull ?? 0) !== 0 || (mergeCommit?.notnull ?? 0) !== 0) {
+    db.exec(`DROP TABLE IF EXISTS release_pr_reachability_next`);
+    db.exec(`
+    CREATE TABLE release_pr_reachability_next (
+      tag TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      tag_commit_oid TEXT,
+      merge_commit_oid TEXT,
+      base_ref_name TEXT,
+      status TEXT NOT NULL,
+      method TEXT NOT NULL DEFAULT 'git-merge-base',
+      evidence_json TEXT NOT NULL DEFAULT '{}',
+      checked_at TEXT NOT NULL,
+      PRIMARY KEY (tag, pr_number)
+    )`);
+    db.exec(`
+    INSERT INTO release_pr_reachability_next (
+      tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
+    )
+    SELECT tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
+    FROM release_pr_reachability
+    `);
+    db.exec(`DROP TABLE release_pr_reachability`);
+    db.exec(`ALTER TABLE release_pr_reachability_next RENAME TO release_pr_reachability`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
   }
 } catch {
@@ -997,8 +1026,8 @@ export function upsertPullRequestFix(input: PullRequestFixInput): void {
 export interface ReleasePrReachabilityInput {
   tag: string;
   pr_number: number;
-  tag_commit_oid: string;
-  merge_commit_oid: string;
+  tag_commit_oid: string | null;
+  merge_commit_oid: string | null;
   base_ref_name: string | null;
   status: 'reachable' | 'not_reachable' | 'unknown';
   method?: string;

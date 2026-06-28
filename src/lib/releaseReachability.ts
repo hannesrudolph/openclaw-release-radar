@@ -43,33 +43,76 @@ JOIN issue_pr_links l ON l.pr_number = p.pr_number
 JOIN final_closure e ON e.issue_number = l.issue_number
 WHERE e.state_reason='COMPLETED'
   AND p.merged = 1
-  AND p.merge_commit_oid IS NOT NULL
   AND ${creditedFixLinkSql('l')}
 `);
 
 const releaseCommitStmt = db.prepare('SELECT tag_commit_oid FROM release_commits WHERE tag=?');
 
 export async function checkReleasePrReachability(tag: string): Promise<ReleaseReachabilityResult> {
-  const release = releaseCommitStmt.get(tag) as { tag_commit_oid: string | null } | undefined;
-  if (!release?.tag_commit_oid) {
-    return { tag, releaseCommit: null, candidates: 0, reachable: 0, notReachable: 0, unknown: 0 };
-  }
-
-  await ensureRepo();
-  git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
-  git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], { stdio: 'inherit' });
-
   const candidates = candidateStmt.all() as Array<{
     pr_number: number;
-    merge_commit_oid: string;
+    merge_commit_oid: string | null;
     base_ref_name: string | null;
   }>;
   let reachable = 0;
   let unknown = 0;
+  let notReachable = 0;
   deleteReleasePrReachabilityForRelease(tag);
+
+  const release = releaseCommitStmt.get(tag) as { tag_commit_oid: string | null } | undefined;
+  if (!release?.tag_commit_oid) {
+    for (const candidate of candidates) {
+      upsertReleasePrReachability({
+        tag,
+        pr_number: candidate.pr_number,
+        tag_commit_oid: null,
+        merge_commit_oid: candidate.merge_commit_oid ?? null,
+        base_ref_name: candidate.base_ref_name ?? null,
+        status: 'unknown',
+        evidence_json: JSON.stringify({ evidence: 'release_commit_unavailable' }),
+      });
+      unknown++;
+    }
+    return { tag, releaseCommit: null, candidates: candidates.length, reachable: 0, notReachable: 0, unknown };
+  }
+
+  await ensureRepo();
+  git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
+  const releaseFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], {
+    allowFailure: true,
+    stdio: 'inherit',
+  });
+  if (releaseFetch.status !== 0) {
+    for (const candidate of candidates) {
+      upsertReleasePrReachability({
+        tag,
+        pr_number: candidate.pr_number,
+        tag_commit_oid: release.tag_commit_oid,
+        merge_commit_oid: candidate.merge_commit_oid ?? null,
+        base_ref_name: candidate.base_ref_name ?? null,
+        status: 'unknown',
+        evidence_json: JSON.stringify({ evidence: 'release_commit_fetch_failed', status: releaseFetch.status }),
+      });
+      unknown++;
+    }
+    return { tag, releaseCommit: release.tag_commit_oid, candidates: candidates.length, reachable: 0, notReachable: 0, unknown };
+  }
 
   for (const candidate of candidates) {
     const commit = candidate.merge_commit_oid;
+    if (!commit) {
+      upsertReleasePrReachability({
+        tag,
+        pr_number: candidate.pr_number,
+        tag_commit_oid: release.tag_commit_oid,
+        merge_commit_oid: null,
+        base_ref_name: candidate.base_ref_name ?? null,
+        status: 'unknown',
+        evidence_json: JSON.stringify({ evidence: 'merge_commit_oid_unavailable' }),
+      });
+      unknown++;
+      continue;
+    }
     git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commit], { allowFailure: true });
     const exists = git(['cat-file', '-e', `${commit}^{commit}`], { allowFailure: true });
     if (exists.status !== 0) {
@@ -87,19 +130,19 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     }
 
     const res = git(['merge-base', '--is-ancestor', commit, release.tag_commit_oid], { allowFailure: true });
-    const isReachable = res.status === 0;
+    const interpreted = interpretMergeBaseResult(res, 'merge_commit_in_release_history');
     upsertReleasePrReachability({
       tag,
       pr_number: candidate.pr_number,
       tag_commit_oid: release.tag_commit_oid,
       merge_commit_oid: commit,
       base_ref_name: candidate.base_ref_name ?? null,
-      status: isReachable ? 'reachable' : 'not_reachable',
-      evidence_json: JSON.stringify({
-        evidence: isReachable ? 'merge_commit_in_release_history' : 'not_reachable_from_release_tag',
-      }),
+      status: interpreted.status,
+      evidence_json: JSON.stringify(interpreted.evidence),
     });
-    if (isReachable) reachable++;
+    if (interpreted.status === 'reachable') reachable++;
+    else if (interpreted.status === 'not_reachable') notReachable++;
+    else unknown++;
   }
 
   return {
@@ -107,7 +150,7 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     releaseCommit: release.tag_commit_oid,
     candidates: candidates.length,
     reachable,
-    notReachable: candidates.length - reachable - unknown,
+    notReachable,
     unknown,
   };
 }
@@ -135,7 +178,21 @@ export async function checkReleaseCommitReachability(
 
   await ensureRepo();
   git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
-  git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], { stdio: 'inherit' });
+  const releaseFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], {
+    allowFailure: true,
+    stdio: 'inherit',
+  });
+  if (releaseFetch.status !== 0) {
+    for (const commitOid of uniqueCommits) {
+      results.set(commitOid, {
+        commitOid,
+        tagCommitOid: release.tag_commit_oid,
+        status: 'unknown',
+        evidence: 'release_commit_fetch_failed',
+      });
+    }
+    return results;
+  }
 
   for (const commitOid of uniqueCommits) {
     git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commitOid], { allowFailure: true });
@@ -150,12 +207,12 @@ export async function checkReleaseCommitReachability(
       continue;
     }
     const res = git(['merge-base', '--is-ancestor', commitOid, release.tag_commit_oid], { allowFailure: true });
-    const isReachable = res.status === 0;
+    const interpreted = interpretMergeBaseResult(res, 'fix_commit_in_release_history');
     results.set(commitOid, {
       commitOid,
       tagCommitOid: release.tag_commit_oid,
-      status: isReachable ? 'reachable' : 'not_reachable',
-      evidence: isReachable ? 'fix_commit_in_release_history' : 'not_reachable_from_release_tag',
+      status: interpreted.status,
+      evidence: interpreted.evidence.evidence,
     });
   }
 
@@ -173,6 +230,29 @@ function git(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {})
   return run(['git', `--git-dir=${repoDir}`, ...args], opts);
 }
 
+function interpretMergeBaseResult(
+  res: ReturnType<typeof run>,
+  reachableEvidence: string,
+): { status: CommitReachability['status']; evidence: Record<string, unknown> & { evidence: string } } {
+  if (res.status === 0) return { status: 'reachable', evidence: { evidence: reachableEvidence } };
+  if (res.status === 1) return { status: 'not_reachable', evidence: { evidence: 'not_reachable_from_release_tag' } };
+  return {
+    status: 'unknown',
+    evidence: {
+      evidence: 'merge_base_error',
+      status: res.status,
+      stderr: trimProcessOutput(res.stderr),
+      stdout: trimProcessOutput(res.stdout),
+      signal: res.signal ?? null,
+    },
+  };
+}
+
+function trimProcessOutput(value: unknown): string | null {
+  const text = String(value ?? '').trim();
+  return text ? text.slice(0, 1000) : null;
+}
+
 function run(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {}) {
   const res = spawnSync(args[0], args.slice(1), {
     encoding: 'utf8',
@@ -183,3 +263,7 @@ function run(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {})
   }
   return res;
 }
+
+export const __releaseReachabilityTest = {
+  interpretMergeBaseResult,
+};
