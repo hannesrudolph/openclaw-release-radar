@@ -99,7 +99,9 @@ export function closureProofPayload(tag: string) {
     .filter((row) => row.status !== 'fixed_in_release')
     .reduce((sum, row) => sum + row.count, 0);
   const creditedCount = byStatus.fixed_in_release ?? 0;
-  const examples = closureProofExamples(tag, 30).map((row) => {
+  const analyzedClosedCount = creditedCount + notCreditedCount;
+  const exampleCandidateLimit = Math.max(30, analyzedClosedCount);
+  const examples = closureProofExamples(tag, exampleCandidateLimit).map((row) => {
     const classification = effectiveClosureClassification(row, labelCutoff);
     const effectiveRiskRow = classification
       ? {
@@ -132,7 +134,7 @@ export function closureProofPayload(tag: string) {
       riskDisposition: closureRiskDisposition(row.status),
       evidence: parseJson(row.evidence_json, {}),
     };
-  });
+  }).sort(compareClosureProofExamples).slice(0, 30);
   const riskSummary = {
     creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
     knownNotInReleaseCount: byRiskDisposition.known_not_in_release ?? 0,
@@ -148,7 +150,7 @@ export function closureProofPayload(tag: string) {
   return {
     creditedCount,
     notCreditedCount,
-    analyzedClosedCount: creditedCount + notCreditedCount,
+    analyzedClosedCount,
     byStatus,
     byRiskDisposition,
     riskSummary: {
@@ -159,6 +161,35 @@ export function closureProofPayload(tag: string) {
     },
     examples,
   };
+}
+
+function compareClosureProofExamples(a: any, b: any): number {
+  const riskDiff = Number(b.riskWeight ?? 0) - Number(a.riskWeight ?? 0);
+  if (riskDiff !== 0) return riskDiff;
+  const statusDiff = closureStatusRank(a.status) - closureStatusRank(b.status);
+  if (statusDiff !== 0) return statusDiff;
+  return String(b.closedAt ?? '').localeCompare(String(a.closedAt ?? ''));
+}
+
+function closureStatusRank(status: string): number {
+  return ({
+    duplicate_to_open_canonical: 0,
+    fixed_after_release: 1,
+    duplicate_to_fixed_after_release: 2,
+    main_only_claim: 3,
+    already_present_claim: 4,
+    duplicate_to_closed_canonical: 5,
+    canonical_cycle_or_self_reference: 6,
+    duplicate_or_superseded: 7,
+    no_code_proof: 8,
+    no_timeline_event: 9,
+    reporter_replaced: 10,
+    reporter_withdrawn: 11,
+    reporter_self_closed: 12,
+    not_planned: 13,
+    non_bug_neutral: 14,
+    fixed_in_release: 15,
+  } as Record<string, number>)[status] ?? 99;
 }
 
 export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any, closureProof = closureProofPayload(tag)) {

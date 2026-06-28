@@ -757,6 +757,11 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         expect(failures, release.tag, typeof example.riskWeight === 'number',
           `closure proof example #${example.number} must expose numeric riskWeight`);
       }
+      for (let i = 1; i < (proof.examples ?? []).length; i++) {
+        expect(failures, release.tag,
+          Number(proof.examples[i - 1].riskWeight ?? 0) >= Number(proof.examples[i].riskWeight ?? 0),
+          'closure proof examples must be sorted by descending riskWeight');
+      }
 
       const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
       const comparisonProof = comparisonFix?.closureProof;
