@@ -46,6 +46,30 @@ describe('closure proof risk weighting', () => {
     assert.ok(weight > 0);
   });
 
+  it('weights no-release-fix proof shapes as unresolved unsupported closure risk', () => {
+    for (const status of ['linked_closing_pr_not_merged', 'related_pr_without_release_fix', 'closed_without_release_fix_proof']) {
+      const weight = closureRiskWeightForRow({
+        status,
+        sentiment: 'negative',
+        severity: 'high',
+        functionality: 'core',
+        scope: 'moderate',
+        affected_users: 'some',
+      });
+      assert.equal(closureRiskDisposition(status), 'unsupported_closure_claim');
+      assert.ok(weight > 0, `${status} should carry unresolved risk`);
+    }
+    assert.equal(closureRiskDisposition('linked_closing_pr_reachability_unknown'), 'missing_evidence');
+    assert.ok(closureRiskWeightForRow({
+      status: 'linked_closing_pr_reachability_unknown',
+      sentiment: 'negative',
+      severity: 'high',
+      functionality: 'core',
+      scope: 'moderate',
+      affected_users: 'some',
+    }) > 0);
+  });
+
   it('counts bare admin not-planned closures as unresolved unsupported risk', () => {
     const weight = closureRiskWeightForRow({
       status: 'admin_not_planned_unverified',

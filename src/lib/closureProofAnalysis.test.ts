@@ -169,6 +169,23 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'non_bug_superseded_to_open_pr');
   });
 
+  it('classifies related PR references without release-fix proof separately', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{
+          number: 123,
+          title: 'related work',
+          state: 'MERGED',
+          merged: 1,
+          source: 'CrossReferencedEvent',
+        }],
+      },
+    );
+
+    assert.equal(adjusted.status, 'related_pr_without_release_fix');
+  });
+
   it('recognizes common duplicate-of text as canonical graph targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(

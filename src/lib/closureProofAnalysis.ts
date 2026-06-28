@@ -299,7 +299,11 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       canonicalFixCommitProofCount: canonicalCommitMentionsByIssue.get(row.number)?.length ?? 0,
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
-    preparedRows.push({ issueNumber: row.number, result, evidence });
+    preparedRows.push({
+      issueNumber: row.number,
+      result: adjustNoReleaseFixProofStatus(result, evidence),
+      evidence,
+    });
   }
 
   for (const item of preparedRows) {
@@ -581,6 +585,20 @@ function adjustCanonicalDuplicateStatus(
   return { ...result, evidence: nextEvidence };
 }
 
+function adjustNoReleaseFixProofStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  if (result.status !== 'closed_without_release_fix_proof') return result;
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
+  if (linkedPrs.length === 0) return result;
+  return {
+    ...result,
+    status: 'related_pr_without_release_fix',
+    summary: 'Related PR references exist, but none is linked as reachable release-fix proof for this tag.',
+  };
+}
+
 function canonicalResolution(
   sourceIssueNumber: number,
   graph: Map<number, number[]>,
@@ -619,6 +637,7 @@ function canonicalResolution(
 
 export const __closureProofAnalysisTest = {
   adjustCanonicalDuplicateStatus,
+  adjustNoReleaseFixProofStatus,
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
   commitReferenceMentionsFromRows,

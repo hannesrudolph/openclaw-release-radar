@@ -230,17 +230,25 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (hasCompletedClosure && input.hasClosingLink && input.hasMergedClosingPr) {
+    return {
+      status: 'linked_closing_pr_reachability_unknown',
+      summary: 'A merged closing PR exists, but release-tag reachability is missing or unknown.',
+      evidence,
+    };
+  }
+
   if (input.hasClosingLink && !input.hasMergedClosingPr) {
     return {
-      status: 'no_code_proof',
+      status: 'linked_closing_pr_not_merged',
       summary: 'A linked PR exists, but it is not merged or its merge state is unknown.',
       evidence,
     };
   }
 
   return {
-    status: 'no_code_proof',
-    summary: 'Closed without reachable PR or fix/source commit proof for this release tag.',
+    status: 'closed_without_release_fix_proof',
+    summary: 'Closed without linked release-fix PR or fix/source commit proof for this release tag.',
     evidence,
   };
 }

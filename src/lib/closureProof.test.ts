@@ -203,7 +203,7 @@ describe('classifyClosureProof', () => {
         body: 'Keep open. Current main and v2026.6.8 still run this path serially.',
       }],
     }));
-    assert.equal(result.status, 'no_code_proof');
+    assert.equal(result.status, 'closed_without_release_fix_proof');
     assert.equal(result.evidence.closureContextCommentCount, 0);
     assert.deepEqual(result.evidence.matchingComments, []);
   });
@@ -215,7 +215,25 @@ describe('classifyClosureProof', () => {
         body: 'Keep open: current main and the latest release still lack the required fallback before closing this issue.',
       }],
     }));
-    assert.equal(result.status, 'no_code_proof');
+    assert.equal(result.status, 'closed_without_release_fix_proof');
+  });
+
+  it('separates unmerged linked closing PR from missing proof', () => {
+    const result = classifyClosureProof(input({
+      hasClosingLink: true,
+      hasMergedClosingPr: false,
+    }));
+    assert.equal(result.status, 'linked_closing_pr_not_merged');
+  });
+
+  it('separates merged closing PR with unknown reachability from missing proof', () => {
+    const result = classifyClosureProof(input({
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: false,
+      hasNotReachableClosingPr: false,
+    }));
+    assert.equal(result.status, 'linked_closing_pr_reachability_unknown');
   });
 
   it('uses close-time comments as the closure rationale', () => {

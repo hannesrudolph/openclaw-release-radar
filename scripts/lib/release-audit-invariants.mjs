@@ -260,6 +260,29 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `admin_not_planned_unverified issue #${row.issue_number} must have NOT_PLANNED state reason`);
       }
+      if (row.status === 'linked_closing_pr_not_merged') {
+        expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
+          `linked_closing_pr_not_merged issue #${row.issue_number} must have an unmerged/unknown closing PR`);
+      }
+      if (row.status === 'linked_closing_pr_reachability_unknown') {
+        expect(failures, tag, evidence.hasClosingLink === true &&
+          evidence.hasMergedClosingPr === true &&
+          evidence.hasReachableClosingPr !== true &&
+          evidence.hasNotReachableClosingPr !== true,
+          `linked_closing_pr_reachability_unknown issue #${row.issue_number} must have merged closing PR with unknown reachability`);
+      }
+      if (row.status === 'related_pr_without_release_fix') {
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) && evidence.linkedPrs.length > 0,
+          `related_pr_without_release_fix issue #${row.issue_number} must include related PR references`);
+        expect(failures, tag, evidence.hasClosingLink !== true,
+          `related_pr_without_release_fix issue #${row.issue_number} must not have a credited closing PR link`);
+      }
+      if (row.status === 'closed_without_release_fix_proof') {
+        expect(failures, tag, evidence.hasClosingLink !== true,
+          `closed_without_release_fix_proof issue #${row.issue_number} must not have a credited closing PR link`);
+        expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
+          `closed_without_release_fix_proof issue #${row.issue_number} must not include related PR references`);
+      }
       if (row.status === 'non_bug_fixed_in_release') {
         expect(failures, tag, row.sentiment !== 'negative',
           `non_bug_fixed_in_release issue #${row.issue_number} must not be negative`);

@@ -129,6 +129,10 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `reporter_withdrawn`: reporter withdrew the report, asked maintainers to ignore it, or closed it for privacy/non-fix reasons.
 - `reporter_self_closed`: reporter self-closed the issue without linked release fix proof or ongoing failure context.
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
+- `linked_closing_pr_reachability_unknown`: a merged GitHub closing PR link exists, but release-tag reachability is missing or unknown.
+- `linked_closing_pr_not_merged`: a GitHub closing PR link exists, but the PR is not merged or its merge state is unknown.
+- `related_pr_without_release_fix`: related PR references exist, but none is linked as reachable release-fix proof for the scored tag.
+- `closed_without_release_fix_proof`: no linked PR or fix/source commit proof was found for the closure.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_fixed_in_release`: non-negative item has release-reachable fix proof; it remains audit-visible but is not scored as bug fix credit.
 - `non_bug_fixed_after_release`: non-negative item has fix proof that is not reachable from this release tag.
