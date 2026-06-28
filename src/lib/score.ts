@@ -65,6 +65,7 @@ export type InstallStatus = 'wait' | 'skip-cve' | 'skip-hotfix' | 'eligible';
 export type InstallBand = 'solid' | 'ok' | 'caution' | 'weak' | 'skip' | 'wait';
 
 export interface InstallInput {
+  schemaVersion?: number;
   publishedAt: string | null;
   isLatest: boolean;
   hoursToNextStable: number | null;

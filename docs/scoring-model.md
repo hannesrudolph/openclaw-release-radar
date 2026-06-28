@@ -232,6 +232,7 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
 
 Each detail entry has a stable `code`, matching `text`, and may include `metrics`, `buckets`, and `issueRefs`.
 
+`/api/releases/:tag/review` exposes `local.input.schemaVersion` and `local.components.schemaVersion`. Current value: `1`.
 `/api/releases/:tag/review` also exposes `local.issueEvidence.schemaVersion`. Current value: `1`.
 
 ## Validation Commands

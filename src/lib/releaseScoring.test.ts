@@ -7,9 +7,11 @@ import {
   ISSUE_EVIDENCE_SCHEMA_VERSION,
   LABEL_TIMELINE_SCHEMA_VERSION,
   RELEASE_CHECKS_SCHEMA_VERSION,
+  SCORE_COMPONENTS_SCHEMA_VERSION,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_EXPLANATION_SCHEMA_VERSION,
+  SCORE_INPUT_SCHEMA_VERSION,
   __releaseScoringTest,
 } from './releaseScoring.ts';
 
@@ -52,7 +54,10 @@ describe('release score explanations', () => {
     const labelTimeline = run.scored[0].gateEvidence.labelTimeline as any;
     const evidence = run.scored[0].debtEvidence as any;
 
+    assert.equal(run.scored[0].input.schemaVersion, SCORE_INPUT_SCHEMA_VERSION);
+    assert.equal((run.scored[0].conf as any).components != null, true);
     assert.equal(explanation.schemaVersion, SCORE_EXPLANATION_SCHEMA_VERSION);
+    assert.equal(SCORE_COMPONENTS_SCHEMA_VERSION, 1);
     assert.equal(evidence.schemaVersion, ISSUE_EVIDENCE_SCHEMA_VERSION);
     assert.equal(run.scored[0].gateEvidence.schemaVersion, GATE_EVIDENCE_SCHEMA_VERSION);
     assert.equal(explanation.limits.length, explanation.limitDetails.length);

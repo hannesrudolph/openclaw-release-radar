@@ -92,6 +92,8 @@ const affectedUserRiskWeights = new Map([
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
+const scoreInputSchemaVersion = 1;
+const scoreComponentsSchemaVersion = 1;
 const gateEvidenceSchemaVersion = 1;
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
@@ -281,8 +283,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
 
     const audit = reader.getReleaseScoreAudit(tag);
     if (audit) {
+      const scoreInput = parseJson(audit.input_json, {});
+      const scoreComponents = parseJson(audit.components_json, {});
       const gate = parseJson(audit.gate_evidence_json, {});
       const issueEvidence = parseJson(audit.issue_evidence_json, {});
+      expect(failures, tag, scoreInput.schemaVersion === scoreInputSchemaVersion,
+        `persisted score input schemaVersion (${scoreInput.schemaVersion}) must equal ${scoreInputSchemaVersion}`);
+      expect(failures, tag, scoreComponents.schemaVersion === scoreComponentsSchemaVersion,
+        `persisted score components schemaVersion (${scoreComponents.schemaVersion}) must equal ${scoreComponentsSchemaVersion}`);
       expect(failures, tag, gate.schemaVersion === gateEvidenceSchemaVersion,
         `persisted gateEvidence schemaVersion (${gate.schemaVersion}) must equal ${gateEvidenceSchemaVersion}`);
       verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit });
@@ -967,6 +975,10 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, releaseApi.band === review.local?.band,
         `releases band (${releaseApi.band}) must match review band (${review.local?.band})`);
     }
+    expect(failures, release.tag, review.local?.input?.schemaVersion === scoreInputSchemaVersion,
+      `review score input schemaVersion (${review.local?.input?.schemaVersion}) must equal ${scoreInputSchemaVersion}`);
+    expect(failures, release.tag, review.local?.components?.schemaVersion === scoreComponentsSchemaVersion,
+      `review score components schemaVersion (${review.local?.components?.schemaVersion}) must equal ${scoreComponentsSchemaVersion}`);
     expect(failures, release.tag, review.local?.gateEvidence?.schemaVersion === gateEvidenceSchemaVersion,
       `review gateEvidence schemaVersion (${review.local?.gateEvidence?.schemaVersion}) must equal ${gateEvidenceSchemaVersion}`);
     expect(failures, release.tag, review.local?.issueEvidence?.schemaVersion === issueEvidenceSchemaVersion,

@@ -203,6 +203,7 @@ That structured `explanation` object contains:
 - `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets`, and `issueRefs`.
 - `verdict`: install-facing interpretation of the score.
 
+The `/api/releases/:tag/review` `local.input` and `local.components` objects also expose `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.issueEvidence` object also exposes `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.gateEvidence` object also exposes `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.gateEvidence.labelTimeline` object also exposes `schemaVersion`. Current value: `1`.

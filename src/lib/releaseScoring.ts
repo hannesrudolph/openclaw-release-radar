@@ -99,6 +99,8 @@ export interface ScoreExplanationIssueRef {
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 const SHORT_ISSUE_TITLE_LENGTH = 110;
+export const SCORE_INPUT_SCHEMA_VERSION = 1;
+export const SCORE_COMPONENTS_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
 export const GATE_EVIDENCE_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
@@ -191,6 +193,7 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
       recommended,
       input_json: JSON.stringify(result.input),
       components_json: JSON.stringify({
+        schemaVersion: SCORE_COMPONENTS_SCHEMA_VERSION,
         components: result.conf.components,
         evidenceCoverage: result.conf.evidenceCoverage,
         hotfix: result.conf.hotfix,
@@ -306,6 +309,7 @@ function scoreRelease(args: {
   const closureProof = closureProofPayload(rel.tag, labelCutoff);
   const unresolvedClosureRiskWeight = closureRiskWeight(closureProof?.riskSummary);
   const input: InstallInput = {
+    schemaVersion: SCORE_INPUT_SCHEMA_VERSION,
     publishedAt: rel.published_at,
     isLatest: args.idx === 0,
     hoursToNextStable: rel.hours_to_next_stable,
