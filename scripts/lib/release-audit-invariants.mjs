@@ -96,6 +96,9 @@ const scoreInputSchemaVersion = 1;
 const scoreComponentsSchemaVersion = 1;
 const scoreAuditSummarySchemaVersion = 1;
 const localAuditSchemaVersion = 1;
+const comparisonPayloadSchemaVersion = 1;
+const comparisonUpstreamSchemaVersion = 1;
+const comparisonDeltaSchemaVersion = 1;
 const gateEvidenceSchemaVersion = 1;
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
@@ -887,6 +890,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     verifyNoForbiddenPublicKeys({ failures, tag: release.tag ?? 'api/public', value: release });
   }
   const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
+  expect(failures, 'api/comparison', comparisonPayload.schemaVersion === comparisonPayloadSchemaVersion,
+    `comparison schemaVersion must be ${comparisonPayloadSchemaVersion}, got ${JSON.stringify(comparisonPayload.schemaVersion)}`);
   verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
   const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
 
@@ -956,6 +961,14 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     const comparison = comparisonByTag.get(release.tag);
     expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
       'comparison payload must include local, upstream, and delta objects');
+    if (comparison?.upstream) {
+      expect(failures, release.tag, comparison.upstream.schemaVersion === comparisonUpstreamSchemaVersion,
+        `comparison upstream schemaVersion (${comparison.upstream.schemaVersion}) must equal ${comparisonUpstreamSchemaVersion}`);
+    }
+    if (comparison?.delta) {
+      expect(failures, release.tag, comparison.delta.schemaVersion === comparisonDeltaSchemaVersion,
+        `comparison delta schemaVersion (${comparison.delta.schemaVersion}) must equal ${comparisonDeltaSchemaVersion}`);
+    }
 
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
     verifyComparisonSnapshot({ failures, label: `${release.tag} review`, snapshot: review.snapshot });

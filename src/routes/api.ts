@@ -99,6 +99,7 @@ function parseJson<T>(json: string | null | undefined, fallback: T): T {
 function normalizeComparison(row: Record<string, unknown> | undefined) {
   if (!row) return null;
   return {
+    schemaVersion: COMPARISON_UPSTREAM_SCHEMA_VERSION,
     snapshotId: row.snapshot_id,
     tag: row.tag,
     score: row.score,
@@ -183,6 +184,9 @@ function maintainerSignals(r: {
 
 const SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1;
 const LOCAL_AUDIT_SCHEMA_VERSION = 1;
+const COMPARISON_PAYLOAD_SCHEMA_VERSION = 1;
+const COMPARISON_UPSTREAM_SCHEMA_VERSION = 1;
+const COMPARISON_DELTA_SCHEMA_VERSION = 1;
 
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   if (!audit) return null;
@@ -278,6 +282,7 @@ api.get('/comparison', (_req, res) => {
       },
       upstream,
       delta: {
+        schemaVersion: COMPARISON_DELTA_SCHEMA_VERSION,
         score: localScore != null && upstreamScore != null ? Math.round((localScore - upstreamScore) * 10) / 10 : null,
         negativeIssues:
           release.negative_issues != null && typeof upstream?.negativeIssues === 'number'
@@ -286,7 +291,7 @@ api.get('/comparison', (_req, res) => {
       },
     };
   });
-  res.json({ snapshot, releases });
+  res.json({ schemaVersion: COMPARISON_PAYLOAD_SCHEMA_VERSION, snapshot, releases });
 });
 
 api.get('/releases/:tag/review', (req, res) => {

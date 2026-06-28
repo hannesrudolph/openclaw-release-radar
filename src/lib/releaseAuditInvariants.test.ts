@@ -245,6 +245,7 @@ describe('verifyReleaseAudit', () => {
       }
       if (url.endsWith('/api/comparison')) {
         return {
+          schemaVersion: 1,
           snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
           releases: [{
             tag: 'v1',
@@ -270,7 +271,7 @@ describe('verifyReleaseAudit', () => {
               },
             },
             upstream: null,
-            delta: { score: null, negativeIssues: null },
+            delta: { schemaVersion: 1, score: null, negativeIssues: null },
           }],
         };
       }
