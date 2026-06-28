@@ -307,6 +307,12 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           expect(failures, tag, knownRiskDispositions.has(disposition),
             `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
         }
+        verifyClosureProofExamplesByStatus({
+          failures,
+          tag,
+          proof: fix.closureProof,
+          label: 'persisted closureProof',
+        });
       }
     }
   } else {
@@ -967,18 +973,12 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
             `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
         }
       }
-      expect(failures, release.tag, isObject(proof.examplesByStatus),
-        'closureProof must expose examplesByStatus');
-      for (const [status, count] of Object.entries(proof.byStatus ?? {})) {
-        if (status === 'fixed_in_release' || Number(count ?? 0) <= 0) continue;
-        const statusExamples = proof.examplesByStatus?.[status];
-        expect(failures, release.tag, Array.isArray(statusExamples) && statusExamples.length > 0,
-          `closureProof examplesByStatus must include at least one ${status} example`);
-        for (const example of statusExamples ?? []) {
-          expect(failures, release.tag, example.status === status,
-            `closureProof examplesByStatus ${status} contains example with status ${example.status}`);
-        }
-      }
+      verifyClosureProofExamplesByStatus({
+        failures,
+        tag: release.tag,
+        proof,
+        label: 'closureProof',
+      });
       for (const example of proof.examples ?? []) {
         expect(failures, release.tag, isObject(example.rawClassification),
           `closure proof example #${example.number} must expose rawClassification`);
@@ -1014,6 +1014,21 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         comparisonProof?.riskSummary, proof.riskSummary);
       expectJsonEqual(failures, release.tag, 'comparison closureProof examplesByStatus must match review',
         comparisonProof?.examplesByStatus, proof.examplesByStatus);
+    }
+  }
+}
+
+function verifyClosureProofExamplesByStatus({ failures, tag, proof, label }) {
+  expect(failures, tag, isObject(proof?.examplesByStatus),
+    `${label} must expose examplesByStatus`);
+  for (const [status, count] of Object.entries(proof?.byStatus ?? {})) {
+    if (status === 'fixed_in_release' || Number(count ?? 0) <= 0) continue;
+    const statusExamples = proof?.examplesByStatus?.[status];
+    expect(failures, tag, Array.isArray(statusExamples) && statusExamples.length > 0,
+      `${label} examplesByStatus must include at least one ${status} example`);
+    for (const example of statusExamples ?? []) {
+      expect(failures, tag, example.status === status,
+        `${label} examplesByStatus ${status} contains example with status ${example.status}`);
     }
   }
 }

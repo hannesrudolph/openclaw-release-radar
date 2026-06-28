@@ -487,6 +487,63 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /unknown reachability must include evidence reason/.test(failure)));
   });
 
+  it('fails when persisted closure proof lacks representative examples for non-fixed statuses', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'repro_requested',
+          evidence_json: JSON.stringify({
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+          }),
+        }],
+        prEvidence: [],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { repro_requested: 1 },
+                byRiskDisposition: { unsupported_closure_claim: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 1,
+                  neutralOrNonActionableCount: 0,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 1,
+                  unresolvedWeightedRisk: 2.125,
+                  weightedRiskByDisposition: { unsupported_closure_claim: 2.125 },
+                },
+                examplesByStatus: {},
+              }),
+              releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) =>
+      /persisted closureProof examplesByStatus must include at least one repro_requested example/.test(failure)));
+  });
+
   it('fails when canonical-open proof does not resolve to open terminal', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
