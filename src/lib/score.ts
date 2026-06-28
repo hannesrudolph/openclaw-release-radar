@@ -37,6 +37,14 @@ const ARTIFACT_UP = 0.35;
 const ARTIFACT_DOWN = -1.2;
 const PRIOR = 12;
 
+export const SCORE_COMPONENT_LIMITS = {
+  carryoverDebtMaxPenalty: Math.abs(CARRYOVER_DEBT_MAX),
+  staleDebtMaxPenalty: Math.abs(STALE_DEBT_MAX),
+  closureRiskMaxPenalty: Math.abs(CLOSURE_RISK_MAX),
+  heavyClosureRiskThreshold: HEAVY_CLOSURE_RISK_THRESHOLD,
+  heavyClosureScoreCap: HEAVY_CLOSURE_SCORE_CAP,
+} as const;
+
 const SEVERITY_WEIGHT: Record<string, number> = {
   critical: 4,
   high: 2.5,

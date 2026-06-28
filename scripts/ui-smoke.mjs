@@ -185,7 +185,7 @@ async function openScoreBreakdown(page, tag) {
     await row.click();
     await panel.waitFor({ state: 'visible' });
   }
-  const summary = panel.locator('summary.evidence-toggle__summary', { hasText: 'Show score breakdown' });
+  const summary = panel.locator('summary.evidence-toggle__summary', { hasText: /^(Why .+\/10\?|Show score breakdown)$/ });
   const isOpen = await summary.evaluate((el) => el.parentElement?.hasAttribute('open') === true);
   if (!isOpen) await summary.click();
   return panel;

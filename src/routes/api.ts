@@ -148,8 +148,8 @@ api.get('/status', (_req, res) => {
   res.json({
     schemaVersion: STATUS_PAYLOAD_SCHEMA_VERSION,
     ...state,
-    lastRefreshAt: lastScoredAt ?? state.lastRefreshAt,
-    processLastRefreshAt: state.lastRefreshAt,
+    lastRefreshAt: state.processLastRefreshAt,
+    processLastRefreshAt: state.processLastRefreshAt,
     lastScoredAt,
     dataFreshness: latestScoredTag ? releaseDataFreshness(latestScoredTag) : null,
   });
@@ -421,7 +421,7 @@ function comparePublicIssueSignal(
 }
 
 function buildPublicPayload() {
-  const { lastRefreshAt } = getRefreshState();
+  const { processLastRefreshAt } = getRefreshState();
   const lastScoredAt = getLastScoredAt();
   // Only the focused window (config.limits.releases, default 10) carries full
   // evidence + My-install scoring. The chart still plots SCORE_HISTORY_CHART_LIMIT
@@ -507,7 +507,7 @@ function buildPublicPayload() {
   return {
     schemaVersion: PUBLIC_PAYLOAD_SCHEMA_VERSION,
     repo:      `${config.github.owner}/${config.github.repo}`,
-    updatedAt: lastScoredAt ?? lastRefreshAt,
+    updatedAt: lastScoredAt ?? processLastRefreshAt,
     releases,
   };
 }

@@ -318,7 +318,7 @@ main.main-home{max-width:880px}
 .score-ledger__label{min-width:0;color:var(--muted);font-size:var(--text-xs)}
 .score-ledger__points{font-variant-numeric:tabular-nums;text-align:right;color:var(--text);font-size:var(--text-xs)}
 .score-ledger__points--bonus{color:var(--ok)}
-.score-ledger__points--penalty{color:var(--bad)}
+.score-ledger__points--penalty{color:var(--danger)}
 .score-ledger__cap{font-size:var(--text-xs);color:var(--muted)}
 
 .cta-track{
@@ -2192,14 +2192,14 @@ function whyNotTenHtml(local) {
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
     reasons.push(
-      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${esc(components.carryoverDebt ?? 0)} points.`
+      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${esc(components.carryoverDebt ?? 0)} points.`
       + sentenceSuffix('Top examples', example)
     );
   }
 
   if ((input.staleDebtWeight ?? 0) > 0) {
     reasons.push(
-      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${esc(components.staleDebt ?? 0)} points.`
+      `${stale.length} low-confidence/stale evidence items are still tracked. This contributes ${esc(components.staleDebt ?? 0)} points.`
     );
   }
 
@@ -2210,7 +2210,7 @@ function whyNotTenHtml(local) {
     const riskText = closureRiskSummaryText(closureProof);
     reasons.push(
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.`
-      + ` This contributes a ${esc(Math.abs(Number(components.closureRisk ?? 0)))} point penalty after the closure-risk cap.`
+      + ` This contributes a ${esc(Math.abs(Number(components.closureRisk ?? 0)))} point penalty.`
       + (riskText ? ` Risk split: ${riskText}.` : '')
       + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );
@@ -2296,6 +2296,7 @@ function scoreReviewHtml(r) {
     + '</div>'
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
+    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a></div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';
@@ -2327,9 +2328,10 @@ function collapsibleEvidence(summary, contentHtml) {
 
 function installPanelHtml(r) {
   const advCount = (r.advisories?.affected?.items ?? []).length;
+  const scoreLabel = formatScore10(r.finalScore);
   return `<div class="details__inner">`
     + updateCommandBlockHtml(r.tag)
-    + collapsibleEvidence('Show score breakdown', scoreReviewHtml(r))
+    + collapsibleEvidence(scoreLabel ? `Why ${scoreLabel}/10?` : 'Show score breakdown', scoreReviewHtml(r))
     + collapsibleEvidence(advCount === 1 ? 'Show known advisory' : 'Show known advisories', advisoryEvidenceHtml(r))
     + collapsibleEvidence('Show related issues', issueEvidenceHtml(r))
     + `</div>`;
@@ -2677,13 +2679,20 @@ function toggleRelease(row) {
 // last successful refresh is older than STALE_AFTER_MS — i.e. the install
 // advice on screen might no longer reflect reality.
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
+const SOURCE_STALE_AFTER_HOURS = 12;
 
 async function loadStatus() {
   const box = document.getElementById('topbarUpdated');
   const label = document.getElementById('updatedLabel');
   try {
     const s = await api('/status');
-    const last = s.lastRefreshAt ? Date.parse(s.lastRefreshAt) : NaN;
+    const issueLag = Number(s.dataFreshness?.issueUpdatedAgeHoursAtScore);
+    if (Number.isFinite(issueLag) && issueLag > SOURCE_STALE_AFTER_HOURS) {
+      box.hidden = false;
+      label.textContent = `Source data may be stale — issue rows lag ${metricValue(issueLag)}h`;
+      return;
+    }
+    const last = s.lastScoredAt ? Date.parse(s.lastScoredAt) : NaN;
     const age = Number.isFinite(last) ? Date.now() - last : Infinity;
     if (age <= STALE_AFTER_MS) {
       box.hidden = true; // fresh enough — stay quiet
@@ -2691,7 +2700,7 @@ async function loadStatus() {
     }
     box.hidden = false;
     label.textContent = Number.isFinite(last)
-      ? 'Data may be stale — last updated ' + timeAgo(s.lastRefreshAt)
+      ? 'Score may be stale — last scored ' + timeAgo(s.lastScoredAt)
       : 'Data not yet refreshed';
   } catch {
     // Can't reach the status endpoint — treat as a staleness warning.

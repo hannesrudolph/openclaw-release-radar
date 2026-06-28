@@ -87,6 +87,17 @@ The first refresh can take a few minutes because it backfills GitHub data and cl
 
 `REFRESH_ON_STARTUP=false` keeps the web server from writing to the DB when you only want to inspect the UI. `REFRESH_MINUTES=0` disables periodic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
 
+For a reproducible rebuild from an empty local database, wipe every ignored SQLite file, run a full issue-history refresh, then verify the persisted audits:
+
+```bash
+rm -f ./data/*.db ./data/*.db-* ./data/*.db-shm ./data/*.db-wal
+FULL_ISSUE_BACKFILL=true REFRESH_MINUTES=0 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=50 npx tsx -e "import { refresh } from './src/lib/refresh.ts'; refresh().then(console.log)"
+npm run verify:local
+npm run verify:live
+```
+
+`npm run verify:live` requires `npm run dev` to be serving `http://127.0.0.1:8787`.
+
 ## Internal Calibration Snapshot
 
 During model calibration, you can capture an external rendered UI snapshot as a temporary internal benchmark:
@@ -262,7 +273,7 @@ The SQLite database defaults to:
 To reset local data:
 
 ```bash
-rm -f ./data/radar.db ./data/radar.db-shm ./data/radar.db-wal
+rm -f ./data/*.db ./data/*.db-* ./data/*.db-shm ./data/*.db-wal
 ```
 
 Then restart:

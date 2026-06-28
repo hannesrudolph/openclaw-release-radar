@@ -1326,10 +1326,12 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     `status schemaVersion must be ${statusPayloadSchemaVersion}, got ${JSON.stringify(status.schemaVersion)}`);
   expect(failures, 'api/status', status.refreshing === false, `refreshing must be false, got ${status.refreshing}`);
   expect(failures, 'api/status', status.lastError == null, `lastError must be null, got ${status.lastError}`);
-  if (status.lastScoredAt) {
-    expect(failures, 'api/status', status.lastRefreshAt === status.lastScoredAt,
-      `lastRefreshAt (${status.lastRefreshAt}) must equal lastScoredAt (${status.lastScoredAt})`);
-  }
+  expect(failures, 'api/status', status.lastScoredAt == null || Number.isFinite(Date.parse(status.lastScoredAt)),
+    `lastScoredAt must be null or a valid timestamp, got ${status.lastScoredAt}`);
+  expect(failures, 'api/status', status.lastRefreshAt == null || status.lastRefreshAt === status.processLastRefreshAt,
+    `lastRefreshAt (${status.lastRefreshAt}) must match processLastRefreshAt (${status.processLastRefreshAt})`);
+  expect(failures, 'api/status', status.processLastRefreshAt == null || Number.isFinite(Date.parse(status.processLastRefreshAt)),
+    `processLastRefreshAt must be null or a valid timestamp, got ${status.processLastRefreshAt}`);
   if (status.dataFreshness) {
     verifyDataFreshness({ failures, tag: 'api/status', dataFreshness: status.dataFreshness, releaseTag: status.dataFreshness.tag });
   }

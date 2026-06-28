@@ -124,12 +124,19 @@ describe('release score explanations', () => {
     }
     const closureExamples = (closureProof.examples ?? [])
       .filter((item: any) => item.status !== 'fixed_in_release');
-    assert.deepEqual(
-      closure.issueRefs?.slice(0, 3).map((item) => item.number),
-      closureExamples.slice(0, Math.min(3, closure.issueRefs?.length ?? 0)).map((item: any) => item.number),
-    );
     assert.ok(closure.issueRefs?.every((issue) => issue.proof?.status && issue.proof.statusLabel));
     assert.ok(closure.issueRefs?.some((issue) => issue.proof?.riskDispositionLabel));
+    const unresolvedRiskDispositions = Object.entries(closure.riskBuckets ?? {})
+      .filter(([disposition, count]) =>
+        ['open_canonical_risk', 'known_not_in_release', 'unsupported_closure_claim', 'missing_evidence']
+          .includes(disposition) && Number(count ?? 0) > 0)
+      .map(([disposition]) => disposition);
+    for (const disposition of unresolvedRiskDispositions.slice(0, 5)) {
+      assert.ok(
+        closure.issueRefs?.some((issue) => issue.proof?.riskDisposition === disposition),
+        `expected closure explanation issueRefs to include ${disposition}`,
+      );
+    }
     assert.ok(closure.issueRefs?.some((issue) =>
       issue.proof?.canonicalIssue?.number ||
       (issue.proof?.openPrs?.length ?? 0) > 0 ||
@@ -141,6 +148,8 @@ describe('release score explanations', () => {
     const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
     assert.ok(carryover);
     assert.ok((carryover.metrics?.count ?? 0) > 0);
+    assert.equal(typeof carryover.metrics?.maxPenalty, 'number');
+    assert.equal(typeof carryover.metrics?.capApplied, 'boolean');
     assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);
     assert.ok((carryover.metrics?.storedExampleWeight ?? 0) <= (carryover.metrics?.rawWeight ?? 0));
     assert.equal(typeof carryover.metrics?.byInstallImpactClass, 'object');
@@ -154,6 +163,8 @@ describe('release score explanations', () => {
     const stale = explanation.limitDetails.find((detail) => detail.code === 'stale_low_confidence_evidence');
     assert.ok(stale);
     assert.ok((stale.metrics?.count ?? 0) > 0);
+    assert.equal(typeof stale.metrics?.maxPenalty, 'number');
+    assert.equal(typeof stale.metrics?.capApplied, 'boolean');
     assert.equal(stale.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).staleDebt.length);
     assert.ok((stale.metrics?.storedExampleWeight ?? 0) <= (stale.metrics?.rawWeight ?? 0));
     assert.equal(typeof stale.metrics?.byInstallImpactClass, 'object');

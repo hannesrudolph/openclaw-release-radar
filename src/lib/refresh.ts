@@ -51,7 +51,6 @@ import {
   deleteStaleClassifications,
   detectBot,
   getClassification,
-  getLastScoredAt,
   getMeta,
   getRelease,
   issuesForVersion,
@@ -160,12 +159,11 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
 const BACKFILL_FLAG = 'backfill_completed_at';
 
 let refreshing = false;
-// Seed from DB so "Not yet refreshed" doesn't show after a restart.
-let lastRefreshAt: string | null = getLastScoredAt();
+let processLastRefreshAt: string | null = null;
 let lastError: string | null = null;
 
 export function getRefreshState() {
-  return { refreshing, lastRefreshAt, lastError };
+  return { refreshing, processLastRefreshAt, lastError };
 }
 
 export async function refresh(): Promise<{
@@ -545,7 +543,7 @@ export async function refresh(): Promise<{
     });
     persistReleaseScoreRun(scoreRun);
 
-    lastRefreshAt = new Date().toISOString();
+    processLastRefreshAt = new Date().toISOString();
     invalidateCache();
     return {
       classifiedCount,

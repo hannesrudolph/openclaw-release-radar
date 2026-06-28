@@ -9,6 +9,7 @@ import {
   installConfidence,
   isFeltSignal,
   pickRecommended,
+  SCORE_COMPONENT_LIMITS,
   SCORE_MODEL_VERSION,
   type InstallConfidence,
   type InstallInput,
@@ -593,7 +594,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const example = issueListText(carryover, 3);
     addLimit(
       'source_carryover_risk',
-      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${penaltyText(components.carryoverDebt)}.` +
+      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -602,6 +603,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           rawWeight: roundMetric(input.carryoverDebtWeight),
           storedExampleWeight: roundMetric(debtSummary.carryover?.storedWeight ?? carryoverDebt.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
           cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
+          maxPenalty: SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty,
+          capApplied: Math.abs(numberOrZero(components.carryoverDebt)) >= SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty,
           byInstallImpactClass: debtSummary.carryover?.byInstallImpactClass ?? {},
         },
         issueRefs: issueRefs(carryoverDebt, 5),
@@ -613,7 +616,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const example = issueListText(stale.map((row: any) => row.issue).filter(Boolean), 3);
     addLimit(
       'stale_low_confidence_evidence',
-      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.` +
+      `${stale.length} low-confidence/stale evidence items are still tracked. This contributes ${penaltyText(components.staleDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.staleDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -622,6 +625,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           rawWeight: roundMetric(input.staleDebtWeight),
           storedExampleWeight: roundMetric(debtSummary.stale?.storedWeight ?? stale.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
           cappedPenalty: Math.abs(numberOrZero(components.staleDebt)),
+          maxPenalty: SCORE_COMPONENT_LIMITS.staleDebtMaxPenalty,
+          capApplied: Math.abs(numberOrZero(components.staleDebt)) >= SCORE_COMPONENT_LIMITS.staleDebtMaxPenalty,
           byInstallImpactClass: debtSummary.stale?.byInstallImpactClass ?? {},
         },
         issueRefs: issueRefs(stale, 5),
@@ -666,9 +671,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     ]);
     const riskSummary = closureProof.riskSummary ?? {};
     const neutralAuditRefs = issueRefs(closureProof.neutralAuditExamples ?? [], 2);
-    const primaryIssueRefLimit = neutralAuditRefs.length > 0 ? 3 : 5;
-    const closureExamples = closureProofExamplesWithStatusCoverage(closureProof)
-      .filter((item: any) => item.status !== 'fixed_in_release');
+    const primaryIssueRefLimit = Math.max(3, 5 - neutralAuditRefs.length);
+    const closureExamples = closureProofExamplesForExplanation(closureProof, primaryIssueRefLimit);
     const closureIssueRefs = mergeIssueRefs(
       issueRefs(closureExamples, primaryIssueRefLimit),
       neutralAuditRefs,
@@ -678,8 +682,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       'closed_issues_not_counted_as_release_fixes',
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
       ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including not-scored or non-actionable closures.` +
-      ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
-      ((components.closureRiskCeiling ?? 0) > 0 ? ` Heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
+      ` This contributes ${penaltyText(components.closureRisk)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty} point penalty.` +
+      ((components.closureRiskCeiling ?? 0) > 0 ? ` Because closure risk weight is at least ${SCORE_COMPONENT_LIMITS.heavyClosureRiskThreshold}, heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
       ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0)
         ? ` Audit-only closure flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped not-scored closures were left out of the scored closure penalty; review them separately.`
         : '') +
@@ -693,7 +697,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
           unresolvedClosureRiskWeight: roundMetric(input.unresolvedClosureRiskWeight),
           cappedPenalty: Math.abs(numberOrZero(components.closureRisk)),
+          maxPenalty: SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty,
+          capApplied: Math.abs(numberOrZero(components.closureRisk)) >= SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty,
           scoreCeiling: Number(components.closureRiskCeiling ?? 0) || null,
+          heavyClosureRiskThreshold: SCORE_COMPONENT_LIMITS.heavyClosureRiskThreshold,
           resolvedByCanonicalReleaseFixCount: Number(riskSummary.resolvedByCanonicalReleaseFixCount ?? 0),
           resolvedByReleaseFixProofCount: Number(riskSummary.resolvedByReleaseFixProofCount ?? 0),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
@@ -1111,6 +1118,100 @@ function closureProofExamplesWithStatusCoverage(closureProof: any): any[] {
     }
   }
   return merged;
+}
+
+const CLOSURE_EXPLANATION_DISPOSITION_ORDER = [
+  'open_canonical_risk',
+  'known_not_in_release',
+  'unsupported_closure_claim',
+  'missing_evidence',
+  'neutral_or_non_actionable',
+  'resolved_by_canonical_release_fix',
+  'resolved_by_release_fix_proof',
+];
+
+const CLOSURE_EXPLANATION_STATUS_PREFERENCE: Record<string, string[]> = {
+  open_canonical_risk: [
+    'duplicate_to_open_canonical',
+    'superseded_to_open_pr',
+    'duplicate_with_open_pr_context',
+    'not_planned_with_open_pr_context',
+    'related_open_pr_context',
+  ],
+  known_not_in_release: [
+    'fixed_after_latest_release',
+    'fixed_in_later_release',
+    'fixed_after_release',
+    'fixed_not_in_scored_releases',
+    'main_only_claim',
+    'duplicate_to_known_not_in_release_canonical',
+  ],
+  unsupported_closure_claim: [
+    'admin_not_planned_no_context',
+    'admin_not_planned_unverified',
+    'already_present_claim',
+    'closed_without_release_fix_proof',
+    'no_code_proof',
+    'duplicate_to_closed_canonical_missing_proof',
+    'duplicate_or_superseded',
+    'repro_requested',
+    'insufficient_info',
+  ],
+  missing_evidence: [
+    'no_timeline_event',
+    'unknown',
+    'linked_closing_pr_reachability_unknown',
+    'duplicate_to_closed_canonical_missing_proof',
+  ],
+};
+
+function closureProofExamplesForExplanation(closureProof: any, limit: number): any[] {
+  const cap = Math.max(0, limit);
+  if (cap <= 0) return [];
+  const candidates = closureProofExamplesWithStatusCoverage(closureProof)
+    .filter((item: any) => item.status !== 'fixed_in_release');
+  const selected: any[] = [];
+  const seen = new Set<number>();
+  const add = (item: any) => {
+    const number = Number(item?.number ?? item?.issue?.number);
+    if (!Number.isInteger(number) || number <= 0 || seen.has(number) || selected.length >= cap) return;
+    seen.add(number);
+    selected.push(item);
+  };
+  const byDisposition = new Map<string, any>();
+  for (const item of candidates) {
+    const disposition = typeof item?.riskDisposition === 'string' && item.riskDisposition
+      ? item.riskDisposition
+      : typeof item?.status === 'string' ? closureRiskDisposition(item.status) : null;
+    if (disposition && !byDisposition.has(disposition)) byDisposition.set(disposition, item);
+  }
+  const dispositionCounts = closureProof?.byRiskDisposition && typeof closureProof.byRiskDisposition === 'object'
+    ? closureProof.byRiskDisposition
+    : {};
+  for (const disposition of CLOSURE_EXPLANATION_DISPOSITION_ORDER) {
+    if (Number(dispositionCounts[disposition] ?? 0) > 0) {
+      add(preferredClosureExampleForDisposition(disposition, candidates) ?? byDisposition.get(disposition));
+    }
+  }
+  for (const [disposition, count] of Object.entries(dispositionCounts)) {
+    if (CLOSURE_EXPLANATION_DISPOSITION_ORDER.includes(disposition)) continue;
+    if (Number(count ?? 0) > 0) {
+      add(preferredClosureExampleForDisposition(disposition, candidates) ?? byDisposition.get(disposition));
+    }
+  }
+  for (const item of candidates) add(item);
+  return selected;
+}
+
+function preferredClosureExampleForDisposition(disposition: string, candidates: any[]): any | null {
+  const preferredStatuses = CLOSURE_EXPLANATION_STATUS_PREFERENCE[disposition] ?? [];
+  for (const status of preferredStatuses) {
+    const match = candidates.find((item) => item?.status === status && (
+      item?.riskDisposition === disposition || closureRiskDisposition(String(item?.status ?? '')) === disposition
+    ));
+    if (match) return match;
+  }
+  return null;
 }
 
 function debtTierSummary(items: any[], tier: 'verified' | 'carryover' | 'stale'): {
