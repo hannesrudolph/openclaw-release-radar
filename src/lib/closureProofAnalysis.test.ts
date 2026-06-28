@@ -38,6 +38,55 @@ describe('closure proof canonical roll-up', () => {
     assert.deepEqual(__closureProofAnalysisTest.canonicalIssueNumbersReachableFrom(10, graph), [20]);
   });
 
+  it('classifies canonical cycles with open issues as open canonical risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      88864,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [91154] },
+      new Map([
+        [88864, [91154]],
+        [91154, [88864]],
+      ]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_open_canonical');
+    assert.equal((adjusted.evidence.canonicalResolution as any).cycle, true);
+    assert.equal((adjusted.evidence.canonicalResolution as any).terminalIssue.number, 91154);
+    assert.equal((adjusted.evidence.canonicalResolution as any).cycleTerminalIssue.number, 91154);
+  });
+
+  it('lets canonical fix proof resolve a cycle before falling back to cycle risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      {
+        canonicalIssues: [20],
+        canonicalFixCommitProof: [{ status: 'reachable', sourceIssueNumber: 20 }],
+      },
+      new Map([
+        [10, [20]],
+        [20, [10]],
+      ]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_fixed_in_release');
+    assert.equal((adjusted.evidence.canonicalResolution as any).cycle, true);
+  });
+
+  it('keeps self-only canonical references as cycle risk when no terminal exists', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [10] },
+      new Map([[10, [10]]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'canonical_cycle_or_self_reference');
+  });
+
   it('classifies duplicate closures by terminal canonical fixed-after proof', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,

@@ -676,13 +676,6 @@ function adjustCanonicalDuplicateStatus(
       }
       : resolution,
   };
-  if (resolution.cycle || resolution.selfReference) {
-    return {
-      status: 'canonical_cycle_or_self_reference',
-      summary: 'Closed as duplicate/superseded, but canonical reference loops back to the same issue.',
-      evidence: nextEvidence,
-    };
-  }
   if ((currentWindowTerminalProof?.status === 'fixed_in_release') || hasReachableCanonicalFixCommit) {
     return {
       status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_in_release' : 'duplicate_to_fixed_in_release',
@@ -707,11 +700,18 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
-  if (resolution.terminalIssue?.state === 'open') {
+  const openCycleTerminalIssue = resolution.cycle || resolution.selfReference
+    ? openIssueInCanonicalPath(sourceIssueNumber, resolution)
+    : null;
+  if (resolution.terminalIssue?.state === 'open' || openCycleTerminalIssue) {
+    const canonicalResolution = {
+      ...(nextEvidence.canonicalResolution as Record<string, unknown>),
+      ...(openCycleTerminalIssue ? { terminalIssue: openCycleTerminalIssue, cycleTerminalIssue: openCycleTerminalIssue } : {}),
+    };
     return {
       status: nonBugDuplicate ? 'non_bug_duplicate_to_open_canonical' : 'duplicate_to_open_canonical',
       summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue remains open.`,
-      evidence: nextEvidence,
+      evidence: { ...nextEvidence, canonicalResolution },
     };
   }
   const prContext = openPrContext(evidence);
@@ -741,7 +741,25 @@ function adjustCanonicalDuplicateStatus(
     }
     return closedCanonicalRollup(nonBugDuplicate, terminalProof, nextEvidence);
   }
+  if (resolution.cycle || resolution.selfReference) {
+    return {
+      status: 'canonical_cycle_or_self_reference',
+      summary: 'Closed as duplicate/superseded, but canonical reference loops back to the same issue.',
+      evidence: nextEvidence,
+    };
+  }
   return { ...result, evidence: nextEvidence };
+}
+
+function openIssueInCanonicalPath(
+  sourceIssueNumber: number,
+  resolution: ReturnType<typeof canonicalResolution>,
+): { number: number; title: string | null; state: string | null; url: string | null } | null {
+  for (const number of uniqueNumbers(resolution.path.filter((item) => item !== sourceIssueNumber))) {
+    const issue = issueDetails(number);
+    if (issue?.state === 'open') return issue;
+  }
+  return null;
 }
 
 function closedCanonicalRollup(
