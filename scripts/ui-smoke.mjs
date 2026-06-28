@@ -98,6 +98,8 @@ try {
   if (!fixPanelText.includes(explanationText)) {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
   }
+  await fixPanel.locator('.score-ledger').filter({ hasText: 'Score math' }).first().waitFor();
+  await fixPanel.locator('.score-ledger__row').filter({ hasText: 'Closed-release risk' }).first().waitFor();
   await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();

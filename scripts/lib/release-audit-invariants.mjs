@@ -1591,6 +1591,7 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
     `${source} score explanation schemaVersion must be ${scoreExplanationSchemaVersion}, got ${JSON.stringify(explanation.schemaVersion)}`);
   expect(failures, tag, explanation.title === 'Why not 10?',
     `${source} score explanation title must be "Why not 10?", got ${JSON.stringify(explanation.title)}`);
+  verifyScoreLedger({ failures, tag, source, ledger: explanation.scoreLedger });
   expect(failures, tag, isStringArray(explanation.positives) && explanation.positives.length > 0,
     `${source} score explanation positives must be a non-empty string array`);
   expect(failures, tag, isStringArray(explanation.limits) && explanation.limits.length > 0,
@@ -1622,6 +1623,69 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
   for (const line of [...explanation.positives, ...explanation.limits]) {
     expect(failures, tag, !/\.\.\.\./.test(line), `${source} score explanation lines must not contain four-dot truncation`);
   }
+}
+
+function verifyScoreLedger({ failures, tag, source, ledger }) {
+  expect(failures, tag, isObject(ledger), `${source} score explanation scoreLedger must be present`);
+  if (!isObject(ledger)) return;
+  expect(failures, tag, ledger.schemaVersion === 1,
+    `${source} scoreLedger schemaVersion must be 1, got ${JSON.stringify(ledger.schemaVersion)}`);
+  expect(failures, tag, ledger.finalScore == null || typeof ledger.finalScore === 'number',
+    `${source} scoreLedger finalScore must be numeric or null`);
+  expect(failures, tag, typeof ledger.status === 'string' && ledger.status.length > 0,
+    `${source} scoreLedger status must be present`);
+  expect(failures, tag, typeof ledger.band === 'string' && ledger.band.length > 0,
+    `${source} scoreLedger band must be present`);
+  const minimumRows = ledger.status === 'eligible' || ledger.status === 'skip-hotfix' ? 8 : 1;
+  expect(failures, tag, Array.isArray(ledger.rows) && ledger.rows.length >= minimumRows,
+    `${source} scoreLedger rows must include score components`);
+  let subtotal = 0;
+  for (const row of ledger.rows ?? []) {
+    expect(failures, tag, isObject(row), `${source} scoreLedger row must be an object`);
+    if (!isObject(row)) continue;
+    expect(failures, tag, typeof row.key === 'string' && row.key.length > 0,
+      `${source} scoreLedger row key must be present`);
+    expect(failures, tag, typeof row.label === 'string' && row.label.length > 0,
+      `${source} scoreLedger row label must be present`);
+    expect(failures, tag, typeof row.points === 'number' && Number.isFinite(row.points),
+      `${source} scoreLedger row ${row.key} points must be numeric`);
+    expect(failures, tag, ['base', 'bonus', 'penalty', 'neutral'].includes(row.kind),
+      `${source} scoreLedger row ${row.key} kind must be known`);
+    subtotal += Number(row.points ?? 0);
+  }
+  subtotal = roundMetric(subtotal);
+  expect(failures, tag, sameNumber(ledger.subtotalBeforeCaps, subtotal),
+    `${source} scoreLedger subtotalBeforeCaps (${ledger.subtotalBeforeCaps}) must equal row total (${subtotal})`);
+  let afterCaps = subtotal;
+  expect(failures, tag, Array.isArray(ledger.caps), `${source} scoreLedger caps must be an array`);
+  for (const cap of ledger.caps ?? []) {
+    expect(failures, tag, isObject(cap), `${source} scoreLedger cap must be an object`);
+    if (!isObject(cap)) continue;
+    expect(failures, tag, typeof cap.key === 'string' && cap.key.length > 0,
+      `${source} scoreLedger cap key must be present`);
+    expect(failures, tag, typeof cap.ceiling === 'number' && Number.isFinite(cap.ceiling),
+      `${source} scoreLedger cap ${cap.key} ceiling must be numeric`);
+    expect(failures, tag, typeof cap.applied === 'boolean',
+      `${source} scoreLedger cap ${cap.key} applied must be boolean`);
+    const expectedAfter = roundMetric(Math.min(afterCaps, Number(cap.ceiling)));
+    expect(failures, tag, sameNumber(cap.before, afterCaps),
+      `${source} scoreLedger cap ${cap.key} before (${cap.before}) must equal prior score (${afterCaps})`);
+    expect(failures, tag, sameNumber(cap.after, expectedAfter),
+      `${source} scoreLedger cap ${cap.key} after (${cap.after}) must equal capped score (${expectedAfter})`);
+    expect(failures, tag, cap.applied === (afterCaps > Number(cap.ceiling)),
+      `${source} scoreLedger cap ${cap.key} applied must reflect whether it was binding`);
+    afterCaps = expectedAfter;
+  }
+  expect(failures, tag, sameNumber(ledger.scoreAfterCaps, afterCaps),
+    `${source} scoreLedger scoreAfterCaps (${ledger.scoreAfterCaps}) must equal capped subtotal (${afterCaps})`);
+  if (typeof ledger.finalScore === 'number') {
+    expect(failures, tag, sameNumber(ledger.finalScore, roundMetric(afterCaps)),
+      `${source} scoreLedger finalScore (${ledger.finalScore}) must match scoreAfterCaps (${afterCaps})`);
+  }
+}
+
+function sameNumber(left, right) {
+  return typeof left === 'number' && typeof right === 'number' && Math.abs(left - right) <= 1e-9;
 }
 
 function verifyExplanationDetails({ failures, tag, source, label, details, text }) {

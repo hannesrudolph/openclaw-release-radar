@@ -306,6 +306,20 @@ main.main-home{max-width:880px}
   font-size:var(--text-xs);color:var(--muted);
   padding-left:8px;border-left:2px solid var(--border-soft);
 }
+.score-ledger{
+  display:flex;flex-direction:column;gap:var(--space-2);
+  margin:0 0 var(--space-4);padding:var(--space-3);
+  border:1px solid var(--border-soft);border-radius:var(--radius-sm);
+  background:color-mix(in srgb,var(--text) 2%,transparent);
+}
+.score-ledger__head{display:flex;justify-content:space-between;gap:var(--space-3);font-weight:700;color:var(--text)}
+.score-ledger__rows{display:grid;grid-template-columns:1fr auto;gap:4px 10px}
+.score-ledger__row{display:contents}
+.score-ledger__label{min-width:0;color:var(--muted);font-size:var(--text-xs)}
+.score-ledger__points{font-variant-numeric:tabular-nums;text-align:right;color:var(--text);font-size:var(--text-xs)}
+.score-ledger__points--bonus{color:var(--ok)}
+.score-ledger__points--penalty{color:var(--bad)}
+.score-ledger__cap{font-size:var(--text-xs);color:var(--muted)}
 
 .cta-track{
   margin-top:var(--space-10);
@@ -1807,6 +1821,43 @@ function scoreDetailIssueRefsHtml(issueRefs) {
   return links + (proofs ? `<div class="score-explain__proofs">${proofs}</div>` : '');
 }
 
+function scoreLedgerHtml(ledger) {
+  if (!ledger || typeof ledger !== 'object' || !Array.isArray(ledger.rows)) return '';
+  const rows = ledger.rows
+    .filter((row) => row && typeof row === 'object')
+    .map((row) => {
+      const kind = row.kind === 'bonus' || row.kind === 'penalty' ? row.kind : 'neutral';
+      const metric = row.metric != null && row.metric !== '' ? ` · ${metricValue(row.metric)}` : '';
+      return '<div class="score-ledger__row">'
+        + `<span class="score-ledger__label">${esc(row.label ?? row.key)}${esc(metric)}</span>`
+        + `<span class="score-ledger__points score-ledger__points--${esc(kind)}">${esc(signedPoints(row.points))}</span>`
+        + '</div>';
+    }).join('');
+  const caps = Array.isArray(ledger.caps)
+    ? ledger.caps
+      .filter((cap) => cap && typeof cap === 'object')
+      .map((cap) => {
+        const applied = cap.applied ? 'applied' : 'not binding';
+        const beforeAfter = cap.before != null && cap.after != null ? ` · ${metricValue(cap.before)} -> ${metricValue(cap.after)}` : '';
+        return `<div class="score-ledger__cap">${esc(cap.label ?? cap.key)}: ceiling ${esc(metricValue(cap.ceiling))}, ${esc(applied)}${esc(beforeAfter)}</div>`;
+      }).join('')
+    : '';
+  return '<div class="score-ledger">'
+    + '<div class="score-ledger__head">'
+    + '<span>Score math</span>'
+    + `<span>${esc(metricValue(ledger.subtotalBeforeCaps))} -> ${esc(metricValue(ledger.finalScore))}</span>`
+    + '</div>'
+    + `<div class="score-ledger__rows">${rows}</div>`
+    + caps
+    + '</div>';
+}
+
+function signedPoints(value) {
+  if (!Number.isFinite(value)) return '—';
+  if (value > 0) return `+${metricValue(value)}`;
+  return metricValue(value);
+}
+
 function scoreDetailIssueProofHtml(issue) {
   const proof = issue?.proof;
   if (!proof || typeof proof !== 'object') return '';
@@ -2094,6 +2145,7 @@ function whyNotTenHtml(local) {
     const verdict = structured.verdict || installVerdictText(local);
     return '<div class="score-explain">'
       + `<div class="score-explain__title">${esc(structured.title || 'Why not 10?')}</div>`
+      + scoreLedgerHtml(structured.scoreLedger)
       + (positives.length
         ? '<p><strong>What looks good:</strong></p>'
           + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives) + '</ul>'

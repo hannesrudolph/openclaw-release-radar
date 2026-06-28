@@ -69,11 +69,42 @@ export interface ReleaseScoreRun {
 export interface ScoreExplanation {
   schemaVersion: number;
   title: string;
+  scoreLedger: ScoreExplanationLedger | null;
   positives: string[];
   positiveDetails: ScoreExplanationDetail[];
   limits: string[];
   limitDetails: ScoreExplanationDetail[];
   verdict: string;
+}
+
+export interface ScoreExplanationLedger {
+  schemaVersion: number;
+  finalScore: number | null;
+  status: string;
+  band: string;
+  subtotalBeforeCaps: number | null;
+  scoreAfterCaps: number | null;
+  rows: ScoreExplanationLedgerRow[];
+  caps: ScoreExplanationCap[];
+}
+
+export interface ScoreExplanationLedgerRow {
+  key: string;
+  label: string;
+  points: number;
+  kind: 'base' | 'bonus' | 'penalty' | 'neutral';
+  metric?: number | string | null;
+  note?: string | null;
+}
+
+export interface ScoreExplanationCap {
+  key: string;
+  label: string;
+  ceiling: number;
+  applied: boolean;
+  before: number | null;
+  after: number | null;
+  reason: string;
 }
 
 export interface ScoreExplanationDetail {
@@ -498,6 +529,7 @@ function scoreRelease(args: {
     explanation: {
       schemaVersion: SCORE_EXPLANATION_SCHEMA_VERSION,
       title: 'Why not 10?',
+      scoreLedger: null,
       positives: [],
       positiveDetails: [],
       limits: [],
@@ -752,12 +784,223 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   return {
     schemaVersion: SCORE_EXPLANATION_SCHEMA_VERSION,
     title: 'Why not 10?',
+    scoreLedger: buildScoreLedger(result),
     positives,
     positiveDetails,
     limits,
     limitDetails,
     verdict: installVerdictText(result.conf.status, recommended),
   };
+}
+
+function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | null {
+  const components = result.conf.components;
+  if (!components) return buildGateScoreLedger(result);
+  const input = result.input;
+  let rows: ScoreExplanationLedgerRow[] = [
+    {
+      key: 'base',
+      label: 'Base',
+      points: roundMetric(components.base),
+      kind: 'base',
+      note: 'Starting confidence for an eligible stable before evidence adjustments.',
+    },
+    {
+      key: 'verifiedDebt',
+      label: 'Field blocker debt',
+      points: roundMetric(components.verifiedDebt),
+      kind: scoreLedgerKind(components.verifiedDebt),
+      metric: roundMetric(input.verifiedDebtWeight),
+      note: 'Release-local field/community blocker evidence.',
+    },
+    {
+      key: 'carryoverDebt',
+      label: 'Source/carryover risk',
+      points: roundMetric(components.carryoverDebt),
+      kind: scoreLedgerKind(components.carryoverDebt),
+      metric: roundMetric(input.carryoverDebtWeight),
+      note: 'Open source-derived or carryover risk, capped.',
+    },
+    {
+      key: 'staleDebt',
+      label: 'Stale/low-confidence risk',
+      points: roundMetric(components.staleDebt),
+      kind: scoreLedgerKind(components.staleDebt),
+      metric: roundMetric(input.staleDebtWeight),
+      note: 'Weak or stale evidence risk, heavily capped.',
+    },
+    {
+      key: 'closureRisk',
+      label: 'Closed-release risk',
+      points: roundMetric(components.closureRisk),
+      kind: scoreLedgerKind(components.closureRisk),
+      metric: roundMetric(input.unresolvedClosureRiskWeight),
+      note: 'Closed issues not proven fixed in this release tag.',
+    },
+    {
+      key: 'coverage',
+      label: 'Classification coverage',
+      points: roundMetric(components.coverage),
+      kind: scoreLedgerKind(components.coverage),
+      metric: `${input.classifiedIssueCount}/${input.rawIssueCount}`,
+      note: 'Penalty only when attributed issue classification coverage is incomplete.',
+    },
+    {
+      key: 'survival',
+      label: 'Stable survival',
+      points: roundMetric(components.survival),
+      kind: scoreLedgerKind(components.survival),
+      metric: input.hoursToNextStable == null ? null : roundMetric(input.hoursToNextStable),
+      note: 'Reward for standing without a quick stable hotfix replacement.',
+    },
+    {
+      key: 'shakeout',
+      label: 'Beta shakeout',
+      points: roundMetric(components.shakeout),
+      kind: scoreLedgerKind(components.shakeout),
+      metric: input.betaCount,
+      note: 'Small reward for beta/prerelease bake time.',
+    },
+    {
+      key: 'regression',
+      label: 'Opened vs fixed balance',
+      points: roundMetric(components.regression),
+      kind: scoreLedgerKind(components.regression),
+      metric: `${roundMetric(input.feltOpenedWeight)} opened / ${roundMetric(input.feltClosedWeight)} fixed`,
+      note: 'Field-visible regressions opened versus verified fixes in the release window.',
+    },
+    {
+      key: 'breaking',
+      label: 'Breaking changes',
+      points: roundMetric(components.breaking),
+      kind: scoreLedgerKind(components.breaking),
+      metric: input.breakingCount,
+      note: 'Penalty for documented breaking changes in the stable/beta chain.',
+    },
+    {
+      key: 'releaseVerification',
+      label: 'Release checks',
+      points: roundMetric(components.releaseVerification),
+      kind: scoreLedgerKind(components.releaseVerification),
+      metric: `${input.releaseCheckSuccess ?? 0} passed / ${input.releaseCheckFailure ?? 0} failed / ${input.releaseCheckPending ?? 0} pending`,
+      note: 'Release commit check confidence.',
+    },
+    {
+      key: 'artifactVerification',
+      label: 'Artifact verification',
+      points: roundMetric(components.artifactVerification),
+      kind: scoreLedgerKind(components.artifactVerification),
+      metric: input.artifactVerified ? 'verified' : input.artifactMismatch ? 'mismatch' : 'not verified',
+      note: 'npm package and release artifact integrity evidence.',
+    },
+  ];
+  let subtotalBeforeCaps = scoreLedgerSubtotal(rows);
+  let caps = scoreLedgerCaps(result, subtotalBeforeCaps);
+  let scoreAfterCaps = caps.length ? caps[caps.length - 1].after ?? subtotalBeforeCaps : subtotalBeforeCaps;
+  if (typeof result.conf.score === 'number') {
+    const adjustment = roundMetric(result.conf.score - scoreAfterCaps);
+    if (Math.abs(adjustment) > 0) {
+      rows = [
+        ...rows,
+        {
+          key: 'precisionAdjustment',
+          label: 'Unrounded model adjustment',
+          points: adjustment,
+          kind: scoreLedgerKind(adjustment),
+          note: 'Reconciles displayed one-decimal components with the unrounded score calculation.',
+        },
+      ];
+      subtotalBeforeCaps = scoreLedgerSubtotal(rows);
+      caps = scoreLedgerCaps(result, subtotalBeforeCaps);
+      scoreAfterCaps = caps.length ? caps[caps.length - 1].after ?? subtotalBeforeCaps : subtotalBeforeCaps;
+    }
+  }
+  return {
+    schemaVersion: 1,
+    finalScore: result.conf.score,
+    status: result.conf.status,
+    band: result.conf.band,
+    subtotalBeforeCaps,
+    scoreAfterCaps,
+    rows,
+    caps,
+  };
+}
+
+function buildGateScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger {
+  const input = result.input;
+  const row: ScoreExplanationLedgerRow = result.conf.status === 'skip-cve'
+    ? {
+      key: 'cveGate',
+      label: 'CVE safety gate',
+      points: roundMetric(result.conf.score ?? 0),
+      kind: 'penalty',
+      metric: roundMetric(input.cveLoad),
+      note: 'Known medium-or-higher CVE exposure activates a hard skip gate; score is bounded below normal install confidence.',
+    }
+    : {
+      key: 'settleGate',
+      label: 'Settle-time gate',
+      points: 0,
+      kind: 'neutral',
+      metric: input.publishedAt,
+      note: 'Release is not scored until it has had enough time to settle.',
+    };
+  const subtotalBeforeCaps = result.conf.score == null ? null : row.points;
+  return {
+    schemaVersion: 1,
+    finalScore: result.conf.score,
+    status: result.conf.status,
+    band: result.conf.band,
+    subtotalBeforeCaps,
+    scoreAfterCaps: subtotalBeforeCaps,
+    rows: [row],
+    caps: [],
+  };
+}
+
+function scoreLedgerSubtotal(rows: ScoreExplanationLedgerRow[]): number {
+  return roundMetric(rows.reduce((sum, row) => sum + row.points, 0));
+}
+
+function scoreLedgerCaps(result: ReleaseScoreResult, subtotalBeforeCaps: number): ScoreExplanationCap[] {
+  const components = result.conf.components;
+  const caps: ScoreExplanationCap[] = [];
+  let scoreAfterCaps = subtotalBeforeCaps;
+  if (components && components.closureRiskCeiling > 0) {
+    const after = roundMetric(Math.min(scoreAfterCaps, components.closureRiskCeiling));
+    caps.push({
+      key: 'closureRiskCeiling',
+      label: 'Heavy closure-risk ceiling',
+      ceiling: roundMetric(components.closureRiskCeiling),
+      applied: scoreAfterCaps > components.closureRiskCeiling,
+      before: scoreAfterCaps,
+      after,
+      reason: 'Heavy unresolved closed-release risk prevents a solid score.',
+    });
+    scoreAfterCaps = after;
+  }
+  if (result.conf.status === 'skip-hotfix') {
+    const hotfixCeiling = 4.9;
+    const after = roundMetric(Math.min(scoreAfterCaps, hotfixCeiling));
+    caps.push({
+      key: 'hotfixCeiling',
+      label: 'Hotfix successor ceiling',
+      ceiling: hotfixCeiling,
+      applied: scoreAfterCaps > hotfixCeiling,
+      before: scoreAfterCaps,
+      after,
+      reason: 'A release replaced quickly by a later stable is not an install target.',
+    });
+    scoreAfterCaps = after;
+  }
+  return caps;
+}
+
+function scoreLedgerKind(points: number): ScoreExplanationLedgerRow['kind'] {
+  if (points > 0) return 'bonus';
+  if (points < 0) return 'penalty';
+  return 'neutral';
 }
 
 function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {

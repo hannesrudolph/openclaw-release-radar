@@ -8,7 +8,7 @@ The score answers one question:
 
 It is not a raw issue count. The model combines hard gates, release survival, issue provenance, community breadth, fix reachability, release checks, and package artifact verification. Every score is written to `release_score_audits` with JSON inputs, components, issue evidence, and gate evidence.
 
-Refresh and `npm run verify:score` both use the shared `releaseScoring` DB scoring pass. The verifier opens the database in read-only/query-only mode, recomputes the same install inputs and audit payloads from stored evidence, then fails if persisted release rows or score-audit rows drift. The same pass also writes the structured `components.explanation` payload used by the UI's "Why not 10?" panel, including prose plus machine-readable reason codes, metrics, buckets, and supporting issue references.
+Refresh and `npm run verify:score` both use the shared `releaseScoring` DB scoring pass. The verifier opens the database in read-only/query-only mode, recomputes the same install inputs and audit payloads from stored evidence, then fails if persisted release rows or score-audit rows drift. The same pass also writes the structured `components.explanation` payload used by the UI's "Why not 10?" panel, including prose plus machine-readable reason codes, metrics, buckets, supporting issue references, and a `scoreLedger` that shows the base score, every component adjustment, caps, and final score arithmetic.
 
 ## Hard Gates
 
@@ -279,6 +279,7 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
 `components.explanation` is the stable "Why not 10?" contract:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.
+- `scoreLedger`: ordered score math rows (`base`, evidence penalties, survival/shakeout/release/artifact bonuses), cap rows such as heavy closure-risk ceiling and hotfix ceiling, subtotal before caps, score after caps, and final rounded score.
 - `positives`: human-readable favorable evidence lines.
 - `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.
 - `limits`: human-readable limiting evidence lines.

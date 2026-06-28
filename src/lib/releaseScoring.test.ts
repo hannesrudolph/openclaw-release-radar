@@ -66,6 +66,14 @@ describe('release score explanations', () => {
     assert.ok(explanation.positiveDetails.every((detail, idx) => detail.text === explanation.positives[idx]));
     assert.ok(explanation.limitDetails.every((detail) => SCORE_EXPLANATION_LIMIT_CODES.includes(detail.code as any)));
     assert.ok(explanation.positiveDetails.every((detail) => SCORE_EXPLANATION_POSITIVE_CODES.includes(detail.code as any)));
+    assert.equal(explanation.scoreLedger?.schemaVersion, 1);
+    assert.equal(explanation.scoreLedger?.finalScore, run.scored[0].conf.score);
+    assert.equal(explanation.scoreLedger?.status, run.scored[0].conf.status);
+    assert.ok((explanation.scoreLedger?.rows.length ?? 0) >= 10);
+    const ledgerSubtotal = Math.round((explanation.scoreLedger?.rows ?? []).reduce((sum, row) => sum + row.points, 0) * 1000) / 1000;
+    assert.equal(explanation.scoreLedger?.subtotalBeforeCaps, ledgerSubtotal);
+    assert.equal(explanation.scoreLedger?.rows[0]?.key, 'base');
+    assert.ok(explanation.scoreLedger?.rows.some((row) => row.key === 'closureRisk' && row.metric != null));
 
     const opened = explanation.limitDetails.find((detail) => detail.code === 'field_visible_reports_opened');
     assert.ok(opened);
