@@ -385,6 +385,20 @@ describe('openDebtLoad — current issue debt', () => {
     assert.equal(explanation.evidence.find((item) => item.duplicateCluster === 'mixed-tier-cluster')?.tier, 'carryover');
   });
 
+  it('records install-impact class and multiplier in debt evidence', () => {
+    const explanation = explainOpenDebtLoad([
+      dc({
+        issueNumber: 215,
+        title: 'provider catalog lookup fails',
+        labels: ['bug', 'impact:auth-provider'],
+        functionality: 'provider',
+        severity: 'high',
+      }),
+    ]);
+    assert.equal(explanation.evidence[0]?.installImpactClass, 'provider');
+    assert.equal(explanation.evidence[0]?.installImpactMultiplier, 0.65);
+  });
+
   it('uses unique human commenters as field/community evidence for source-repro findings', () => {
     const discussed = openDebtLoad([
       dc({

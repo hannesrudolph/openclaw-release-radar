@@ -89,6 +89,10 @@ export interface ScoreExplanationIssueRef {
   url: string | null;
   state?: string | null;
   status?: string | null;
+  tier?: string | null;
+  weight?: number | null;
+  installImpactClass?: string | null;
+  installImpactMultiplier?: number | null;
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -465,7 +469,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const components = (result.conf.components ?? {}) as Partial<Record<string, number>>;
   const opened = Array.isArray(evidence.openedFeltSerious) ? evidence.openedFeltSerious : [];
   const openedStillOpen = opened.filter((issue: any) => issue?.state === 'open');
-  const carryover = (Array.isArray(evidence.carryoverDebt) ? evidence.carryoverDebt : [])
+  const carryoverDebt = Array.isArray(evidence.carryoverDebt) ? evidence.carryoverDebt : [];
+  const carryover = carryoverDebt
     .map((row: any) => row.issue)
     .filter(Boolean);
   const stale = Array.isArray(evidence.staleDebt) ? evidence.staleDebt : [];
@@ -506,7 +511,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           rawWeight: roundMetric(input.carryoverDebtWeight),
           cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
         },
-        issueRefs: issueRefs(carryover),
+        issueRefs: issueRefs(carryoverDebt),
       },
     );
   }
@@ -672,6 +677,10 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       url: item?.url ?? item?.issue?.url ?? null,
       state: item?.state ?? item?.issue?.state ?? null,
       status: item?.status ?? null,
+      tier: item?.tier ?? null,
+      weight: typeof item?.weight === 'number' ? roundMetric(item.weight) : null,
+      installImpactClass: item?.installImpactClass ?? null,
+      installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
 }

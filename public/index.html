@@ -1758,7 +1758,11 @@ function scoreDetailMetricsHtml(metrics) {
 function scoreDetailIssueRefsHtml(issueRefs) {
   if (!Array.isArray(issueRefs) || !issueRefs.length) return '';
   return `<div class="score-explain__refs">${issueRefs.slice(0, 5).map((issue) => {
-    const label = `#${issue.number} ${shortIssueTitle(issue)}`;
+    const impact = issue.installImpactClass
+      ? ` · ${String(issue.installImpactClass).replace(/_/g, ' ')} x${metricValue(issue.installImpactMultiplier ?? 1)}`
+      : '';
+    const weight = Number.isFinite(issue.weight) ? ` · w ${metricValue(issue.weight)}` : '';
+    const label = `#${issue.number} ${shortIssueTitle(issue)}${impact}${weight}`;
     return issue.url
       ? `<a class="score-explain__ref" href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
       : `<span class="score-explain__ref">${esc(label)}</span>`;

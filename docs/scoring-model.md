@@ -60,6 +60,8 @@ The model deliberately separates:
 
 Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override.
 
+Debt evidence also records `installImpactClass` and `installImpactMultiplier`, so damped provider/security/product-debt risks are auditable in the score explanation instead of being hidden inside the final weight.
+
 If raw attributed issues exist without current classifications, the score explanation includes `incomplete_classification_coverage` with raw/classified counts, the missing count, the evidence-coverage ratio, the capped penalty, and example unclassified issue references when available. This makes coverage penalties explicit instead of hiding them inside the final score.
 
 ## Issue Open Intervals

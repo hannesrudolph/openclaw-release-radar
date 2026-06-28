@@ -97,6 +97,7 @@ try {
   }
   await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
+  await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();

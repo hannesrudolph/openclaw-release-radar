@@ -78,6 +78,8 @@ describe('release score explanations', () => {
     assert.ok(carryover);
     assert.ok((carryover.issueRefs?.length ?? 0) > 0);
     assert.ok(carryover.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
+    assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactClass === 'string'));
+    assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactMultiplier === 'number'));
     const sampleEvidenceIssue = [
       ...(evidence.verifiedDebt ?? []),
       ...(evidence.carryoverDebt ?? []),

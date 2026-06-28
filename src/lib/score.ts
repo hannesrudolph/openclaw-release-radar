@@ -185,6 +185,7 @@ export interface DebtEvidenceItem {
   positiveReactionCount?: number;
   commenterScanTruncated?: boolean;
   installImpactClass?: string;
+  installImpactMultiplier?: number;
   clusterReleaseLocal?: boolean;
 }
 
@@ -436,6 +437,7 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         positiveReactionCount: item.clusterPositiveReactionCount,
         commenterScanTruncated: item.commenterScanTruncated === true || item.commenterScanTruncated === 1,
         installImpactClass: installImpactClass(item),
+        installImpactMultiplier: installImpactMultiplier(item),
         clusterReleaseLocal: item.clusterReleaseLocal,
       });
     }
