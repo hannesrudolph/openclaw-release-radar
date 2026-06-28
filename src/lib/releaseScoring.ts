@@ -505,14 +505,18 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
 
   if (opened.length) {
     const examples = openedStillOpen.length ? openedStillOpen : opened;
-    const example = issueListText(examples);
+    const example = issueListText(examples, 3);
     addLimit(
       'field_visible_reports_opened',
       `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.` +
       sentenceSuffix('Examples', example),
       {
-        metrics: { openedCount: opened.length, stillOpenCount: openedStillOpen.length },
-        issueRefs: issueRefs(examples),
+        metrics: {
+          openedCount: opened.length,
+          stillOpenCount: openedStillOpen.length,
+          closedCount: Math.max(0, opened.length - openedStillOpen.length),
+        },
+        issueRefs: issueRefs(examples, 5),
       },
     );
   }

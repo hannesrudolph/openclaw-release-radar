@@ -55,6 +55,17 @@ describe('release score explanations', () => {
     assert.ok(explanation.limitDetails.every((detail) => SCORE_EXPLANATION_LIMIT_CODES.includes(detail.code as any)));
     assert.ok(explanation.positiveDetails.every((detail) => SCORE_EXPLANATION_POSITIVE_CODES.includes(detail.code as any)));
 
+    const opened = explanation.limitDetails.find((detail) => detail.code === 'field_visible_reports_opened');
+    assert.ok(opened);
+    assert.equal(typeof opened.metrics?.openedCount, 'number');
+    assert.equal(typeof opened.metrics?.stillOpenCount, 'number');
+    assert.equal(typeof opened.metrics?.closedCount, 'number');
+    assert.equal(
+      Number(opened.metrics?.openedCount ?? 0),
+      Number(opened.metrics?.stillOpenCount ?? 0) + Number(opened.metrics?.closedCount ?? 0),
+    );
+    assert.ok((opened.issueRefs?.length ?? 0) >= Math.min(3, Number(opened.metrics?.stillOpenCount ?? opened.metrics?.openedCount ?? 0)));
+
     const closure = explanation.limitDetails.find((detail) => detail.code === 'closed_issues_not_counted_as_release_fixes');
     assert.ok(closure);
     assert.equal(typeof closure.metrics?.notCountedClosedCount, 'number');
