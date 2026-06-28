@@ -298,6 +298,68 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'related_pr_without_release_fix');
   });
 
+  it('separates related PR context by reachability before generic no-fix status', () => {
+    const reachable = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 123, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          reachable: [{ number: 123, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+    const notReachable = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 124, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          notReachable: [{ number: 124, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+    const unknown = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 125, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          unknownReachability: [{ number: 125, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+
+    assert.equal(reachable.status, 'related_merged_pr_reachable_context_without_fix_credit');
+    assert.equal(notReachable.status, 'related_merged_pr_not_reachable_context');
+    assert.equal(unknown.status, 'related_merged_pr_reachability_unknown');
+  });
+
+  it('separates open, closed-unmerged, and external closing PR context', () => {
+    const open = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 123, state: 'OPEN', merged: 0 }],
+        relatedPrContext: { open: [{ number: 123 }] },
+      },
+    );
+    const closed = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 124, state: 'CLOSED', merged: 0 }],
+        relatedPrContext: { closedUnmerged: [{ number: 124 }] },
+      },
+    );
+    const external = __closureProofAnalysisTest.adjustNoReleaseFixProofStatus(
+      result('closed_without_release_fix_proof', 'No proof.'),
+      {
+        linkedPrs: [{ number: 27, repositoryNameWithOwner: 'openclaw/fs-safe', state: 'MERGED', merged: 1 }],
+        relatedPrContext: { externalClosing: [{ number: 27, repositoryNameWithOwner: 'openclaw/fs-safe' }] },
+      },
+    );
+
+    assert.equal(open.status, 'related_open_pr_context');
+    assert.equal(closed.status, 'related_closed_unmerged_pr_context');
+    assert.equal(external.status, 'external_repo_closing_pr_unscored');
+  });
+
   it('separates open linked closing PRs from closed unmerged PRs', () => {
     const open = __closureProofAnalysisTest.adjustClosureProofStatus(
       result('linked_closing_pr_not_merged', 'No merge.'),
@@ -471,6 +533,54 @@ describe('closure proof canonical roll-up', () => {
     );
 
     assert.equal(adjusted.status, 'not_planned_with_open_pr_context');
+  });
+
+  it('classifies not-planned related PR context by reachability', () => {
+    const reachable = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{ number: 123, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          reachable: [{ number: 123, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+    const notReachable = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{ number: 124, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          notReachable: [{ number: 124, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+    const unknown = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{ number: 125, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          unknownReachability: [{ number: 125, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+    const closed = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{ number: 126, state: 'CLOSED', merged: 0 }],
+        relatedPrContext: {
+          closedUnmerged: [{ number: 126, repositoryNameWithOwner: 'openclaw/openclaw' }],
+        },
+      },
+    );
+
+    assert.equal(reachable.status, 'not_planned_related_merged_pr_reachable_context_without_fix_credit');
+    assert.equal(notReachable.status, 'not_planned_related_merged_pr_not_reachable_context');
+    assert.equal(unknown.status, 'not_planned_related_merged_pr_reachability_unknown');
+    assert.equal(closed.status, 'not_planned_related_closed_unmerged_pr_context');
   });
 
   it('recognizes common duplicate-of text as canonical graph targets', () => {

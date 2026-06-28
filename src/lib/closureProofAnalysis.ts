@@ -243,6 +243,14 @@ ORDER BY r.published_at ASC
 LIMIT 1
 `);
 
+const releasePrReachabilityStatusStmt = db.prepare(`
+SELECT status, tag_commit_oid, merge_commit_oid, method
+FROM release_pr_reachability
+WHERE tag=?
+  AND pr_repository_name_with_owner=?
+  AND pr_number=?
+`);
+
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
@@ -383,6 +391,8 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       canonicalFixCommitProofCount: canonicalCommitMentionsByIssue.get(row.number)?.length ?? 0,
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
+    const relatedPrContext = relatedPrContextEvidence(releaseTag, evidence);
+    if (hasRelatedPrContext(relatedPrContext)) evidence.relatedPrContext = relatedPrContext;
     preparedRows.push({
       issueNumber: row.number,
       result: adjustClosureProofStatus(result, evidence, releaseTag, laterCommitReachability),
@@ -1136,10 +1146,53 @@ function adjustNoReleaseFixProofStatus(
   if (result.status !== 'closed_without_release_fix_proof') return result;
   const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
   if (linkedPrs.length === 0) return result;
+  const context = relatedPrContextFromPayload(evidence);
+  if (context.externalClosing.length > 0) {
+    return {
+      ...result,
+      status: 'external_repo_closing_pr_unscored',
+      summary: 'GitHub closure points to a merged PR in another repository; OpenClaw release inclusion is not proven by the release tag.',
+    };
+  }
+  if (context.open.length > 0) {
+    return {
+      ...result,
+      status: 'related_open_pr_context',
+      summary: 'Related PR context remains open, so the closure is not trusted release-fix proof.',
+    };
+  }
+  if (context.reachable.length > 0) {
+    return {
+      ...result,
+      status: 'related_merged_pr_reachable_context_without_fix_credit',
+      summary: 'Related PR work is reachable from this release tag, but no trusted closing or fix proof is credited for this issue.',
+    };
+  }
+  if (context.notReachable.length > 0) {
+    return {
+      ...result,
+      status: 'related_merged_pr_not_reachable_context',
+      summary: 'Related merged PR work exists, but it is not reachable from this release tag.',
+    };
+  }
+  if (context.unknownReachability.length > 0) {
+    return {
+      ...result,
+      status: 'related_merged_pr_reachability_unknown',
+      summary: 'Related merged PR work exists, but release-tag reachability has not been proven.',
+    };
+  }
+  if (context.closedUnmerged.length > 0) {
+    return {
+      ...result,
+      status: 'related_closed_unmerged_pr_context',
+      summary: 'Related PR context exists, but the referenced PRs closed without merging.',
+    };
+  }
   return {
     ...result,
     status: 'related_pr_without_release_fix',
-    summary: 'Related PR references exist, but none is linked as reachable release-fix proof for this tag.',
+    summary: 'Related PR references exist, but none is credited as trusted release-fix proof for this issue.',
   };
 }
 
@@ -1188,13 +1241,147 @@ function adjustNotPlannedEvidenceStatus(
     };
   }
   if (linkedPrs.length > 0) {
+    const context = relatedPrContextFromPayload(evidence);
+    if (context.reachable.length > 0) {
+      return {
+        ...result,
+        status: 'not_planned_related_merged_pr_reachable_context_without_fix_credit',
+        summary: 'Closed as not planned with related PR work reachable from this release tag, but no trusted closing or fix proof is credited for this issue.',
+      };
+    }
+    if (context.notReachable.length > 0) {
+      return {
+        ...result,
+        status: 'not_planned_related_merged_pr_not_reachable_context',
+        summary: 'Closed as not planned with related merged PR work that is not reachable from this release tag.',
+      };
+    }
+    if (context.unknownReachability.length > 0) {
+      return {
+        ...result,
+        status: 'not_planned_related_merged_pr_reachability_unknown',
+        summary: 'Closed as not planned with related merged PR work whose release-tag reachability is unknown.',
+      };
+    }
+    if (context.closedUnmerged.length > 0) {
+      return {
+        ...result,
+        status: 'not_planned_related_closed_unmerged_pr_context',
+        summary: 'Closed as not planned with related PR context that closed without merging.',
+      };
+    }
     return {
       ...result,
       status: 'not_planned_related_pr_without_release_fix',
-      summary: 'Closed as not planned with related PR references, but none is reachable release-fix proof for this tag.',
+      summary: 'Closed as not planned with related PR references, but none is credited as trusted release-fix proof for this issue.',
     };
   }
   return result;
+}
+
+type RelatedPrContext = {
+  externalClosing: Array<Record<string, unknown>>;
+  open: Array<Record<string, unknown>>;
+  closedUnmerged: Array<Record<string, unknown>>;
+  notReachable: Array<Record<string, unknown>>;
+  reachable: Array<Record<string, unknown>>;
+  unknownReachability: Array<Record<string, unknown>>;
+};
+
+function emptyRelatedPrContext(): RelatedPrContext {
+  return {
+    externalClosing: [],
+    open: [],
+    closedUnmerged: [],
+    notReachable: [],
+    reachable: [],
+    unknownReachability: [],
+  };
+}
+
+function hasRelatedPrContext(context: RelatedPrContext): boolean {
+  return Object.values(context).some((items) => items.length > 0);
+}
+
+function relatedPrContextFromPayload(evidence: Record<string, unknown>): RelatedPrContext {
+  const raw = evidence.relatedPrContext;
+  if (!raw || typeof raw !== 'object') return emptyRelatedPrContext();
+  const context = raw as Record<string, unknown>;
+  return {
+    externalClosing: Array.isArray(context.externalClosing) ? context.externalClosing as Array<Record<string, unknown>> : [],
+    open: Array.isArray(context.open) ? context.open as Array<Record<string, unknown>> : [],
+    closedUnmerged: Array.isArray(context.closedUnmerged) ? context.closedUnmerged as Array<Record<string, unknown>> : [],
+    notReachable: Array.isArray(context.notReachable) ? context.notReachable as Array<Record<string, unknown>> : [],
+    reachable: Array.isArray(context.reachable) ? context.reachable as Array<Record<string, unknown>> : [],
+    unknownReachability: Array.isArray(context.unknownReachability) ? context.unknownReachability as Array<Record<string, unknown>> : [],
+  };
+}
+
+function relatedPrContextEvidence(
+  releaseTag: string,
+  evidence: Record<string, unknown>,
+): RelatedPrContext {
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  const context = emptyRelatedPrContext();
+  const seen = new Set<string>();
+  for (const pr of linkedPrs) {
+    const repo = String(pr.repositoryNameWithOwner ?? '');
+    const prNumber = Number(pr.number ?? 0);
+    if (!Number.isInteger(prNumber) || prNumber <= 0) continue;
+    const source = String(pr.source ?? '');
+    const state = String(pr.state ?? '').toUpperCase();
+    const merged = Number(pr.merged ?? 0) === 1;
+    const key = `${repo}#${prNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const item = {
+      number: prNumber,
+      repositoryNameWithOwner: repo,
+      source: pr.source ?? null,
+      title: pr.title ?? null,
+      url: pr.url ?? null,
+      mergedAt: pr.mergedAt ?? null,
+    };
+    const isClosingSource = Number(pr.willCloseTarget ?? 0) === 1 ||
+      source === 'closedByPullRequestsReferences' ||
+      source === 'ClosedEvent.closer';
+    if (repo !== trackedPrRepositoryNameWithOwner) {
+      if (isClosingSource && merged) context.externalClosing.push(item);
+      continue;
+    }
+    if (state === 'OPEN' && !merged) {
+      context.open.push(item);
+      continue;
+    }
+    if (state === 'CLOSED' && !merged) {
+      context.closedUnmerged.push(item);
+      continue;
+    }
+    if (!merged) continue;
+    const reachability = releasePrReachabilityStatusStmt.get(releaseTag, repo, prNumber) as {
+      status: string;
+      tag_commit_oid: string | null;
+      merge_commit_oid: string | null;
+      method: string | null;
+    } | undefined;
+    const reachedItem = {
+      ...item,
+      reachabilityStatus: reachability?.status ?? 'unknown',
+      reachabilityMethod: reachability?.method ?? null,
+      mergeCommitOid: reachability?.merge_commit_oid ?? null,
+    };
+    if (reachability?.status === 'reachable') context.reachable.push(reachedItem);
+    else if (reachability?.status === 'not_reachable') context.notReachable.push(reachedItem);
+    else context.unknownReachability.push(reachedItem);
+  }
+  return {
+    externalClosing: context.externalClosing.slice(0, 10),
+    open: context.open.slice(0, 10),
+    closedUnmerged: context.closedUnmerged.slice(0, 10),
+    notReachable: context.notReachable.slice(0, 10),
+    reachable: context.reachable.slice(0, 10),
+    unknownReachability: context.unknownReachability.slice(0, 10),
+  };
 }
 
 function canonicalResolution(

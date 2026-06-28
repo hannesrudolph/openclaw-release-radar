@@ -337,6 +337,30 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           evidence.linkedPrs.some((pr) => Number(pr?.willCloseTarget ?? 0) === 1 && Number(pr?.merged ?? 0) !== 1),
           `not_planned_linked_pr_not_merged issue #${row.issue_number} must include an unmerged linked closing PR`);
       }
+      if (row.status === 'not_planned_related_closed_unmerged_pr_context') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_related_closed_unmerged_pr_context issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, relatedPrContext(evidence).closedUnmerged.length > 0,
+          `not_planned_related_closed_unmerged_pr_context issue #${row.issue_number} must include closed-unmerged related PR context`);
+      }
+      if (row.status === 'not_planned_related_merged_pr_not_reachable_context') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_related_merged_pr_not_reachable_context issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, relatedPrContext(evidence).notReachable.length > 0,
+          `not_planned_related_merged_pr_not_reachable_context issue #${row.issue_number} must include not-reachable related PR context`);
+      }
+      if (row.status === 'not_planned_related_merged_pr_reachable_context_without_fix_credit') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_related_merged_pr_reachable_context_without_fix_credit issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, relatedPrContext(evidence).reachable.length > 0,
+          `not_planned_related_merged_pr_reachable_context_without_fix_credit issue #${row.issue_number} must include reachable related PR context`);
+      }
+      if (row.status === 'not_planned_related_merged_pr_reachability_unknown') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_related_merged_pr_reachability_unknown issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, relatedPrContext(evidence).unknownReachability.length > 0,
+          `not_planned_related_merged_pr_reachability_unknown issue #${row.issue_number} must include unknown-reachability related PR context`);
+      }
       if (row.status === 'not_planned_related_pr_without_release_fix') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `not_planned_related_pr_without_release_fix issue #${row.issue_number} must have NOT_PLANNED state reason`);
@@ -369,6 +393,30 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `related_pr_without_release_fix issue #${row.issue_number} must include related PR references`);
         expect(failures, tag, evidence.hasClosingLink !== true,
           `related_pr_without_release_fix issue #${row.issue_number} must not have a credited closing PR link`);
+      }
+      if (row.status === 'external_repo_closing_pr_unscored') {
+        expect(failures, tag, relatedPrContext(evidence).externalClosing.length > 0,
+          `external_repo_closing_pr_unscored issue #${row.issue_number} must include external closing PR context`);
+      }
+      if (row.status === 'related_open_pr_context') {
+        expect(failures, tag, relatedPrContext(evidence).open.length > 0,
+          `related_open_pr_context issue #${row.issue_number} must include open related PR context`);
+      }
+      if (row.status === 'related_closed_unmerged_pr_context') {
+        expect(failures, tag, relatedPrContext(evidence).closedUnmerged.length > 0,
+          `related_closed_unmerged_pr_context issue #${row.issue_number} must include closed-unmerged related PR context`);
+      }
+      if (row.status === 'related_merged_pr_not_reachable_context') {
+        expect(failures, tag, relatedPrContext(evidence).notReachable.length > 0,
+          `related_merged_pr_not_reachable_context issue #${row.issue_number} must include not-reachable related PR context`);
+      }
+      if (row.status === 'related_merged_pr_reachable_context_without_fix_credit') {
+        expect(failures, tag, relatedPrContext(evidence).reachable.length > 0,
+          `related_merged_pr_reachable_context_without_fix_credit issue #${row.issue_number} must include reachable related PR context`);
+      }
+      if (row.status === 'related_merged_pr_reachability_unknown') {
+        expect(failures, tag, relatedPrContext(evidence).unknownReachability.length > 0,
+          `related_merged_pr_reachability_unknown issue #${row.issue_number} must include unknown-reachability related PR context`);
       }
       if (row.status === 'closed_without_release_fix_proof') {
         expect(failures, tag, evidence.hasClosingLink !== true,
@@ -881,6 +929,20 @@ function linkedClosingPrEvidence(evidence) {
       source === 'closedByPullRequestsReferences' ||
       source === 'ClosedEvent.closer';
   });
+}
+
+function relatedPrContext(evidence) {
+  const context = evidence?.relatedPrContext && typeof evidence.relatedPrContext === 'object'
+    ? evidence.relatedPrContext
+    : {};
+  return {
+    externalClosing: Array.isArray(context.externalClosing) ? context.externalClosing : [],
+    open: Array.isArray(context.open) ? context.open : [],
+    closedUnmerged: Array.isArray(context.closedUnmerged) ? context.closedUnmerged : [],
+    notReachable: Array.isArray(context.notReachable) ? context.notReachable : [],
+    reachable: Array.isArray(context.reachable) ? context.reachable : [],
+    unknownReachability: Array.isArray(context.unknownReachability) ? context.unknownReachability : [],
+  };
 }
 
 function canonicalFixedAfterRelease(evidence) {

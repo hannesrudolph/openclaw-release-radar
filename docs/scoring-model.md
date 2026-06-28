@@ -136,6 +136,10 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `not_planned_fixed_after_release`: a negative report was closed with GitHub `NOT_PLANNED`, and trusted fix proof exists only after the scored release tag.
 - `not_planned_with_open_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` while related open PR context still exists.
 - `not_planned_linked_pr_not_merged`: a negative report was closed with GitHub `NOT_PLANNED` and a linked closing PR is not merged or has unknown merge state.
+- `not_planned_related_closed_unmerged_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` and related PR context closed without merging.
+- `not_planned_related_merged_pr_not_reachable_context`: a negative report was closed with GitHub `NOT_PLANNED` and related merged PR work is not reachable from the scored tag.
+- `not_planned_related_merged_pr_reachable_context_without_fix_credit`: a negative report was closed with GitHub `NOT_PLANNED`; related PR work is reachable from the scored tag, but no trusted closing/fix proof is credited for the issue.
+- `not_planned_related_merged_pr_reachability_unknown`: a negative report was closed with GitHub `NOT_PLANNED` and related merged PR reachability is unknown.
 - `not_planned_related_pr_without_release_fix`: a negative report was closed with GitHub `NOT_PLANNED` and related PR references exist, but none is release-fix proof for the scored tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
 - `reporter_replaced`: reporter refiled, reopened, or replaced the issue under another issue number.
@@ -146,6 +150,12 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `linked_closing_pr_not_merged`: a GitHub closing PR link exists, but the PR is not merged or its merge state is unknown.
 - `linked_closing_pr_open`: a GitHub closing PR link exists and that PR is still open.
 - `linked_closing_pr_closed_unmerged`: a GitHub closing PR link exists, but that PR closed without merging.
+- `external_repo_closing_pr_unscored`: GitHub closure points to a merged PR in another repository; OpenClaw release inclusion is not proven by the release tag.
+- `related_open_pr_context`: related PR context remains open.
+- `related_closed_unmerged_pr_context`: related PR context exists, but the referenced PRs closed without merging.
+- `related_merged_pr_not_reachable_context`: related merged PR work exists, but is not reachable from the scored tag.
+- `related_merged_pr_reachable_context_without_fix_credit`: related PR work is reachable from the scored tag, but no trusted closing/fix proof is credited for the issue.
+- `related_merged_pr_reachability_unknown`: related merged PR work exists, but release-tag reachability is unknown.
 - `related_pr_without_release_fix`: related PR references exist, but none is linked as reachable release-fix proof for the scored tag.
 - `closed_without_release_fix_proof`: no linked PR or fix/source commit proof was found for the closure.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.

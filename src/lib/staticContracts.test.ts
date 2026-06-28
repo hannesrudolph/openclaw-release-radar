@@ -4,6 +4,7 @@ import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { REC_THRESHOLD } from './score.ts';
+import { CLOSURE_PROOF_STATUSES, CLOSURE_RISK_DISPOSITIONS } from './closureProofTaxonomy.ts';
 
 const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -52,78 +53,10 @@ describe('static scoring/UI contracts', () => {
 
   it('frontend closure proof labels cover backend statuses and risk dispositions', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
-    [
-      'fixed_in_release',
-      'fixed_after_release',
-      'fixed_in_later_release',
-      'fixed_not_in_scored_releases',
-      'fixed_after_latest_release',
-      'fixed_skipped_by_later_releases',
-      'duplicate_to_fixed_in_release',
-      'duplicate_to_open_canonical',
-      'duplicate_to_closed_canonical',
-      'duplicate_to_non_actionable_canonical',
-      'duplicate_to_known_not_in_release_canonical',
-      'duplicate_to_open_pr_canonical',
-      'duplicate_to_unverified_closed_canonical',
-      'duplicate_to_closed_canonical_missing_proof',
-      'duplicate_to_fixed_after_release',
-      'superseded_to_open_pr',
-      'duplicate_with_open_pr_context',
-      'canonical_cycle_or_self_reference',
-      'duplicate_or_superseded',
-      'already_present_claim',
-      'admin_not_planned_unverified',
-      'not_planned_with_release_fix_proof',
-      'not_planned_fixed_after_release',
-      'not_planned_with_open_pr_context',
-      'not_planned_linked_pr_not_merged',
-      'not_planned_related_pr_without_release_fix',
-      'main_only_claim',
-      'reporter_replaced',
-      'reporter_withdrawn',
-      'repro_requested',
-      'reporter_self_closed',
-      'no_code_proof',
-      'linked_closing_pr_reachability_unknown',
-      'linked_closing_pr_not_merged',
-      'linked_closing_pr_open',
-      'linked_closing_pr_closed_unmerged',
-      'related_pr_without_release_fix',
-      'closed_without_release_fix_proof',
-      'no_timeline_event',
-      'non_bug_fixed_in_release',
-      'non_bug_fixed_after_release',
-      'non_bug_fixed_in_later_release',
-      'non_bug_fixed_not_in_scored_releases',
-      'non_bug_fixed_after_latest_release',
-      'non_bug_fixed_skipped_by_later_releases',
-      'non_bug_linked_without_merge',
-      'non_bug_linked_pr_open',
-      'non_bug_linked_pr_closed_unmerged',
-      'non_bug_duplicate_to_fixed_in_release',
-      'non_bug_duplicate_to_open_canonical',
-      'non_bug_duplicate_to_closed_canonical',
-      'non_bug_duplicate_to_closed_canonical_missing_proof',
-      'non_bug_duplicate_to_fixed_after_release',
-      'non_bug_superseded_to_open_pr',
-      'non_bug_duplicate_with_open_pr_context',
-      'non_bug_duplicate_or_superseded',
-      'non_bug_not_actionable',
-      'non_bug_neutral',
-      'not_planned',
-      'unknown',
-    ].forEach((status) => assert.match(html, new RegExp(`${status}:`), `missing frontend closure label for ${status}`));
-    [
-      'credited_release_fix',
-      'resolved_by_canonical_release_fix',
-      'resolved_by_release_fix_proof',
-      'known_not_in_release',
-      'open_canonical_risk',
-      'unsupported_closure_claim',
-      'neutral_or_non_actionable',
-      'missing_evidence',
-    ].forEach((disposition) => assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
+    CLOSURE_PROOF_STATUSES.forEach((status) =>
+      assert.match(html, new RegExp(`${status}:`), `missing frontend closure label for ${status}`));
+    CLOSURE_RISK_DISPOSITIONS.forEach((disposition) =>
+      assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
     assert.match(html, /resolvedByCanonicalReleaseFixCount/);
     assert.match(html, /resolvedByReleaseFixProofCount/);
     assert.match(html, /neutralHighImpactCount/);
