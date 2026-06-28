@@ -16,6 +16,7 @@ let closureRiskText = null;
 let explanationText = null;
 let explanationIssueRef = null;
 let explanationMetricText = null;
+let nonActionableRationaleText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -38,6 +39,9 @@ for (const release of releases) {
     explanationIssueRef = closureDetail?.issueRefs?.[0] ?? null;
     const metric = closureDetail?.metrics?.unresolvedForReleaseCount;
     explanationMetricText = Number.isFinite(metric) ? `unresolved: ${metric}` : null;
+    const rationaleExample = firstClosureExampleWith(review, (example) =>
+      example?.evidence?.nonActionableRationaleComments?.[0]?.snippet);
+    nonActionableRationaleText = rationaleExample?.evidence?.nonActionableRationaleComments?.[0]?.snippet ?? null;
     break;
   }
 }
@@ -104,6 +108,12 @@ try {
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
   await fixPanel.getByText(/Scored as .* risk /).first().waitFor();
+  if (nonActionableRationaleText) {
+    await fixPanel.getByText('Non-actionable rationale:').first().waitFor();
+    if (!(await fixPanel.innerText()).includes(nonActionableRationaleText)) {
+      throw new Error(`Non-actionable rationale not rendered for ${fixCreditTag}`);
+    }
+  }
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {
@@ -166,6 +176,15 @@ async function json(path) {
   const res = await fetch(base + path);
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
+}
+
+function firstClosureExampleWith(review, predicate) {
+  const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
+  const examples = [
+    ...(Array.isArray(proof?.examples) ? proof.examples : []),
+    ...Object.values(proof?.examplesByStatus ?? {}).flatMap((rows) => Array.isArray(rows) ? rows : []),
+  ];
+  return examples.find(predicate) ?? null;
 }
 
 async function openScoreBreakdown(page, tag) {

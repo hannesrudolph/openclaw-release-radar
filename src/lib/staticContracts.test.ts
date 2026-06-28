@@ -103,6 +103,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /neutralBugShapedCount/);
     assert.match(html, /closureProofExamplesWithStatusCoverage/);
     assert.match(html, /examplesByStatus/);
+    assert.match(html, /Non-actionable rationale:/);
   });
 
   it('release audit verifier uses shared closure proof taxonomy', () => {

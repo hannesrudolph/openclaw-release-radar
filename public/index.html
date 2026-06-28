@@ -1934,6 +1934,7 @@ function closureProofHtml(closureProof) {
       ? `Canonical proof: ${esc(closureStatusLabel(terminalProof.status))}${terminalProof.summary ? ` · ${esc(terminalProof.summary)}` : ''}`
       : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
+    const nonActionableClaim = (item.evidence?.nonActionableRationaleComments ?? [])[0]?.snippet;
     const disposition = item.riskDisposition ? closureRiskDispositionLabel(item.riskDisposition) : null;
     const classification = item.classification;
     const classificationLine = classification
@@ -1957,6 +1958,7 @@ function closureProofHtml(closureProof) {
       + (relatedPrLine ? `<span class="evidence__meta">${relatedPrLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (terminalProofLine ? `<span class="evidence__meta">${terminalProofLine}</span>` : '')
+      + (nonActionableClaim ? `<span class="evidence__meta">Non-actionable rationale: ${esc(nonActionableClaim)}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
       + `</li>`;
   }).join('');
