@@ -694,6 +694,58 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.unverifiedClosedForRelease('v-window-old').map((row: any) => row.number), []);
   });
 
+  it('matches final closure events when GitHub timestamps differ by one second', async () => {
+    const db = await freshDb('closure-timestamp-skew');
+    seedRelease(db, 'v-skew', '2028-10-01T00:00:00Z');
+    seedIssue(db, 33, '2028-10-02T00:00:00Z', '2028-10-01T12:00:00Z');
+    seedIssue(db, 34, '2028-10-02T00:00:00Z', '2028-10-01T12:00:00Z');
+    seedPr(db, 233, true);
+    seedPr(db, 234, true);
+    db.upsertIssueClosureEvent({
+      issue_number: 33,
+      event_id: 'closed-33-skew',
+      closed_at: '2028-10-02T00:00:01Z',
+      actor_login: 'maintainer',
+      state_reason: 'COMPLETED',
+      closer_type: 'PullRequest',
+      closer_number: 233,
+      closer_oid: 'merge-233',
+      raw_json: '{}',
+    });
+    db.upsertIssueClosureEvent({
+      issue_number: 34,
+      event_id: 'closed-34-real-mismatch',
+      closed_at: '2028-10-02T00:00:03Z',
+      actor_login: 'maintainer',
+      state_reason: 'COMPLETED',
+      closer_type: 'PullRequest',
+      closer_number: 234,
+      closer_oid: 'merge-234',
+      raw_json: '{}',
+    });
+    for (const [issue, pr] of [[33, 233], [34, 234]] as const) {
+      db.upsertIssuePrLink({
+        issue_number: issue,
+        pr_number: pr,
+        source: 'ClosedEvent.closer',
+        will_close_target: 1,
+        referenced_at: '2028-10-02T00:00:00Z',
+      });
+      db.upsertReleasePrReachability({
+        tag: 'v-skew',
+        pr_number: pr,
+        tag_commit_oid: 'v-skew-commit',
+        merge_commit_oid: `merge-${pr}`,
+        base_ref_name: 'main',
+        status: 'reachable',
+        evidence_json: '{}',
+      });
+    }
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-skew').map((row: any) => row.number), [33]);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-skew').map((row: any) => row.number), [34]);
+  });
+
   it('keeps unverified closures visible but excludes verified fixes', async () => {
     const db = await freshDb('unverified-closed');
     seedRelease(db, 'v3', '2026-07-01T00:00:00Z');

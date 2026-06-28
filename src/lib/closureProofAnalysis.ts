@@ -68,7 +68,7 @@ window_closure AS (
   FROM issue_closure_events e
   JOIN issues wi
     ON wi.number=e.issue_number
-   AND wi.closed_at=e.closed_at
+   AND ABS(unixepoch(wi.closed_at) - unixepoch(e.closed_at)) <= 2
 )
 SELECT
   i.number,

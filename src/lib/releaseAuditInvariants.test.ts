@@ -358,7 +358,32 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /issue_rows changed/.test(failure)));
   });
 
-  it('fails when proof closure event timestamp does not match issue closedAt', async () => {
+  it('allows one-second GitHub closure event timestamp skew', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'fixed_in_release',
+          checked_at: proofCheckedAt,
+          evidence_json: JSON.stringify({
+            closedAt: '2026-01-01T00:00:00Z',
+            closureEventClosedAt: ['2026-01-01T00:00:01Z'],
+            hasReachableClosingPr: true,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+    assert.ok(!result.failures.some((failure) => /closure event timestamp/.test(failure)));
+  });
+
+  it('fails when proof closure event timestamp does not match issue closedAt within tolerance', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
         proofRows: [{

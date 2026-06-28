@@ -497,8 +497,13 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     expect(failures, tag, isStringArray(evidence.closureEventClosedAt),
       `proof issue #${row.issue_number} closureEventClosedAt must be a string array when present`);
     if (isStringArray(evidence.closureEventClosedAt) && evidence.closedAt) {
+      const issueClosedAtMs = Date.parse(evidence.closedAt);
       for (const closedAt of evidence.closureEventClosedAt) {
-        expect(failures, tag, closedAt === evidence.closedAt,
+        const eventClosedAtMs = Date.parse(closedAt);
+        const closeDeltaSeconds = Number.isFinite(issueClosedAtMs) && Number.isFinite(eventClosedAtMs)
+          ? Math.abs(issueClosedAtMs - eventClosedAtMs) / 1000
+          : Infinity;
+        expect(failures, tag, closeDeltaSeconds <= 2,
           `proof issue #${row.issue_number} closure event timestamp ${closedAt} must match issue closedAt ${evidence.closedAt}`);
       }
     }

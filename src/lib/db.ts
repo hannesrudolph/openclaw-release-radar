@@ -1643,7 +1643,7 @@ window_closure AS (
   FROM issue_closure_events e
   JOIN issues wi
     ON wi.number=e.issue_number
-   AND wi.closed_at=e.closed_at
+   AND ABS(unixepoch(wi.closed_at) - unixepoch(e.closed_at)) <= 2
 )
 SELECT DISTINCT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
@@ -1727,7 +1727,7 @@ WHERE
       FROM issue_closure_events e
       JOIN issues wi
         ON wi.number=e.issue_number
-       AND wi.closed_at=e.closed_at
+       AND ABS(unixepoch(wi.closed_at) - unixepoch(e.closed_at)) <= 2
     )
     SELECT 1
     FROM issue_closure_proofs proof
