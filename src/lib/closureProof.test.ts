@@ -87,6 +87,33 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [96857]);
   });
 
+  it('uses close-time comments that say closing this as a duplicate', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-25T22:25:56Z',
+      stateReasons: ['DUPLICATE'],
+      comments: [{
+        author: 'reporter',
+        createdAt: '2026-06-25T22:25:55Z',
+        body: 'Closing this as a duplicate of #96857. Keeping the upstream discussion centralized there.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.deepEqual(result.evidence.canonicalIssues, [96857]);
+  });
+
+  it('extracts open canonical tracker references from duplicate comments', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close as a duplicate of the open canonical tracker #60841, not as fixed.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [60841]);
+  });
+
   it('does not treat negated duplicate discussion as duplicate closure rationale', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],

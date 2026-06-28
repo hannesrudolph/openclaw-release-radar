@@ -70,6 +70,30 @@ describe('closure proof canonical roll-up', () => {
     );
   });
 
+  it('recognizes close-time duplicate and canonical tracker wording as graph targets', () => {
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Closing this as a duplicate of #96857. Keeping the upstream discussion centralized there.',
+      ),
+      [96857],
+    );
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Close as a duplicate of the open canonical tracker #60841, not as fixed.',
+      ),
+      [60841],
+    );
+  });
+
+  it('does not treat canonical PR links as canonical issue targets', () => {
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Canonical path: Open PR https://github.com/openclaw/openclaw/pull/85651 owns this feature work.',
+      ),
+      [],
+    );
+  });
+
   it('ignores stale canonical comments when building source closure graph edges', () => {
     const comments = [
       { created_at: '2026-06-20T10:00:00Z', body: 'Keep open. Canonical: #96857' },
