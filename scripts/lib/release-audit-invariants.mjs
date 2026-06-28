@@ -417,6 +417,12 @@ function verifyPublicIssueSummaries({ failures, tag, publicRelease }) {
     expect(failures, tag, publicIssueSortKey(issues[i - 1]) <= publicIssueSortKey(issues[i]),
       'public issues must be sorted by effective sentiment/severity/scope');
   }
+  expect(failures, tag, issues.length <= 25, 'public issues must stay capped at 25');
+  expect(failures, tag, watchIssues.length <= 25, 'public watchIssues must stay capped at 25');
+  for (let i = 1; i < watchIssues.length; i++) {
+    expect(failures, tag, publicIssueSortKey(watchIssues[i - 1]) <= publicIssueSortKey(watchIssues[i]),
+      'public watchIssues must be sorted by effective sentiment/severity/scope');
+  }
   for (const issue of watchIssues) {
     expect(failures, tag, issue.state === 'open',
       `public watch issue #${issue.number} must be open`);

@@ -177,6 +177,8 @@ describe('static scoring/UI contracts', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     assert.match(api, /classifyIssueRowWithLabels/);
     assert.match(api, /labelsForIssueAt/);
+    assert.match(api, /comparePublicIssueSignal/);
+    assert.match(api, /sort\(comparePublicIssueSignal\)/);
     assert.match(api, /classification\.severity/);
     assert.match(api, /affectedUsers:\s+classification\.affectedUsers/);
     assert.doesNotMatch(api, /SEVERITY_RANK\[a\.severity\]/);

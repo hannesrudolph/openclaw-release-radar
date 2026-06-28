@@ -347,6 +347,19 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
 const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 3 };
 
+function comparePublicIssueSignal(
+  a: { classification: { sentiment: string; severity: string; scope: string; affectedUsers: string } },
+  b: { classification: { sentiment: string; severity: string; scope: string; affectedUsers: string } },
+): number {
+  const sentiment = (SENTIMENT_RANK[a.classification.sentiment] ?? 9) - (SENTIMENT_RANK[b.classification.sentiment] ?? 9);
+  if (sentiment !== 0) return sentiment;
+  const severity = (SEVERITY_RANK[a.classification.severity] ?? 9) - (SEVERITY_RANK[b.classification.severity] ?? 9);
+  if (severity !== 0) return severity;
+  const scope = (SCOPE_RANK[a.classification.scope] ?? 9) - (SCOPE_RANK[b.classification.scope] ?? 9);
+  if (scope !== 0) return scope;
+  return (USERS_RANK[a.classification.affectedUsers] ?? 9) - (USERS_RANK[b.classification.affectedUsers] ?? 9);
+}
+
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
   const lastScoredAt = getLastScoredAt();
@@ -368,15 +381,7 @@ function buildPublicPayload() {
       return { issue: i, classification: classifyIssueRowWithLabels(i, labels), labels };
     };
     const all = issuesForVersion(r.tag);
-    const sorted = all.map(classifyPublicIssue).sort((a, b) => {
-      const s = (SENTIMENT_RANK[a.classification.sentiment] ?? 9) - (SENTIMENT_RANK[b.classification.sentiment] ?? 9);
-      if (s !== 0) return s;
-      const severity = (SEVERITY_RANK[a.classification.severity] ?? 9) - (SEVERITY_RANK[b.classification.severity] ?? 9);
-      if (severity !== 0) return severity;
-      const scope = (SCOPE_RANK[a.classification.scope] ?? 9) - (SCOPE_RANK[b.classification.scope] ?? 9);
-      if (scope !== 0) return scope;
-      return (USERS_RANK[a.classification.affectedUsers] ?? 9) - (USERS_RANK[b.classification.affectedUsers] ?? 9);
-    });
+    const sorted = all.map(classifyPublicIssue).sort(comparePublicIssueSignal);
     const issueSummary = ({ issue: i, classification }: typeof sorted[number]) => ({
       number:        i.number,
       title:         i.title,
@@ -412,6 +417,8 @@ function buildPublicPayload() {
         positiveReactionCount: issue.positive_reactions,
         labels,
       }))
+      .sort(comparePublicIssueSignal)
+      .slice(0, PUBLIC_ISSUES_PER_RELEASE)
       .map(issueSummary);
 
     return {
