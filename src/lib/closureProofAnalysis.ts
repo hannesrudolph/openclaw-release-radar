@@ -1,5 +1,5 @@
 import { config } from '../config';
-import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
+import { db, deleteIssueClosureProofsForRelease, deleteIssuePrLinksForIssues, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
@@ -194,11 +194,11 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const canonicalIssueNumbers = new Set<number>();
   const canonicalGraph = new Map<number, number[]>();
   const closedAtByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
+  const closureContextCommentsByIssue = new Map<number, GhComment[]>();
   for (const issueNumber of issueNumbers) {
-    const numbers = canonicalIssueNumbersFromComments(
-      closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber)),
-      issueNumber,
-    );
+    const closureContextComments = closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber));
+    closureContextCommentsByIssue.set(issueNumber, closureContextComments);
+    const numbers = canonicalIssueNumbersFromComments(closureContextComments, issueNumber);
     canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
@@ -209,7 +209,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const useReferencedCommitProofIssues = new Set<number>();
   const allCommitOids = new Set<string>();
   for (const issueNumber of issueNumbers) {
-    const directMentions = closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []);
+    const directMentions = closureCommentCommitMentions(issueNumber, closureContextCommentsByIssue.get(issueNumber) ?? []);
     const canonicalMentions = canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
         closureCommentCommitMentions(
           issueNumber,
@@ -301,7 +301,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     };
     preparedRows.push({
       issueNumber: row.number,
-      result: adjustNoReleaseFixProofStatus(result, evidence),
+      result: adjustClosureProofStatus(result, evidence),
       evidence,
     });
   }
@@ -448,7 +448,10 @@ function canonicalIssueNumbersFromText(text: string): number[] {
   const numbers = new Set<number>();
   const canonicalReferenceRes = [
     /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
+    /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker|root-cause cluster|root cause cluster)(?:\*\*)?\s*:\s*.{0,240}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)/gim,
     /\b(?:canonical|root-cause|root cause)\s+(?:issue|tracker|report)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+    /\b(?:canonical path|canonical|root-cause|root cause|root-cause cluster|root cause cluster)\b.{0,240}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)/gim,
+    /\b(?:close[sd]?|closing)\s+as\s+(?:a\s+)?(?:duplicate|dupe|superseded)\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
     /\b(?:as\s+(?:a\s+)?)?(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:the\s+)?(?:open\s+|closed\s+)?(?:canonical\s+)?(?:(?:issue|tracker|report)\s+)?(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
     /\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
   ];
@@ -585,6 +588,16 @@ function adjustCanonicalDuplicateStatus(
   return { ...result, evidence: nextEvidence };
 }
 
+function adjustClosureProofStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  return adjustNotPlannedEvidenceStatus(
+    adjustNoReleaseFixProofStatus(result, evidence),
+    evidence,
+  );
+}
+
 function adjustNoReleaseFixProofStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
@@ -597,6 +610,50 @@ function adjustNoReleaseFixProofStatus(
     status: 'related_pr_without_release_fix',
     summary: 'Related PR references exist, but none is linked as reachable release-fix proof for this tag.',
   };
+}
+
+function adjustNotPlannedEvidenceStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  if (result.status !== 'admin_not_planned_unverified') return result;
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  if (evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true) {
+    return {
+      ...result,
+      status: 'not_planned_with_release_fix_proof',
+      summary: 'Closed as not planned, but trusted release-reachable fix proof exists; this resolves closure risk without direct GitHub fix-credit.',
+    };
+  }
+  if (evidence.hasNotReachableFixCommit === true || evidence.hasNotReachableClosingPr === true) {
+    return {
+      ...result,
+      status: 'not_planned_fixed_after_release',
+      summary: 'Closed as not planned with fix proof that is not reachable from this release tag.',
+    };
+  }
+  if (linkedPrs.some((pr) => String(pr.state ?? '').toUpperCase() === 'OPEN' && Number(pr.merged ?? 0) !== 1)) {
+    return {
+      ...result,
+      status: 'not_planned_with_open_pr_context',
+      summary: 'Closed as not planned while related open PR context still exists; no reachable release-fix proof is credited.',
+    };
+  }
+  if (linkedPrs.some((pr) => Number(pr.willCloseTarget ?? 0) === 1 && Number(pr.merged ?? 0) !== 1)) {
+    return {
+      ...result,
+      status: 'not_planned_linked_pr_not_merged',
+      summary: 'Closed as not planned with a linked closing PR that is not merged or has unknown merge state.',
+    };
+  }
+  if (linkedPrs.length > 0) {
+    return {
+      ...result,
+      status: 'not_planned_related_pr_without_release_fix',
+      summary: 'Closed as not planned with related PR references, but none is reachable release-fix proof for this tag.',
+    };
+  }
+  return result;
 }
 
 function canonicalResolution(
@@ -636,7 +693,9 @@ function canonicalResolution(
 }
 
 export const __closureProofAnalysisTest = {
+  adjustClosureProofStatus,
   adjustCanonicalDuplicateStatus,
+  adjustNotPlannedEvidenceStatus,
   adjustNoReleaseFixProofStatus,
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
@@ -721,6 +780,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       listIssueFixEvidenceBatch(chunk),
       listIssueCommentsBatch(chunk),
     ]);
+    deleteIssuePrLinksForIssues(chunk);
     for (const item of evidence.values()) {
       for (const event of item.closureEvents) {
         upsertIssueClosureEvent({

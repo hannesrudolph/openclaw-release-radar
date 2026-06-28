@@ -1270,6 +1270,7 @@ function extractClosureCommentPrNumbers(body: string): number[] {
 function closureCommentPrMentionSource(
   text: string,
 ): ClosureCommentPrMention['source'] | null {
+  if (isKeepOpenReviewComment(text)) return null;
   if (isClosureFixProofComment(text)) return CLOSURE_COMMENT_FIX_PROOF_SOURCE;
   if (isClosurePrContextComment(text)) return CLOSURE_COMMENT_PR_MENTION_SOURCE;
   return null;
@@ -1305,6 +1306,7 @@ function isClosurePrContextComment(text: string): boolean {
 }
 
 function isClosureCommitFixProofComment(text: string): boolean {
+  if (isKeepOpenReviewComment(text)) return false;
   return (
     /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{40}`?/i.test(text) ||
     /\bfixed\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
@@ -1313,6 +1315,10 @@ function isClosureCommitFixProofComment(text: string): boolean {
     /\bfix\s+evidence\b.{0,220}\bcommit\b/i.test(text) ||
     /\brelease\s+provenance\b.{0,260}\b(v20\d{2}\.\d+\.\d+|release|tag)\b/i.test(text)
   );
+}
+
+function isKeepOpenReviewComment(text: string): boolean {
+  return /\bkeep(?:ing)?\s+(?:this\s+)?open\b|\b(?:stay|remain)\s+(?:open|unresolved)\b|\bbefore closing this issue\b/i.test(text);
 }
 
 function extractCommitOids(text: string): string[] {

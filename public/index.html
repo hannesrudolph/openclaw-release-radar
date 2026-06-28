@@ -1726,6 +1726,7 @@ function metricLabel(key) {
     openedCount: 'opened',
     rawIssueCount: 'raw issues',
     rawWeight: 'raw weight',
+    resolvedByReleaseFixProofCount: 'release proof',
     stillOpenCount: 'still open',
     unverifiedClosedCount: 'unverified',
     unresolvedClosureRiskWeight: 'closure weight',
@@ -1804,6 +1805,11 @@ function closureStatusLabel(status) {
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
     admin_not_planned_unverified: 'unverified admin not-planned',
+    not_planned_with_release_fix_proof: 'not-planned with release proof',
+    not_planned_fixed_after_release: 'not-planned fixed after this release',
+    not_planned_with_open_pr_context: 'not-planned with open PR context',
+    not_planned_linked_pr_not_merged: 'not-planned linked PR not merged',
+    not_planned_related_pr_without_release_fix: 'not-planned related PR without release-fix proof',
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
@@ -1848,6 +1854,7 @@ function closureRiskDispositionLabel(disposition) {
   return ({
     credited_release_fix: 'credited release fix',
     resolved_by_canonical_release_fix: 'resolved by canonical release fix',
+    resolved_by_release_fix_proof: 'resolved by release fix proof',
     known_not_in_release: 'known not in this tag',
     open_canonical_risk: 'still-open canonical risk',
     unsupported_closure_claim: 'unsupported closure/admin claim',
@@ -1860,6 +1867,7 @@ function closureRiskSummaryText(closureProof) {
   const risk = closureProof?.riskSummary ?? {};
   const parts = [
     [risk.resolvedByCanonicalReleaseFixCount, 'resolved by canonical release fix'],
+    [risk.resolvedByReleaseFixProofCount, 'resolved by release fix proof'],
     [risk.knownNotInReleaseCount, 'known not in this tag'],
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],

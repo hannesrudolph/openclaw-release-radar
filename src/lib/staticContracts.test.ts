@@ -66,6 +66,11 @@ describe('static scoring/UI contracts', () => {
       'duplicate_or_superseded',
       'already_present_claim',
       'admin_not_planned_unverified',
+      'not_planned_with_release_fix_proof',
+      'not_planned_fixed_after_release',
+      'not_planned_with_open_pr_context',
+      'not_planned_linked_pr_not_merged',
+      'not_planned_related_pr_without_release_fix',
       'main_only_claim',
       'reporter_replaced',
       'reporter_withdrawn',
@@ -96,6 +101,7 @@ describe('static scoring/UI contracts', () => {
     [
       'credited_release_fix',
       'resolved_by_canonical_release_fix',
+      'resolved_by_release_fix_proof',
       'known_not_in_release',
       'open_canonical_risk',
       'unsupported_closure_claim',
@@ -103,6 +109,7 @@ describe('static scoring/UI contracts', () => {
       'missing_evidence',
     ].forEach((disposition) => assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
     assert.match(html, /resolvedByCanonicalReleaseFixCount/);
+    assert.match(html, /resolvedByReleaseFixProofCount/);
     assert.match(html, /neutralHighImpactCount/);
     assert.match(html, /neutralBugShapedCount/);
     assert.match(html, /closureProofExamplesWithStatusCoverage/);

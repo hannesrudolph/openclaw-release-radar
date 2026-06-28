@@ -124,6 +124,11 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `admin_not_planned_unverified`: a negative report was closed with GitHub `NOT_PLANNED`, but no reachable release fix proof or concrete close-time non-actionable rationale was found.
+- `not_planned_with_release_fix_proof`: a negative report was closed with GitHub `NOT_PLANNED`, but trusted release-reachable fix proof exists. It resolves closure risk without direct GitHub fix-credit.
+- `not_planned_fixed_after_release`: a negative report was closed with GitHub `NOT_PLANNED`, and trusted fix proof exists only after the scored release tag.
+- `not_planned_with_open_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` while related open PR context still exists.
+- `not_planned_linked_pr_not_merged`: a negative report was closed with GitHub `NOT_PLANNED` and a linked closing PR is not merged or has unknown merge state.
+- `not_planned_related_pr_without_release_fix`: a negative report was closed with GitHub `NOT_PLANNED` and related PR references exist, but none is release-fix proof for the scored tag.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
 - `reporter_replaced`: reporter refiled, reopened, or replaced the issue under another issue number.
 - `reporter_withdrawn`: reporter withdrew the report, asked maintainers to ignore it, or closed it for privacy/non-fix reasons.
@@ -155,13 +160,14 @@ The closure proof payload also rolls status buckets into risk dispositions:
 
 - `credited_release_fix`: hard proof that the release tag contains the fix.
 - `resolved_by_canonical_release_fix`: duplicate/superseded report whose canonical fix is proven reachable from the release tag.
+- `resolved_by_release_fix_proof`: trusted release-reachable proof exists, but the GitHub closure shape was not direct fix-credit.
 - `known_not_in_release`: a PR/commit or closure note indicates the fix is on main or after this tag, so it is not proof for this release.
 - `open_canonical_risk`: the report was moved to an open canonical issue/trusted PR, or it has related open PR context that proves the work is not resolved in the scored release.
 - `unsupported_closure_claim`: an already-present, duplicate, superseded, admin-not-planned, or closed-canonical claim that lacks reachable release code proof.
 - `neutral_or_non_actionable`: not-scored closure evidence such as non-bug reports, concrete non-actionable rationale, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.
 
-`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, then disposition weight times severity, functionality, scope, and affected-user reach. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty.
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, not-planned closures resolved by trusted release proof, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale or proof are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, then disposition weight times severity, functionality, scope, and affected-user reach. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty.
 
 The API exposes a coherent `releaseFixCredit` object:
 

@@ -186,6 +186,36 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'related_pr_without_release_fix');
   });
 
+  it('classifies not-planned closures with reachable proof separately from bare admin closures', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        hasReachableFixCommit: true,
+        linkedPrs: [],
+      },
+    );
+
+    assert.equal(adjusted.status, 'not_planned_with_release_fix_proof');
+  });
+
+  it('classifies not-planned closures with open PR context separately', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{
+          number: 97423,
+          state: 'OPEN',
+          merged: 0,
+          source: 'CrossReferencedEvent',
+        }],
+      },
+    );
+
+    assert.equal(adjusted.status, 'not_planned_with_open_pr_context');
+  });
+
   it('recognizes common duplicate-of text as canonical graph targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(
@@ -207,6 +237,18 @@ describe('closure proof canonical roll-up', () => {
         'Close as a duplicate of the open canonical tracker #60841, not as fixed.',
       ),
       [60841],
+    );
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Close as duplicate/superseded. Canonical path: Keep https://github.com/openclaw/openclaw/issues/76042 as the active tracker.',
+      ),
+      [76042],
+    );
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Close as a duplicate: https://github.com/openclaw/openclaw/issues/67016 is open and already tracks this.',
+      ),
+      [67016],
     );
   });
 

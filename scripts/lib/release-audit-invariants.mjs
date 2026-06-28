@@ -259,6 +259,43 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'admin_not_planned_unverified') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `admin_not_planned_unverified issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, evidence.hasReachableFixCommit !== true && evidence.hasReachableClosingPr !== true &&
+          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true,
+          `admin_not_planned_unverified issue #${row.issue_number} must not have direct fix proof; use a not_planned_* proof status`);
+        expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
+          `admin_not_planned_unverified issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
+      }
+      if (row.status === 'not_planned_with_release_fix_proof') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_with_release_fix_proof issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true,
+          `not_planned_with_release_fix_proof issue #${row.issue_number} must have reachable PR or commit evidence`);
+      }
+      if (row.status === 'not_planned_fixed_after_release') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_fixed_after_release issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, evidence.hasNotReachableFixCommit === true || evidence.hasNotReachableClosingPr === true,
+          `not_planned_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+      }
+      if (row.status === 'not_planned_with_open_pr_context') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_with_open_pr_context issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) &&
+          evidence.linkedPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) !== 1),
+          `not_planned_with_open_pr_context issue #${row.issue_number} must include open PR context`);
+      }
+      if (row.status === 'not_planned_linked_pr_not_merged') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_linked_pr_not_merged issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) &&
+          evidence.linkedPrs.some((pr) => Number(pr?.willCloseTarget ?? 0) === 1 && Number(pr?.merged ?? 0) !== 1),
+          `not_planned_linked_pr_not_merged issue #${row.issue_number} must include an unmerged linked closing PR`);
+      }
+      if (row.status === 'not_planned_related_pr_without_release_fix') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_related_pr_without_release_fix issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) && evidence.linkedPrs.length > 0,
+          `not_planned_related_pr_without_release_fix issue #${row.issue_number} must include related PR references`);
       }
       if (row.status === 'linked_closing_pr_not_merged') {
         expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
@@ -782,6 +819,7 @@ function riskSummaryFromCounts(counts, neutralAuditCounts = { highImpact: 0, bug
   const summary = {
     creditedReleaseFixCount: counts.credited_release_fix ?? 0,
     resolvedByCanonicalReleaseFixCount: counts.resolved_by_canonical_release_fix ?? 0,
+    resolvedByReleaseFixProofCount: counts.resolved_by_release_fix_proof ?? 0,
     knownNotInReleaseCount: counts.known_not_in_release ?? 0,
     openCanonicalRiskCount: counts.open_canonical_risk ?? 0,
     unsupportedClosureClaimCount: counts.unsupported_closure_claim ?? 0,

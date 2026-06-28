@@ -83,6 +83,22 @@ describe('closure proof risk weighting', () => {
     assert.ok(weight > 0);
   });
 
+  it('keeps not-planned closures with reachable proof out of unresolved risk', () => {
+    const base = {
+      sentiment: 'negative',
+      severity: 'critical',
+      functionality: 'core',
+      scope: 'broad',
+      affected_users: 'many',
+    };
+    assert.equal(closureRiskDisposition('not_planned_with_release_fix_proof'), 'resolved_by_release_fix_proof');
+    assert.equal(closureRiskWeightForRow({ ...base, status: 'not_planned_with_release_fix_proof' }), 0);
+    assert.equal(closureRiskDisposition('not_planned_fixed_after_release'), 'known_not_in_release');
+    assert.ok(closureRiskWeightForRow({ ...base, status: 'not_planned_fixed_after_release' }) > 0);
+    assert.equal(closureRiskDisposition('not_planned_with_open_pr_context'), 'open_canonical_risk');
+    assert.ok(closureRiskWeightForRow({ ...base, status: 'not_planned_with_open_pr_context' }) > 0);
+  });
+
   it('excludes credited fixes and neutral closures from unresolved closure risk', () => {
     const base = {
       sentiment: 'negative',

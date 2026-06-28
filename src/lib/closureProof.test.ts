@@ -87,6 +87,18 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [96857]);
   });
 
+  it('extracts canonical issue URLs from canonical path comments with extra wording', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close as duplicate/superseded. Canonical path: Keep https://github.com/openclaw/openclaw/issues/76042 as the active tracker.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [76042]);
+  });
+
   it('uses close-time comments that say closing this as a duplicate', () => {
     const result = classifyClosureProof(input({
       closedAt: '2026-06-25T22:25:56Z',
@@ -275,6 +287,20 @@ describe('classifyClosureProof', () => {
     }));
     assert.equal(result.status, 'not_planned');
     assert.equal(result.evidence.closureContextCommentCount, 1);
+  });
+
+  it('captures plugin-scope non-actionable rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-27T21:45:31Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-27T21:44:31Z',
+        body: 'Close: this is ClawHub plugin scope, not core OpenClaw source work.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.nonActionableRationaleComments.length, 1);
   });
 
   it('keeps duplicate/superseded closures distinct from already-present claims', () => {

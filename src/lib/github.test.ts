@@ -232,6 +232,18 @@ describe('GitHub GraphQL mapping', () => {
     ]);
   });
 
+  it('does not extract fix proof from keep-open review comments', () => {
+    const comments = [{
+      body: 'Codex review: keeping this open for maintainer follow-up. Keep open: current main and v2026.6.6 still lack the requested guard. Release provenance: v2026.6.6 commit 8c802aa683510c7f7503597b54c3021733245e59 is not sufficient.',
+      created_at: '2026-06-15T16:31:00Z',
+      user: { login: 'clawsweeper' },
+      author_association: 'CONTRIBUTOR',
+    }];
+
+    assert.deepEqual(__githubTest.closureCommentCommitMentions(92315, comments), []);
+    assert.deepEqual(__githubTest.closureCommentPrMentions(92315, comments), []);
+  });
+
   it('does not accept abbreviated commit hashes as closure proof without resolution', () => {
     const mentions = __githubTest.closureCommentCommitMentions(97222, [
       {

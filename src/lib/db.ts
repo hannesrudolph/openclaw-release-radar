@@ -1165,6 +1165,16 @@ export function upsertIssuePrLink(input: IssuePrLinkInput): void {
   upsertIssuePrLinkStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
+const deleteIssuePrLinksForIssuesStmt = db.prepare(`
+DELETE FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+`);
+
+export function deleteIssuePrLinksForIssues(issueNumbers: number[]): void {
+  if (!issueNumbers.length) return;
+  deleteIssuePrLinksForIssuesStmt.run(JSON.stringify(issueNumbers));
+}
+
 export interface IssueCommitReferenceInput {
   issue_number: number;
   event_id: string;

@@ -607,6 +607,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const riskBuckets = proofBucketsExceptFixed(closureProof.byRiskDisposition, [
       'credited_release_fix',
       'resolved_by_canonical_release_fix',
+      'resolved_by_release_fix_proof',
     ]);
     const riskSummary = closureProof.riskSummary ?? {};
     const neutralAuditRefs = issueRefs(closureProof.neutralAuditExamples ?? [], 2);
@@ -639,6 +640,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           cappedPenalty: Math.abs(numberOrZero(components.closureRisk)),
           scoreCeiling: Number(components.closureRiskCeiling ?? 0) || null,
           resolvedByCanonicalReleaseFixCount: Number(riskSummary.resolvedByCanonicalReleaseFixCount ?? 0),
+          resolvedByReleaseFixProofCount: Number(riskSummary.resolvedByReleaseFixProofCount ?? 0),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
           unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
@@ -919,6 +921,7 @@ function closureRiskSummaryText(closureProof: any): string {
   const risk = closureProof?.riskSummary ?? {};
   const parts = [
     [risk.resolvedByCanonicalReleaseFixCount, 'resolved by canonical release fix'],
+    [risk.resolvedByReleaseFixProofCount, 'resolved by release fix proof'],
     [risk.knownNotInReleaseCount, 'known not in this tag'],
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
@@ -948,6 +951,11 @@ function closureStatusLabel(status: string): string {
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
     admin_not_planned_unverified: 'unverified admin not-planned',
+    not_planned_with_release_fix_proof: 'not-planned with release proof',
+    not_planned_fixed_after_release: 'not-planned fixed after this release',
+    not_planned_with_open_pr_context: 'not-planned with open PR context',
+    not_planned_linked_pr_not_merged: 'not-planned linked PR not merged',
+    not_planned_related_pr_without_release_fix: 'not-planned related PR without release-fix proof',
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',

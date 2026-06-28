@@ -43,6 +43,7 @@ function closureProofFixture(overrides: any = {}) {
     riskSummary: {
       creditedReleaseFixCount: 1,
       resolvedByCanonicalReleaseFixCount: 0,
+      resolvedByReleaseFixProofCount: 0,
       knownNotInReleaseCount: 0,
       openCanonicalRiskCount: 0,
       unsupportedClosureClaimCount: 0,
@@ -534,6 +535,7 @@ describe('verifyReleaseAudit', () => {
                 riskSummary: {
                   creditedReleaseFixCount: 0,
                   resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 0,
                   unsupportedClosureClaimCount: 1,
@@ -587,6 +589,7 @@ describe('verifyReleaseAudit', () => {
                 riskSummary: {
                   creditedReleaseFixCount: 0,
                   resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 0,
                   unsupportedClosureClaimCount: 1,
@@ -859,6 +862,7 @@ describe('verifyReleaseAudit', () => {
                 riskSummary: {
                   creditedReleaseFixCount: 0,
                   resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 1,
                   unsupportedClosureClaimCount: 0,
@@ -916,6 +920,7 @@ describe('verifyReleaseAudit', () => {
                 riskSummary: {
                   creditedReleaseFixCount: 0,
                   resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 0,
                   unsupportedClosureClaimCount: 0,
@@ -975,6 +980,7 @@ describe('verifyReleaseAudit', () => {
                 riskSummary: {
                   creditedReleaseFixCount: 0,
                   resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 0,
                   unsupportedClosureClaimCount: 0,
