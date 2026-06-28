@@ -1884,6 +1884,7 @@ function whyNotTenHtml(local) {
     const riskText = closureRiskSummaryText(closureProof);
     reasons.push(
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.`
+      + ` This contributes a ${esc(Math.abs(Number(components.closureRisk ?? 0)))} point penalty after the closure-risk cap.`
       + (riskText ? ` Risk split: ${riskText}.` : '')
       + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );

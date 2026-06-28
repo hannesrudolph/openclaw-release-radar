@@ -520,6 +520,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.` +
+      ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
       {
@@ -529,6 +530,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           analyzedClosedCount: Number(closureProof.analyzedClosedCount ?? 0),
           unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
           unresolvedClosureRiskWeight: roundMetric(input.unresolvedClosureRiskWeight),
+          cappedPenalty: Math.abs(numberOrZero(components.closureRisk)),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
           unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
