@@ -90,6 +90,7 @@ try {
     .waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
+  await fixPanel.getByText(/Scored as .* risk /).first().waitFor();
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {

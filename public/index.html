@@ -1781,8 +1781,23 @@ function closureProofHtml(closureProof) {
       : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
     const disposition = item.riskDisposition ? closureRiskDispositionLabel(item.riskDisposition) : null;
+    const classification = item.classification;
+    const classificationLine = classification
+      ? `Scored as ${esc(classification.severity)} ${esc(classification.functionality)} · ${esc(classification.scope)} · ${esc(classification.affectedUsers)} users${Number.isFinite(item.riskWeight) ? ` · risk ${esc(item.riskWeight)}` : ''}`
+      : '';
+    const diffKeys = item.classificationDiff && typeof item.classificationDiff === 'object'
+      ? Object.keys(item.classificationDiff)
+      : [];
+    const diffLine = diffKeys.length
+      ? `Classification overrides: ${diffKeys.map((key) => {
+          const diff = item.classificationDiff[key];
+          return `${key} ${diff?.raw ?? 'unknown'} -> ${diff?.effective ?? 'unknown'}`;
+        }).join('; ')}`
+      : '';
     return `<li class="evidence__item">${link}`
       + `<span class="evidence__meta">${disposition ? `${esc(disposition)} · ` : ''}${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
+      + (classificationLine ? `<span class="evidence__meta">${classificationLine}</span>` : '')
+      + (diffLine ? `<span class="evidence__meta">${esc(diffLine)}</span>` : '')
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (terminalProofLine ? `<span class="evidence__meta">${terminalProofLine}</span>` : '')

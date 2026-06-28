@@ -99,22 +99,40 @@ export function closureProofPayload(tag: string) {
     .filter((row) => row.status !== 'fixed_in_release')
     .reduce((sum, row) => sum + row.count, 0);
   const creditedCount = byStatus.fixed_in_release ?? 0;
-  const examples = closureProofExamples(tag, 30).map((row) => ({
-    number: row.issue_number,
-    title: row.title,
-    url: row.html_url,
-    closedAt: row.closed_at,
-    status: row.status,
-    summary: row.summary,
-    sentiment: row.sentiment,
-    severity: row.severity,
-    scope: row.scope,
-    functionality: row.functionality,
-    affectedUsers: row.affected_users,
-    checkedAt: row.checked_at,
-    riskDisposition: closureRiskDisposition(row.status),
-    evidence: parseJson(row.evidence_json, {}),
-  }));
+  const examples = closureProofExamples(tag, 30).map((row) => {
+    const classification = effectiveClosureClassification(row, labelCutoff);
+    const effectiveRiskRow = classification
+      ? {
+        status: row.status,
+        sentiment: classification.classification.sentiment,
+        severity: classification.classification.severity,
+        scope: classification.classification.scope,
+        functionality: classification.classification.functionality,
+        affected_users: classification.classification.affectedUsers,
+      }
+      : row;
+    return {
+      number: row.issue_number,
+      title: row.title,
+      url: row.html_url,
+      closedAt: row.closed_at,
+      status: row.status,
+      summary: row.summary,
+      sentiment: classification?.classification.sentiment ?? row.sentiment,
+      severity: classification?.classification.severity ?? row.severity,
+      scope: classification?.classification.scope ?? row.scope,
+      functionality: classification?.classification.functionality ?? row.functionality,
+      affectedUsers: classification?.classification.affectedUsers ?? row.affected_users,
+      checkedAt: row.checked_at,
+      labels: classification?.labels ?? parseJson<string[]>(row.labels, []),
+      rawClassification: classification?.rawClassification ?? null,
+      classification: classification?.classification ?? null,
+      classificationDiff: classification?.classificationDiff ?? {},
+      riskWeight: roundMetric(closureRiskWeightForRow(effectiveRiskRow)),
+      riskDisposition: closureRiskDisposition(row.status),
+      evidence: parseJson(row.evidence_json, {}),
+    };
+  });
   const riskSummary = {
     creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
     knownNotInReleaseCount: byRiskDisposition.known_not_in_release ?? 0,
@@ -190,6 +208,18 @@ type ClosureRiskWeightRow = Pick<ClosureProofRiskRow,
   'status' | 'sentiment' | 'severity' | 'scope' | 'functionality' | 'affected_users'
 >;
 
+type ClosureRiskSourceRow = ClosureRiskWeightRow & {
+  issue_number: number;
+  title: string;
+  labels: string;
+  has_workaround: number | null;
+  workaround_status: string | null;
+  duplicate_cluster: string | null;
+  affects_version: string | null;
+  confidence: number | null;
+  rationale: string | null;
+};
+
 export function closureRiskWeightForRow(row: ClosureRiskWeightRow): number {
   const disposition = closureRiskDisposition(row.status);
   const dispositionWeight = DISPOSITION_RISK_WEIGHT[disposition] ?? 0;
@@ -223,33 +253,50 @@ function weightedRiskForRows(rows: ClosureProofRiskRow[], labelCutoff: string | 
   };
 }
 
-function effectiveClosureRiskRow(row: ClosureProofRiskRow, labelCutoff: string | null): ClosureRiskWeightRow {
+function effectiveClosureRiskRow(row: ClosureRiskSourceRow, labelCutoff: string | null): ClosureRiskWeightRow {
+  const effective = effectiveClosureClassification(row, labelCutoff);
+  if (!effective) return row;
+  return {
+    status: row.status,
+    sentiment: effective.classification.sentiment,
+    severity: effective.classification.severity,
+    scope: effective.classification.scope,
+    functionality: effective.classification.functionality,
+    affected_users: effective.classification.affectedUsers,
+  };
+}
+
+function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: string | null): {
+  labels: string[];
+  rawClassification: IssueClassification;
+  classification: IssueClassification;
+  classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
+} | null {
   if (!row.sentiment || !row.severity || !row.scope || !row.functionality || !row.affected_users) {
-    return row;
+    return null;
   }
   const currentLabels = parseJson<string[]>(row.labels, []);
   const labels = labelsForIssueAt(row.issue_number, currentLabels, labelCutoff, {
     useFallbackWhenNoEvents: labelCutoff == null,
   });
-  const effective = applyTitleIssueShapeHint(
+  const rawClassification = rowToClassification(row);
+  const classification = applyTitleIssueShapeHint(
     applyLabelOverrides(
-      applyTitleFunctionalityHint(rowToClassification(row), row.title ?? ''),
+      applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
       labels,
     ),
     row.title ?? '',
     labels,
   );
   return {
-    status: row.status,
-    sentiment: effective.sentiment,
-    severity: effective.severity,
-    scope: effective.scope,
-    functionality: effective.functionality,
-    affected_users: effective.affectedUsers,
+    labels,
+    rawClassification,
+    classification,
+    classificationDiff: classificationDiff(rawClassification, classification),
   };
 }
 
-function rowToClassification(row: ClosureProofRiskRow): IssueClassification {
+function rowToClassification(row: ClosureRiskSourceRow): IssueClassification {
   const workaroundStatus = ['none', 'partial', 'confirmed', 'unknown'].includes(row.workaround_status ?? '')
     ? row.workaround_status as IssueClassification['workaroundStatus']
     : row.has_workaround === 1
@@ -267,6 +314,25 @@ function rowToClassification(row: ClosureProofRiskRow): IssueClassification {
     confidence: typeof row.confidence === 'number' ? row.confidence : 0.5,
     rationale: row.rationale ?? '',
   };
+}
+
+function classificationDiff(
+  raw: IssueClassification,
+  effective: IssueClassification,
+): Record<string, { raw: unknown; effective: unknown }> {
+  const out: Record<string, { raw: unknown; effective: unknown }> = {};
+  for (const key of [
+    'sentiment',
+    'severity',
+    'scope',
+    'functionality',
+    'affectedUsers',
+    'workaroundStatus',
+    'confidence',
+  ] as const) {
+    if (raw[key] !== effective[key]) out[key] = { raw: raw[key], effective: effective[key] };
+  }
+  return out;
 }
 
 function roundRiskMap(map: Partial<Record<ClosureRiskDisposition, number>>): Partial<Record<ClosureRiskDisposition, number>> {

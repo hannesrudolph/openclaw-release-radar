@@ -125,6 +125,8 @@ The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCou
 
 After closure proof analysis, the same `closureProof` and `releaseFixCredit` payload is persisted back into `release_score_audits.gate_evidence_json` and exposed through `/review` and `/comparison`.
 
+Closure proof examples expose raw classification, effective classification, classification diffs, effective labels, and per-issue risk weight so reviewers can see which deterministic overrides affected closure-risk scoring.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence.

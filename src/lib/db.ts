@@ -853,7 +853,10 @@ export function closureProofRiskRows(releaseTag: string): ClosureProofRiskRow[] 
 }
 
 const closureProofExamplesStmt = db.prepare(`
-SELECT p.*, i.title, i.html_url, i.closed_at, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
+SELECT p.*, i.title, i.html_url, i.closed_at, i.labels,
+       c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale
 FROM issue_closure_proofs p
 JOIN issues i ON i.number=p.issue_number
 LEFT JOIN classifications c ON c.issue_number=p.issue_number
@@ -880,21 +883,35 @@ export function closureProofExamples(releaseTag: string, limit = 25): Array<Issu
   title: string;
   html_url: string | null;
   closed_at: string | null;
+  labels: string;
   sentiment: string | null;
   severity: string | null;
   scope: string | null;
   functionality: string | null;
   affected_users: string | null;
+  has_workaround: number | null;
+  workaround_status: string | null;
+  duplicate_cluster: string | null;
+  affects_version: string | null;
+  confidence: number | null;
+  rationale: string | null;
 }> {
   return closureProofExamplesStmt.all(releaseTag, limit) as unknown as Array<IssueClosureProofRow & {
     title: string;
     html_url: string | null;
     closed_at: string | null;
+    labels: string;
     sentiment: string | null;
     severity: string | null;
     scope: string | null;
     functionality: string | null;
     affected_users: string | null;
+    has_workaround: number | null;
+    workaround_status: string | null;
+    duplicate_cluster: string | null;
+    affects_version: string | null;
+    confidence: number | null;
+    rationale: string | null;
   }>;
 }
 

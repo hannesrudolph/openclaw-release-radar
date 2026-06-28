@@ -747,6 +747,16 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
             `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
         }
       }
+      for (const example of proof.examples ?? []) {
+        expect(failures, release.tag, isObject(example.rawClassification),
+          `closure proof example #${example.number} must expose rawClassification`);
+        expect(failures, release.tag, isObject(example.classification),
+          `closure proof example #${example.number} must expose effective classification`);
+        expect(failures, release.tag, isObject(example.classificationDiff),
+          `closure proof example #${example.number} must expose classificationDiff`);
+        expect(failures, release.tag, typeof example.riskWeight === 'number',
+          `closure proof example #${example.number} must expose numeric riskWeight`);
+      }
 
       const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
       const comparisonProof = comparisonFix?.closureProof;
