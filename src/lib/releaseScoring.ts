@@ -579,6 +579,9 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including neutral or non-actionable closures.` +
       ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
       ((components.closureRiskCeiling ?? 0) > 0 ? ` Heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
+      ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0)
+        ? ` Audit-only neutral flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact neutral closures and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped neutral closures were excluded from risk.`
+        : '') +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
       {
@@ -595,6 +598,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
           unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
           neutralOrNonActionableCount: Number(riskSummary.neutralOrNonActionableCount ?? 0),
+          neutralHighImpactCount: Number(riskSummary.neutralHighImpactCount ?? 0),
+          neutralBugShapedCount: Number(riskSummary.neutralBugShapedCount ?? 0),
           missingEvidenceCount: Number(riskSummary.missingEvidenceCount ?? 0),
         },
         buckets,
@@ -810,6 +815,8 @@ function closureRiskSummaryText(closureProof: any): string {
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
     [risk.missingEvidenceCount, 'missing proof evidence'],
     [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
+    [risk.neutralHighImpactCount, 'high-impact neutral audit flag'],
+    [risk.neutralBugShapedCount, 'bug-shaped neutral audit flag'],
   ];
   return parts
     .filter(([count]) => Number(count ?? 0) > 0)

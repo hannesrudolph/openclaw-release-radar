@@ -102,7 +102,9 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     : release ? releaseLabelCutoff(release, audit?.scored_at ?? null) : null;
   const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
   const byRiskDisposition = countByRiskDisposition(summaryRows);
-  const weightedRisk = weightedRiskForRows(closureProofRiskRows(tag), labelCutoff);
+  const riskRows = closureProofRiskRows(tag);
+  const weightedRisk = weightedRiskForRows(riskRows, labelCutoff);
+  const neutralAuditSignals = neutralAuditSignalsForRows(riskRows, labelCutoff);
   const notCreditedCount = summaryRows
     .filter((row) => row.status !== 'fixed_in_release')
     .reduce((sum, row) => sum + row.count, 0);
@@ -150,6 +152,8 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     openCanonicalRiskCount: byRiskDisposition.open_canonical_risk ?? 0,
     unsupportedClosureClaimCount: byRiskDisposition.unsupported_closure_claim ?? 0,
     neutralOrNonActionableCount: byRiskDisposition.neutral_or_non_actionable ?? 0,
+    neutralHighImpactCount: neutralAuditSignals.highImpact,
+    neutralBugShapedCount: neutralAuditSignals.bugShaped,
     missingEvidenceCount: byRiskDisposition.missing_evidence ?? 0,
   };
   const unresolvedForReleaseCount = riskSummary.knownNotInReleaseCount +
@@ -294,6 +298,28 @@ function weightedRiskForRows(rows: ClosureProofRiskRow[], labelCutoff: string | 
     unresolvedWeightedRisk: Object.values(byDisposition).reduce((sum, value) => sum + Number(value ?? 0), 0),
     byDisposition,
   };
+}
+
+const BUG_SHAPED_TITLE_RE = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
+
+function neutralAuditSignalsForRows(rows: ClosureProofRiskRow[], labelCutoff: string | null): {
+  highImpact: number;
+  bugShaped: number;
+} {
+  let highImpact = 0;
+  let bugShaped = 0;
+  for (const row of rows) {
+    if (closureRiskDisposition(row.status) !== 'neutral_or_non_actionable') continue;
+    const effective = effectiveClosureRiskRow(row, labelCutoff);
+    if (effective.sentiment !== 'neutral') continue;
+    if (effective.severity === 'high' || effective.severity === 'critical') {
+      highImpact += Number(row.count ?? 0);
+    }
+    if (BUG_SHAPED_TITLE_RE.test(row.title ?? '')) {
+      bugShaped += Number(row.count ?? 0);
+    }
+  }
+  return { highImpact, bugShaped };
 }
 
 function effectiveClosureRiskRow(row: ClosureRiskSourceRow, labelCutoff: string | null): ClosureRiskWeightRow {

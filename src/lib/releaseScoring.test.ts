@@ -65,6 +65,8 @@ describe('release score explanations', () => {
       assert.equal(typeof closure.metrics?.scoreCeiling, 'number');
     }
     assert.equal(typeof closure.metrics?.neutralOrNonActionableCount, 'number');
+    assert.equal(typeof closure.metrics?.neutralHighImpactCount, 'number');
+    assert.equal(typeof closure.metrics?.neutralBugShapedCount, 'number');
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
     assert.ok((closure.issueRefs?.length ?? 0) >= 3);

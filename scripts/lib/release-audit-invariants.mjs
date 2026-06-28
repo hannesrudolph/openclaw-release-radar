@@ -89,6 +89,7 @@ const affectedUserRiskWeights = new Map([
 ]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
+const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -621,7 +622,7 @@ function riskDispositionCountsForProofRows(proofRows) {
   return counts;
 }
 
-function riskSummaryFromCounts(counts) {
+function riskSummaryFromCounts(counts, neutralAuditCounts = { highImpact: 0, bugShaped: 0 }) {
   const summary = {
     creditedReleaseFixCount: counts.credited_release_fix ?? 0,
     resolvedByCanonicalReleaseFixCount: counts.resolved_by_canonical_release_fix ?? 0,
@@ -629,6 +630,8 @@ function riskSummaryFromCounts(counts) {
     openCanonicalRiskCount: counts.open_canonical_risk ?? 0,
     unsupportedClosureClaimCount: counts.unsupported_closure_claim ?? 0,
     neutralOrNonActionableCount: counts.neutral_or_non_actionable ?? 0,
+    neutralHighImpactCount: neutralAuditCounts.highImpact ?? 0,
+    neutralBugShapedCount: neutralAuditCounts.bugShaped ?? 0,
     missingEvidenceCount: counts.missing_evidence ?? 0,
   };
   return {
@@ -644,7 +647,8 @@ function riskSummaryFromCounts(counts) {
 
 function riskSummaryForProofRows(proofRows) {
   const counts = riskDispositionCountsForProofRows(proofRows);
-  const summary = riskSummaryFromCounts(counts);
+  const neutralAuditCounts = neutralAuditSignalCountsForProofRows(proofRows);
+  const summary = riskSummaryFromCounts(counts, neutralAuditCounts);
   const byDisposition = {};
   for (const row of proofRows) {
     const disposition = riskDispositionForStatus(row.status);
@@ -660,6 +664,19 @@ function riskSummaryForProofRows(proofRows) {
       weightedRiskByDisposition: roundRiskMap(byDisposition),
     },
   };
+}
+
+function neutralAuditSignalCountsForProofRows(proofRows) {
+  let highImpact = 0;
+  let bugShaped = 0;
+  for (const row of proofRows) {
+    if (riskDispositionForStatus(row.status) !== 'neutral_or_non_actionable') continue;
+    const classification = effectiveClassificationForProofRow(row);
+    if (classification.sentiment !== 'neutral') continue;
+    if (classification.severity === 'high' || classification.severity === 'critical') highImpact++;
+    if (bugShapedTitleRe.test(row.title ?? '')) bugShaped++;
+  }
+  return { highImpact, bugShaped };
 }
 
 function closureRiskWeightForProofRow(row) {
