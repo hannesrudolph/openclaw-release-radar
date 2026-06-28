@@ -241,6 +241,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /COMPARISON_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /COMPARISON_UPSTREAM_SCHEMA_VERSION = 1/);
     assert.match(api, /COMPARISON_DELTA_SCHEMA_VERSION = 1/);
+    assert.match(api, /STATUS_PAYLOAD_SCHEMA_VERSION = 1/);
+    assert.match(api, /CONFIG_PAYLOAD_SCHEMA_VERSION = 1/);
+    assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 1/);
+    assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1/);
+    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 1/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /freshness\.max_scored_at/);

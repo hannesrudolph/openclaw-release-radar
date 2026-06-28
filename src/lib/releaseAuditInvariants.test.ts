@@ -199,7 +199,10 @@ describe('verifyReleaseAudit', () => {
         verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
       };
       if (url.endsWith('/api/status')) {
-        return { refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt };
+        return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt };
+      }
+      if (url.endsWith('/api/config')) {
+        return { schemaVersion: 1, releases: 10, refreshMinutes: 30 };
       }
       if (url.endsWith('/api/public')) {
         return {
@@ -207,6 +210,7 @@ describe('verifyReleaseAudit', () => {
           repo: 'x/y',
           updatedAt: auditScoredAt,
           releases: [{
+            schemaVersion: 1,
             tag: 'v1',
             score: 7.5,
             band: 'ok',
@@ -230,6 +234,7 @@ describe('verifyReleaseAudit', () => {
       }
       if (url.endsWith('/api/releases')) {
         return [{
+          schemaVersion: 1,
           tag: 'v1',
           finalScore: 7.5,
           band: 'ok',
@@ -241,6 +246,14 @@ describe('verifyReleaseAudit', () => {
           scoredAt: auditScoredAt,
           scoreAudit,
           explanation,
+        }];
+      }
+      if (url.endsWith('/api/releases/history')) {
+        return [{
+          schemaVersion: 1,
+          tag: 'v1',
+          publishedAt: '2026-01-01T00:00:00Z',
+          finalScore: 7.5,
         }];
       }
       if (url.endsWith('/api/comparison')) {

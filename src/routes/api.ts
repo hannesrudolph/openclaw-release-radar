@@ -132,6 +132,7 @@ api.get('/health', (_req, res) => {
 // UI config — lets the frontend respect server-side limits without hardcoding.
 api.get('/config', (_req, res) => {
   res.json({
+    schemaVersion: CONFIG_PAYLOAD_SCHEMA_VERSION,
     releases: config.limits.releases,
     refreshMinutes: config.refresh.intervalMinutes,
   });
@@ -141,6 +142,7 @@ api.get('/status', (_req, res) => {
   const state = getRefreshState();
   const lastScoredAt = getLastScoredAt();
   res.json({
+    schemaVersion: STATUS_PAYLOAD_SCHEMA_VERSION,
     ...state,
     lastRefreshAt: lastScoredAt ?? state.lastRefreshAt,
     processLastRefreshAt: state.lastRefreshAt,
@@ -187,6 +189,10 @@ const LOCAL_AUDIT_SCHEMA_VERSION = 1;
 const COMPARISON_PAYLOAD_SCHEMA_VERSION = 1;
 const COMPARISON_UPSTREAM_SCHEMA_VERSION = 1;
 const COMPARISON_DELTA_SCHEMA_VERSION = 1;
+const STATUS_PAYLOAD_SCHEMA_VERSION = 1;
+const CONFIG_PAYLOAD_SCHEMA_VERSION = 1;
+const RELEASE_ROW_SCHEMA_VERSION = 1;
+const RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1;
 
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   if (!audit) return null;
@@ -217,6 +223,7 @@ api.get('/releases', (_req, res) => {
       const status = advisoryStatusFor(r.tag, advisories, stableTags);
       const audit = getReleaseScoreAudit(r.tag);
       return {
+        schemaVersion: RELEASE_ROW_SCHEMA_VERSION,
         tag: r.tag,
         name: r.name,
         publishedAt: r.published_at,
@@ -248,6 +255,7 @@ api.get('/releases/history', (_req, res) => {
   const rows = listReleasesDb(SCORE_HISTORY_CHART_LIMIT);
   res.json(
     rows.map((r) => ({
+      schemaVersion: RELEASE_HISTORY_ROW_SCHEMA_VERSION,
       tag: r.tag,
       publishedAt: r.published_at,
       finalScore: r.final_score,
@@ -356,6 +364,7 @@ api.get('/releases/:tag/review', (req, res) => {
 // effective severity/reach, then positives.
 const PUBLIC_ISSUES_PER_RELEASE = 25;
 const PUBLIC_PAYLOAD_SCHEMA_VERSION = 1;
+const PUBLIC_RELEASE_SCHEMA_VERSION = 1;
 const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
 const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
@@ -446,6 +455,7 @@ function buildPublicPayload() {
       .map(issueSummary);
 
     return {
+      schemaVersion:     PUBLIC_RELEASE_SCHEMA_VERSION,
       tag:               r.tag,
       publishedAt:       r.published_at,
       url:               r.html_url,

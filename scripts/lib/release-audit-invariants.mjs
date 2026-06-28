@@ -99,6 +99,11 @@ const localAuditSchemaVersion = 1;
 const comparisonPayloadSchemaVersion = 1;
 const comparisonUpstreamSchemaVersion = 1;
 const comparisonDeltaSchemaVersion = 1;
+const statusPayloadSchemaVersion = 1;
+const configPayloadSchemaVersion = 1;
+const releaseRowSchemaVersion = 1;
+const releaseHistoryRowSchemaVersion = 1;
+const publicReleaseSchemaVersion = 1;
 const gateEvidenceSchemaVersion = 1;
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
@@ -136,6 +141,7 @@ const publicReleaseKeys = new Set([
   'score',
   'scoreAudit',
   'scoredAt',
+  'schemaVersion',
   'status',
   'tag',
   'totalAttributedIssues',
@@ -864,12 +870,22 @@ function intersection(left, right) {
 
 async function verifyApi({ apiBase, fetchJson, releases, failures }) {
   const status = await fetchJson(`${apiBase}/api/status`);
+  expect(failures, 'api/status', status.schemaVersion === statusPayloadSchemaVersion,
+    `status schemaVersion must be ${statusPayloadSchemaVersion}, got ${JSON.stringify(status.schemaVersion)}`);
   expect(failures, 'api/status', status.refreshing === false, `refreshing must be false, got ${status.refreshing}`);
   expect(failures, 'api/status', status.lastError == null, `lastError must be null, got ${status.lastError}`);
   if (status.lastScoredAt) {
     expect(failures, 'api/status', status.lastRefreshAt === status.lastScoredAt,
       `lastRefreshAt (${status.lastRefreshAt}) must equal lastScoredAt (${status.lastScoredAt})`);
   }
+
+  const configPayload = await fetchJson(`${apiBase}/api/config`);
+  expect(failures, 'api/config', configPayload.schemaVersion === configPayloadSchemaVersion,
+    `config schemaVersion must be ${configPayloadSchemaVersion}, got ${JSON.stringify(configPayload.schemaVersion)}`);
+  expect(failures, 'api/config', Number.isInteger(configPayload.releases) && configPayload.releases > 0,
+    'config releases must be a positive integer');
+  expect(failures, 'api/config', typeof configPayload.refreshMinutes === 'number' && configPayload.refreshMinutes > 0,
+    'config refreshMinutes must be a positive number');
 
   const publicPayload = await fetchJson(`${apiBase}/api/public`);
   verifyAllowedKeys({ failures, tag: 'api/public', label: 'public top-level', value: publicPayload, allowed: publicTopLevelKeys });
@@ -884,10 +900,20 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
 
   const releasesPayload = await fetchJson(`${apiBase}/api/releases`);
   const releaseApiByTag = new Map((Array.isArray(releasesPayload) ? releasesPayload : []).map((release) => [release.tag, release]));
+  const historyPayload = await fetchJson(`${apiBase}/api/releases/history`);
+  expect(failures, 'api/releases/history', Array.isArray(historyPayload), 'history payload must be an array');
+  for (const row of historyPayload ?? []) {
+    expect(failures, row?.tag ?? 'api/releases/history', row.schemaVersion === releaseHistoryRowSchemaVersion,
+      `history row schemaVersion must be ${releaseHistoryRowSchemaVersion}, got ${JSON.stringify(row?.schemaVersion)}`);
+    expect(failures, row?.tag ?? 'api/releases/history', typeof row.tag === 'string' && row.tag.length > 0,
+      'history row tag must be present');
+  }
   const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
   for (const release of publicPayload.releases ?? []) {
     verifyAllowedKeys({ failures, tag: release.tag ?? 'api/public', label: 'public release', value: release, allowed: publicReleaseKeys });
     verifyNoForbiddenPublicKeys({ failures, tag: release.tag ?? 'api/public', value: release });
+    expect(failures, release.tag ?? 'api/public', release.schemaVersion === publicReleaseSchemaVersion,
+      `public release schemaVersion must be ${publicReleaseSchemaVersion}, got ${JSON.stringify(release.schemaVersion)}`);
   }
   const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
   expect(failures, 'api/comparison', comparisonPayload.schemaVersion === comparisonPayloadSchemaVersion,
@@ -899,6 +925,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     const releaseApi = releaseApiByTag.get(release.tag);
     expect(failures, release.tag, !!releaseApi, 'releases API must include monitored release');
     if (releaseApi) {
+      expect(failures, release.tag, releaseApi.schemaVersion === releaseRowSchemaVersion,
+        `releases row schemaVersion must be ${releaseRowSchemaVersion}, got ${JSON.stringify(releaseApi.schemaVersion)}`);
       expect(failures, release.tag, releaseApi.finalScore === release.final_score,
         `releases finalScore (${releaseApi.finalScore}) must match DB final_score (${release.final_score})`);
       expect(failures, release.tag, releaseApi.status === release.state,

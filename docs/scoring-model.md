@@ -236,6 +236,7 @@ Each detail entry has a stable `code`, matching `text`, and may include `metrics
 `/api/releases/:tag/review` exposes `local.schemaVersion`; `/api/public` and `/api/releases` expose `scoreAudit.schemaVersion`. Current value: `1`.
 `/api/releases/:tag/review` also exposes `local.issueEvidence.schemaVersion`. Current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
+The `/api/status`, `/api/config`, `/api/releases` rows, `/api/releases/history` rows, and `/api/public` release rows also expose `schemaVersion`. Current value: `1`.
 
 ## Validation Commands
 

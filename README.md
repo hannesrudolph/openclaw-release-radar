@@ -210,6 +210,7 @@ The `/api/releases/:tag/review` `local.gateEvidence` object also exposes `schema
 The `/api/releases/:tag/review` `local.gateEvidence.labelTimeline` object also exposes `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.gateEvidence.releaseChecks` and `local.gateEvidence.artifactVerification` objects also expose `schemaVersion`. Current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
+The `/api/status`, `/api/config`, `/api/releases` rows, `/api/releases/history` rows, and `/api/public` release rows also expose `schemaVersion`. Current value: `1`.
 
 ## Development Commands
 
