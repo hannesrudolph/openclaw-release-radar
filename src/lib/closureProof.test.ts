@@ -126,6 +126,25 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [60841]);
   });
 
+  it('uses bot close rationale that says closing this here because work is already tracked', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-25T12:59:11Z',
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-25T12:52:12Z',
+        body: [
+          'Thanks for the context here. I swept through the related work, and this is now duplicate or superseded.',
+          'Canonical: https://github.com/openclaw/openclaw/issues/58957',
+          'So I am closing this here because the remaining work is already tracked in the canonical issue.',
+        ].join('\n\n'),
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.deepEqual(result.evidence.canonicalIssues, [58957]);
+  });
+
   it('does not treat negated duplicate discussion as duplicate closure rationale', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],

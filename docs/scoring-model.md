@@ -144,6 +144,8 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `linked_closing_pr_reachability_unknown`: a merged GitHub closing PR link exists, but release-tag reachability is missing or unknown.
 - `linked_closing_pr_not_merged`: a GitHub closing PR link exists, but the PR is not merged or its merge state is unknown.
+- `linked_closing_pr_open`: a GitHub closing PR link exists and that PR is still open.
+- `linked_closing_pr_closed_unmerged`: a GitHub closing PR link exists, but that PR closed without merging.
 - `related_pr_without_release_fix`: related PR references exist, but none is linked as reachable release-fix proof for the scored tag.
 - `closed_without_release_fix_proof`: no linked PR or fix/source commit proof was found for the closure.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
@@ -154,6 +156,8 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `non_bug_fixed_after_latest_release`: non-negative item has fix proof after the latest scored stable release.
 - `non_bug_fixed_skipped_by_later_releases`: non-negative item has fix proof that predates later scored stable releases but is not reachable from them.
 - `non_bug_linked_without_merge`: non-negative item has a linked closing PR, but it is not merged or merge state is unknown.
+- `non_bug_linked_pr_open`: non-negative item has an open linked closing PR.
+- `non_bug_linked_pr_closed_unmerged`: non-negative item has a linked closing PR that closed without merging.
 - `non_bug_duplicate_to_fixed_in_release`: non-negative duplicate/superseded item points to canonical release-fix proof.
 - `non_bug_duplicate_to_open_canonical`: non-negative duplicate/superseded item points to an open canonical issue.
 - `non_bug_duplicate_to_closed_canonical`: non-negative duplicate/superseded item points to a closed canonical issue with terminal proof that is not release-fix credit.

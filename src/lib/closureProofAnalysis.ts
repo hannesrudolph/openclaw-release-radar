@@ -865,7 +865,10 @@ function adjustClosureProofStatus(
   latestStableReleaseLookup = latestStableRelease,
 ): ClosureProofResult {
   const adjusted = adjustNotPlannedEvidenceStatus(
-    adjustAdminTitleOnlyStatus(adjustNoReleaseFixProofStatus(result, evidence), evidence),
+    adjustLinkedClosingPrStatus(
+      adjustAdminTitleOnlyStatus(adjustNoReleaseFixProofStatus(result, evidence), evidence),
+      evidence,
+    ),
     evidence,
   );
   return adjustFixedAfterReleaseStatus(adjusted, evidence, releaseTag, laterCommitReachability, latestStableReleaseLookup);
@@ -882,6 +885,35 @@ function adjustAdminTitleOnlyStatus(
       ...result,
       status: 'reporter_withdrawn',
       summary: 'Title indicates the reporter withdrew or requested deletion; closure is not release fix proof.',
+    };
+  }
+  return result;
+}
+
+function adjustLinkedClosingPrStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  const negativeLinked = result.status === 'linked_closing_pr_not_merged';
+  const nonBugLinked = result.status === 'non_bug_linked_without_merge';
+  if (!negativeLinked && !nonBugLinked) return result;
+  const closingPrs = linkedClosingPrEvidence(evidence);
+  if (closingPrs.some((pr) => String(pr.state ?? '').toUpperCase() === 'OPEN' && Number(pr.merged ?? 0) !== 1)) {
+    return {
+      ...result,
+      status: negativeLinked ? 'linked_closing_pr_open' : 'non_bug_linked_pr_open',
+      summary: negativeLinked
+        ? 'A linked closing PR exists and remains open, so the closure points to unresolved PR work.'
+        : 'Non-negative item has an open linked closing PR; not scored as bug fix credit.',
+    };
+  }
+  if (closingPrs.some((pr) => String(pr.state ?? '').toUpperCase() === 'CLOSED' && Number(pr.merged ?? 0) !== 1)) {
+    return {
+      ...result,
+      status: negativeLinked ? 'linked_closing_pr_closed_unmerged' : 'non_bug_linked_pr_closed_unmerged',
+      summary: negativeLinked
+        ? 'A linked closing PR exists, but it was closed without merging.'
+        : 'Non-negative item has a linked closing PR that closed without merging.',
     };
   }
   return result;
@@ -1109,6 +1141,16 @@ function adjustNoReleaseFixProofStatus(
     status: 'related_pr_without_release_fix',
     summary: 'Related PR references exist, but none is linked as reachable release-fix proof for this tag.',
   };
+}
+
+function linkedClosingPrEvidence(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  return linkedPrs.filter((pr) => {
+    const source = String(pr.source ?? '');
+    return Number(pr.willCloseTarget ?? 0) === 1 ||
+      source === 'closedByPullRequestsReferences' ||
+      source === 'ClosedEvent.closer';
+  });
 }
 
 function adjustNotPlannedEvidenceStatus(

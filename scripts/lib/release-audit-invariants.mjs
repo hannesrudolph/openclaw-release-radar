@@ -347,6 +347,16 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
           `linked_closing_pr_not_merged issue #${row.issue_number} must have an unmerged/unknown closing PR`);
       }
+      if (row.status === 'linked_closing_pr_open') {
+        expect(failures, tag, linkedClosingPrEvidence(evidence).some((pr) =>
+          String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) !== 1),
+          `linked_closing_pr_open issue #${row.issue_number} must have open linked closing PR evidence`);
+      }
+      if (row.status === 'linked_closing_pr_closed_unmerged') {
+        expect(failures, tag, linkedClosingPrEvidence(evidence).some((pr) =>
+          String(pr?.state ?? '').toUpperCase() === 'CLOSED' && Number(pr?.merged ?? 0) !== 1),
+          `linked_closing_pr_closed_unmerged issue #${row.issue_number} must have closed-unmerged linked closing PR evidence`);
+      }
       if (row.status === 'linked_closing_pr_reachability_unknown') {
         expect(failures, tag, evidence.hasClosingLink === true &&
           evidence.hasMergedClosingPr === true &&
@@ -405,6 +415,18 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `non_bug_linked_without_merge issue #${row.issue_number} must not be negative`);
         expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
           `non_bug_linked_without_merge issue #${row.issue_number} must have an unmerged/unknown linked PR`);
+      }
+      if (row.status === 'non_bug_linked_pr_open') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, linkedClosingPrEvidence(evidence).some((pr) =>
+          String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) !== 1),
+          `non_bug_linked_pr_open issue #${row.issue_number} must have open linked closing PR evidence`);
+      }
+      if (row.status === 'non_bug_linked_pr_closed_unmerged') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, linkedClosingPrEvidence(evidence).some((pr) =>
+          String(pr?.state ?? '').toUpperCase() === 'CLOSED' && Number(pr?.merged ?? 0) !== 1),
+          `non_bug_linked_pr_closed_unmerged issue #${row.issue_number} must have closed-unmerged linked closing PR evidence`);
       }
       if (row.status === 'non_bug_duplicate_to_fixed_in_release') {
         expectNonNegativeProof({ failures, tag, row });
@@ -849,6 +871,16 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
 
 function canonicalFixCommitProof(evidence) {
   return Array.isArray(evidence?.canonicalFixCommitProof) ? evidence.canonicalFixCommitProof : [];
+}
+
+function linkedClosingPrEvidence(evidence) {
+  const linkedPrs = Array.isArray(evidence?.linkedPrs) ? evidence.linkedPrs : [];
+  return linkedPrs.filter((pr) => {
+    const source = String(pr?.source ?? '');
+    return Number(pr?.willCloseTarget ?? 0) === 1 ||
+      source === 'closedByPullRequestsReferences' ||
+      source === 'ClosedEvent.closer';
+  });
 }
 
 function canonicalFixedAfterRelease(evidence) {

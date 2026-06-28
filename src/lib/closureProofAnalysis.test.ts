@@ -298,6 +298,40 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'related_pr_without_release_fix');
   });
 
+  it('separates open linked closing PRs from closed unmerged PRs', () => {
+    const open = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('linked_closing_pr_not_merged', 'No merge.'),
+      {
+        linkedPrs: [{
+          number: 123,
+          source: 'closedByPullRequestsReferences',
+          willCloseTarget: 1,
+          state: 'OPEN',
+          merged: 0,
+        }],
+      },
+      'v1',
+      new Map(),
+    );
+    const closed = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('linked_closing_pr_not_merged', 'No merge.'),
+      {
+        linkedPrs: [{
+          number: 124,
+          source: 'closedByPullRequestsReferences',
+          willCloseTarget: 1,
+          state: 'CLOSED',
+          merged: 0,
+        }],
+      },
+      'v1',
+      new Map(),
+    );
+
+    assert.equal(open.status, 'linked_closing_pr_open');
+    assert.equal(closed.status, 'linked_closing_pr_closed_unmerged');
+  });
+
   it('classifies title-only author deletion requests as reporter withdrawal', () => {
     const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
       result('admin_not_planned_unverified', 'No rationale.'),
