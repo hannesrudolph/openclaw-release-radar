@@ -82,6 +82,17 @@ describe('release score explanations', () => {
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
     assert.ok((closure.issueRefs?.length ?? 0) >= 3);
     const closureProof = (run.scored[0].gateEvidence as any).fixProvenance?.closureProof ?? {};
+    const nonFixedClosureStatuses = Object.entries(closureProof.byStatus ?? {})
+      .filter(([status, count]) => status !== 'fixed_in_release' && Number(count ?? 0) > 0)
+      .map(([status]) => status);
+    assert.ok(closureProof.examplesByStatus);
+    for (const status of nonFixedClosureStatuses) {
+      assert.ok(
+        (closureProof.examplesByStatus[status]?.length ?? 0) > 0,
+        `expected representative example for closure status ${status}`,
+      );
+      assert.ok(closureProof.examplesByStatus[status].every((example: any) => example.status === status));
+    }
     if ((closure.metrics?.neutralHighImpactCount ?? 0) > 0 || (closure.metrics?.neutralBugShapedCount ?? 0) > 0) {
       assert.ok((closureProof.neutralAuditExamples?.length ?? 0) > 0);
       assert.ok(closure.issueRefs?.some((issue) =>

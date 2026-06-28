@@ -16,7 +16,7 @@ const proofCheckedAt = '2026-01-02T00:00:00Z';
 const auditScoredAt = '2026-01-02T00:00:01Z';
 
 function closureProofFixture(overrides: any = {}) {
-  return {
+  const proof = {
     creditedCount: 1,
     notCreditedCount: 0,
     byStatus: { fixed_in_release: 1 },
@@ -37,6 +37,12 @@ function closureProofFixture(overrides: any = {}) {
     },
     ...overrides,
   };
+  proof.examplesByStatus ??= Object.fromEntries(
+    Object.keys(proof.byStatus ?? {})
+      .filter((status) => status !== 'fixed_in_release')
+      .map((status) => [status, [{ number: 1, status }]]),
+  );
+  return proof;
 }
 
 function reader(overrides: Partial<{

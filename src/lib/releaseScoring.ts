@@ -598,8 +598,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const riskSummary = closureProof.riskSummary ?? {};
     const neutralAuditRefs = issueRefs(closureProof.neutralAuditExamples ?? [], 2);
     const primaryIssueRefLimit = neutralAuditRefs.length > 0 ? 3 : 5;
+    const closureExamples = closureProofExamplesWithStatusCoverage(closureProof)
+      .filter((item: any) => item.status !== 'fixed_in_release');
     const closureIssueRefs = mergeIssueRefs(
-      issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release'), primaryIssueRefLimit),
+      issueRefs(closureExamples, primaryIssueRefLimit),
       neutralAuditRefs,
       5,
     );
@@ -735,6 +737,26 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function closureProofExamplesWithStatusCoverage(closureProof: any): any[] {
+  const seen = new Set<number>();
+  const merged: any[] = [];
+  const add = (item: any) => {
+    const number = Number(item?.number ?? item?.issue?.number);
+    if (!Number.isInteger(number) || number <= 0 || seen.has(number)) return;
+    seen.add(number);
+    merged.push(item);
+  };
+  for (const item of closureProof?.examples ?? []) add(item);
+  const examplesByStatus = closureProof?.examplesByStatus ?? {};
+  if (examplesByStatus && typeof examplesByStatus === 'object') {
+    for (const examples of Object.values(examplesByStatus)) {
+      if (!Array.isArray(examples)) continue;
+      for (const item of examples) add(item);
+    }
+  }
+  return merged;
 }
 
 function debtTierSummary(items: any[], tier: 'verified' | 'carryover' | 'stale'): {

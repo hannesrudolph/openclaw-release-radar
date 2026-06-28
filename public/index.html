@@ -1854,9 +1854,28 @@ function closureRiskSummaryText(closureProof) {
     .join(' · ');
 }
 
+function closureProofExamplesWithStatusCoverage(closureProof, riskLimit = 12) {
+  const seen = new Set();
+  const merged = [];
+  const add = (item) => {
+    const number = Number(item?.number);
+    if (!Number.isInteger(number) || number <= 0 || seen.has(number)) return;
+    seen.add(number);
+    merged.push(item);
+  };
+  (closureProof?.examples ?? []).slice(0, riskLimit).forEach(add);
+  const examplesByStatus = closureProof?.examplesByStatus ?? {};
+  if (examplesByStatus && typeof examplesByStatus === 'object') {
+    Object.values(examplesByStatus).forEach((examples) => {
+      if (Array.isArray(examples)) examples.forEach(add);
+    });
+  }
+  return merged;
+}
+
 function closureProofHtml(closureProof) {
   if (!closureProof?.examples?.length) return '';
-  const rows = closureProof.examples.slice(0, 12).map((item) => {
+  const rows = closureProofExamplesWithStatusCoverage(closureProof, 12).map((item) => {
     const link = item.url
       ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">#${esc(item.number)} ${esc(shortIssueTitle(item))}</a>`
       : `<span>#${esc(item.number)} ${esc(shortIssueTitle(item))}</span>`;

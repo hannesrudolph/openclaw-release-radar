@@ -151,6 +151,7 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     .sort(compareNeutralAuditExamples)
     .slice(0, 10);
   const examples = allExamples.slice(0, 30);
+  const examplesByStatus = representativeExamplesByStatus(allExamples, summaryRows);
   const riskSummary = {
     creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
     resolvedByCanonicalReleaseFixCount: byRiskDisposition.resolved_by_canonical_release_fix ?? 0,
@@ -179,6 +180,7 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
       weightedRiskByDisposition: roundRiskMap(weightedRisk.byDisposition),
     },
     neutralAuditExamples,
+    examplesByStatus,
     examples,
   };
 }
@@ -189,6 +191,22 @@ function compareClosureProofExamples(a: any, b: any): number {
   const statusDiff = closureStatusRank(a.status) - closureStatusRank(b.status);
   if (statusDiff !== 0) return statusDiff;
   return String(b.closedAt ?? '').localeCompare(String(a.closedAt ?? ''));
+}
+
+function representativeExamplesByStatus(
+  allExamples: any[],
+  summaryRows: Array<{ status: string; count: number }>,
+  limitPerStatus = 1,
+): Record<string, any[]> {
+  const byStatus: Record<string, any[]> = {};
+  for (const row of summaryRows) {
+    if (row.status === 'fixed_in_release' || Number(row.count ?? 0) <= 0) continue;
+    const examples = allExamples
+      .filter((example) => example.status === row.status)
+      .slice(0, limitPerStatus);
+    if (examples.length) byStatus[row.status] = examples;
+  }
+  return byStatus;
 }
 
 function closureStatusRank(status: string): number {

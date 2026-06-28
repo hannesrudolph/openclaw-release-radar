@@ -85,6 +85,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /resolvedByCanonicalReleaseFixCount/);
     assert.match(html, /neutralHighImpactCount/);
     assert.match(html, /neutralBugShapedCount/);
+    assert.match(html, /closureProofExamplesWithStatusCoverage/);
+    assert.match(html, /examplesByStatus/);
   });
 
   it('issue title truncation is word-boundary aware in the UI fallback', () => {
