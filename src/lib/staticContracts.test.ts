@@ -195,6 +195,16 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /allCommitOids\.add\(commitOid\.toLowerCase\(\)\)/);
   });
 
+  it('PR reachability covers related merged PR evidence, not only credited closing links', () => {
+    const reachability = readFileSync(join(root, 'src/lib/releaseReachability.ts'), 'utf8');
+    const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    assert.match(reachability, /JOIN issue_pr_links l/);
+    assert.match(reachability, /WHERE p\.merged = 1/);
+    assert.doesNotMatch(reachability, /creditedFixLinkSql/);
+    assert.match(analysis, /refreshClosureCommentPrMentionEvidence/);
+    assert.match(analysis, /await checkReleasePrReachability\(releaseTag\);/);
+  });
+
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);

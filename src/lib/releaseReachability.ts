@@ -4,7 +4,6 @@ import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { config } from '../config';
 import { db, deleteReleasePrReachabilityForRelease, upsertReleasePrReachability } from './db';
-import { creditedFixLinkSql } from './fixProvenance';
 
 export interface ReleaseReachabilityResult {
   tag: string;
@@ -36,11 +35,8 @@ SELECT DISTINCT
   p.base_ref_name
 FROM pull_request_fixes p
 JOIN issue_pr_links l ON l.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND l.pr_number = p.pr_number
-JOIN issue_closure_events e ON e.issue_number = l.issue_number
-WHERE e.state_reason='COMPLETED'
-  AND p.merged = 1
+WHERE p.merged = 1
   AND p.pr_repository_name_with_owner = ?
-  AND ${creditedFixLinkSql('l')}
 `);
 
 const releaseCommitStmt = db.prepare('SELECT tag_commit_oid FROM release_commits WHERE tag=?');

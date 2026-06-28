@@ -282,6 +282,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }
   const analysisIssueNumbers = uniqueNumbers([...issueNumbers, ...terminalCanonicalIssuesToBackfill]);
   await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue);
+  await checkReleasePrReachability(releaseTag);
   const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
   const aggregateRows = analysisIssueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(analysisIssueNumbers), releaseTag) as Array<any>
