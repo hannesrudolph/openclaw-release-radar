@@ -8,7 +8,7 @@ const dbPath = process.env.DB_PATH ?? './data/radar.db';
 process.env.RADAR_DB_READ_ONLY = '1';
 const db = new DatabaseSync(dbPath, { readOnly: true });
 db.exec('PRAGMA query_only = ON');
-const { buildReleaseScoreRun } = await import('../src/lib/releaseScoring.ts');
+const { buildReleaseScoreRun, PROMPT_VERSION, SCORE_MODEL_VERSION } = await import('../src/lib/releaseScoring.ts');
 
 const allRel = db.prepare(
   `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`,
@@ -101,12 +101,21 @@ function comparePersisted({ failures, result, audit, recommended }) {
 
   expectEqual(failures, tag, 'release final_score', rel.final_score, conf.score);
   expectEqual(failures, tag, 'audit final_score', audit.final_score, conf.score);
+  expectEqual(failures, tag, 'audit score_model_version', audit.score_model_version, SCORE_MODEL_VERSION);
+  expectEqual(failures, tag, 'audit prompt_version', Number(audit.prompt_version), PROMPT_VERSION);
   expectEqual(failures, tag, 'release state', rel.state, conf.status);
   expectEqual(failures, tag, 'audit status', audit.status, conf.status);
   expectEqual(failures, tag, 'audit band', audit.band, conf.band);
   expectEqual(failures, tag, 'release recommended', Number(rel.recommended ?? 0), recommended ? 1 : 0);
   expectEqual(failures, tag, 'audit recommended', Number(audit.recommended ?? 0), recommended ? 1 : 0);
   expectEqual(failures, tag, 'release reason', rel.score_reason, conf.reason);
+  expectEqual(failures, tag, 'release scored_at', rel.scored_at, audit.scored_at);
+  if (input.classifiedIssueCount > input.rawIssueCount) {
+    failures.push(`${tag}: classifiedIssueCount (${input.classifiedIssueCount}) must not exceed rawIssueCount (${input.rawIssueCount})`);
+  }
+  if (input.rawIssueCount !== input.classifiedIssueCount) {
+    failures.push(`${tag}: scored release requires complete classification coverage (${input.classifiedIssueCount}/${input.rawIssueCount})`);
+  }
 
   expectEqual(failures, tag, 'negative issue count', Number(rel.negative_issues ?? 0), result.neg);
   expectEqual(failures, tag, 'positive issue count', Number(rel.positive_issues ?? 0), result.pos);

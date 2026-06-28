@@ -77,6 +77,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /buildReleaseScoreRun/);
     assert.match(verifier, /RADAR_DB_READ_ONLY = '1'/);
     assert.match(verifier, /verifyScoredReleaseCoverage/);
+    assert.match(verifier, /SCORE_MODEL_VERSION/);
+    assert.match(verifier, /PROMPT_VERSION/);
+    assert.match(verifier, /complete classification coverage/);
+    assert.match(verifier, /release scored_at/);
     assert.match(verifier, /--all/);
     assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);
