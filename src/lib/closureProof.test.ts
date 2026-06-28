@@ -169,6 +169,38 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [58957]);
   });
 
+  it('recognizes this-is-now duplicate close rationale with canonical path', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-05-27T14:44:44Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-05-27T14:34:31Z',
+        updatedAt: '2026-05-27T14:44:42Z',
+        body: [
+          'Thanks for the context here. I swept through the related work, and this is now duplicate or superseded.',
+          'This is the same unresolved Gateway OpenAI-compatible session-routing bug already tracked by the older open report.',
+          'Canonical path: Use https://github.com/openclaw/openclaw/issues/74679 as the canonical fix target.',
+          'So I am closing this here and keeping the remaining discussion on the canonical issue.',
+        ].join('\n\n'),
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [74679]);
+  });
+
+  it('recognizes already-active duplicate wording with canonical URL', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'This report matches the already-active missing-index-metadata regression tracked in https://github.com/openclaw/openclaw/issues/90361, so keeping a second root-cause-specific report open would fragment the investigation.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [90361]);
+  });
+
   it('does not treat negated duplicate discussion as duplicate closure rationale', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],
@@ -206,6 +238,26 @@ describe('classifyClosureProof', () => {
       }],
     }));
     assert.equal(result.status, 'repro_requested');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.matchingComments as any[]).length, 1);
+  });
+
+  it('separates insufficient-info closures from bare admin not-planned closures', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-18T11:49:54Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-04-27T04:54:06Z',
+        updatedAt: '2026-06-18T11:49:53Z',
+        body: [
+          'Close as stale/insufficient-info: the report has a plausible Matrix routing-to-WebChat failure,',
+          'but the maintainer-requested isolated-DM rerun, gateway logs, and matching session JSONL never arrived,',
+          'and current code/release inspection still cannot identify the missing handoff without that trace.',
+        ].join(' '),
+      }],
+    }));
+    assert.equal(result.status, 'insufficient_info');
     assert.equal(result.evidence.closureContextCommentCount, 1);
     assert.equal((result.evidence.matchingComments as any[]).length, 1);
   });
@@ -271,6 +323,18 @@ describe('classifyClosureProof', () => {
     assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
   });
 
+  it('recognizes deprecated integration guidance as non-actionable', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'maintainer',
+        body: 'Closing - the BlueBubbles channel plugin is deprecated and no longer maintained. For iMessage integration, use the built-in `imessage` channel instead.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
   it('does not use stale review comments as the closure rationale', () => {
     const result = classifyClosureProof(input({
       closedAt: '2026-06-25T01:31:42Z',
@@ -293,6 +357,20 @@ describe('classifyClosureProof', () => {
       }],
     }));
     assert.equal(result.status, 'closed_without_release_fix_proof');
+  });
+
+  it('does not treat negated stay-open wording as a keep-open review', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-01T00:00:00Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-01T00:00:00Z',
+        body: 'Close as duplicate: this does not need to stay open separately because https://github.com/openclaw/openclaw/issues/87998 tracks the same report.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
   it('separates unmerged linked closing PR from missing proof', () => {

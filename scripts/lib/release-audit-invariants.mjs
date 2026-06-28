@@ -313,6 +313,10 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
           `admin_not_planned_unverified issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
       }
+      if (row.status === 'insufficient_info') {
+        expect(failures, tag, Array.isArray(evidence.matchingComments) && evidence.matchingComments.length > 0,
+          `insufficient_info issue #${row.issue_number} must include close-time matching rationale`);
+      }
       if (row.status === 'not_planned_with_release_fix_proof') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `not_planned_with_release_fix_proof issue #${row.issue_number} must have NOT_PLANNED state reason`);

@@ -281,6 +281,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     }
   }
   const analysisIssueNumbers = uniqueNumbers([...issueNumbers, ...terminalCanonicalIssuesToBackfill]);
+  await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue);
   const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
   const aggregateRows = analysisIssueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(analysisIssueNumbers), releaseTag) as Array<any>
@@ -1682,6 +1683,49 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
     }
   }
   return { closureEvents, reopenEvents, prLinks, pullRequests, commitReferences };
+}
+
+async function refreshClosureCommentPrMentionEvidence(
+  issueNumbers: number[],
+  commentsByIssue: Map<number, GhComment[]>,
+): Promise<void> {
+  const commentMentions = issueNumbers.flatMap((issueNumber) =>
+    closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+  );
+  if (!commentMentions.length) return;
+  const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
+    prNumber: mention.prNumber,
+    prRepositoryOwner: mention.prRepositoryOwner,
+    prRepositoryName: mention.prRepositoryName,
+    prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+  })));
+  for (const mention of commentMentions) {
+    const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
+    if (!pr) continue;
+    upsertIssuePrLink({
+      issue_number: mention.issueNumber,
+      pr_repository_owner: mention.prRepositoryOwner,
+      pr_repository_name: mention.prRepositoryName,
+      pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
+      pr_number: mention.prNumber,
+      source: mention.source,
+      will_close_target: null,
+      referenced_at: mention.referencedAt,
+    });
+    upsertPullRequestFix({
+      pr_repository_owner: pr.repositoryOwner,
+      pr_repository_name: pr.repositoryName,
+      pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+      pr_number: pr.number,
+      title: pr.title,
+      url: pr.url,
+      state: pr.state,
+      merged: pr.merged ? 1 : 0,
+      merged_at: pr.mergedAt,
+      merge_commit_oid: pr.mergeCommitOid,
+      base_ref_name: pr.baseRefName,
+    });
+  }
 }
 
 function splitCsv(value: unknown): string[] {

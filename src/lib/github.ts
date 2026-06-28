@@ -1430,7 +1430,9 @@ function isClosureCommitFixProofComment(text: string): boolean {
 }
 
 function isKeepOpenReviewComment(text: string): boolean {
-  return /\bkeep(?:ing)?\s+(?:this\s+)?open\b|\b(?:stay|remain)\s+(?:open|unresolved)\b|\bbefore closing this issue\b/i.test(text);
+  const keepOpen = /\bkeep(?:ing)?\s+(?:this\s+)?open\b|\b(?:stay|remain)\s+(?:open|unresolved)\b|\bbefore closing this issue\b/i.test(text);
+  if (!keepOpen) return false;
+  return !/\b(?:does\s+not|doesn't|do\s+not|don't|no\s+need\s+to|need\s+not)\s+(?:need\s+to\s+)?(?:stay|remain|keep|keeping)\s+(?:this\s+)?open\b|\brather\s+than\s+keeping\b.{0,120}\bopen\b|\bnot\s+keeping\b.{0,120}\bopen\b/i.test(text);
 }
 
 function commentEffectiveAt(comment: {

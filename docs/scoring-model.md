@@ -145,6 +145,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `reporter_replaced`: reporter refiled, reopened, or replaced the issue under another issue number.
 - `reporter_withdrawn`: reporter withdrew the report, asked maintainers to ignore it, or closed it for privacy/non-fix reasons.
 - `reporter_self_closed`: reporter self-closed the issue without linked release fix proof or ongoing failure context.
+- `insufficient_info`: closure explains that requested reproduction detail, logs, or trace evidence never arrived. It remains unresolved proof debt rather than a release fix.
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `linked_closing_pr_reachability_unknown`: a merged GitHub closing PR link exists, but release-tag reachability is missing or unknown.
 - `linked_closing_pr_not_merged`: a GitHub closing PR link exists, but the PR is not merged or its merge state is unknown.

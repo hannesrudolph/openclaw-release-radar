@@ -26,18 +26,20 @@ export interface ClosureProofResult {
   evidence: Record<string, unknown>;
 }
 
-const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|broader .*tracker|belongs under)\b/i;
-const DUPLICATE_RATIONALE_RE = /\b(?:close[sd]?|closing|closed)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:duplicate|dupe|superseded|already tracked|covered by|belongs under)\b|\b(?:as\s+(?:a\s+)?)?(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:the\s+)?(?:open\s+|closed\s+)?(?:canonical\s+)?(?:(?:issue|tracker|report)\s+)?(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b|\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b/i;
+const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|already-active|already active|broader .*tracker|belongs under|matches\b.{0,120}\b(?:tracked|canonical|duplicate|same))\b/i;
+const DUPLICATE_RATIONALE_RE = /\b(?:close[sd]?|closing|closed)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:duplicate|dupe|superseded|already tracked|covered by|belongs under)\b|\b(?:this\s+is\s+now|now)\s+(?:a\s+)?(?:duplicate|dupe|superseded)\b|\b(?:this\s+report\s+)?matches\b.{0,160}\b(?:already-active|already active|canonical|duplicate|same)\b|\b(?:as\s+(?:a\s+)?)?(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:the\s+)?(?:open\s+|closed\s+)?(?:canonical\s+)?(?:(?:issue|tracker|report)\s+)?(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b|\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b/i;
 const NOT_DUPLICATE_RE = /\b(?:not|isn't|is not|wasn't|was not|no longer)\s+(?:a\s+)?(?:duplicate|dupe|superseded)\b/i;
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|tagged releases? already|already contains|already covered|implemented in current|current `?main`?.{0,80}\b(?:already|now)\s+(?:has|contains|includes|implements?|fix(?:e[sd])?)|current `?main`?.{0,80}\bv20\d{2}\.\d+\.\d+\s+(?:already\s+)?(?:has|contains|includes|implements?|fix(?:e[sd])?))\b/i;
 const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
-const NON_ACTIONABLE_RATIONALE_RE = /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|plugin-owned|plugin\s+scope|ClawHub|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported|no longer reproduc(?:e|es|ible)|not reproducible|non-reproducible|could not reproduce|does not reproduce|contract (?:was )?clarified|supported alternative|decision:)\b/i;
+const NON_ACTIONABLE_RATIONALE_RE = /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|wrong\s+(?:repo|repository|service)|not\s+OpenClaw-related|not\s+affiliated|please\s+file\s+(?:under|upstream|against)|plugin-owned|plugin\s+scope|plugin\/community path|external\s+(?:package|plugin|client)|separately published|deprecated and no longer (?:ships|maintained)|no longer maintained|use\s+(?:the\s+)?built-in\b|ClawHub|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported|no longer reproduc(?:e|es|ible)|not reproducible|non-reproducible|could not reproduce|could not reproduce it anymore|does not reproduce|contract (?:was )?clarified|supported alternative|decision:)\b/i;
 const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|under|to)\b.{0,80}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#\d+\b/i;
 const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
 const REPRO_REQUESTED_RE = /\b(?:(?:please\s+)?(?:file|open)\s+(?:a\s+)?fresh\s+issue|please\s+(?:file|open)\s+(?:a\s+)?new\s+issue)\b.{0,160}\bif\b.{0,160}\b(?:still|continues?|fails?|repro(?:s|duces?)?)\b|\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b|\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b.{0,80}\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b/i;
+const INSUFFICIENT_INFO_RE = /\b(?:stale\/insufficient-info|insufficient[-\s]?info|insufficient information|missing enough reproduction detail|not enough (?:evidence|information|details)|without (?:those|the) (?:details|logs|trace)|no reply from (?:the )?author|there has been no reply|never arrived|cannot identify .* without (?:that|the) trace)\b/i;
 const KEEP_OPEN_RE = /\b(?:keep(?:ing)?|stay|remain)\s+(?:this\s+)?open\b|\bbefore closing this issue\b/i;
-const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:here\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\bfixed\s+on\s+(?:current\s+)?`?main`?\b|\bcanonical\s+(?:PR|pull request)\s*:\s*#\d+\b|\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b|\b(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b/i;
+const NOT_KEEP_OPEN_RE = /\b(?:does\s+not|doesn't|do\s+not|don't|no\s+need\s+to|need\s+not)\s+(?:need\s+to\s+)?(?:stay|remain|keep|keeping)\s+(?:this\s+)?open\b|\brather\s+than\s+keeping\b.{0,120}\bopen\b|\bnot\s+keeping\b.{0,120}\bopen\b/i;
+const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\bclosing\s*[—-]|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:here\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\bso\s+i[’']?m\s+closing\s+this\s+here\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\b(?:this\s+is\s+now|now)\s+(?:a\s+)?(?:duplicate|dupe|superseded)\b|\b(?:this\s+report\s+)?matches\b.{0,160}\b(?:already-active|already active|canonical|duplicate|same)\b|\bfixed\s+on\s+(?:current\s+)?`?main`?\b|\bcanonical\s+(?:PR|pull request)\s*:\s*#\d+\b|\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b|\b(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b/i;
 const CANONICAL_REFERENCE_RES = [
   /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
   /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker|root-cause cluster|root cause cluster)(?:\*\*)?\s*:\s*.{0,240}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)/gim,
@@ -185,6 +187,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (INSUFFICIENT_INFO_RE.test(combinedComments)) {
+    return {
+      status: 'insufficient_info',
+      summary: 'Closed because requested reproduction detail, logs, or trace evidence was missing; no release fix proof is linked.',
+      evidence,
+    };
+  }
+
   if (hasDuplicateOrSupersededSignal(combinedComments, reasons)) {
     return {
       status: 'duplicate_or_superseded',
@@ -287,7 +297,7 @@ export function closureRationaleComments<T extends { createdAt?: string | null; 
       effectiveMs >= closedMs - CLOSURE_CONTEXT_BEFORE_MS &&
       effectiveMs <= closedMs + CLOSURE_CONTEXT_AFTER_MS) {
       const body = 'body' in comment ? String(comment.body ?? '').replace(/\s+/g, ' ') : '';
-      return CLOSURE_RATIONALE_RE.test(body) && !KEEP_OPEN_RE.test(body);
+      return CLOSURE_RATIONALE_RE.test(body) && !isKeepOpenComment(body);
     }
     return false;
   });
@@ -332,6 +342,10 @@ function shouldSkipBarePrCanonicalMatch(text: string, match: RegExpMatchArray): 
   return /\b(?:PR|pull request)\b|\/pull\//i.test(line);
 }
 
+function isKeepOpenComment(text: string): boolean {
+  return KEEP_OPEN_RE.test(text) && !NOT_KEEP_OPEN_RE.test(text);
+}
+
 function hasDuplicateOrSupersededSignal(text: string, reasons: Set<string>): boolean {
   if (reasons.has('DUPLICATE')) return true;
   if (!DUPLICATE_RE.test(text)) return false;
@@ -350,7 +364,8 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
     .filter((comment) => {
       const body = comment.body ?? '';
       return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || MAIN_ONLY_RE.test(body) || NO_PLAN_RE.test(body) ||
-        REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body) || REPRO_REQUESTED_RE.test(body);
+        REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body) || REPRO_REQUESTED_RE.test(body) ||
+        INSUFFICIENT_INFO_RE.test(body);
     })
     .slice(-3)
     .map((comment) => ({

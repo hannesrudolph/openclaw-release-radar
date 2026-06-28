@@ -972,6 +972,7 @@ function closureStatusLabel(status: string): string {
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
     repro_requested: 'fresh repro requested',
+    insufficient_info: 'insufficient repro info',
     reporter_self_closed: 'reporter self-closed',
     no_code_proof: 'no linked release fix',
     linked_closing_pr_reachability_unknown: 'merged closing PR reachability unknown',
