@@ -2,10 +2,19 @@ import {
   closureProofExamples,
   closureProofRiskRows,
   closureProofSummary,
+  getRelease,
   type ClosureProofRiskRow,
   getReleaseScoreAudit,
+  labelsForIssueAt,
   updateReleaseScoreAuditGateEvidence,
 } from './db';
+import { releaseLabelCutoff } from './labelCutoff';
+import {
+  applyLabelOverrides,
+  applyTitleFunctionalityHint,
+  applyTitleIssueShapeHint,
+} from './labelOverrides';
+import type { IssueClassification } from './llm';
 
 export const CLOSURE_RISK_DISPOSITIONS = [
   'credited_release_fix',
@@ -81,9 +90,11 @@ const USERS_RISK_WEIGHT: Record<string, number> = {
 export function closureProofPayload(tag: string) {
   const summaryRows = closureProofSummary(tag);
   if (!summaryRows.length) return null;
+  const release = getRelease(tag);
+  const labelCutoff = release ? releaseLabelCutoff(release) : null;
   const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
   const byRiskDisposition = countByRiskDisposition(summaryRows);
-  const weightedRisk = weightedRiskForRows(closureProofRiskRows(tag));
+  const weightedRisk = weightedRiskForRows(closureProofRiskRows(tag), labelCutoff);
   const notCreditedCount = summaryRows
     .filter((row) => row.status !== 'fixed_in_release')
     .reduce((sum, row) => sum + row.count, 0);
@@ -175,9 +186,11 @@ function countByRiskDisposition(
   return counts;
 }
 
-export function closureRiskWeightForRow(row: Pick<ClosureProofRiskRow,
+type ClosureRiskWeightRow = Pick<ClosureProofRiskRow,
   'status' | 'sentiment' | 'severity' | 'scope' | 'functionality' | 'affected_users'
->): number {
+>;
+
+export function closureRiskWeightForRow(row: ClosureRiskWeightRow): number {
   const disposition = closureRiskDisposition(row.status);
   const dispositionWeight = DISPOSITION_RISK_WEIGHT[disposition] ?? 0;
   if (dispositionWeight <= 0) return 0;
@@ -192,20 +205,67 @@ export function closureRiskWeightForRow(row: Pick<ClosureProofRiskRow,
     (USERS_RISK_WEIGHT[row.affected_users ?? 'unknown'] ?? USERS_RISK_WEIGHT.unknown);
 }
 
-function weightedRiskForRows(rows: ClosureProofRiskRow[]): {
+function weightedRiskForRows(rows: ClosureProofRiskRow[], labelCutoff: string | null): {
   unresolvedWeightedRisk: number;
   byDisposition: Partial<Record<ClosureRiskDisposition, number>>;
 } {
   const byDisposition: Partial<Record<ClosureRiskDisposition, number>> = {};
   for (const row of rows) {
     const disposition = closureRiskDisposition(row.status);
-    const weight = closureRiskWeightForRow(row) * Number(row.count ?? 0);
+    const effective = effectiveClosureRiskRow(row, labelCutoff);
+    const weight = closureRiskWeightForRow(effective) * Number(row.count ?? 0);
     if (weight <= 0) continue;
     byDisposition[disposition] = (byDisposition[disposition] ?? 0) + weight;
   }
   return {
     unresolvedWeightedRisk: Object.values(byDisposition).reduce((sum, value) => sum + Number(value ?? 0), 0),
     byDisposition,
+  };
+}
+
+function effectiveClosureRiskRow(row: ClosureProofRiskRow, labelCutoff: string | null): ClosureRiskWeightRow {
+  if (!row.sentiment || !row.severity || !row.scope || !row.functionality || !row.affected_users) {
+    return row;
+  }
+  const currentLabels = parseJson<string[]>(row.labels, []);
+  const labels = labelsForIssueAt(row.issue_number, currentLabels, labelCutoff, {
+    useFallbackWhenNoEvents: labelCutoff == null,
+  });
+  const effective = applyTitleIssueShapeHint(
+    applyLabelOverrides(
+      applyTitleFunctionalityHint(rowToClassification(row), row.title ?? ''),
+      labels,
+    ),
+    row.title ?? '',
+    labels,
+  );
+  return {
+    status: row.status,
+    sentiment: effective.sentiment,
+    severity: effective.severity,
+    scope: effective.scope,
+    functionality: effective.functionality,
+    affected_users: effective.affectedUsers,
+  };
+}
+
+function rowToClassification(row: ClosureProofRiskRow): IssueClassification {
+  const workaroundStatus = ['none', 'partial', 'confirmed', 'unknown'].includes(row.workaround_status ?? '')
+    ? row.workaround_status as IssueClassification['workaroundStatus']
+    : row.has_workaround === 1
+      ? 'confirmed'
+      : 'unknown';
+  return {
+    sentiment: row.sentiment as IssueClassification['sentiment'],
+    severity: row.severity as IssueClassification['severity'],
+    scope: row.scope as IssueClassification['scope'],
+    functionality: row.functionality as IssueClassification['functionality'],
+    affectedUsers: row.affected_users as IssueClassification['affectedUsers'],
+    workaroundStatus,
+    duplicateCluster: row.duplicate_cluster,
+    affectsVersion: row.affects_version,
+    confidence: typeof row.confidence === 'number' ? row.confidence : 0.5,
+    rationale: row.rationale ?? '',
   };
 }
 

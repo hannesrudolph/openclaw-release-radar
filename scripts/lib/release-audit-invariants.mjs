@@ -1,3 +1,9 @@
+import {
+  applyLabelOverrides,
+  applyTitleFunctionalityHint,
+  applyTitleIssueShapeHint,
+} from '../../src/lib/labelOverrides.ts';
+
 export const knownProofStatuses = new Set([
   'fixed_in_release',
   'fixed_after_release',
@@ -507,15 +513,50 @@ function closureRiskWeightForProofRow(row) {
   const disposition = riskDispositionForStatus(row.status);
   const dispositionWeight = riskDispositionWeights.get(disposition) ?? 0;
   if (dispositionWeight <= 0) return 0;
-  if (row.sentiment !== 'negative') return 0;
-  const severity = severityRiskWeights.get(row.severity) ?? 0;
-  const functionality = functionalityRiskWeights.get(row.functionality) ?? 0;
+  const classification = effectiveClassificationForProofRow(row);
+  if (classification.sentiment !== 'negative') return 0;
+  const severity = severityRiskWeights.get(classification.severity) ?? 0;
+  const functionality = functionalityRiskWeights.get(classification.functionality) ?? 0;
   if (severity <= 0 || functionality <= 0) return 0;
   return dispositionWeight *
     severity *
     functionality *
-    (scopeRiskWeights.get(row.scope) ?? 1) *
-    (affectedUserRiskWeights.get(row.affected_users ?? 'unknown') ?? affectedUserRiskWeights.get('unknown'));
+    (scopeRiskWeights.get(classification.scope) ?? 1) *
+    (affectedUserRiskWeights.get(classification.affectedUsers ?? 'unknown') ?? affectedUserRiskWeights.get('unknown'));
+}
+
+function effectiveClassificationForProofRow(row) {
+  const labels = Array.isArray(row.effective_labels)
+    ? row.effective_labels.filter((label) => typeof label === 'string')
+    : [];
+  return applyTitleIssueShapeHint(
+    applyLabelOverrides(
+      applyTitleFunctionalityHint(rawClassificationForProofRow(row), row.title ?? ''),
+      labels,
+    ),
+    row.title ?? '',
+    labels,
+  );
+}
+
+function rawClassificationForProofRow(row) {
+  const workaroundStatus = ['none', 'partial', 'confirmed', 'unknown'].includes(row.workaround_status ?? '')
+    ? row.workaround_status
+    : row.has_workaround === 1
+      ? 'confirmed'
+      : 'unknown';
+  return {
+    sentiment: row.sentiment,
+    severity: row.severity,
+    scope: row.scope,
+    functionality: row.functionality,
+    affectedUsers: row.affected_users,
+    workaroundStatus,
+    duplicateCluster: row.duplicate_cluster ?? null,
+    affectsVersion: row.affects_version ?? null,
+    confidence: typeof row.confidence === 'number' ? row.confidence : 0.5,
+    rationale: row.rationale ?? '',
+  };
 }
 
 function roundRiskMap(map) {

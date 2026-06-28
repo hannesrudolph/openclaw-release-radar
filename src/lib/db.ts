@@ -803,26 +803,48 @@ export function closureProofSummary(releaseTag: string): Array<{ status: string;
 
 const closureProofRiskRowsStmt = db.prepare(`
 SELECT p.status,
+       p.issue_number,
+       i.title,
+       i.labels,
        c.sentiment,
        c.severity,
        c.scope,
        c.functionality,
        c.affected_users,
+       c.has_workaround,
+       c.workaround_status,
+       c.duplicate_cluster,
+       c.affects_version,
+       c.confidence,
+       c.rationale,
        COUNT(*) AS count
 FROM issue_closure_proofs p
+JOIN issues i ON i.number=p.issue_number
 LEFT JOIN classifications c ON c.issue_number=p.issue_number
 WHERE p.release_tag=?
-GROUP BY p.status, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
+GROUP BY p.status, p.issue_number, i.title, i.labels,
+         c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+         c.has_workaround, c.workaround_status, c.duplicate_cluster,
+         c.affects_version, c.confidence, c.rationale
 ORDER BY count DESC
 `);
 
 export interface ClosureProofRiskRow {
   status: string;
+  issue_number: number;
+  title: string;
+  labels: string;
   sentiment: string | null;
   severity: string | null;
   scope: string | null;
   functionality: string | null;
   affected_users: string | null;
+  has_workaround: number | null;
+  workaround_status: string | null;
+  duplicate_cluster: string | null;
+  affects_version: string | null;
+  confidence: number | null;
+  rationale: string | null;
   count: number;
 }
 

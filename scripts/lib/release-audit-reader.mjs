@@ -227,14 +227,26 @@ export class ReleaseAuditReader {
   }
 
   proofRowsFor(tag) {
-    return this.db.prepare(`
+    const release = this.db.prepare(`SELECT tag, published_at, hours_to_next_stable FROM releases WHERE tag=?`).get(tag);
+    const cutoff = releaseLabelCutoff(release);
+    const rows = this.db.prepare(`
       SELECT p.release_tag, p.issue_number, p.status, p.summary, p.evidence_json, p.checked_at,
-             c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
+             i.title, i.labels,
+             c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+             c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+             c.confidence, c.rationale
       FROM issue_closure_proofs p
+      JOIN issues i ON i.number=p.issue_number
       LEFT JOIN classifications c ON c.issue_number=p.issue_number
       WHERE p.release_tag=?
       ORDER BY p.issue_number
     `).all(tag);
+    return rows.map((row) => ({
+      ...row,
+      effective_labels: labelsForIssueAt(this.db, row.issue_number, parseLabels(row.labels), cutoff, {
+        useFallbackWhenNoEvents: cutoff == null,
+      }),
+    }));
   }
 
   prReachabilityEvidenceForIssue(tag, issueNumber) {
@@ -265,4 +277,40 @@ export class ReleaseAuditReader {
       WHERE release_tag=?
     `).get(tag);
   }
+}
+
+function releaseLabelCutoff(rel) {
+  if (!rel?.published_at || rel.hours_to_next_stable == null) return null;
+  const publishedAt = Date.parse(rel.published_at);
+  if (!Number.isFinite(publishedAt)) return null;
+  return new Date(publishedAt + Number(rel.hours_to_next_stable) * 3_600_000).toISOString();
+}
+
+function parseLabels(raw) {
+  try {
+    const value = raw ? JSON.parse(raw) : [];
+    return Array.isArray(value) ? value.filter((label) => typeof label === 'string') : [];
+  } catch {
+    return [];
+  }
+}
+
+function labelsForIssueAt(db, issueNumber, fallbackLabels, cutoff, options = {}) {
+  const eventCount = Number(db.prepare(`
+    SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?
+  `).get(issueNumber)?.count ?? 0);
+  if (eventCount === 0) return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
+  const labels = new Set();
+  const rows = db.prepare(`
+    SELECT action, label_name
+    FROM issue_label_events
+    WHERE issue_number=?
+      AND (? IS NULL OR created_at <= ?)
+    ORDER BY created_at ASC, event_id ASC
+  `).all(issueNumber, cutoff, cutoff);
+  for (const row of rows) {
+    if (row.action === 'labeled') labels.add(row.label_name);
+    else if (row.action === 'unlabeled') labels.delete(row.label_name);
+  }
+  return [...labels];
 }
