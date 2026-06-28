@@ -230,6 +230,16 @@ export async function checkReleaseCommitReachability(
   return results;
 }
 
+export function resolveCommitOidPrefix(prefix: string): string | null {
+  const normalized = String(prefix ?? '').trim().toLowerCase();
+  if (!/^[0-9a-f]{7,39}$/.test(normalized)) return null;
+  if (!existsSync(repoDir)) return null;
+  const res = git(['rev-parse', '--verify', `${normalized}^{commit}`], { allowFailure: true });
+  if (res.status !== 0) return null;
+  const oid = String(res.stdout ?? '').trim().toLowerCase();
+  return /^[0-9a-f]{40}$/.test(oid) ? oid : null;
+}
+
 async function ensureRepo(): Promise<void> {
   await mkdir(dirname(repoDir), { recursive: true });
   if (!existsSync(repoDir)) {

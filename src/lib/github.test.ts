@@ -400,6 +400,38 @@ describe('GitHub GraphQL mapping', () => {
     assert.deepEqual(mentions, []);
   });
 
+  it('accepts abbreviated commit hashes only after resolver expansion', () => {
+    const full = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const mentions = __githubTest.closureCommentCommitMentions(97222, [
+      {
+        body: 'Fixed by commit cfeaf6897fd8.',
+        created_at: '2026-06-27T09:04:25Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
+      },
+    ], 97222, (prefix) => prefix === 'cfeaf6897fd8' ? full : null);
+
+    assert.equal(mentions.length, 1);
+    assert.equal(mentions[0].commitOid, full);
+    assert.equal(mentions[0].source, 'ClosureComment.fixProof');
+  });
+
+  it('resolves fixed-on-current-main short SHA closure proof', () => {
+    const full = 'd05e4a4bc6f22aaaa17ca566568556d46a67dee9';
+    const mentions = __githubTest.closureCommentCommitMentions(88712, [
+      {
+        body: 'Fixed on current `main` by `d05e4a4bc6` / #88698-era gateway channel runtime follow-up.',
+        created_at: '2026-05-31T18:03:10Z',
+        user: { login: 'steipete' },
+        author_association: 'MEMBER',
+      },
+    ], 88712, (prefix) => prefix === 'd05e4a4bc6' ? full : null);
+
+    assert.equal(mentions.length, 1);
+    assert.equal(mentions[0].commitOid, full);
+    assert.equal(mentions[0].author, 'steipete');
+  });
+
   it('identifies missing issue aliases in GraphQL partial-error messages', () => {
     const indexes = __githubTest.missingIssueIndexesFromGraphqlError(
       new Error('GitHub GraphQL error: NOT_FOUND repository.issue21 Could not resolve to an Issue with the number of 95854.'),

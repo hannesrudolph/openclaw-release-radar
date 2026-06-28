@@ -273,6 +273,8 @@ export interface ClosureCommentCommitMention {
   trustedSource: boolean;
 }
 
+type CommitOidResolver = (prefix: string) => string | null;
+
 export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueLabelEvent[]>();
@@ -1284,6 +1286,7 @@ export function closureCommentCommitMentions(
     authorAssociation?: string | null;
   }>,
   sourceIssueNumber = issueNumber,
+  resolveCommitOid?: CommitOidResolver,
 ): ClosureCommentCommitMention[] {
   const byCommit = new Map<string, ClosureCommentCommitMention>();
   for (const comment of comments) {
@@ -1293,7 +1296,7 @@ export function closureCommentCommitMentions(
     if (!trust.trustedSource) continue;
     if (!isClosureCommitFixProofComment(text)) continue;
     const referencedAt = commentEffectiveAt(comment);
-    for (const commitOid of extractCommitOids(text)) {
+    for (const commitOid of extractCommitOids(text, resolveCommitOid)) {
       const existing = byCommit.get(commitOid);
       if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
         byCommit.set(commitOid, {
@@ -1416,11 +1419,12 @@ function isClosurePrContextComment(text: string): boolean {
 function isClosureCommitFixProofComment(text: string): boolean {
   if (isKeepOpenReviewComment(text)) return false;
   return (
-    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{40}`?/i.test(text) ||
-    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b/i.test(text) ||
-    /\bfixed\s+on\s+(?:current\s+)?(?:source|main)\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
-    /\bfixed\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
-    /\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b/i.test(text) ||
+    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{7,40}`?/i.test(text) ||
+    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{7,40}\b/i.test(text) ||
+    /\bfixed\s+on\s+(?:current\s+)?(?:source|main)\s+by\s+commit\s+`?[0-9a-f]{7,40}`?/i.test(text) ||
+    /\bfixed\s+on\s+(?:current\s+)?`?(?:source|main)`?\s+by\s+`?[0-9a-f]{7,40}`?/i.test(text) ||
+    /\bfixed\s+by\s+commit\s+`?[0-9a-f]{7,40}`?/i.test(text) ||
+    /\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{7,40}\b/i.test(text) ||
     /\bproof:\b.{0,1000}\b[0-9a-f]{40}\b/i.test(text) ||
     /\bfix\s+provenance\b.{0,220}\bcommit\b/i.test(text) ||
     /\bcanonical\s+fix\b.{0,220}\bcommit\b/i.test(text) ||
@@ -1449,13 +1453,27 @@ function commentEffectiveAt(comment: {
   return createdAt;
 }
 
-function extractCommitOids(text: string): string[] {
+function extractCommitOids(text: string, resolveCommitOid?: CommitOidResolver): string[] {
   const commits = new Set<string>();
   for (const match of text.matchAll(/\b[0-9a-f]{40}\b/gi)) {
     commits.add(match[0].toLowerCase());
   }
   for (const match of text.matchAll(/github\.com\/openclaw\/openclaw\/commit\/([0-9a-f]{40})\b/gi)) {
     commits.add(match[1].toLowerCase());
+  }
+  if (resolveCommitOid) {
+    const prefixPatterns = [
+      /\bcommit\s+`?([0-9a-f]{7,39})`?\b/gi,
+      /github\.com\/openclaw\/openclaw\/commit\/([0-9a-f]{7,39})\b/gi,
+      /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?([0-9a-f]{7,39})`?\b/gi,
+      /\bfixed\s+on\s+(?:current\s+)?`?(?:source|main)`?\s+by\s+`?([0-9a-f]{7,39})`?\b/gi,
+    ];
+    for (const re of prefixPatterns) {
+      for (const match of text.matchAll(re)) {
+        const resolved = resolveCommitOid(match[1].toLowerCase());
+        if (resolved && /^[0-9a-f]{40}$/.test(resolved)) commits.add(resolved);
+      }
+    }
   }
   return [...commits].sort();
 }

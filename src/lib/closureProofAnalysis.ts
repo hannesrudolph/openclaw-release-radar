@@ -7,7 +7,7 @@ import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommen
 import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
 import type { IssueClassification } from './llm';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
-import { checkReleaseCommitReachability, checkReleasePrReachability, type CommitReachability } from './releaseReachability';
+import { checkReleaseCommitReachability, checkReleasePrReachability, resolveCommitOidPrefix, type CommitReachability } from './releaseReachability';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -317,12 +317,18 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const useReferencedCommitProofIssues = new Set<number>();
   const allCommitOids = new Set<string>();
   for (const issueNumber of analysisIssueNumbers) {
-    const directMentions = closureCommentCommitMentions(issueNumber, closureContextCommentsByIssue.get(issueNumber) ?? []);
+    const directMentions = closureCommentCommitMentions(
+      issueNumber,
+      closureContextCommentsByIssue.get(issueNumber) ?? [],
+      issueNumber,
+      resolveCommitOidPrefix,
+    );
     const canonicalMentions = canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
       closureCommentCommitMentions(
         issueNumber,
         allCommentsByIssue.get(canonicalIssueNumber) ?? [],
         canonicalIssueNumber,
+        resolveCommitOidPrefix,
       ),
     );
     const mentions = [...directMentions, ...canonicalMentions];
