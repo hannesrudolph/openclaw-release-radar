@@ -29,6 +29,7 @@ export const CLOSURE_RISK_DISPOSITIONS = [
 ] as const;
 
 export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
+export const CLOSURE_PROOF_SCHEMA_VERSION = 1;
 
 const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<string, ClosureRiskDisposition> = {
   fixed_in_release: 'credited_release_fix',
@@ -168,6 +169,7 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     riskSummary.unsupportedClosureClaimCount +
     riskSummary.missingEvidenceCount;
   return {
+    schemaVersion: CLOSURE_PROOF_SCHEMA_VERSION,
     creditedCount,
     notCreditedCount,
     analyzedClosedCount,

@@ -17,6 +17,7 @@ const auditScoredAt = '2026-01-02T00:00:01Z';
 
 function closureProofFixture(overrides: any = {}) {
   const proof = {
+    schemaVersion: 1,
     creditedCount: 1,
     notCreditedCount: 0,
     byStatus: { fixed_in_release: 1 },
@@ -542,6 +543,29 @@ describe('verifyReleaseAudit', () => {
     });
     assert.ok(result.failures.some((failure) =>
       /persisted closureProof examplesByStatus must include at least one repro_requested example/.test(failure)));
+  });
+
+  it('fails when persisted closure proof schema version is missing', async () => {
+    const closureProof = closureProofFixture();
+    delete closureProof.schemaVersion;
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof,
+              releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /persisted closureProof schemaVersion/.test(failure)));
   });
 
   it('fails when canonical-open proof does not resolve to open terminal', async () => {

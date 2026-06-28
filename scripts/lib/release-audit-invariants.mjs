@@ -92,6 +92,7 @@ const affectedUserRiskWeights = new Map([
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
+const closureProofSchemaVersion = 1;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -289,6 +290,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         'persisted audit gateEvidence must include closureProof and releaseFixCredit when proof rows exist');
       if (fix.closureProof && fix.releaseFixCredit) {
         const expectedRisk = riskSummaryForProofRows(proofRows);
+        expect(failures, tag, fix.closureProof.schemaVersion === closureProofSchemaVersion,
+          `persisted closureProof schemaVersion (${fix.closureProof.schemaVersion}) must equal ${closureProofSchemaVersion}`);
         expect(failures, tag, fix.releaseFixCredit.countedClosedCount === fixedProof.length,
           `persisted countedClosedCount (${fix.releaseFixCredit.countedClosedCount}) must match fixed_in_release proof rows (${fixedProof.length})`);
         expect(failures, tag, fix.releaseFixCredit.notCountedClosedCount === notCountedProof.length,
@@ -955,6 +958,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (proof || credit) {
       expect(failures, release.tag, !!proof && !!credit, 'review must expose closureProof and releaseFixCredit together');
+      expect(failures, release.tag, proof.schemaVersion === closureProofSchemaVersion,
+        `closureProof schemaVersion (${proof.schemaVersion}) must equal ${closureProofSchemaVersion}`);
       expect(failures, release.tag, credit.countedClosedCount === proof.creditedCount,
         'releaseFixCredit countedClosedCount must match closureProof creditedCount');
       expect(failures, release.tag, credit.notCountedClosedCount === proof.notCreditedCount,
