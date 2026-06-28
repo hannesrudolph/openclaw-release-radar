@@ -119,6 +119,7 @@ const publicReleaseKeys = new Set([
   'watchIssues',
 ]);
 const publicIssueKeys = new Set([
+  'affectedUsers',
   'closedAt',
   'confidence',
   'hasWorkaround',
@@ -135,6 +136,7 @@ const publicIssueKeys = new Set([
 const publicSentimentRank = new Map([['negative', 0], ['positive', 1], ['neutral', 2]]);
 const publicSeverityRank = new Map([['critical', 0], ['high', 1], ['medium', 2], ['low', 3]]);
 const publicScopeRank = new Map([['broad', 0], ['moderate', 1], ['niche', 2]]);
+const publicAffectedUsersRank = new Map([['many', 0], ['some', 1], ['few', 2], ['unknown', 3]]);
 const forbiddenPublicKeys = new Set([
   'comparison',
   'delta',
@@ -407,6 +409,8 @@ function verifyPublicIssueSummaries({ failures, tag, publicRelease }) {
         `public ${name}[${index}] must expose a title`);
       expect(failures, tag, typeof issue.url === 'string' && /^https:\/\/github\.com\//.test(issue.url),
         `public ${name}[${index}] must expose a GitHub URL`);
+      expect(failures, tag, typeof issue.affectedUsers === 'string' && publicAffectedUsersRank.has(issue.affectedUsers),
+        `public ${name}[${index}] must expose affectedUsers`);
     });
   }
   for (let i = 1; i < issues.length; i++) {
@@ -428,6 +432,7 @@ function publicIssueSortKey(issue) {
     publicSentimentRank.get(issue.sentiment) ?? 9,
     publicSeverityRank.get(issue.severity) ?? 9,
     publicScopeRank.get(issue.scope) ?? 9,
+    publicAffectedUsersRank.get(issue.affectedUsers) ?? 9,
   ].join(':');
 }
 

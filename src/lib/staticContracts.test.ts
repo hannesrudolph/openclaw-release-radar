@@ -178,6 +178,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /classifyIssueRowWithLabels/);
     assert.match(api, /labelsForIssueAt/);
     assert.match(api, /classification\.severity/);
+    assert.match(api, /affectedUsers:\s+classification\.affectedUsers/);
     assert.doesNotMatch(api, /SEVERITY_RANK\[a\.severity\]/);
   });
 });

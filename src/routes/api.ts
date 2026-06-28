@@ -387,6 +387,7 @@ function buildPublicPayload() {
       sentiment:     classification.sentiment,
       severity:      classification.severity,
       scope:         classification.scope,
+      affectedUsers: classification.affectedUsers,
       hasWorkaround: classification.workaroundStatus === 'confirmed' || i.has_workaround === 1,
       confidence:    classification.confidence,
       rationale:     classification.rationale,

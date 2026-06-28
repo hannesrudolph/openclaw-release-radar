@@ -152,7 +152,12 @@ describe('verifyReleaseAudit', () => {
             scoreAudit,
             explanation,
             totalAttributedIssues: 1,
-            issues: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
+            issues: [{
+              number: 1,
+              title: 'issue 1',
+              url: 'https://github.com/x/y/issues/1',
+              affectedUsers: 'some',
+            }],
           }],
         };
       }
