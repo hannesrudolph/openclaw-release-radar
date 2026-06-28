@@ -1798,6 +1798,7 @@ function closureStatusLabel(status) {
     duplicate_to_closed_canonical: 'moved to closed canonical',
     duplicate_to_fixed_after_release: 'canonical fixed after this release',
     superseded_to_open_pr: 'moved to open PR',
+    duplicate_with_open_pr_context: 'related open PR context',
     canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
@@ -1891,6 +1892,14 @@ function closureProofHtml(closureProof) {
             : esc(label);
         }).join(', ')}`
       : '';
+    const relatedPrLine = (item.evidence?.relatedOpenPrs ?? []).length
+      ? `Related open PR: ${(item.evidence.relatedOpenPrs ?? []).slice(0, 3).map((pr) => {
+          const label = `#${pr.number}${pr.state ? ` ${String(pr.state).toLowerCase()}` : ''}`;
+          return pr.url
+            ? `<a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+            : esc(label);
+        }).join(', ')}`
+      : '';
     const canonicalLine = (item.evidence?.canonicalIssueDetails ?? []).length
       ? `Canonical: ${(item.evidence.canonicalIssueDetails ?? []).slice(0, 3).map((issue) => {
           const label = `#${issue.number}${issue.state ? ` ${issue.state}` : ''}`;
@@ -1931,6 +1940,7 @@ function closureProofHtml(closureProof) {
       + (diffLine ? `<span class="evidence__meta">${esc(diffLine)}</span>` : '')
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
       + (openPrLine ? `<span class="evidence__meta">${openPrLine}</span>` : '')
+      + (relatedPrLine ? `<span class="evidence__meta">${relatedPrLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (terminalProofLine ? `<span class="evidence__meta">${terminalProofLine}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')

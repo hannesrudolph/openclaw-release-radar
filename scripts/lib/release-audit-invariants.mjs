@@ -12,6 +12,7 @@ export const knownProofStatuses = new Set([
   'duplicate_to_closed_canonical',
   'duplicate_to_fixed_after_release',
   'superseded_to_open_pr',
+  'duplicate_with_open_pr_context',
   'canonical_cycle_or_self_reference',
   'duplicate_or_superseded',
   'not_planned',
@@ -45,6 +46,7 @@ const riskDispositionByProofStatus = new Map([
   ['duplicate_to_fixed_after_release', 'known_not_in_release'],
   ['duplicate_to_open_canonical', 'open_canonical_risk'],
   ['superseded_to_open_pr', 'open_canonical_risk'],
+  ['duplicate_with_open_pr_context', 'open_canonical_risk'],
   ['duplicate_to_closed_canonical', 'unsupported_closure_claim'],
   ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
   ['duplicate_or_superseded', 'unsupported_closure_claim'],
@@ -286,8 +288,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       }
       if (row.status === 'superseded_to_open_pr') {
         expect(failures, tag, Array.isArray(evidence.canonicalOpenPrs) &&
-          evidence.canonicalOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
-          `superseded_to_open_pr issue #${row.issue_number} must include open canonical PR evidence`);
+          evidence.canonicalOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' &&
+            Number(pr?.merged ?? 0) === 0 && pr?.source === 'ClosureComment.prMention'),
+          `superseded_to_open_pr issue #${row.issue_number} must include trusted closure-comment open PR evidence`);
+      }
+      if (row.status === 'duplicate_with_open_pr_context') {
+        expect(failures, tag, Array.isArray(evidence.relatedOpenPrs) &&
+          evidence.relatedOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
+          `duplicate_with_open_pr_context issue #${row.issue_number} must include related open PR evidence`);
       }
       if (row.status === 'duplicate_to_closed_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',

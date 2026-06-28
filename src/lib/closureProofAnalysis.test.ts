@@ -83,6 +83,29 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((adjusted.evidence.canonicalOpenPrs as any[])[0].number, 85651);
   });
 
+  it('keeps cross-reference-only open PRs as related context, not canonical closure proof', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      96343,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      {
+        canonicalIssues: [],
+        linkedPrs: [{
+          number: 96358,
+          title: 'fix(cron): preserve action-critical command output',
+          state: 'OPEN',
+          merged: 0,
+          source: 'CrossReferencedEvent',
+        }],
+      },
+      new Map([[96343, []]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_with_open_pr_context');
+    assert.equal((adjusted.evidence.relatedOpenPrs as any[])[0].number, 96358);
+    assert.equal(adjusted.evidence.canonicalOpenPrs, undefined);
+  });
+
   it('recognizes common duplicate-of text as canonical graph targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(

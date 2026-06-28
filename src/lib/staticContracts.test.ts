@@ -60,6 +60,7 @@ describe('static scoring/UI contracts', () => {
       'duplicate_to_closed_canonical',
       'duplicate_to_fixed_after_release',
       'superseded_to_open_pr',
+      'duplicate_with_open_pr_context',
       'canonical_cycle_or_self_reference',
       'duplicate_or_superseded',
       'already_present_claim',

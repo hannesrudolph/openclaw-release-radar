@@ -546,12 +546,19 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
-  const openPrs = canonicalOpenPrs(evidence);
-  if (openPrs.length) {
+  const prContext = openPrContext(evidence);
+  if (prContext.canonical.length) {
     return {
       status: 'superseded_to_open_pr',
-      summary: 'Closed as duplicate/superseded; referenced canonical PR remains open and unmerged.',
-      evidence: { ...nextEvidence, canonicalOpenPrs: openPrs },
+      summary: 'Closed as duplicate/superseded; trusted close-time context points to an open, unmerged PR.',
+      evidence: { ...nextEvidence, canonicalOpenPrs: prContext.canonical },
+    };
+  }
+  if (prContext.related.length) {
+    return {
+      status: 'duplicate_with_open_pr_context',
+      summary: 'Closed as duplicate/superseded; related open PR references exist, but no trusted close-time note marks them as canonical.',
+      evidence: { ...nextEvidence, relatedOpenPrs: prContext.related },
     };
   }
   if (resolution.terminalIssue?.state === 'closed') {
@@ -797,15 +804,21 @@ function parseJsonArray(value: unknown): unknown[] {
   }
 }
 
-function canonicalOpenPrs(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
+function openPrContext(evidence: Record<string, unknown>): {
+  canonical: Array<Record<string, unknown>>;
+  related: Array<Record<string, unknown>>;
+} {
   const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
-  return linkedPrs
+  const openPrs = linkedPrs
     .filter((item): item is Record<string, unknown> => {
       if (!item || typeof item !== 'object') return false;
       const state = String(item.state ?? '').toUpperCase();
       return state === 'OPEN' && Number(item.merged ?? 0) === 0;
-    })
-    .slice(0, 5);
+    });
+  return {
+    canonical: openPrs.filter((item) => item.source === 'ClosureComment.prMention').slice(0, 5),
+    related: openPrs.filter((item) => item.source !== 'ClosureComment.prMention').slice(0, 5),
+  };
 }
 
 function unique(values: string[]): string[] {
