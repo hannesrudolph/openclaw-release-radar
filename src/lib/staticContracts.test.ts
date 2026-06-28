@@ -50,6 +50,43 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /\.slice\(0,\s*14\)/);
   });
 
+  it('frontend closure proof labels cover backend statuses and risk dispositions', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    [
+      'fixed_in_release',
+      'fixed_after_release',
+      'duplicate_to_fixed_in_release',
+      'duplicate_to_open_canonical',
+      'duplicate_to_closed_canonical',
+      'duplicate_to_fixed_after_release',
+      'canonical_cycle_or_self_reference',
+      'duplicate_or_superseded',
+      'already_present_claim',
+      'main_only_claim',
+      'reporter_replaced',
+      'reporter_withdrawn',
+      'repro_requested',
+      'reporter_self_closed',
+      'no_code_proof',
+      'no_timeline_event',
+      'non_bug_neutral',
+      'not_planned',
+      'unknown',
+    ].forEach((status) => assert.match(html, new RegExp(`${status}:`), `missing frontend closure label for ${status}`));
+    [
+      'credited_release_fix',
+      'resolved_by_canonical_release_fix',
+      'known_not_in_release',
+      'open_canonical_risk',
+      'unsupported_closure_claim',
+      'neutral_or_non_actionable',
+      'missing_evidence',
+    ].forEach((disposition) => assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
+    assert.match(html, /resolvedByCanonicalReleaseFixCount/);
+    assert.match(html, /neutralHighImpactCount/);
+    assert.match(html, /neutralBugShapedCount/);
+  });
+
   it('issue title truncation is word-boundary aware in the UI fallback', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /function truncateAtWordBoundary/);

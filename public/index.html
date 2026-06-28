@@ -1793,6 +1793,7 @@ function closureStatusLabel(status) {
   return ({
     fixed_in_release: 'fixed in this release',
     fixed_after_release: 'fixed after this release',
+    duplicate_to_fixed_in_release: 'canonical fixed in this release',
     duplicate_to_open_canonical: 'moved to open canonical',
     duplicate_to_closed_canonical: 'moved to closed canonical',
     duplicate_to_fixed_after_release: 'canonical fixed after this release',
@@ -1802,6 +1803,7 @@ function closureStatusLabel(status) {
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
+    repro_requested: 'fresh repro requested',
     reporter_self_closed: 'reporter self-closed',
     no_code_proof: 'no linked release fix',
     no_timeline_event: 'close event not fetched',
@@ -1825,6 +1827,7 @@ function closureProofSummaryText(closureProof) {
 function closureRiskDispositionLabel(disposition) {
   return ({
     credited_release_fix: 'credited release fix',
+    resolved_by_canonical_release_fix: 'resolved by canonical release fix',
     known_not_in_release: 'known not in this tag',
     open_canonical_risk: 'still-open canonical risk',
     unsupported_closure_claim: 'unsupported closure/admin claim',
@@ -1836,11 +1839,14 @@ function closureRiskDispositionLabel(disposition) {
 function closureRiskSummaryText(closureProof) {
   const risk = closureProof?.riskSummary ?? {};
   const parts = [
+    [risk.resolvedByCanonicalReleaseFixCount, 'resolved by canonical release fix'],
     [risk.knownNotInReleaseCount, 'known not in this tag'],
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
     [risk.missingEvidenceCount, 'missing proof evidence'],
     [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
+    [risk.neutralHighImpactCount, 'high-impact neutral audit flag'],
+    [risk.neutralBugShapedCount, 'bug-shaped neutral audit flag'],
   ];
   return parts
     .filter(([count]) => Number(count ?? 0) > 0)
