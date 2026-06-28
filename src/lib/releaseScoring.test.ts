@@ -90,6 +90,8 @@ describe('release score explanations', () => {
     assert.ok((carryover.metrics?.count ?? 0) > 0);
     assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);
     assert.ok((carryover.metrics?.storedExampleWeight ?? 0) <= (carryover.metrics?.rawWeight ?? 0));
+    assert.equal(typeof carryover.metrics?.byInstallImpactClass, 'object');
+    assert.ok(Object.keys(carryover.metrics?.byInstallImpactClass ?? {}).length > 0);
     assert.ok((carryover.issueRefs?.length ?? 0) >= 3);
     assert.ok(carryover.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
     assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactClass === 'string'));
@@ -101,6 +103,8 @@ describe('release score explanations', () => {
     assert.ok((stale.metrics?.count ?? 0) > 0);
     assert.equal(stale.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).staleDebt.length);
     assert.ok((stale.metrics?.storedExampleWeight ?? 0) <= (stale.metrics?.rawWeight ?? 0));
+    assert.equal(typeof stale.metrics?.byInstallImpactClass, 'object');
+    assert.ok(Object.keys(stale.metrics?.byInstallImpactClass ?? {}).length > 0);
     assert.ok((stale.issueRefs?.length ?? 0) > 0);
     assert.ok(stale.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
     assert.ok(stale.issueRefs?.some((issue) => typeof issue.weight === 'number'));
