@@ -117,6 +117,7 @@ function reader(overrides: Partial<{
     })),
     prReachabilityEvidenceForIssue: () => data.prEvidence,
     getReleaseScoreAudit: () => data.audit,
+    sourceFreshnessFor: () => [],
   };
 }
 
@@ -345,6 +346,16 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /must not be newer than audit scored_at/.test(failure)));
+  });
+
+  it('fails when source evidence changed after the score audit', async () => {
+    const staleReader = reader();
+    staleReader.sourceFreshnessFor = () => [{
+      source: 'issue_rows',
+      max_ts: '2026-01-02T00:00:02Z',
+    }];
+    const result = await verifyReleaseAudit({ reader: staleReader });
+    assert.ok(result.failures.some((failure) => /issue_rows changed/.test(failure)));
   });
 
   it('fails when proof closure event timestamp does not match issue closedAt', async () => {

@@ -241,6 +241,78 @@ export class ReleaseAuditReader {
     }));
   }
 
+  sourceFreshnessFor(tag) {
+    return this.db.prepare(`
+      WITH target AS (
+        SELECT tag, published_at,
+               COALESCE(
+                 (SELECT MIN(next.published_at)
+                  FROM releases next
+                  WHERE next.published_at > releases.published_at
+                    AND next.prerelease=0),
+                 '9999-12-31T23:59:59Z'
+               ) AS end_at
+        FROM releases
+        WHERE tag=?
+      ),
+      issue_universe AS (
+        SELECT DISTINCT i.number
+        FROM issues i
+        JOIN target
+        WHERE i.created_at < target.end_at
+          AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
+      ),
+      closed_universe AS (
+        SELECT DISTINCT i.number
+        FROM issues i
+        JOIN target
+        WHERE i.closed_at IS NOT NULL
+          AND i.closed_at >= target.published_at
+          AND i.closed_at < target.end_at
+      ),
+      pr_universe AS (
+        SELECT DISTINCT l.pr_number
+        FROM issue_pr_links l
+        JOIN closed_universe c ON c.number=l.issue_number
+        WHERE ${CREDITED_FIX_LINK_SQL}
+      )
+      SELECT 'release_metadata' AS source, MAX(updated_at) AS max_ts
+      FROM (
+        SELECT fetched_at AS updated_at FROM release_commits WHERE tag=?
+        UNION ALL
+        SELECT fetched_at FROM advisories
+      )
+      UNION ALL
+      SELECT 'issue_rows', MAX(i.updated_at)
+      FROM issues i JOIN issue_universe u ON u.number=i.number
+      UNION ALL
+      SELECT 'classification_rows', MAX(c.classified_at)
+      FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
+      UNION ALL
+      SELECT 'label_events', MAX(e.fetched_at)
+      FROM issue_label_events e JOIN issue_universe u ON u.number=e.issue_number
+      UNION ALL
+      SELECT 'label_snapshots', MAX(s.fetched_at)
+      FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
+      UNION ALL
+      SELECT 'closure_events', MAX(e.fetched_at)
+      FROM issue_closure_events e JOIN closed_universe u ON u.number=e.issue_number
+      UNION ALL
+      SELECT 'reopen_events', MAX(r.fetched_at)
+      FROM issue_reopen_events r JOIN issue_universe u ON u.number=r.issue_number
+      UNION ALL
+      SELECT 'issue_pr_links', MAX(l.fetched_at)
+      FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
+      UNION ALL
+      SELECT 'pull_request_fixes', MAX(p.fetched_at)
+      FROM pull_request_fixes p JOIN pr_universe u ON u.pr_number=p.pr_number
+      UNION ALL
+      SELECT 'release_pr_reachability', MAX(r.checked_at)
+      FROM release_pr_reachability r JOIN pr_universe u ON u.pr_number=r.pr_number
+      WHERE r.tag=?
+    `).all(tag, tag, tag);
+  }
+
   prReachabilityEvidenceForIssue(tag, issueNumber) {
     return this.db.prepare(`
       SELECT l.issue_number,

@@ -168,6 +168,9 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const verified = reader.verifiedFixedForRelease(tag);
     const unverified = reader.unverifiedClosedForRelease(tag);
     const proofRows = reader.proofRowsFor(tag);
+    const sourceFreshnessRows = typeof reader.sourceFreshnessFor === 'function'
+      ? reader.sourceFreshnessFor(tag)
+      : [];
     const fixedProof = proofRows.filter((row) => row.status === 'fixed_in_release');
     const notCountedProof = proofRows.filter((row) => row.status !== 'fixed_in_release');
     const releaseIsScored = release.final_score != null || release.score != null ||
@@ -268,6 +271,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const audit = reader.getReleaseScoreAudit(tag);
     if (audit) {
     const gate = parseJson(audit.gate_evidence_json, {});
+    verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit });
     verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
     verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
     verifyProofFreshness({ failures, tag, proofRows, audit });
@@ -311,6 +315,22 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   }
 
   return { releases, rows, failures };
+}
+
+function verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit }) {
+  const scoredAt = Date.parse(audit.scored_at ?? '');
+  expect(failures, tag, Number.isFinite(scoredAt),
+    `audit scored_at must be a valid timestamp, got ${audit.scored_at}`);
+  if (!Number.isFinite(scoredAt)) return;
+  for (const row of sourceFreshnessRows ?? []) {
+    if (!row?.max_ts) continue;
+    const sourceAt = Date.parse(row.max_ts);
+    expect(failures, tag, Number.isFinite(sourceAt),
+      `${row.source} max timestamp must be valid, got ${row.max_ts}`);
+    if (!Number.isFinite(sourceAt)) continue;
+    expect(failures, tag, sourceAt <= scoredAt,
+      `${row.source} changed at ${row.max_ts}, newer than audit scored_at ${audit.scored_at}`);
+  }
 }
 
 function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
