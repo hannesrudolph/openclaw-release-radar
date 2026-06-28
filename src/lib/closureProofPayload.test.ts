@@ -1,10 +1,16 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { CLOSURE_PROOF_SCHEMA_VERSION, closureRiskDisposition, closureRiskWeightForRow } from './closureProofPayload.ts';
+import {
+  CLOSURE_PROOF_SCHEMA_VERSION,
+  RELEASE_FIX_CREDIT_SCHEMA_VERSION,
+  closureRiskDisposition,
+  closureRiskWeightForRow,
+} from './closureProofPayload.ts';
 
 describe('closure proof risk weighting', () => {
   it('publishes a stable payload schema version', () => {
     assert.equal(CLOSURE_PROOF_SCHEMA_VERSION, 1);
+    assert.equal(RELEASE_FIX_CREDIT_SCHEMA_VERSION, 1);
   });
 
   it('weights unresolved closure risk by disposition and issue classification', () => {

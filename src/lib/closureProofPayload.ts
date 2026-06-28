@@ -30,6 +30,7 @@ export const CLOSURE_RISK_DISPOSITIONS = [
 
 export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
 export const CLOSURE_PROOF_SCHEMA_VERSION = 1;
+export const RELEASE_FIX_CREDIT_SCHEMA_VERSION = 1;
 
 const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<string, ClosureRiskDisposition> = {
   fixed_in_release: 'credited_release_fix',
@@ -261,6 +262,7 @@ export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: an
     gateEvidence.fixProvenance ??= {};
     gateEvidence.fixProvenance.closureProof = closureProof;
     gateEvidence.fixProvenance.releaseFixCredit = {
+      schemaVersion: RELEASE_FIX_CREDIT_SCHEMA_VERSION,
       countedClosedCount: closureProof.creditedCount,
       notCountedClosedCount: closureProof.notCreditedCount,
       analyzedClosedCount: closureProof.analyzedClosedCount,

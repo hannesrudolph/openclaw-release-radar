@@ -103,7 +103,7 @@ function reader(overrides: Partial<{
           verifiedFixedCount: 1,
           unverifiedClosedCount: 0,
           closureProof: closureProofFixture(),
-          releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+          releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
         },
       }),
     },
@@ -220,7 +220,7 @@ describe('verifyReleaseAudit', () => {
               gateEvidence: {
                 fixProvenance: {
                   closureProof: closureProofFixture(),
-                  releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+                  releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
                 },
               },
             },
@@ -248,7 +248,7 @@ describe('verifyReleaseAudit', () => {
             gateEvidence: {
               fixProvenance: {
                 closureProof: closureProofFixture(),
-                releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+                releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
               },
             },
             components: { explanation },
@@ -274,7 +274,7 @@ describe('verifyReleaseAudit', () => {
               verifiedFixedCount: 2,
               unverifiedClosedCount: 0,
               closureProof: closureProofFixture(),
-              releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
             },
           }),
         },
@@ -479,7 +479,7 @@ describe('verifyReleaseAudit', () => {
                   weightedRiskByDisposition: { unsupported_closure_claim: 2.125 },
                 },
               }),
-              releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
             },
           }),
         },
@@ -535,7 +535,7 @@ describe('verifyReleaseAudit', () => {
                 },
                 examplesByStatus: {},
               }),
-              releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
             },
           }),
         },
@@ -559,13 +559,34 @@ describe('verifyReleaseAudit', () => {
               verifiedFixedCount: 1,
               unverifiedClosedCount: 0,
               closureProof,
-              releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
             },
           }),
         },
       }),
     });
     assert.ok(result.failures.some((failure) => /persisted closureProof schemaVersion/.test(failure)));
+  });
+
+  it('fails when persisted release fix credit schema version is missing', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /persisted releaseFixCredit schemaVersion/.test(failure)));
   });
 
   it('fails when canonical-open proof does not resolve to open terminal', async () => {
@@ -614,7 +635,7 @@ describe('verifyReleaseAudit', () => {
                   weightedRiskByDisposition: { open_canonical_risk: 3.188 },
                 },
               }),
-              releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
             },
           }),
         },
