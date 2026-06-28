@@ -319,12 +319,12 @@ function canonicalIssueNumbers(text: string): number[] {
 
 function canonicalIssueNumbersFromSignalLines(text: string): number[] {
   const numbers = new Set<number>();
-  const signalRe = /\b(?:covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
+  const signalRe = /\b(?:canonical path|covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
   for (const line of text.split(/\n+/)) {
     if (!signalRe.test(line)) continue;
     const prContext = /\b(?:PR|pull request)\b|\/pull\//i.test(line);
     for (const match of line.matchAll(/https?:\/\/github\.com\/openclaw\/openclaw\/issues\/(\d+)\b|#(\d+)\b/gim)) {
-      if (prContext && !match[1]) continue;
+      if (prContext && !match[1] && !isBareIssueReference(line, match)) continue;
       const number = Number(match[1] ?? match[2]);
       if (Number.isInteger(number) && number > 0) numbers.add(number);
     }
@@ -339,7 +339,12 @@ function shouldSkipBarePrCanonicalMatch(text: string, match: RegExpMatchArray): 
   const lineStart = index >= 0 ? text.lastIndexOf('\n', index) + 1 : 0;
   const lineEnd = index >= 0 ? text.indexOf('\n', index) : -1;
   const line = text.slice(lineStart, lineEnd >= 0 ? lineEnd : undefined);
-  return /\b(?:PR|pull request)\b|\/pull\//i.test(line);
+  return /\b(?:PR|pull request)\b|\/pull\//i.test(line) && !isBareIssueReference(line, match);
+}
+
+function isBareIssueReference(line: string, match: RegExpMatchArray): boolean {
+  if (typeof match.index !== 'number') return false;
+  return /\b(?:issue|tracker|report)\s*$/i.test(line.slice(Math.max(0, match.index - 24), match.index));
 }
 
 function isKeepOpenComment(text: string): boolean {

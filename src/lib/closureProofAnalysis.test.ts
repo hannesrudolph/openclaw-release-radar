@@ -767,6 +767,25 @@ describe('closure proof canonical roll-up', () => {
     );
   });
 
+  it('filters canonical graph targets to real issues when PR numbers are also referenced', () => {
+    const comments = [
+      {
+        created_at: '2026-06-28T10:00:00Z',
+        body: 'Close as duplicate. Canonical path: use PR #86281 for implementation and issue #86773 for the remaining tracker.',
+      },
+    ];
+    const closureComments = closureRationaleComments(comments, '2026-06-28T10:05:00Z');
+
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromComments(
+        closureComments,
+        10,
+        (number: number) => number === 86773,
+      ),
+      [86773],
+    );
+  });
+
   it('builds fallback commit proof from eligible referenced commits only', () => {
     const rows = [
       {

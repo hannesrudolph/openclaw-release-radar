@@ -251,6 +251,8 @@ WHERE tag=?
   AND pr_number=?
 `);
 
+const issueExistsStmt = db.prepare(`SELECT 1 FROM issues WHERE number=?`);
+
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
@@ -265,7 +267,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const sourceClosedAtByIssue = new Map(sourceAggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
   for (const issueNumber of issueNumbers) {
     const closureContextComments = closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], sourceClosedAtByIssue.get(issueNumber));
-    const numbers = canonicalIssueNumbersFromComments(closureContextComments, issueNumber);
+    const numbers = canonicalIssueNumbersFromComments(closureContextComments, issueNumber, knownIssueNumber);
     canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
@@ -405,7 +407,8 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
 
   for (const item of preparedRows) {
     const canonicalIssues = Array.isArray(item.evidence.canonicalIssues)
-      ? (item.evidence.canonicalIssues as unknown[]).filter((n): n is number => typeof n === 'number')
+      ? (item.evidence.canonicalIssues as unknown[])
+        .filter((n): n is number => typeof n === 'number' && knownIssueNumber(n))
       : [];
     canonicalGraph.set(item.issueNumber, canonicalIssues);
   }
@@ -531,11 +534,15 @@ function directClosureCommitMentions(
     }));
 }
 
-function canonicalIssueNumbersFromComments(comments: GhComment[], sourceIssueNumber: number): number[] {
+function canonicalIssueNumbersFromComments(
+  comments: GhComment[],
+  sourceIssueNumber: number,
+  issueNumberAllowed: (number: number) => boolean = () => true,
+): number[] {
   const numbers = new Set<number>();
   for (const comment of comments) {
     for (const number of canonicalIssueNumbersFromText(comment.body ?? '')) {
-      if (number !== sourceIssueNumber) numbers.add(number);
+      if (number !== sourceIssueNumber && issueNumberAllowed(number)) numbers.add(number);
     }
   }
   return [...numbers].sort((a, b) => a - b);
@@ -566,12 +573,12 @@ function canonicalIssueNumbersFromText(text: string): number[] {
 
 function canonicalIssueNumbersFromSignalLines(text: string): number[] {
   const numbers = new Set<number>();
-  const signalRe = /\b(?:covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
+  const signalRe = /\b(?:canonical path|covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
   for (const line of text.split(/\n+/)) {
     if (!signalRe.test(line)) continue;
     const prContext = /\b(?:PR|pull request)\b|\/pull\//i.test(line);
     for (const match of line.matchAll(/https?:\/\/github\.com\/openclaw\/openclaw\/issues\/(\d+)\b|#(\d+)\b/gim)) {
-      if (prContext && !match[1]) continue;
+      if (prContext && !match[1] && !isBareIssueReference(line, match)) continue;
       const number = Number(match[1] ?? match[2]);
       if (Number.isInteger(number) && number > 0) numbers.add(number);
     }
@@ -586,7 +593,12 @@ function shouldSkipBarePrCanonicalMatch(text: string, match: RegExpMatchArray): 
   const lineStart = index >= 0 ? text.lastIndexOf('\n', index) + 1 : 0;
   const lineEnd = index >= 0 ? text.indexOf('\n', index) : -1;
   const line = text.slice(lineStart, lineEnd >= 0 ? lineEnd : undefined);
-  return /\b(?:PR|pull request)\b|\/pull\//i.test(line);
+  return /\b(?:PR|pull request)\b|\/pull\//i.test(line) && !isBareIssueReference(line, match);
+}
+
+function isBareIssueReference(line: string, match: RegExpMatchArray): boolean {
+  if (typeof match.index !== 'number') return false;
+  return /\b(?:issue|tracker|report)\s*$/i.test(line.slice(Math.max(0, match.index - 24), match.index));
 }
 
 async function expandCanonicalGraph(
@@ -607,7 +619,11 @@ async function expandCanonicalGraph(
     for (const issueNumber of frontier) {
       if (parsed.has(issueNumber)) continue;
       parsed.add(issueNumber);
-      const targets = canonicalIssueNumbersFromComments(commentsByIssue.get(issueNumber) ?? [], issueNumber);
+      const targets = canonicalIssueNumbersFromComments(
+        commentsByIssue.get(issueNumber) ?? [],
+        issueNumber,
+        knownIssueNumber,
+      );
       canonicalGraph.set(issueNumber, targets);
       for (const target of targets) {
         if (!parsed.has(target)) nextFrontier.push(target);
@@ -1769,6 +1785,10 @@ function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)].sort((a, b) => a - b);
 }
 
+function knownIssueNumber(number: number): boolean {
+  return !!issueExistsStmt.get(number);
+}
+
 function canonicalIssueDetails(sourceIssueNumber: number, numbers: number[]): Array<{
   number: number;
   title: string | null;
@@ -1778,13 +1798,14 @@ function canonicalIssueDetails(sourceIssueNumber: number, numbers: number[]): Ar
   const stmt = db.prepare(`SELECT number, title, state, html_url FROM issues WHERE number=?`);
   return numbers
     .filter((number) => number !== sourceIssueNumber)
-    .map((number) => {
+    .flatMap((number) => {
       const row = stmt.get(number) as { number: number; title: string; state: string; html_url: string | null } | undefined;
+      if (!row) return [];
       return {
-        number,
-        title: row?.title ?? null,
-        state: row?.state ?? null,
-        url: row?.html_url ?? null,
+        number: row.number,
+        title: row.title,
+        state: row.state,
+        url: row.html_url ?? null,
       };
     });
 }
