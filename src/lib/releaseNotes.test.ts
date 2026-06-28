@@ -112,6 +112,7 @@ describe('parseReleaseNotes', () => {
       '- integrity: `sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==`',
       '- release SHA: `aa69b12d0086b631b139c1435c9621a5783e3a40`',
       '- full release CI report: https://github.com/openclaw/releases/blob/main/evidence/2026.6.10/release-evidence.md',
+      '- full release validation: https://github.com/openclaw/openclaw/actions/runs/28068476120',
     ].join('\n');
     const r = parseReleaseNotes(body);
     assert.equal(r.npmPackageUrl, 'https://www.npmjs.com/package/openclaw/v/2026.6.10');
@@ -119,6 +120,7 @@ describe('parseReleaseNotes', () => {
     assert.equal(r.integrity, 'sha512-LcooND2tBQw8A+kc1Ujltu3lg30bJ0w7XaeRy7eYzobb8BBdcW6DOGbwJL4vpj1vl9+gjRceOtlh5nh9OARcug==');
     assert.equal(r.releaseSha, 'aa69b12d0086b631b139c1435c9621a5783e3a40');
     assert.equal(r.fullReleaseCiReportUrl, 'https://github.com/openclaw/releases/blob/main/evidence/2026.6.10/release-evidence.md');
+    assert.equal(r.fullReleaseValidationUrl, 'https://github.com/openclaw/openclaw/actions/runs/28068476120');
   });
 
   it('handles Windows-style CRLF line endings', () => {

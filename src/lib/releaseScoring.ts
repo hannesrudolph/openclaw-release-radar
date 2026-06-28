@@ -433,6 +433,9 @@ function scoreRelease(args: {
       ciReportUrl: rel.full_release_ci_report_url,
       ciReportVerified: rel.ci_report_verified === 1,
       ciReportMismatch: rel.ci_report_mismatch,
+      fullReleaseValidationUrl: rel.full_release_validation_url,
+      releaseValidationVerified: rel.release_validation_verified === 1,
+      releaseValidationMismatch: rel.release_validation_mismatch,
       registryVersion: rel.registry_version,
       registryIntegrity: rel.registry_integrity,
       registryTarballUrl: rel.registry_tarball_url,
@@ -670,7 +673,14 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     addPositive(
       'artifact_verified',
       text,
-      { metrics: { artifactVerified: true, releaseShaMatches: artifact.releaseShaMatches === true } },
+      {
+        metrics: {
+          artifactVerified: true,
+          releaseShaMatches: artifact.releaseShaMatches === true,
+          ciReportVerified: artifact.ciReportVerified === true,
+          releaseValidationVerified: artifact.releaseValidationVerified === true,
+        },
+      },
     );
   }
   if (recommended) {

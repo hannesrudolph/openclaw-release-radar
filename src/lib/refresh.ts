@@ -245,6 +245,7 @@ export async function refresh(): Promise<{
         release_integrity: stats.integrity,
         release_sha: stats.releaseSha,
         full_release_ci_report_url: stats.fullReleaseCiReportUrl,
+        full_release_validation_url: stats.fullReleaseValidationUrl,
       });
     }
 
@@ -256,7 +257,7 @@ export async function refresh(): Promise<{
           expectedIntegrity: stats.integrity,
           expectedTarballUrl: stats.registryTarballUrl,
         });
-        const evidenceReport = await verifyEvidenceReportUrl(stats.fullReleaseCiReportUrl);
+        const evidenceReport = await verifyEvidenceReportUrl(stats.fullReleaseCiReportUrl, stats.fullReleaseValidationUrl);
         updateReleaseArtifactVerification({
           tag: r.tag_name,
           registry_version: artifact.version,
@@ -264,6 +265,8 @@ export async function refresh(): Promise<{
           registry_tarball_url: artifact.tarballUrl,
           ci_report_verified: evidenceReport.verified ? 1 : 0,
           ci_report_mismatch: evidenceReport.mismatch,
+          release_validation_verified: evidenceReport.fallbackKind === 'github_actions_run' && evidenceReport.verified ? 1 : 0,
+          release_validation_mismatch: evidenceReport.fallbackKind === 'github_actions_run' ? evidenceReport.mismatch : null,
           artifact_verified: artifact.verified ? 1 : 0,
           artifact_mismatch: artifact.mismatch,
         });

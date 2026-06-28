@@ -73,11 +73,14 @@ CREATE TABLE IF NOT EXISTS releases (
   release_integrity TEXT,
   release_sha TEXT,
   full_release_ci_report_url TEXT,
+  full_release_validation_url TEXT,
   registry_version TEXT,
   registry_integrity TEXT,
   registry_tarball_url TEXT,
   ci_report_verified INTEGER NOT NULL DEFAULT 0,
   ci_report_mismatch TEXT,
+  release_validation_verified INTEGER NOT NULL DEFAULT 0,
+  release_validation_mismatch TEXT,
   artifact_verified INTEGER NOT NULL DEFAULT 0,
   artifact_mismatch TEXT,
   -- JSON array of the top product surfaces this release breaks (visible regressions),
@@ -364,11 +367,14 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN release_integrity TEXT`,
   `ALTER TABLE releases ADD COLUMN release_sha TEXT`,
   `ALTER TABLE releases ADD COLUMN full_release_ci_report_url TEXT`,
+  `ALTER TABLE releases ADD COLUMN full_release_validation_url TEXT`,
   `ALTER TABLE releases ADD COLUMN registry_version TEXT`,
   `ALTER TABLE releases ADD COLUMN registry_integrity TEXT`,
   `ALTER TABLE releases ADD COLUMN registry_tarball_url TEXT`,
   `ALTER TABLE releases ADD COLUMN ci_report_verified INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN ci_report_mismatch TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_validation_verified INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE releases ADD COLUMN release_validation_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN artifact_verified INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN artifact_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
@@ -489,11 +495,14 @@ export interface ReleaseRow {
   release_integrity: string | null;
   release_sha: string | null;
   full_release_ci_report_url: string | null;
+  full_release_validation_url: string | null;
   registry_version: string | null;
   registry_integrity: string | null;
   registry_tarball_url: string | null;
   ci_report_verified: number;
   ci_report_mismatch: string | null;
+  release_validation_verified: number;
+  release_validation_mismatch: string | null;
   artifact_verified: number;
   artifact_mismatch: string | null;
   broken_surfaces: string | null;
@@ -535,7 +544,8 @@ UPDATE releases SET
   release_tarball_url=:release_tarball_url,
   release_integrity=:release_integrity,
   release_sha=:release_sha,
-  full_release_ci_report_url=:full_release_ci_report_url
+  full_release_ci_report_url=:full_release_ci_report_url,
+  full_release_validation_url=:full_release_validation_url
 WHERE tag=:tag
 `);
 
@@ -554,6 +564,7 @@ export function updateReleaseDerivedStats(args: {
   release_integrity?: string | null;
   release_sha?: string | null;
   full_release_ci_report_url?: string | null;
+  full_release_validation_url?: string | null;
 }): void {
   updateReleaseDerivedStatsStmt.run({
     ...args,
@@ -562,6 +573,7 @@ export function updateReleaseDerivedStats(args: {
     release_integrity: args.release_integrity ?? null,
     release_sha: args.release_sha ?? null,
     full_release_ci_report_url: args.full_release_ci_report_url ?? null,
+    full_release_validation_url: args.full_release_validation_url ?? null,
   });
 }
 
@@ -572,6 +584,8 @@ UPDATE releases SET
   registry_tarball_url=:registry_tarball_url,
   ci_report_verified=:ci_report_verified,
   ci_report_mismatch=:ci_report_mismatch,
+  release_validation_verified=:release_validation_verified,
+  release_validation_mismatch=:release_validation_mismatch,
   artifact_verified=:artifact_verified,
   artifact_mismatch=:artifact_mismatch
 WHERE tag=:tag
@@ -584,6 +598,8 @@ export function updateReleaseArtifactVerification(args: {
   registry_tarball_url: string | null;
   ci_report_verified: number;
   ci_report_mismatch: string | null;
+  release_validation_verified: number;
+  release_validation_mismatch: string | null;
   artifact_verified: number;
   artifact_mismatch: string | null;
 }): void {

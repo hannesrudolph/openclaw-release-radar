@@ -33,6 +33,7 @@ export interface ReleaseNotesStats {
   integrity: string | null;
   releaseSha: string | null;
   fullReleaseCiReportUrl: string | null;
+  fullReleaseValidationUrl: string | null;
 }
 
 const EMPTY: ReleaseNotesStats = {
@@ -46,6 +47,7 @@ const EMPTY: ReleaseNotesStats = {
   integrity: null,
   releaseSha: null,
   fullReleaseCiReportUrl: null,
+  fullReleaseValidationUrl: null,
 };
 
 // A bullet line: leading `- ` after optional indentation. We intentionally
@@ -101,20 +103,23 @@ function parseReleaseVerification(lines: string[]): Pick<ReleaseNotesStats,
   'registryTarballUrl' |
   'integrity' |
   'releaseSha' |
-  'fullReleaseCiReportUrl'
+  'fullReleaseCiReportUrl' |
+  'fullReleaseValidationUrl'
 > {
   const result: Pick<ReleaseNotesStats,
     'npmPackageUrl' |
     'registryTarballUrl' |
     'integrity' |
     'releaseSha' |
-    'fullReleaseCiReportUrl'
+    'fullReleaseCiReportUrl' |
+    'fullReleaseValidationUrl'
   > = {
     npmPackageUrl: null,
     registryTarballUrl: null,
     integrity: null,
     releaseSha: null,
     fullReleaseCiReportUrl: null,
+    fullReleaseValidationUrl: null,
   };
   for (const line of lines) {
     const match = line.match(RELEASE_VERIFICATION_LINE);
@@ -126,6 +131,7 @@ function parseReleaseVerification(lines: string[]): Pick<ReleaseNotesStats,
     else if (key === 'integrity') result.integrity = value;
     else if (key === 'release sha') result.releaseSha = value;
     else if (key === 'full release ci report') result.fullReleaseCiReportUrl = value;
+    else if (key === 'full release validation') result.fullReleaseValidationUrl = value;
   }
   return result;
 }

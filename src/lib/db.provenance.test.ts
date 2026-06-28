@@ -317,6 +317,7 @@ describe('release fix provenance', () => {
       release_integrity: 'sha512-test',
       release_sha: 'commit-1',
       full_release_ci_report_url: 'https://example.test/report.md',
+      full_release_validation_url: 'https://github.com/openclaw/openclaw/actions/runs/1',
     });
     db.updateReleaseArtifactVerification({
       tag: 'v1',
@@ -325,6 +326,8 @@ describe('release fix provenance', () => {
       registry_tarball_url: 'https://registry.npmjs.org/openclaw/-/openclaw-1.0.0.tgz',
       ci_report_verified: 1,
       ci_report_mismatch: null,
+      release_validation_verified: 1,
+      release_validation_mismatch: null,
       artifact_verified: 1,
       artifact_mismatch: null,
     });
@@ -335,6 +338,8 @@ describe('release fix provenance', () => {
     assert.equal(row.registry_version, '1.0.0');
     assert.equal(row.registry_integrity, 'sha512-test');
     assert.equal(row.ci_report_verified, 1);
+    assert.equal(row.full_release_validation_url, 'https://github.com/openclaw/openclaw/actions/runs/1');
+    assert.equal(row.release_validation_verified, 1);
     assert.equal(row.artifact_verified, 1);
   });
 
