@@ -150,9 +150,13 @@ describe('static scoring/UI contracts', () => {
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
+    const scoreModel = readFileSync(join(root, 'src/lib/score.ts'), 'utf8')
+      .match(/SCORE_MODEL_VERSION = '([^']+)'/)?.[1];
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.doesNotMatch(scoringDoc, /Current `v20\d{2}\.\d+\.\d+` Snapshot/);
     assert.doesNotMatch(scoringDoc, /Score:\s*`[0-9.]+`/);
+    assert.ok(scoreModel);
+    assert.match(scoringDoc, new RegExp(`Current model: \`${scoreModel}\``));
     assert.match(scoringDoc, /components\.explanation/);
     assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /positiveDetails/);
