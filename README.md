@@ -146,6 +146,8 @@ Main public payload:
 curl http://127.0.0.1:8787/api/public
 ```
 
+Top-level `schemaVersion` is the public payload contract version. Current value: `1`.
+
 Score review:
 
 ```bash

@@ -85,6 +85,7 @@ const affectedUserRiskWeights = new Map([
 ]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const scoreExplanationSchemaVersion = 1;
+const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
   'field_visible_reports_opened',
   'source_carryover_risk',
@@ -99,7 +100,7 @@ const knownExplanationCodes = new Set([
   'release_recommended',
   'hard_gates_passed',
 ]);
-const publicTopLevelKeys = new Set(['repo', 'releases', 'updatedAt']);
+const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
 const publicReleaseKeys = new Set([
   'band',
   'explanation',
@@ -697,6 +698,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
 
   const publicPayload = await fetchJson(`${apiBase}/api/public`);
   verifyAllowedKeys({ failures, tag: 'api/public', label: 'public top-level', value: publicPayload, allowed: publicTopLevelKeys });
+  expect(failures, 'api/public', publicPayload.schemaVersion === publicPayloadSchemaVersion,
+    `public schemaVersion must be ${publicPayloadSchemaVersion}, got ${JSON.stringify(publicPayload.schemaVersion)}`);
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('comparison'), 'public payload must not include comparison data');
   expect(failures, 'api/public', !JSON.stringify(publicPayload).includes('upstream'), 'public payload must not include upstream data');
   if (status.lastScoredAt) {

@@ -141,6 +141,7 @@ describe('verifyReleaseAudit', () => {
       }
       if (url.endsWith('/api/public')) {
         return {
+          schemaVersion: 1,
           repo: 'x/y',
           updatedAt: auditScoredAt,
           releases: [{

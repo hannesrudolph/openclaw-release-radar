@@ -175,6 +175,8 @@ describe('static scoring/UI contracts', () => {
 
   it('public issue summaries use effective scoring classifications', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 1/);
+    assert.match(api, /function publicCacheKey/);
     assert.match(api, /classifyIssueRowWithLabels/);
     assert.match(api, /labelsForIssueAt/);
     assert.match(api, /comparePublicIssueSignal/);

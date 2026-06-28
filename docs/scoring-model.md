@@ -188,6 +188,8 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
   | jq '{score: .local.score, explanation: .local.components.explanation, fix: .local.gateEvidence.fixProvenance.releaseFixCredit}'
 ```
 
+`/api/public` exposes top-level `schemaVersion` for the public payload contract. Current value: `1`.
+
 `components.explanation` is the stable "Why not 10?" contract:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.

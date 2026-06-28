@@ -342,10 +342,15 @@ api.get('/releases/:tag/review', (req, res) => {
 // we cap to the most relevant issues per release: negatives first, sorted by
 // effective severity/reach, then positives.
 const PUBLIC_ISSUES_PER_RELEASE = 25;
+const PUBLIC_PAYLOAD_SCHEMA_VERSION = 1;
 const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
 const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
 const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 3 };
+
+function publicCacheKey(updatedAt: string | null | undefined): string {
+  return `${PUBLIC_PAYLOAD_SCHEMA_VERSION}:${updatedAt ?? ''}`;
+}
 
 function comparePublicIssueSignal(
   a: { classification: { sentiment: string; severity: string; scope: string; affectedUsers: string } },
@@ -442,6 +447,7 @@ function buildPublicPayload() {
   });
 
   return {
+    schemaVersion: PUBLIC_PAYLOAD_SCHEMA_VERSION,
     repo:      `${config.github.owner}/${config.github.repo}`,
     updatedAt: lastScoredAt ?? lastRefreshAt,
     releases,
@@ -449,9 +455,9 @@ function buildPublicPayload() {
 }
 
 api.get('/public', (_req, res) => {
-  const hit = getCached(getLastScoredAt());
+  const hit = getCached(publicCacheKey(getLastScoredAt()));
   if (hit) { res.json(hit); return; }
   const data = buildPublicPayload();
-  setCached(data, data.updatedAt ?? null);
+  setCached(data, publicCacheKey(data.updatedAt ?? null));
   res.json(data);
 });
