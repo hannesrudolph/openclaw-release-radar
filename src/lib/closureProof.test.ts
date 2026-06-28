@@ -350,6 +350,19 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [1234]);
   });
 
+  it('preserves concrete non-actionable rationale for neutral items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close: this lives outside the OpenClaw source repository and is plugin-owned.',
+      }],
+    }));
+    assert.equal(result.status, 'non_bug_not_actionable');
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
   it('keeps missing closure timeline evidence visible even for neutral items', () => {
     const result = classifyClosureProof(input({
       sentiment: 'neutral',

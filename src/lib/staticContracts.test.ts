@@ -84,6 +84,7 @@ describe('static scoring/UI contracts', () => {
       'non_bug_superseded_to_open_pr',
       'non_bug_duplicate_with_open_pr_context',
       'non_bug_duplicate_or_superseded',
+      'non_bug_not_actionable',
       'non_bug_neutral',
       'not_planned',
       'unknown',

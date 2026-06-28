@@ -200,12 +200,13 @@ function closureStatusRank(status: string): number {
     non_bug_duplicate_to_closed_canonical_missing_proof: 24,
     non_bug_duplicate_to_closed_canonical: 25,
     non_bug_duplicate_or_superseded: 26,
-    not_planned: 27,
-    non_bug_neutral: 28,
-    non_bug_duplicate_to_fixed_in_release: 29,
-    non_bug_fixed_in_release: 30,
-    duplicate_to_fixed_in_release: 31,
-    fixed_in_release: 32,
+    non_bug_not_actionable: 27,
+    not_planned: 28,
+    non_bug_neutral: 29,
+    non_bug_duplicate_to_fixed_in_release: 30,
+    non_bug_fixed_in_release: 31,
+    duplicate_to_fixed_in_release: 32,
+    fixed_in_release: 33,
   } as Record<string, number>)[status] ?? 99;
 }
 

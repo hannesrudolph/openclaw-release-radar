@@ -124,6 +124,13 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
         evidence,
       };
     }
+    if (evidence.nonActionableRationaleComments.length > 0) {
+      return {
+        status: 'non_bug_not_actionable',
+        summary: 'Non-negative item was closed with concrete non-actionable or out-of-repository rationale.',
+        evidence,
+      };
+    }
     return {
       status: 'non_bug_neutral',
       summary: 'Closed item is not negative bug evidence.',

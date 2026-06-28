@@ -322,6 +322,12 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'non_bug_duplicate_or_superseded') {
         expectNonNegativeProof({ failures, tag, row });
       }
+      if (row.status === 'non_bug_not_actionable') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, Array.isArray(evidence.nonActionableRationaleComments) &&
+          evidence.nonActionableRationaleComments.length > 0,
+          `non_bug_not_actionable issue #${row.issue_number} must include concrete non-actionable rationale`);
+      }
       if (isNegativeBareNotPlannedNeutral(row, evidence)) {
         expect(failures, tag, false,
           `negative NOT_PLANNED issue #${row.issue_number} cannot be neutral/non-actionable without concrete close-time rationale`);

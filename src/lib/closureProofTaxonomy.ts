@@ -31,6 +31,7 @@ export const CLOSURE_PROOF_STATUSES = [
   'non_bug_superseded_to_open_pr',
   'non_bug_duplicate_with_open_pr_context',
   'non_bug_duplicate_or_superseded',
+  'non_bug_not_actionable',
   'non_bug_neutral',
   'unknown',
 ] as const;
@@ -82,6 +83,7 @@ export const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<ClosureProofStatus, Clos
   non_bug_superseded_to_open_pr: 'neutral_or_non_actionable',
   non_bug_duplicate_with_open_pr_context: 'neutral_or_non_actionable',
   non_bug_duplicate_or_superseded: 'neutral_or_non_actionable',
+  non_bug_not_actionable: 'neutral_or_non_actionable',
   no_timeline_event: 'missing_evidence',
   unknown: 'missing_evidence',
 };

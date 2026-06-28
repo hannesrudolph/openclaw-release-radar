@@ -141,6 +141,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `non_bug_superseded_to_open_pr`: non-negative duplicate/superseded item points to an open, unmerged PR.
 - `non_bug_duplicate_with_open_pr_context`: non-negative duplicate/superseded item has related open PR context that is not marked canonical.
 - `non_bug_duplicate_or_superseded`: non-negative item was closed as duplicate/superseded, but no canonical issue or PR target was resolved.
+- `non_bug_not_actionable`: non-negative item was closed with concrete non-actionable, out-of-scope, or out-of-repository rationale.
 - `non_bug_neutral`: closed item is not negative bug evidence.
 - `not_planned`: close-time rationale says the issue is expected, by design, outside the tracked source/repository boundary, or otherwise concretely non-actionable for this release.
 

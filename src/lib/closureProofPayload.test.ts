@@ -75,6 +75,7 @@ describe('closure proof risk weighting', () => {
     assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_duplicate_to_open_canonical' }), 0);
     assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_superseded_to_open_pr' }), 0);
     assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_duplicate_to_closed_canonical_missing_proof' }), 0);
+    assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_not_actionable' }), 0);
     assert.equal(closureRiskWeightForRow({ ...base, status: 'fixed_after_release', sentiment: 'neutral' }), 0);
   });
 });
