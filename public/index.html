@@ -301,6 +301,11 @@ main.main-home{max-width:880px}
   text-decoration:none;
 }
 .score-explain__ref:hover{border-color:var(--link)}
+.score-explain__proofs{display:flex;flex-direction:column;gap:4px;margin-top:var(--space-1)}
+.score-explain__proof{
+  font-size:var(--text-xs);color:var(--muted);
+  padding-left:8px;border-left:2px solid var(--border-soft);
+}
 
 .cta-track{
   margin-top:var(--space-10);
@@ -1764,9 +1769,28 @@ function scoreDetailMetricsHtml(metrics) {
   ).join('')}</div>`;
 }
 
+function scoreDetailBucketsHtml(detail) {
+  const entries = [];
+  if (detail?.riskBuckets && typeof detail.riskBuckets === 'object') {
+    Object.entries(detail.riskBuckets).forEach(([key, value]) => {
+      if (Number(value) > 0) entries.push([closureRiskDispositionLabel(key), value]);
+    });
+  }
+  if (detail?.buckets && typeof detail.buckets === 'object') {
+    Object.entries(detail.buckets).forEach(([key, value]) => {
+      if (Number(value) > 0) entries.push([closureStatusLabel(key), value]);
+    });
+  }
+  if (!entries.length) return '';
+  return `<div class="score-explain__metrics">${entries.slice(0, 14).map(([key, value]) =>
+    `<span class="score-explain__metric">${esc(key)}: ${esc(metricValue(value))}</span>`
+  ).join('')}</div>`;
+}
+
 function scoreDetailIssueRefsHtml(issueRefs) {
   if (!Array.isArray(issueRefs) || !issueRefs.length) return '';
-  return `<div class="score-explain__refs">${issueRefs.slice(0, 5).map((issue) => {
+  const refs = issueRefs.slice(0, 5);
+  const links = `<div class="score-explain__refs">${refs.map((issue) => {
     const impact = issue.installImpactClass
       ? ` · ${String(issue.installImpactClass).replace(/_/g, ' ')} x${metricValue(issue.installImpactMultiplier ?? 1)}`
       : '';
@@ -1776,6 +1800,41 @@ function scoreDetailIssueRefsHtml(issueRefs) {
       ? `<a class="score-explain__ref" href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
       : `<span class="score-explain__ref">${esc(label)}</span>`;
   }).join('')}</div>`;
+  const proofs = refs
+    .map(scoreDetailIssueProofHtml)
+    .filter(Boolean)
+    .join('');
+  return links + (proofs ? `<div class="score-explain__proofs">${proofs}</div>` : '');
+}
+
+function scoreDetailIssueProofHtml(issue) {
+  const proof = issue?.proof;
+  if (!proof || typeof proof !== 'object') return '';
+  const parts = [];
+  const heading = [
+    proof.riskDispositionLabel || null,
+    proof.statusLabel || null,
+  ].filter(Boolean).join(' · ');
+  if (heading) parts.push(heading);
+  if (proof.summary) parts.push(proof.summary);
+  if (Number.isFinite(proof.riskWeight)) parts.push(`risk ${metricValue(proof.riskWeight)}`);
+  if (proof.canonicalIssue?.number) {
+    const path = Array.isArray(proof.canonicalPath) && proof.canonicalPath.length > 1
+      ? ` · path ${proof.canonicalPath.map((n) => `#${n}`).join(' -> ')}`
+      : '';
+    parts.push(`canonical #${proof.canonicalIssue.number}${proof.canonicalIssue.state ? ` ${proof.canonicalIssue.state}` : ''}${path}`);
+  }
+  if (Array.isArray(proof.openPrs) && proof.openPrs.length) {
+    parts.push(`open PR ${proof.openPrs.map((pr) => `#${pr.number}`).join(', ')}`);
+  }
+  if (Array.isArray(proof.reachablePrs) && proof.reachablePrs.length) {
+    parts.push(`reachable PR ${proof.reachablePrs.map((pr) => `#${pr.number}`).join(', ')}`);
+  }
+  if (Array.isArray(proof.notReachablePrs) && proof.notReachablePrs.length) {
+    parts.push(`not in tag PR ${proof.notReachablePrs.map((pr) => `#${pr.number}`).join(', ')}`);
+  }
+  if (!parts.length) return '';
+  return `<div class="score-explain__proof">#${esc(issue.number)}: ${esc(parts.join(' · '))}</div>`;
 }
 
 function scoreExplanationDetailsHtml(details, fallbackText) {
@@ -1783,6 +1842,7 @@ function scoreExplanationDetailsHtml(details, fallbackText) {
     return details.map((detail) =>
       `<li class="score-explain__detail"><span>${esc(detail.text ?? '')}</span>`
       + scoreDetailMetricsHtml(detail.metrics)
+      + scoreDetailBucketsHtml(detail)
       + scoreDetailIssueRefsHtml(detail.issueRefs)
       + '</li>'
     ).join('');

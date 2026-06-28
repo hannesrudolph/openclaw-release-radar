@@ -16,7 +16,7 @@ let closureRiskText = null;
 let explanationText = null;
 let explanationIssueRef = null;
 let explanationMetricText = null;
-let nonActionableRationaleText = null;
+let explanationProofText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -39,9 +39,7 @@ for (const release of releases) {
     explanationIssueRef = closureDetail?.issueRefs?.[0] ?? null;
     const metric = closureDetail?.metrics?.unresolvedForReleaseCount;
     explanationMetricText = Number.isFinite(metric) ? `unresolved: ${metric}` : null;
-    const rationaleExample = firstClosureExampleWith(review, (example) =>
-      example?.evidence?.nonActionableRationaleComments?.[0]?.snippet);
-    nonActionableRationaleText = rationaleExample?.evidence?.nonActionableRationaleComments?.[0]?.snippet ?? null;
+    explanationProofText = explanationIssueRef?.proof?.riskDispositionLabel ?? explanationIssueRef?.proof?.statusLabel ?? null;
     break;
   }
 }
@@ -50,6 +48,7 @@ if (!explanationText) throw new Error(`No score explanation text available for $
 if (!closureRiskText) throw new Error(`No closure risk summary available for ${fixCreditTag}`);
 if (!explanationIssueRef?.number || !explanationIssueRef?.url) throw new Error(`No explanation issue ref available for ${fixCreditTag}`);
 if (!explanationMetricText) throw new Error(`No explanation metric available for ${fixCreditTag}`);
+if (!explanationProofText) throw new Error(`No explanation proof context available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -102,18 +101,14 @@ try {
   await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();
+  await fixPanel.locator('.score-explain__proof').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
+  await fixPanel.locator('.score-explain__proof').filter({ hasText: explanationProofText }).first().waitFor();
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
   await fixPanel.getByText(/Scored as .* risk /).first().waitFor();
-  if (nonActionableRationaleText) {
-    await fixPanel.getByText('Non-actionable rationale:').first().waitFor();
-    if (!(await fixPanel.innerText()).includes(nonActionableRationaleText)) {
-      throw new Error(`Non-actionable rationale not rendered for ${fixCreditTag}`);
-    }
-  }
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {
@@ -176,15 +171,6 @@ async function json(path) {
   const res = await fetch(base + path);
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
-}
-
-function firstClosureExampleWith(review, predicate) {
-  const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
-  const examples = [
-    ...(Array.isArray(proof?.examples) ? proof.examples : []),
-    ...Object.values(proof?.examplesByStatus ?? {}).flatMap((rows) => Array.isArray(rows) ? rows : []),
-  ];
-  return examples.find(predicate) ?? null;
 }
 
 async function openScoreBreakdown(page, tag) {

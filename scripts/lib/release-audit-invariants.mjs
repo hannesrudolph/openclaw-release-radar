@@ -1,4 +1,5 @@
 import {
+  applyClosureRiskSentimentHint,
   applyLabelOverrides,
   applyTitleFunctionalityHint,
   applyTitleIssueShapeHint,
@@ -132,6 +133,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   const releases = reader.listReleases(limit, { scoredOnly });
   const failures = [];
   const rows = [];
+  const latestScoredStableRelease = releases.find((release) =>
+    release.final_score != null || release.score != null || release.scored_at != null || release.scoredAt != null);
 
   for (const release of releases) {
     const tag = release.tag;
@@ -235,6 +238,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'fixed_after_latest_release') {
         expect(failures, tag, evidence.unscoredFixProof?.timing === 'after_latest_release',
           `fixed_after_latest_release issue #${row.issue_number} must include after-latest unscoredFixProof metadata`);
+        verifyAfterLatestFixProof({ failures, tag, row, evidence, latestScoredStableRelease });
       }
       if (row.status === 'fixed_skipped_by_later_releases') {
         expect(failures, tag, evidence.unscoredFixProof?.timing === 'skipped_by_later_releases',
@@ -269,6 +273,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
         expect(failures, tag, !!evidence.canonicalResolution?.terminalProof,
           `duplicate_to_closed_canonical issue #${row.issue_number} must include terminal proof; missing terminal proof should use duplicate_to_closed_canonical_missing_proof`);
+        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'unsupported_closure_claim',
+          `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to unsupported terminal proof; use a more specific canonical status for resolved/open/missing proof`);
       }
       if (row.status === 'duplicate_to_non_actionable_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
@@ -431,26 +437,22 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `closed_without_release_fix_proof issue #${row.issue_number} must not include related PR references`);
       }
       if (row.status === 'non_bug_fixed_in_release') {
-        expect(failures, tag, row.sentiment !== 'negative',
-          `non_bug_fixed_in_release issue #${row.issue_number} must not be negative`);
+        expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.hasReachableClosingPr === true || evidence.hasReachableFixCommit === true,
           `non_bug_fixed_in_release issue #${row.issue_number} must have reachable PR or commit evidence`);
       }
       if (row.status === 'non_bug_fixed_after_release') {
-        expect(failures, tag, row.sentiment !== 'negative',
-          `non_bug_fixed_after_release issue #${row.issue_number} must not be negative`);
+        expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
           `non_bug_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
       }
       if (row.status === 'non_bug_fixed_in_later_release') {
-        expect(failures, tag, row.sentiment !== 'negative',
-          `non_bug_fixed_in_later_release issue #${row.issue_number} must not be negative`);
+        expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.laterFixProof?.releaseTag && ['pr', 'commit'].includes(evidence.laterFixProof?.proofType),
           `non_bug_fixed_in_later_release issue #${row.issue_number} must include laterFixProof metadata`);
       }
       if (row.status === 'non_bug_fixed_not_in_scored_releases') {
-        expect(failures, tag, row.sentiment !== 'negative',
-          `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not be negative`);
+        expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, !evidence.laterFixProof,
           `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not include laterFixProof metadata`);
       }
@@ -458,6 +460,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.unscoredFixProof?.timing === 'after_latest_release',
           `non_bug_fixed_after_latest_release issue #${row.issue_number} must include after-latest unscoredFixProof metadata`);
+        verifyAfterLatestFixProof({ failures, tag, row, evidence, latestScoredStableRelease });
       }
       if (row.status === 'non_bug_fixed_skipped_by_later_releases') {
         expectNonNegativeProof({ failures, tag, row });
@@ -465,8 +468,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `non_bug_fixed_skipped_by_later_releases issue #${row.issue_number} must include skipped-by-later unscoredFixProof metadata`);
       }
       if (row.status === 'non_bug_linked_without_merge') {
-        expect(failures, tag, row.sentiment !== 'negative',
-          `non_bug_linked_without_merge issue #${row.issue_number} must not be negative`);
+        expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
           `non_bug_linked_without_merge issue #${row.issue_number} must have an unmerged/unknown linked PR`);
       }
@@ -960,9 +962,24 @@ function canonicalFixedAfterRelease(evidence) {
     canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable');
 }
 
+function verifyAfterLatestFixProof({ failures, tag, row, evidence, latestScoredStableRelease }) {
+  const proof = evidence?.unscoredFixProof;
+  expect(failures, tag, proof?.latestScoredReleaseTag === latestScoredStableRelease?.tag,
+    `${row.status} issue #${row.issue_number} must name latest scored stable release ${latestScoredStableRelease?.tag ?? 'unknown'}`);
+  const proofMs = proof?.proofTime ? Date.parse(proof.proofTime) : NaN;
+  const latestPublishedMs = proof?.latestScoredReleasePublishedAt ? Date.parse(proof.latestScoredReleasePublishedAt) : NaN;
+  expect(failures, tag, Number.isFinite(proofMs) && Number.isFinite(latestPublishedMs) && proofMs > latestPublishedMs,
+    `${row.status} issue #${row.issue_number} must have proofTime after latest scored stable published_at`);
+  expect(failures, tag, proof?.proofType === 'pr' ? Number.isInteger(Number(proof.prNumber)) && Number(proof.prNumber) > 0 : fullCommitOidRe.test(String(proof?.commitOid ?? '')),
+    `${row.status} issue #${row.issue_number} must include a PR number or full commit OID for after-latest proof`);
+  expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
+    `${row.status} issue #${row.issue_number} must include not-reachable PR or commit evidence`);
+}
+
 function expectNonNegativeProof({ failures, tag, row }) {
-  expect(failures, tag, row.sentiment !== 'negative',
-    `${row.status} issue #${row.issue_number} must not be negative`);
+  const classification = effectiveClassificationForProofRow(row);
+  expect(failures, tag, classification.sentiment !== 'negative',
+    `${row.status} issue #${row.issue_number} must not be effectively negative`);
 }
 
 function verifyCommitArray({ failures, tag, issueNumber, name, commits }) {
@@ -1072,9 +1089,13 @@ function effectiveClassificationForProofRow(row) {
   const labels = Array.isArray(row.effective_labels)
     ? row.effective_labels.filter((label) => typeof label === 'string')
     : [];
-  return applyTitleIssueShapeHint(
-    applyLabelOverrides(
-      applyTitleFunctionalityHint(rawClassificationForProofRow(row), row.title ?? ''),
+  return applyClosureRiskSentimentHint(
+    applyTitleIssueShapeHint(
+      applyLabelOverrides(
+        applyTitleFunctionalityHint(rawClassificationForProofRow(row), row.title ?? ''),
+        labels,
+      ),
+      row.title ?? '',
       labels,
     ),
     row.title ?? '',

@@ -12,6 +12,7 @@ import {
 } from './db';
 import { releaseLabelCutoff } from './labelCutoff';
 import {
+  applyClosureRiskSentimentHint,
   applyLabelOverrides,
   applyTitleFunctionalityHint,
   applyTitleIssueShapeHint,
@@ -413,9 +414,13 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
   const timelineEventCount = issueLabelEventCount(row.issue_number);
   const snapshotCount = issueLabelSnapshotCountAt(row.issue_number, labelCutoff);
   const rawClassification = rowToClassification(row);
-  const classification = applyTitleIssueShapeHint(
-    applyLabelOverrides(
-      applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
+  const classification = applyClosureRiskSentimentHint(
+    applyTitleIssueShapeHint(
+      applyLabelOverrides(
+        applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
+        labels,
+      ),
+      row.title ?? '',
       labels,
     ),
     row.title ?? '',

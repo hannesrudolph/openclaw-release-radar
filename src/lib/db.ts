@@ -1986,7 +1986,6 @@ WHERE
          WHERE next.published_at > target.published_at AND next.prerelease = 0),
         '9999-12-31T23:59:59Z'
       )
-  AND c.sentiment = 'negative'
   AND EXISTS (
     SELECT 1
     FROM window_closure e
@@ -2008,6 +2007,7 @@ WHERE
         WHERE proof.release_tag = target.tag
           AND proof.issue_number = i.number
       )
+      AND c.sentiment = 'negative'
       AND EXISTS (
         SELECT 1
         FROM window_closure e

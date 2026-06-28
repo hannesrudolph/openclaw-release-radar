@@ -120,6 +120,13 @@ describe('release score explanations', () => {
       closure.issueRefs?.slice(0, 3).map((item) => item.number),
       closureExamples.slice(0, Math.min(3, closure.issueRefs?.length ?? 0)).map((item: any) => item.number),
     );
+    assert.ok(closure.issueRefs?.every((issue) => issue.proof?.status && issue.proof.statusLabel));
+    assert.ok(closure.issueRefs?.some((issue) => issue.proof?.riskDispositionLabel));
+    assert.ok(closure.issueRefs?.some((issue) =>
+      issue.proof?.canonicalIssue?.number ||
+      (issue.proof?.openPrs?.length ?? 0) > 0 ||
+      (issue.proof?.reachablePrs?.length ?? 0) > 0 ||
+      (issue.proof?.notReachablePrs?.length ?? 0) > 0));
     assert.ok(closureExamples.every((item: any, index: number) =>
       index === 0 || Number(closureExamples[index - 1].riskWeight ?? 0) >= Number(item.riskWeight ?? 0)));
 

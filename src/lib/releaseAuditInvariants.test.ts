@@ -887,6 +887,65 @@ describe('verifyReleaseAudit', () => {
     assert.match(result.failures[0], /open terminal/);
   });
 
+  it('fails when closed canonical proof should use a more specific status', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'duplicate_to_closed_canonical',
+          evidence_json: JSON.stringify({
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            canonicalResolution: {
+              terminalIssue: { state: 'closed' },
+              terminalProof: { status: 'fixed_in_release', summary: 'canonical was fixed in this release' },
+            },
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { duplicate_to_closed_canonical: 1 },
+                byRiskDisposition: { unsupported_closure_claim: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 1,
+                  neutralOrNonActionableCount: 0,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 1,
+                  unresolvedWeightedRisk: 1,
+                  weightedRiskByDisposition: { unsupported_closure_claim: 1 },
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /more specific canonical status/.test(failure)));
+  });
+
   it('fails when negative NOT_PLANNED is neutral without concrete rationale', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({

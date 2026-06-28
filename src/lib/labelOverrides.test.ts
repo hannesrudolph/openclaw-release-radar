@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { applyLabelOverrides, applyTitleIssueShapeHint } from './labelOverrides.ts';
+import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleIssueShapeHint } from './labelOverrides.ts';
 import type { IssueClassification } from './llm.ts';
 
 // Baseline classification — represents typical LLM output: "medium, moderate, integration".
@@ -239,5 +239,48 @@ describe('applyTitleIssueShapeHint', () => {
       ['regression'],
     );
     assert.deepEqual(out, base);
+  });
+});
+
+describe('applyClosureRiskSentimentHint', () => {
+  it('keeps stale-only neutral evidence neutral', () => {
+    const out = applyClosureRiskSentimentHint(
+      mk({ sentiment: 'neutral', severity: 'medium', affectsVersion: null }),
+      'Question: should we support extra dashboard themes?',
+      ['stale'],
+    );
+    assert.equal(out.sentiment, 'neutral');
+  });
+
+  it('promotes neutral source-repro impact evidence to negative for closure risk', () => {
+    const neutral = applyLabelOverrides(
+      mk({ sentiment: 'negative', severity: 'medium', affectsVersion: null }),
+      ['stale', 'clawsweeper:source-repro', 'impact:message-loss'],
+    );
+    assert.equal(neutral.sentiment, 'neutral');
+    const out = applyClosureRiskSentimentHint(
+      neutral,
+      'Cron announce delivery reports success but message never arrives',
+      ['stale', 'clawsweeper:source-repro', 'impact:message-loss'],
+    );
+    assert.equal(out.sentiment, 'negative');
+  });
+
+  it('promotes neutral data-loss evidence even when the title is not bug-shaped', () => {
+    const out = applyClosureRiskSentimentHint(
+      mk({ sentiment: 'neutral', severity: 'critical', functionality: 'core' }),
+      'feishu_create_doc: LaTeX backslashes eaten in complex block formulas',
+      ['stale', 'impact:data-loss'],
+    );
+    assert.equal(out.sentiment, 'negative');
+  });
+
+  it('does not promote feature-only enhancement requests without live bug evidence', () => {
+    const out = applyClosureRiskSentimentHint(
+      mk({ sentiment: 'neutral', severity: 'critical', affectsVersion: null }),
+      '[Feature]: safe/unsafe ClawdBot',
+      ['enhancement', 'impact:security'],
+    );
+    assert.equal(out.sentiment, 'neutral');
   });
 });

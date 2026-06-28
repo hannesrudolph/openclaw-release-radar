@@ -46,7 +46,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /structured\.limits/);
     assert.match(html, /structured\.limitDetails/);
     assert.match(html, /scoreDetailIssueRefsHtml/);
+    assert.match(html, /scoreDetailIssueProofHtml/);
     assert.match(html, /scoreDetailMetricsHtml/);
+    assert.match(html, /scoreDetailBucketsHtml/);
+    assert.match(html, /score-explain__proof/);
     assert.match(html, /Object\.entries\(value\)/);
     assert.match(html, /\.slice\(0,\s*14\)/);
   });

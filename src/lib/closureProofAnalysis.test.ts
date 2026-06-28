@@ -786,6 +786,50 @@ describe('closure proof canonical roll-up', () => {
     );
   });
 
+  it('promotes neutral closure rows with strong bug evidence before proof classification', () => {
+    const result = __closureProofAnalysisTest.effectiveClosureProofClassification({
+      title: '[Bug]: Cron announce delivery reports success but message never arrives',
+      labels: JSON.stringify(['stale', 'clawsweeper:source-repro', 'impact:message-loss']),
+      sentiment: 'negative',
+      severity: 'medium',
+      scope: 'moderate',
+      functionality: 'integration',
+      affected_users: 'some',
+      has_workaround: 0,
+      workaround_status: 'unknown',
+      duplicate_cluster: null,
+      affects_version: null,
+      confidence: 0.7,
+      rationale: '',
+    });
+
+    assert.equal(result.rawClassification.sentiment, 'negative');
+    assert.equal(result.classification.sentiment, 'negative');
+    assert.equal(result.classificationDiff.sentiment, undefined);
+  });
+
+  it('restores neutralized stale bug evidence to negative closure risk', () => {
+    const result = __closureProofAnalysisTest.effectiveClosureProofClassification({
+      title: 'Gateway lazy-spawns duplicate stdio MCP children with identical ppid+config (memory + CPU leak)',
+      labels: JSON.stringify(['stale', 'P1', 'impact:crash-loop', 'impact:session-state']),
+      sentiment: 'neutral',
+      severity: 'medium',
+      scope: 'moderate',
+      functionality: 'core',
+      affected_users: 'many',
+      has_workaround: 0,
+      workaround_status: 'unknown',
+      duplicate_cluster: null,
+      affects_version: null,
+      confidence: 0.7,
+      rationale: '',
+    });
+
+    assert.equal(result.rawClassification.sentiment, 'neutral');
+    assert.equal(result.classification.sentiment, 'negative');
+    assert.deepEqual(result.classificationDiff.sentiment, { raw: 'neutral', effective: 'negative' });
+  });
+
   it('builds fallback commit proof from eligible referenced commits only', () => {
     const rows = [
       {

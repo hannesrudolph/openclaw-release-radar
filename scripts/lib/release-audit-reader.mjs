@@ -119,7 +119,6 @@ export class ReleaseAuditReader {
                  AND next.prerelease = 0),
               '9999-12-31T23:59:59Z'
             )
-        AND c.sentiment = 'negative'
         AND EXISTS (
           SELECT 1
           FROM window_closure e
@@ -138,10 +137,11 @@ export class ReleaseAuditReader {
             NOT EXISTS (
               SELECT 1
               FROM issue_closure_proofs proof
-              WHERE proof.release_tag = target.tag
-                AND proof.issue_number = i.number
-            )
-            AND EXISTS (
+            WHERE proof.release_tag = target.tag
+              AND proof.issue_number = i.number
+          )
+          AND c.sentiment = 'negative'
+          AND EXISTS (
               SELECT 1
               FROM window_closure e
                 JOIN issue_pr_links l ON l.issue_number = e.issue_number

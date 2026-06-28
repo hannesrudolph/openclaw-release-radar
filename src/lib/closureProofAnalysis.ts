@@ -4,6 +4,8 @@ import { classifyClosureProof, closureRationaleComments, type ClosureProofResult
 import { closureRiskDisposition } from './closureProofTaxonomy';
 import { creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, pullRequestKey, type ClosureCommentCommitMention, type GhComment } from './github';
+import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
+import type { IssueClassification } from './llm';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { checkReleaseCommitReachability, checkReleasePrReachability, type CommitReachability } from './releaseReachability';
 
@@ -80,8 +82,19 @@ SELECT
   i.number,
   i.title,
   i.author,
+  i.labels,
   i.closed_at,
   c.sentiment,
+  c.severity,
+  c.scope,
+  c.functionality,
+  c.affected_users,
+  c.has_workaround,
+  c.workaround_status,
+  c.duplicate_cluster,
+  c.affects_version,
+  c.confidence,
+  c.rationale,
   GROUP_CONCAT(DISTINCT e.state_reason) AS state_reasons,
   GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
   GROUP_CONCAT(DISTINCT e.closed_at) AS closure_event_closed_at,
@@ -365,11 +378,12 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     const commitProof = directCommitProof;
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
+    const closureClassification = effectiveClosureProofClassification(row);
     const result = classifyClosureProof({
       issueNumber: row.number,
       issueAuthor: row.author,
       closedAt: row.closed_at,
-      sentiment: row.sentiment,
+      sentiment: closureClassification.classification.sentiment,
       stateReasons: splitCsv(row.state_reasons),
       closureActors: splitCsv(row.closure_actors),
       hasClosureEvent: Number(row.closure_events ?? 0) > 0,
@@ -387,6 +401,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       ...result.evidence,
       title: row.title,
       closedAt: row.closed_at,
+      closureClassification,
       closureEventClosedAt: splitCsv(row.closure_event_closed_at),
       closingPrs: splitCsv(row.closing_prs),
       linkedPrs: parseJsonArray(row.linked_prs_json),
@@ -452,6 +467,73 @@ function commitProofEvidence(
       evidence: result?.evidence ?? 'reachability_not_checked',
     };
   });
+}
+
+function effectiveClosureProofClassification(row: any): {
+  labels: string[];
+  rawClassification: IssueClassification;
+  classification: IssueClassification;
+  classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
+} {
+  const labels = parseJsonArray(row.labels).filter((label): label is string => typeof label === 'string');
+  const rawClassification = rowToClassification(row);
+  const classification = applyClosureRiskSentimentHint(
+    applyTitleIssueShapeHint(
+      applyLabelOverrides(
+        applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
+        labels,
+      ),
+      row.title ?? '',
+      labels,
+    ),
+    row.title ?? '',
+    labels,
+  );
+  return {
+    labels,
+    rawClassification,
+    classification,
+    classificationDiff: classificationDiff(rawClassification, classification),
+  };
+}
+
+function rowToClassification(row: any): IssueClassification {
+  const workaroundStatus = ['none', 'partial', 'confirmed', 'unknown'].includes(row.workaround_status ?? '')
+    ? row.workaround_status as IssueClassification['workaroundStatus']
+    : Number(row.has_workaround ?? 0) === 1
+      ? 'confirmed'
+      : 'unknown';
+  return {
+    sentiment: row.sentiment as IssueClassification['sentiment'],
+    severity: row.severity as IssueClassification['severity'],
+    scope: row.scope as IssueClassification['scope'],
+    functionality: row.functionality as IssueClassification['functionality'],
+    affectedUsers: row.affected_users as IssueClassification['affectedUsers'],
+    workaroundStatus,
+    duplicateCluster: row.duplicate_cluster ?? null,
+    affectsVersion: row.affects_version ?? null,
+    confidence: typeof row.confidence === 'number' ? row.confidence : 0.5,
+    rationale: row.rationale ?? '',
+  };
+}
+
+function classificationDiff(
+  raw: IssueClassification,
+  effective: IssueClassification,
+): Record<string, { raw: unknown; effective: unknown }> {
+  const out: Record<string, { raw: unknown; effective: unknown }> = {};
+  for (const key of [
+    'sentiment',
+    'severity',
+    'scope',
+    'functionality',
+    'affectedUsers',
+    'workaroundStatus',
+    'confidence',
+  ] as const) {
+    if (raw[key] !== effective[key]) out[key] = { raw: raw[key], effective: effective[key] };
+  }
+  return out;
 }
 
 const fullCommitOidRe = /^[0-9a-f]{40}$/i;
@@ -1505,6 +1587,7 @@ export const __closureProofAnalysisTest = {
   adjustNoReleaseFixProofStatus,
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
+  effectiveClosureProofClassification,
   commitReferenceMentionsFromRows,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,

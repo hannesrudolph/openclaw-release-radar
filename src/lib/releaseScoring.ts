@@ -16,7 +16,7 @@ import {
 import { hasHotfixSuccessor } from './releaseNotes';
 import { stableDistance, matchesRange } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
-import { closureProofPayload, enrichGateEvidenceWithClosureProof } from './closureProofPayload';
+import { closureProofPayload, closureRiskDisposition, enrichGateEvidenceWithClosureProof } from './closureProofPayload';
 import {
   getReleaseCommit,
   issueLabelEventCount,
@@ -95,6 +95,29 @@ export interface ScoreExplanationIssueRef {
   weight?: number | null;
   installImpactClass?: string | null;
   installImpactMultiplier?: number | null;
+  proof?: ScoreExplanationIssueProof | null;
+}
+
+export interface ScoreExplanationIssueProof {
+  status: string | null;
+  statusLabel: string | null;
+  riskDisposition: string | null;
+  riskDispositionLabel: string | null;
+  summary: string | null;
+  riskWeight: number | null;
+  canonicalIssue?: ScoreExplanationLinkedRef | null;
+  canonicalPath?: number[] | null;
+  openPrs?: ScoreExplanationLinkedRef[];
+  reachablePrs?: ScoreExplanationLinkedRef[];
+  notReachablePrs?: ScoreExplanationLinkedRef[];
+}
+
+export interface ScoreExplanationLinkedRef {
+  number: number;
+  title?: string | null;
+  url?: string | null;
+  state?: string | null;
+  status?: string | null;
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
@@ -750,8 +773,81 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       weight: typeof item?.weight === 'number' ? roundMetric(item.weight) : null,
       installImpactClass: item?.installImpactClass ?? null,
       installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
+      proof: issueRefProof(item),
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function issueRefProof(item: any): ScoreExplanationIssueProof | null {
+  const status = typeof item?.status === 'string' && item.status ? item.status : null;
+  const summary = typeof item?.summary === 'string' && item.summary ? item.summary : null;
+  const riskDisposition = typeof item?.riskDisposition === 'string' && item.riskDisposition
+    ? item.riskDisposition
+    : status ? closureRiskDisposition(status) : null;
+  const evidence = item?.evidence && typeof item.evidence === 'object' ? item.evidence : {};
+  const canonicalResolution = evidence.canonicalResolution && typeof evidence.canonicalResolution === 'object'
+    ? evidence.canonicalResolution
+    : null;
+  const canonicalIssue = linkedIssueRef(canonicalResolution?.terminalIssue) ??
+    linkedIssueRef(Array.isArray(evidence.canonicalIssueDetails) ? evidence.canonicalIssueDetails[0] : null);
+  const canonicalPath = Array.isArray(canonicalResolution?.path)
+    ? canonicalResolution.path.filter((number: unknown): number is number => Number.isInteger(number) && Number(number) > 0)
+    : null;
+  const relatedPrContext = evidence.relatedPrContext && typeof evidence.relatedPrContext === 'object'
+    ? evidence.relatedPrContext
+    : {};
+  const openPrs = linkedRefs([
+    ...(Array.isArray(evidence.canonicalOpenPrs) ? evidence.canonicalOpenPrs : []),
+    ...(Array.isArray(evidence.relatedOpenPrs) ? evidence.relatedOpenPrs : []),
+    ...(Array.isArray(relatedPrContext.open) ? relatedPrContext.open : []),
+  ], 3);
+  const reachablePrs = linkedRefs(Array.isArray(relatedPrContext.reachable) ? relatedPrContext.reachable : [], 3);
+  const notReachablePrs = linkedRefs(Array.isArray(relatedPrContext.notReachable) ? relatedPrContext.notReachable : [], 3);
+  const riskWeight = typeof item?.riskWeight === 'number' ? roundMetric(item.riskWeight) : null;
+  if (!status && !summary && !riskDisposition && riskWeight == null && !canonicalIssue &&
+    !openPrs.length && !reachablePrs.length && !notReachablePrs.length) {
+    return null;
+  }
+  return {
+    status,
+    statusLabel: status ? closureStatusLabel(status) : null,
+    riskDisposition,
+    riskDispositionLabel: riskDisposition ? closureRiskDispositionLabel(riskDisposition) : null,
+    summary,
+    riskWeight,
+    canonicalIssue,
+    canonicalPath,
+    openPrs,
+    reachablePrs,
+    notReachablePrs,
+  };
+}
+
+function linkedRefs(values: unknown[], limit: number): ScoreExplanationLinkedRef[] {
+  const seen = new Set<number>();
+  const refs: ScoreExplanationLinkedRef[] = [];
+  for (const value of values) {
+    const ref = linkedIssueRef(value);
+    if (!ref || seen.has(ref.number)) continue;
+    seen.add(ref.number);
+    refs.push(ref);
+    if (refs.length >= limit) break;
+  }
+  return refs;
+}
+
+function linkedIssueRef(value: unknown): ScoreExplanationLinkedRef | null {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as any;
+  const number = Number(raw.number ?? raw.issueNumber ?? raw.prNumber);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return {
+    number,
+    title: typeof raw.title === 'string' ? raw.title : null,
+    url: typeof raw.url === 'string' ? raw.url : typeof raw.html_url === 'string' ? raw.html_url : null,
+    state: typeof raw.state === 'string' ? raw.state : null,
+    status: typeof raw.reachabilityStatus === 'string' ? raw.reachabilityStatus : typeof raw.status === 'string' ? raw.status : null,
+  };
 }
 
 function closureProofExamplesWithStatusCoverage(closureProof: any): any[] {
@@ -934,6 +1030,19 @@ function closureRiskSummaryText(closureProof: any): string {
     .filter(([count]) => Number(count ?? 0) > 0)
     .map(([count, label]) => `${count} ${label}`)
     .join(' · ');
+}
+
+function closureRiskDispositionLabel(disposition: string): string {
+  return ({
+    credited_release_fix: 'credited release fix',
+    resolved_by_canonical_release_fix: 'resolved by canonical release fix',
+    resolved_by_release_fix_proof: 'resolved by release fix proof',
+    known_not_in_release: 'known not in this tag',
+    open_canonical_risk: 'still open canonical/PR risk',
+    unsupported_closure_claim: 'unsupported closure claim',
+    neutral_or_non_actionable: 'not scored/non-actionable',
+    missing_evidence: 'missing evidence',
+  } as Record<string, string>)[disposition] ?? String(disposition ?? 'unknown').replace(/_/g, ' ');
 }
 
 function closureStatusLabel(status: string): string {

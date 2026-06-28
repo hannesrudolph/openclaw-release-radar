@@ -111,6 +111,15 @@ const PROVIDER_RE = /\b(ollama|openai|anthropic|claude|llama\.cpp|llama\b|codex|
 const EXTENSION_RE = /\b(plugin|subagent|mcp|control[- ]ui|dashboard|webchat|skills?[- ]ui)\b/i;
 const NON_BUG_TITLE_RE = /\b(feature|feedback|roadmap|proposal|support|question|how do i|should support|preserve or explicitly support)\b|^\s*\[(feature|feedback|proposal|backup)\]/i;
 const STRONG_BUG_LABELS = new Set(['bug', 'regression', 'P0', 'beta-blocker']);
+const CLOSURE_RISK_IMPACT_LABELS = new Set([
+  'impact:auth-provider',
+  'impact:crash-loop',
+  'impact:data-loss',
+  'impact:message-loss',
+  'impact:security',
+  'impact:session-state',
+]);
+const BUG_SHAPED_TITLE_RE = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall|never executed|not executed)\b/i;
 
 export function inferFunctionalityFromTitle(title: string): Functionality | undefined {
   if (CHANNEL_RE.test(title))   return 'integration';
@@ -146,6 +155,34 @@ export function applyTitleIssueShapeHint(
     };
   }
   return c;
+}
+
+export function applyClosureRiskSentimentHint(
+  c: IssueClassification,
+  title: string,
+  labelNames: string[] = [],
+): IssueClassification {
+  if (c.sentiment === 'negative' || c.sentiment === 'positive') return c;
+  const has = (name: string): boolean => labelNames.includes(name);
+  const hasAny = (names: Iterable<string>): boolean => {
+    for (const name of names) if (has(name)) return true;
+    return false;
+  };
+  const hasStrongBugLabel = hasAny(STRONG_BUG_LABELS);
+  const hasRepro = has('clawsweeper:source-repro') || has('clawsweeper:current-main-repro');
+  const hasImpact = hasAny(CLOSURE_RISK_IMPACT_LABELS);
+  const hasDataLoss = has('impact:data-loss');
+  const hasMaintainerPriority = has('P0') || has('P1') || has('beta-blocker') || has('regression');
+  const affectsKnownRelease = typeof c.affectsVersion === 'string' && c.affectsVersion.trim() !== '';
+  const bugShapedTitle = BUG_SHAPED_TITLE_RE.test(title);
+  const featureOnly = has('enhancement') && !hasRepro && !affectsKnownRelease && !hasDataLoss && !bugShapedTitle;
+  if (featureOnly) return c;
+  const hasClosureRiskSignal = hasStrongBugLabel ||
+    hasDataLoss ||
+    (hasRepro && hasImpact) ||
+    (bugShapedTitle && (hasImpact || hasRepro || hasMaintainerPriority || affectsKnownRelease)) ||
+    (affectsKnownRelease && (hasImpact || hasRepro || bugShapedTitle));
+  return hasClosureRiskSignal ? { ...c, sentiment: 'negative' } : c;
 }
 
 export function applyLabelOverrides(
