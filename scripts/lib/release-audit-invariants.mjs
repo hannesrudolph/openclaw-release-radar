@@ -3,6 +3,7 @@ export const knownProofStatuses = new Set([
   'fixed_after_release',
   'duplicate_to_open_canonical',
   'duplicate_to_closed_canonical',
+  'duplicate_to_fixed_after_release',
   'canonical_cycle_or_self_reference',
   'duplicate_or_superseded',
   'not_planned',
@@ -30,6 +31,7 @@ const riskDispositionByProofStatus = new Map([
   ['fixed_in_release', 'credited_release_fix'],
   ['fixed_after_release', 'known_not_in_release'],
   ['main_only_claim', 'known_not_in_release'],
+  ['duplicate_to_fixed_after_release', 'known_not_in_release'],
   ['duplicate_to_open_canonical', 'open_canonical_risk'],
   ['duplicate_to_closed_canonical', 'unsupported_closure_claim'],
   ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
@@ -205,6 +207,10 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
           `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
+      }
+      if (row.status === 'duplicate_to_fixed_after_release') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release',
+          `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
       }
       if (row.status === 'duplicate_to_open_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'open',

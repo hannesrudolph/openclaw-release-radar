@@ -3,6 +3,7 @@ export type ClosureProofStatus =
   | 'fixed_after_release'
   | 'duplicate_to_open_canonical'
   | 'duplicate_to_closed_canonical'
+  | 'duplicate_to_fixed_after_release'
   | 'canonical_cycle_or_self_reference'
   | 'duplicate_or_superseded'
   | 'not_planned'

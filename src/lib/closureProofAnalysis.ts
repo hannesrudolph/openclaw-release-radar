@@ -227,9 +227,10 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       : [];
     canonicalGraph.set(item.issueNumber, canonicalIssues);
   }
+  const resultByIssue = new Map(preparedRows.map((item) => [item.issueNumber, item.result]));
 
   for (const item of preparedRows) {
-    const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph);
+    const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph, resultByIssue);
     upsertIssueClosureProof({
       release_tag: releaseTag,
       issue_number: item.issueNumber,
@@ -315,14 +316,30 @@ function adjustCanonicalDuplicateStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
   canonicalGraph: Map<number, number[]>,
+  resultByIssue: Map<number, ClosureProofResult> = new Map(),
 ): ClosureProofResult {
   if (result.status !== 'duplicate_or_superseded') return { ...result, evidence };
   const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph);
-  const nextEvidence = { ...evidence, canonicalResolution: resolution };
+  const terminalProof = resolution.terminalIssue?.number == null
+    ? null
+    : resultByIssue.get(resolution.terminalIssue.number) ?? null;
+  const nextEvidence = {
+    ...evidence,
+    canonicalResolution: terminalProof
+      ? { ...resolution, terminalProof: { status: terminalProof.status, summary: terminalProof.summary } }
+      : resolution,
+  };
   if (resolution.cycle || resolution.selfReference) {
     return {
       status: 'canonical_cycle_or_self_reference',
       summary: 'Closed as duplicate/superseded, but canonical reference loops back to the same issue.',
+      evidence: nextEvidence,
+    };
+  }
+  if (terminalProof?.status === 'fixed_after_release') {
+    return {
+      status: 'duplicate_to_fixed_after_release',
+      summary: 'Closed as duplicate/superseded; canonical issue was fixed after this release tag.',
       evidence: nextEvidence,
     };
   }
@@ -378,6 +395,10 @@ function canonicalResolution(
     selfReference,
   };
 }
+
+export const __closureProofAnalysisTest = {
+  adjustCanonicalDuplicateStatus,
+};
 
 function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {
   const row = db.prepare(`SELECT number, title, state, html_url FROM issues WHERE number=?`).get(number) as {

@@ -752,6 +752,7 @@ function closureStatusLabel(status: string): string {
     fixed_after_release: 'fixed after this release',
     duplicate_to_open_canonical: 'moved to open canonical',
     duplicate_to_closed_canonical: 'moved to closed canonical',
+    duplicate_to_fixed_after_release: 'canonical fixed after this release',
     canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',

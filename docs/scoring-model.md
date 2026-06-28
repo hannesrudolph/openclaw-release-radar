@@ -89,6 +89,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `fixed_after_release`: merged closing PR or named fix/source commit exists, but is not reachable from this release tag.
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
+- `duplicate_to_fixed_after_release`: closure moved the report to a canonical issue that has release proof, but that proof is not reachable from this release tag.
 - `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.

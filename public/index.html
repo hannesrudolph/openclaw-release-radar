@@ -1698,6 +1698,7 @@ function closureStatusLabel(status) {
     fixed_after_release: 'fixed after this release',
     duplicate_to_open_canonical: 'moved to open canonical',
     duplicate_to_closed_canonical: 'moved to closed canonical',
+    duplicate_to_fixed_after_release: 'canonical fixed after this release',
     canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
@@ -1769,10 +1770,14 @@ function closureProofHtml(closureProof) {
       : '';
     const resolution = item.evidence?.canonicalResolution;
     const terminal = resolution?.terminalIssue;
+    const terminalProof = resolution?.terminalProof;
     const resolutionLine = terminal
       ? `Canonical resolution: ${terminal.url
           ? `<a href="${esc(terminal.url)}" target="_blank" rel="noopener">#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}</a>`
           : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${Array.isArray(resolution.path) && resolution.path.length > 1 ? ` · path ${resolution.path.map((n) => `#${esc(n)}`).join(' → ')}` : ''}`
+      : '';
+    const terminalProofLine = terminalProof
+      ? `Canonical proof: ${esc(closureStatusLabel(terminalProof.status))}${terminalProof.summary ? ` · ${esc(terminalProof.summary)}` : ''}`
       : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
     const disposition = item.riskDisposition ? closureRiskDispositionLabel(item.riskDisposition) : null;
@@ -1780,6 +1785,7 @@ function closureProofHtml(closureProof) {
       + `<span class="evidence__meta">${disposition ? `${esc(disposition)} · ` : ''}${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
+      + (terminalProofLine ? `<span class="evidence__meta">${terminalProofLine}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
       + `</li>`;
   }).join('');

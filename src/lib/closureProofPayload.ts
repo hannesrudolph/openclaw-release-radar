@@ -22,6 +22,7 @@ const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<string, ClosureRiskDisposition>
   fixed_in_release: 'credited_release_fix',
   fixed_after_release: 'known_not_in_release',
   main_only_claim: 'known_not_in_release',
+  duplicate_to_fixed_after_release: 'known_not_in_release',
   duplicate_to_open_canonical: 'open_canonical_risk',
   duplicate_to_closed_canonical: 'unsupported_closure_claim',
   canonical_cycle_or_self_reference: 'unsupported_closure_claim',
