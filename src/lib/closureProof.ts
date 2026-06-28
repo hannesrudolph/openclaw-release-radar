@@ -13,6 +13,7 @@ export type ClosureProofStatus =
   | 'reporter_replaced'
   | 'reporter_withdrawn'
   | 'reporter_self_closed'
+  | 'repro_requested'
   | 'no_code_proof'
   | 'no_timeline_event'
   | 'non_bug_neutral'
@@ -51,8 +52,9 @@ const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:sti
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
 const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|under|to)\b.{0,80}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#\d+\b/i;
 const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
+const REPRO_REQUESTED_RE = /\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b|\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b.{0,80}\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b/i;
 const KEEP_OPEN_RE = /\b(?:keep(?:ing)?|stay|remain)\s+(?:this\s+)?open\b|\bbefore closing this issue\b/i;
-const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\bfixed\s+on\s+`?main`?\s+by\s+#\d+\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b/i;
+const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\bfixed\s+on\s+`?main`?\s+by\s+#\d+\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b|\b(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b/i;
 const CANONICAL_REFERENCE_RES = [
   /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
   /\b(?:canonical|root-cause|root cause)\s+(?:issue|tracker|report)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
@@ -145,6 +147,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     return {
       status: 'reporter_withdrawn',
       summary: 'Reporter withdrew, ignored, or closed the report for non-fix reasons.',
+      evidence,
+    };
+  }
+
+  if (REPRO_REQUESTED_RE.test(combinedComments)) {
+    return {
+      status: 'repro_requested',
+      summary: 'Closed with a request to file a fresh report if the issue still reproduces on the latest version; no release fix proof is linked.',
       evidence,
     };
   }
@@ -258,7 +268,7 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
     .filter((comment) => {
       const body = comment.body ?? '';
       return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || MAIN_ONLY_RE.test(body) || NO_PLAN_RE.test(body) ||
-        REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body);
+        REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body) || REPRO_REQUESTED_RE.test(body);
     })
     .slice(-3)
     .map((comment) => ({

@@ -1045,11 +1045,12 @@ ORDER BY
     WHEN 'duplicate_to_closed_canonical' THEN 3
     WHEN 'canonical_cycle_or_self_reference' THEN 4
     WHEN 'duplicate_or_superseded' THEN 5
-    WHEN 'reporter_replaced' THEN 6
-    WHEN 'reporter_withdrawn' THEN 7
-    WHEN 'reporter_self_closed' THEN 8
-    WHEN 'no_code_proof' THEN 9
-    ELSE 10
+    WHEN 'repro_requested' THEN 6
+    WHEN 'reporter_replaced' THEN 7
+    WHEN 'reporter_withdrawn' THEN 8
+    WHEN 'reporter_self_closed' THEN 9
+    WHEN 'no_code_proof' THEN 10
+    ELSE 11
   END,
   i.closed_at DESC
 LIMIT ?

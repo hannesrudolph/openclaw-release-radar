@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { closureRiskWeightForRow } from './closureProofPayload.ts';
+import { closureRiskDisposition, closureRiskWeightForRow } from './closureProofPayload.ts';
 
 describe('closure proof risk weighting', () => {
   it('weights unresolved closure risk by disposition and issue classification', () => {
@@ -21,6 +21,19 @@ describe('closure proof risk weighting', () => {
       affected_users: 'few',
     });
     assert.ok(severe > narrow * 40, `expected severe canonical risk ${severe} to dominate narrow claim ${narrow}`);
+  });
+
+  it('keeps latest-version repro requests as unresolved unsupported closure risk', () => {
+    const weight = closureRiskWeightForRow({
+      status: 'repro_requested',
+      sentiment: 'negative',
+      severity: 'high',
+      functionality: 'integration',
+      scope: 'moderate',
+      affected_users: 'some',
+    });
+    assert.equal(closureRiskDisposition('repro_requested'), 'unsupported_closure_claim');
+    assert.ok(weight > 0);
   });
 
   it('excludes credited fixes and neutral closures from unresolved closure risk', () => {

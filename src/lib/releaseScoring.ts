@@ -911,6 +911,7 @@ function closureStatusLabel(status: string): string {
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
+    repro_requested: 'fresh repro requested',
     reporter_self_closed: 'reporter self-closed',
     no_code_proof: 'no linked release fix',
     no_timeline_event: 'close event not fetched',

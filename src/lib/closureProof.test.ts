@@ -141,6 +141,33 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'reporter_withdrawn');
   });
 
+  it('separates latest-version repro requests from generic missing code proof', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-28T02:41:48Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-06-28T02:41:48Z',
+        body: 'Please file a new issue if this still repos with latest imsg and openclaw',
+      }],
+    }));
+    assert.equal(result.status, 'repro_requested');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.matchingComments as any[]).length, 1);
+  });
+
+  it('does not classify broad future-failure follow-up wording as a latest-version repro request', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-27T20:36:35Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-27T20:23:27Z',
+        body: 'Close as superseded: the issue is tracked in an active continuation PR. Open a new issue only if that surface lands and still fails on main or a release.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+  });
+
   it('does not infer reporter withdrawal from maintainer-only closure wording', () => {
     const result = classifyClosureProof(input({
       issueAuthor: 'reporter',
