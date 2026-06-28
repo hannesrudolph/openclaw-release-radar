@@ -954,10 +954,13 @@ function unscoredFixProof(
 ): UnscoredFixProof {
   const latest = latestStableReleaseLookup();
   const latestMs = latest?.published_at ? Date.parse(latest.published_at) : NaN;
-  const proof = earliestProofTime([
+  const proofs = validProofTimes([
     ...notReachablePrProofTimes(evidence),
     ...notReachableCommitProofTimes(evidence),
   ]);
+  const proof = Number.isFinite(latestMs)
+    ? earliestProofTime(proofs.filter((item) => Date.parse(String(item.proofTime)) > latestMs)) ?? earliestProofTime(proofs)
+    : earliestProofTime(proofs);
   const proofTime = proof?.proofTime ?? null;
   if (!proof || !proofTime || !Number.isFinite(latestMs)) {
     return {
@@ -1026,9 +1029,13 @@ function notReachableCommitProofTimes(evidence: Record<string, unknown>): Unscor
 }
 
 function earliestProofTime(proofs: UnscoredFixProof[]): UnscoredFixProof | null {
+  return validProofTimes(proofs)[0] ?? null;
+}
+
+function validProofTimes(proofs: UnscoredFixProof[]): UnscoredFixProof[] {
   return proofs
     .filter((proof) => proof.proofTime && Number.isFinite(Date.parse(proof.proofTime)))
-    .sort((a, b) => String(a.proofTime).localeCompare(String(b.proofTime)))[0] ?? null;
+    .sort((a, b) => String(a.proofTime).localeCompare(String(b.proofTime)));
 }
 
 function laterPrFixReleases(releaseTag: string, evidence: Record<string, unknown>): LaterFixRelease[] {

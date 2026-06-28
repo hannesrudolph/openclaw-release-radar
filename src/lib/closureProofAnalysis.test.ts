@@ -369,6 +369,35 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((evidence as any).unscoredFixProof.timing, 'skipped_by_later_releases');
   });
 
+  it('prefers after-latest proof over older skipped proof candidates', () => {
+    const evidence = {
+      linkedPrs: [{
+        number: 10,
+        repositoryNameWithOwner: 'openclaw/openclaw',
+        merged: 1,
+        mergedAt: '2026-06-01T12:00:00Z',
+        source: 'ClosedEvent.closer',
+      }, {
+        number: 11,
+        repositoryNameWithOwner: 'openclaw/openclaw',
+        merged: 1,
+        mergedAt: '2026-06-03T12:00:00Z',
+        source: 'ClosedEvent.closer',
+      }],
+      hasNotReachableClosingPr: true,
+    };
+    const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('fixed_after_release', 'Fix exists after this tag.'),
+      evidence,
+      'v1',
+      new Map(),
+      () => ({ tag: 'v2', published_at: '2026-06-02T00:00:00Z' }),
+    );
+
+    assert.equal(adjusted.status, 'fixed_after_latest_release');
+    assert.equal((evidence as any).unscoredFixProof.proofTime, '2026-06-03T12:00:00Z');
+  });
+
   it('classifies not-planned closures with reachable proof separately from bare admin closures', () => {
     const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
       result('admin_not_planned_unverified', 'No rationale.'),
