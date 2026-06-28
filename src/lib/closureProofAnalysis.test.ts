@@ -90,6 +90,62 @@ describe('closure proof canonical roll-up', () => {
     });
   });
 
+  it('uses later-release terminal fix proof for closed canonical targets', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [20] },
+      new Map([[10, [20]]]),
+      new Map(),
+      'v1',
+      () => ({
+        status: 'fixed_in_release',
+        summary: 'Canonical was fixed in a later release.',
+        evidence: {},
+        releaseTag: 'v2',
+        timing: 'after',
+        sourceReleasePublishedAt: '2026-06-01T00:00:00Z',
+        terminalReleasePublishedAt: '2026-06-02T00:00:00Z',
+        crossRelease: true,
+      }),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_fixed_after_release');
+    assert.deepEqual((adjusted.evidence.canonicalResolution as any).terminalProof, {
+      status: 'fixed_in_release',
+      summary: 'Canonical was fixed in a later release.',
+      releaseTag: 'v2',
+      timing: 'after',
+      crossRelease: true,
+      sourceReleasePublishedAt: '2026-06-01T00:00:00Z',
+      terminalReleasePublishedAt: '2026-06-02T00:00:00Z',
+    });
+  });
+
+  it('uses non-fix cross-release terminal proof to avoid missing-proof status', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [20] },
+      new Map([[10, [20]]]),
+      new Map(),
+      'v1',
+      () => ({
+        status: 'not_planned',
+        summary: 'Canonical was closed as non-actionable.',
+        evidence: {},
+        releaseTag: 'v2',
+        timing: 'after',
+        sourceReleasePublishedAt: '2026-06-01T00:00:00Z',
+        terminalReleasePublishedAt: '2026-06-02T00:00:00Z',
+        crossRelease: true,
+      }),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_closed_canonical');
+    assert.equal((adjusted.evidence.canonicalResolution as any).terminalProof.status, 'not_planned');
+  });
+
   it('classifies duplicate closures with open PR context as open canonical risk', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       97322,

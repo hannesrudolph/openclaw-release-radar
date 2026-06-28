@@ -1942,8 +1942,11 @@ function closureProofHtml(closureProof) {
           ? `<a href="${esc(terminal.url)}" target="_blank" rel="noopener">#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}</a>`
           : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${Array.isArray(resolution.path) && resolution.path.length > 1 ? ` · path ${resolution.path.map((n) => `#${esc(n)}`).join(' → ')}` : ''}`
       : '';
+    const terminalProofMeta = terminalProof?.releaseTag
+      ? ` · ${terminalProof.crossRelease ? 'from ' : ''}${esc(terminalProof.releaseTag)}${terminalProof.timing ? ` (${esc(String(terminalProof.timing).replace(/_/g, ' '))})` : ''}`
+      : '';
     const terminalProofLine = terminalProof
-      ? `Canonical proof: ${esc(closureStatusLabel(terminalProof.status))}${terminalProof.summary ? ` · ${esc(terminalProof.summary)}` : ''}`
+      ? `Canonical proof: ${esc(closureStatusLabel(terminalProof.status))}${terminalProofMeta}${terminalProof.summary ? ` · ${esc(terminalProof.summary)}` : ''}`
       : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
     const nonActionableClaim = (item.evidence?.nonActionableRationaleComments ?? [])[0]?.snippet;

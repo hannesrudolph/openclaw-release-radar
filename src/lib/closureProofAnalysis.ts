@@ -194,6 +194,19 @@ WHERE r.is_direct_reference=1
 ORDER BY r.referenced_at
 `);
 
+const releasePublishedAtStmt = db.prepare(`
+SELECT published_at FROM releases WHERE tag=?
+`);
+
+const crossReleaseTerminalProofRowsStmt = db.prepare(`
+SELECT p.release_tag, p.status, p.summary, r.published_at
+FROM issue_closure_proofs p
+LEFT JOIN releases r ON r.tag=p.release_tag
+WHERE p.issue_number=?
+  AND p.release_tag!=?
+ORDER BY r.published_at IS NULL, r.published_at DESC, p.release_tag DESC
+`);
+
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
@@ -328,7 +341,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const resultByIssue = new Map(preparedRows.map((item) => [item.issueNumber, item.result]));
 
   for (const item of preparedRows) {
-    const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph, resultByIssue);
+    const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph, resultByIssue, releaseTag);
     upsertIssueClosureProof({
       release_tag: releaseTag,
       issue_number: item.issueNumber,
@@ -517,13 +530,21 @@ function adjustCanonicalDuplicateStatus(
   evidence: Record<string, unknown>,
   canonicalGraph: Map<number, number[]>,
   resultByIssue: Map<number, ClosureProofResult> = new Map(),
+  sourceReleaseTag: string | null = null,
+  terminalProofLookup = crossReleaseTerminalProofForIssue,
 ): ClosureProofResult {
   const nonBugDuplicate = result.status === 'non_bug_duplicate_or_superseded';
   if (result.status !== 'duplicate_or_superseded' && !nonBugDuplicate) return { ...result, evidence };
   const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph);
-  const terminalProof = resolution.terminalIssue?.number == null
+  const currentWindowTerminalProof = resolution.terminalIssue?.number == null
     ? null
     : resultByIssue.get(resolution.terminalIssue.number) ?? null;
+  const crossReleaseTerminalProof = (!currentWindowTerminalProof || currentWindowTerminalProof.status === 'no_timeline_event' || currentWindowTerminalProof.status === 'unknown') &&
+    sourceReleaseTag &&
+    resolution.terminalIssue?.number != null
+    ? terminalProofLookup(sourceReleaseTag, resolution.terminalIssue.number)
+    : null;
+  const terminalProof = currentWindowTerminalProof ?? crossReleaseTerminalProof;
   const canonicalFixCommitProof = Array.isArray(evidence.canonicalFixCommitProof)
     ? evidence.canonicalFixCommitProof
     : [];
@@ -532,7 +553,10 @@ function adjustCanonicalDuplicateStatus(
   const nextEvidence = {
     ...evidence,
     canonicalResolution: terminalProof
-      ? { ...resolution, terminalProof: { status: terminalProof.status, summary: terminalProof.summary } }
+      ? {
+        ...resolution,
+        terminalProof: terminalProofEvidence(terminalProof),
+      }
       : resolution,
   };
   if (resolution.cycle || resolution.selfReference) {
@@ -542,7 +566,7 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
-  if (terminalProof?.status === 'fixed_in_release' || hasReachableCanonicalFixCommit) {
+  if ((currentWindowTerminalProof?.status === 'fixed_in_release') || hasReachableCanonicalFixCommit) {
     return {
       status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_in_release' : 'duplicate_to_fixed_in_release',
       summary: hasReachableCanonicalFixCommit
@@ -551,10 +575,16 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
-  if (terminalProof?.status === 'fixed_after_release' || hasNotReachableCanonicalFixCommit) {
+  if (
+    currentWindowTerminalProof?.status === 'fixed_after_release' ||
+    hasNotReachableCanonicalFixCommit ||
+    (crossReleaseTerminalProof?.timing === 'after' && isTerminalFixProof(crossReleaseTerminalProof.status))
+  ) {
     return {
       status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_after_release' : 'duplicate_to_fixed_after_release',
-      summary: hasNotReachableCanonicalFixCommit
+      summary: crossReleaseTerminalProof?.timing === 'after' && isTerminalFixProof(crossReleaseTerminalProof.status)
+        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue has terminal fix proof in a later release audit.`
+        : hasNotReachableCanonicalFixCommit
         ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical fix/source commit is not reachable from this release tag.`
         : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue was fixed after this release tag.`,
       evidence: nextEvidence,
@@ -599,6 +629,82 @@ function adjustCanonicalDuplicateStatus(
     };
   }
   return { ...result, evidence: nextEvidence };
+}
+
+type TerminalProofForCanonical = ClosureProofResult & {
+  releaseTag?: string;
+  timing?: 'after' | 'same_or_before' | 'unknown';
+  sourceReleasePublishedAt?: string | null;
+  terminalReleasePublishedAt?: string | null;
+  crossRelease?: boolean;
+};
+
+function crossReleaseTerminalProofForIssue(
+  sourceReleaseTag: string,
+  terminalIssueNumber: number,
+): TerminalProofForCanonical | null {
+  const sourceRelease = releasePublishedAtStmt.get(sourceReleaseTag) as { published_at: string | null } | undefined;
+  const sourcePublishedAt = sourceRelease?.published_at ?? null;
+  const rows = crossReleaseTerminalProofRowsStmt.all(terminalIssueNumber, sourceReleaseTag) as Array<{
+    release_tag: string;
+    status: ClosureProofStatus;
+    summary: string;
+    published_at: string | null;
+  }>;
+  const candidates = rows
+    .map((row) => {
+      const timing = releaseTiming(sourcePublishedAt, row.published_at);
+      return {
+        status: row.status,
+        summary: row.summary,
+        evidence: {},
+        releaseTag: row.release_tag,
+        timing,
+        sourceReleasePublishedAt: sourcePublishedAt,
+        terminalReleasePublishedAt: row.published_at,
+        crossRelease: true,
+        priority: terminalProofPriority(row.status, timing),
+      };
+    })
+    .sort((a, b) => a.priority - b.priority ||
+      String(b.terminalReleasePublishedAt ?? '').localeCompare(String(a.terminalReleasePublishedAt ?? '')));
+  const best = candidates[0];
+  if (!best) return null;
+  const { priority: _priority, ...proof } = best;
+  return proof;
+}
+
+function terminalProofEvidence(proof: TerminalProofForCanonical): Record<string, unknown> {
+  const base = {
+    status: proof.status,
+    summary: proof.summary,
+  };
+  if (proof.crossRelease !== true) return base;
+  return {
+    ...base,
+    releaseTag: proof.releaseTag ?? null,
+    timing: proof.timing ?? null,
+    crossRelease: proof.crossRelease === true,
+    sourceReleasePublishedAt: proof.sourceReleasePublishedAt ?? null,
+    terminalReleasePublishedAt: proof.terminalReleasePublishedAt ?? null,
+  };
+}
+
+function releaseTiming(sourcePublishedAt: string | null, terminalPublishedAt: string | null): 'after' | 'same_or_before' | 'unknown' {
+  const sourceMs = sourcePublishedAt ? Date.parse(sourcePublishedAt) : NaN;
+  const terminalMs = terminalPublishedAt ? Date.parse(terminalPublishedAt) : NaN;
+  if (!Number.isFinite(sourceMs) || !Number.isFinite(terminalMs)) return 'unknown';
+  return terminalMs > sourceMs ? 'after' : 'same_or_before';
+}
+
+function terminalProofPriority(status: string, timing: 'after' | 'same_or_before' | 'unknown'): number {
+  if (timing === 'after' && isTerminalFixProof(status)) return 0;
+  if (!['no_timeline_event', 'unknown'].includes(status)) return 1;
+  return 2;
+}
+
+function isTerminalFixProof(status: string): boolean {
+  return status === 'fixed_in_release' || status === 'fixed_after_release';
 }
 
 function adjustClosureProofStatus(

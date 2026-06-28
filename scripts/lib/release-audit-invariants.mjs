@@ -219,8 +219,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
       }
       if (row.status === 'duplicate_to_fixed_after_release') {
-        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release' ||
-          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable'),
+        expect(failures, tag, canonicalFixedAfterRelease(evidence),
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
       }
       if (row.status === 'duplicate_to_fixed_in_release') {
@@ -346,8 +345,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       }
       if (row.status === 'non_bug_duplicate_to_fixed_after_release') {
         expectNonNegativeProof({ failures, tag, row });
-        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release' ||
-          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable'),
+        expect(failures, tag, canonicalFixedAfterRelease(evidence),
           `non_bug_duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
       }
       if (row.status === 'non_bug_duplicate_to_open_canonical') {
@@ -782,6 +780,15 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
 
 function canonicalFixCommitProof(evidence) {
   return Array.isArray(evidence?.canonicalFixCommitProof) ? evidence.canonicalFixCommitProof : [];
+}
+
+function canonicalFixedAfterRelease(evidence) {
+  const terminalProof = evidence?.canonicalResolution?.terminalProof;
+  return terminalProof?.status === 'fixed_after_release' ||
+    (terminalProof?.crossRelease === true &&
+      terminalProof?.timing === 'after' &&
+      ['fixed_in_release', 'fixed_after_release'].includes(terminalProof?.status)) ||
+    canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable');
 }
 
 function expectNonNegativeProof({ failures, tag, row }) {
