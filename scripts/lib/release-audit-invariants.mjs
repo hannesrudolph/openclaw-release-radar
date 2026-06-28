@@ -94,6 +94,7 @@ const knownExplanationCodes = new Set([
   'field_visible_reports_opened',
   'source_carryover_risk',
   'stale_low_confidence_evidence',
+  'incomplete_classification_coverage',
   'closed_issues_not_counted_as_release_fixes',
   'unverified_closed_fix_reachability',
   'missing_full_release_evidence_report',

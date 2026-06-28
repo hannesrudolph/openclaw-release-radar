@@ -1435,6 +1435,72 @@ export function issueCountForVersion(tag: string): number {
   return Number((issueCountForVersionStmt.get(tag) as { count: number }).count ?? 0);
 }
 
+const unclassifiedIssuesForVersionStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND c.closed_at > i.created_at),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND c.closed_at > r.reopened_at),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+)
+SELECT i.*
+FROM issues i
+JOIN target
+LEFT JOIN classifications c ON c.issue_number=i.number
+WHERE
+  target.start_at IS NOT NULL
+  AND c.issue_number IS NULL
+  AND EXISTS (
+    SELECT 1
+    FROM issue_open_intervals interval
+    WHERE interval.issue_number=i.number
+      AND interval.open_at < target.end_at
+      AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+  )
+ORDER BY
+  CASE i.state WHEN 'open' THEN 0 ELSE 1 END,
+  i.updated_at DESC
+LIMIT ?
+`);
+
+export function unclassifiedIssuesForVersion(tag: string, limit = 25): IssueRow[] {
+  return unclassifiedIssuesForVersionStmt.all(tag, limit) as unknown as IssueRow[];
+}
+
 // Issues CLOSED during a release's reign — the "fixes credit" for that release.
 // An issue counts as fixed-by-R if its closed_at falls inside R's reign window
 // [R.published_at, next_release.published_at). This is what the release shipped

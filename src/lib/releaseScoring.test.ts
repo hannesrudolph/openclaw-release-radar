@@ -78,4 +78,39 @@ describe('release score explanations', () => {
     assert.equal(typeof labelTimeline.issueCount, 'number');
     assert.equal(typeof labelTimeline.historicalCurrentLabelFallbackAllowed, 'boolean');
   });
+
+  it('explains incomplete classification coverage with issue references', () => {
+    const explanation = __releaseScoringTest.buildScoreExplanation({
+      conf: {
+        status: 'eligible',
+        components: { coverage: -0.8 },
+        evidenceCoverage: 0.5,
+      },
+      input: {
+        rawIssueCount: 2,
+        classifiedIssueCount: 1,
+      },
+      debtEvidence: {
+        unclassifiedIssues: [{
+          number: 1002,
+          title: 'unclassified blocker',
+          url: 'https://example.test/issues/1002',
+          state: 'open',
+        }],
+      },
+      gateEvidence: {
+        fixProvenance: {},
+        artifactVerification: {},
+      },
+    } as any, false);
+    const coverage = explanation.limitDetails.find((detail: any) =>
+      detail.code === 'incomplete_classification_coverage',
+    );
+    assert.ok(coverage);
+    assert.match(coverage.text, /1 attributed issues lack current classification evidence/);
+    assert.equal(coverage.metrics?.rawIssueCount, 2);
+    assert.equal(coverage.metrics?.classifiedIssueCount, 1);
+    assert.equal(coverage.metrics?.missingClassificationCount, 1);
+    assert.deepEqual(coverage.issueRefs?.map((issue: any) => issue.number), [1002]);
+  });
 });

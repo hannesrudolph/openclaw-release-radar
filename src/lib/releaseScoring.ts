@@ -26,6 +26,7 @@ import {
   listAdvisories,
   listReleasesDb,
   openedDuringReign,
+  unclassifiedIssuesForVersion,
   updateReleaseScore,
   upsertReleaseScoreAudit,
   unverifiedClosedForRelease,
@@ -97,6 +98,7 @@ export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
   'source_carryover_risk',
   'stale_low_confidence_evidence',
+  'incomplete_classification_coverage',
   'closed_issues_not_counted_as_release_fixes',
   'unverified_closed_fix_reachability',
   'missing_full_release_evidence_report',
@@ -231,6 +233,7 @@ function scoreRelease(args: {
   let neg = 0;
   let pos = 0;
   const attributed = issuesForVersion(rel.tag);
+  const unclassifiedIssues = unclassifiedIssuesForVersion(rel.tag, 25);
   for (const row of attributed) {
     const sentiment = classify(row).sentiment;
     if (sentiment === 'negative') neg++;
@@ -373,6 +376,18 @@ function scoreRelease(args: {
     unverifiedClosed: unverifiedClosed
       .slice(0, 25)
       .map((row) => summarizeIssue(row)),
+    unclassifiedIssues: unclassifiedIssues.map((row) => ({
+      number: row.number,
+      title: row.title,
+      url: row.html_url,
+      state: row.state,
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      closedAt: row.closed_at,
+      author: row.author,
+      comments: row.comments,
+      labels: safeParseLabels(row.labels),
+    })),
   };
   const labelTimeline = labelTimelineCoverage(
     [...attributed, ...openedReign, ...verifiedFixed, ...unverifiedClosed],
@@ -505,6 +520,27 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           rawWeight: roundMetric(input.staleDebtWeight),
           cappedPenalty: Math.abs(numberOrZero(components.staleDebt)),
         },
+      },
+    );
+  }
+
+  const missingClassificationCount = Math.max(0, Number(input.rawIssueCount ?? 0) - Number(input.classifiedIssueCount ?? 0));
+  if (missingClassificationCount > 0) {
+    const coveragePercent = Math.round((result.conf.evidenceCoverage ?? 0) * 100);
+    const unclassified = Array.isArray(evidence.unclassifiedIssues) ? evidence.unclassifiedIssues : [];
+    addLimit(
+      'incomplete_classification_coverage',
+      `Classification coverage is ${coveragePercent}% (${input.classifiedIssueCount}/${input.rawIssueCount}); ${missingClassificationCount} attributed issues lack current classification evidence.` +
+      ` This contributes ${penaltyText(components.coverage)} until evidence is complete.`,
+      {
+        metrics: {
+          rawIssueCount: Number(input.rawIssueCount ?? 0),
+          classifiedIssueCount: Number(input.classifiedIssueCount ?? 0),
+          missingClassificationCount,
+          evidenceCoverage: roundMetric(result.conf.evidenceCoverage ?? 0),
+          cappedPenalty: Math.abs(numberOrZero(components.coverage)),
+        },
+        issueRefs: issueRefs(unclassified, 5),
       },
     );
   }
@@ -821,6 +857,7 @@ function truncateAtWordBoundary(text: string, maxLength: number): string {
 }
 
 export const __releaseScoringTest = {
+  buildScoreExplanation,
   shortIssueTitle,
   truncateAtWordBoundary,
 };
