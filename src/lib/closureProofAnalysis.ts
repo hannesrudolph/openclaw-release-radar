@@ -21,6 +21,7 @@ export interface ClosureProofAnalysisResult {
 }
 
 const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
+const trackedPrRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
 
 const closedIssueRowsStmt = db.prepare(`
 WITH target AS (
@@ -208,6 +209,32 @@ WHERE p.issue_number=?
 ORDER BY r.published_at IS NULL, r.published_at DESC, p.release_tag DESC
 `);
 
+const laterStableReleaseTagsStmt = db.prepare(`
+SELECT later.tag
+FROM releases source
+JOIN releases later
+  ON later.prerelease=0
+ AND later.published_at > source.published_at
+WHERE source.tag=?
+ORDER BY later.published_at ASC
+`);
+
+const laterPrReachabilityStmt = db.prepare(`
+SELECT rpr.tag, r.published_at
+FROM releases source
+JOIN release_pr_reachability rpr
+  ON rpr.pr_repository_name_with_owner=?
+ AND rpr.pr_number=?
+ AND rpr.status='reachable'
+JOIN releases r
+  ON r.tag=rpr.tag
+ AND r.prerelease=0
+ AND r.published_at > source.published_at
+WHERE source.tag=?
+ORDER BY r.published_at ASC
+LIMIT 1
+`);
+
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
@@ -283,6 +310,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     }
   }
   const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids]);
+  const laterCommitReachability = await laterReachableReleaseByCommit(releaseTag, commitReachability);
   const counts = new Map<string, number>();
   deleteIssueClosureProofsForRelease(releaseTag);
   const preparedRows: Array<{
@@ -349,7 +377,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     };
     preparedRows.push({
       issueNumber: row.number,
-      result: adjustClosureProofStatus(result, evidence),
+      result: adjustClosureProofStatus(result, evidence, releaseTag, laterCommitReachability),
       evidence,
     });
   }
@@ -777,6 +805,40 @@ function releaseTiming(sourcePublishedAt: string | null, terminalPublishedAt: st
   return terminalMs > sourceMs ? 'after' : 'same_or_before';
 }
 
+async function laterReachableReleaseByCommit(
+  sourceReleaseTag: string,
+  currentReachability: Map<string, CommitReachability>,
+): Promise<Map<string, LaterFixRelease>> {
+  const remaining = [...currentReachability.values()]
+    .filter((result) => result.status === 'not_reachable')
+    .map((result) => result.commitOid);
+  const releases = laterStableReleaseTagsStmt.all(sourceReleaseTag) as Array<{ tag: string }>;
+  const laterByCommit = new Map<string, LaterFixRelease>();
+  if (!remaining.length || !releases.length) return laterByCommit;
+  let pending = unique(remaining);
+  for (const release of releases) {
+    if (!pending.length) break;
+    const reachability = await checkReleaseCommitReachability(release.tag, pending);
+    const nextPending: string[] = [];
+    for (const commitOid of pending) {
+      const result = reachability.get(commitOid);
+      if (result?.status === 'reachable') {
+        const published = releasePublishedAtStmt.get(release.tag) as { published_at: string | null } | undefined;
+        laterByCommit.set(commitOid, {
+          releaseTag: release.tag,
+          publishedAt: published?.published_at ?? null,
+          proofType: 'commit',
+          commitOid,
+        });
+      } else {
+        nextPending.push(commitOid);
+      }
+    }
+    pending = nextPending;
+  }
+  return laterByCommit;
+}
+
 function terminalProofPriority(status: string, timing: 'after' | 'same_or_before' | 'unknown'): number {
   if (timing === 'after' && isTerminalFixProof(status)) return 0;
   if (!['no_timeline_event', 'unknown'].includes(status)) return 1;
@@ -790,11 +852,98 @@ function isTerminalFixProof(status: string): boolean {
 function adjustClosureProofStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
+  releaseTag: string,
+  laterCommitReachability: Map<string, LaterFixRelease>,
 ): ClosureProofResult {
-  return adjustNotPlannedEvidenceStatus(
+  const adjusted = adjustNotPlannedEvidenceStatus(
     adjustNoReleaseFixProofStatus(result, evidence),
     evidence,
   );
+  return adjustFixedAfterReleaseStatus(adjusted, evidence, releaseTag, laterCommitReachability);
+}
+
+type LaterFixRelease = {
+  releaseTag: string;
+  publishedAt: string | null;
+  proofType: 'pr' | 'commit';
+  prNumber?: number;
+  prRepositoryNameWithOwner?: string;
+  commitOid?: string;
+};
+
+function adjustFixedAfterReleaseStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+  releaseTag: string,
+  laterCommitReachability: Map<string, LaterFixRelease>,
+): ClosureProofResult {
+  const fixedAfter = result.status === 'fixed_after_release';
+  const nonBugFixedAfter = result.status === 'non_bug_fixed_after_release';
+  if (!fixedAfter && !nonBugFixedAfter) return result;
+  const later = earliestLaterFixRelease([
+    ...laterPrFixReleases(releaseTag, evidence),
+    ...laterCommitFixReleases(evidence, laterCommitReachability),
+  ]);
+  if (later) {
+    evidence.laterFixProof = later;
+    return {
+      ...result,
+      status: fixedAfter ? 'fixed_in_later_release' : 'non_bug_fixed_in_later_release',
+      summary: fixedAfter
+        ? `Fix proof is not in this release tag, but is reachable from later stable ${later.releaseTag}.`
+        : `Non-negative item has fix proof reachable from later stable ${later.releaseTag}; not scored as bug fix credit.`,
+    };
+  }
+  return {
+    ...result,
+    status: fixedAfter ? 'fixed_not_in_scored_releases' : 'non_bug_fixed_not_in_scored_releases',
+    summary: fixedAfter
+      ? 'Fix proof exists, but no scored stable release currently contains it.'
+      : 'Non-negative item has fix proof that is not reachable from any scored stable release.',
+  };
+}
+
+function laterPrFixReleases(releaseTag: string, evidence: Record<string, unknown>): LaterFixRelease[] {
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  const releases: LaterFixRelease[] = [];
+  const seen = new Set<string>();
+  for (const pr of linkedPrs) {
+    const repo = String(pr.repositoryNameWithOwner ?? '');
+    const prNumber = Number(pr.number ?? 0);
+    if (repo !== trackedPrRepositoryNameWithOwner || !Number.isInteger(prNumber) || prNumber <= 0) continue;
+    if (Number(pr.merged ?? 0) !== 1) continue;
+    const source = String(pr.source ?? '');
+    if (!['closedByPullRequestsReferences', 'ClosedEvent.closer', 'ClosureComment.fixProof'].includes(source)) continue;
+    const key = `${repo}#${prNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const row = laterPrReachabilityStmt.get(repo, prNumber, releaseTag) as { tag: string; published_at: string | null } | undefined;
+    if (!row) continue;
+    releases.push({
+      releaseTag: row.tag,
+      publishedAt: row.published_at ?? null,
+      proofType: 'pr',
+      prRepositoryNameWithOwner: repo,
+      prNumber,
+    });
+  }
+  return releases;
+}
+
+function laterCommitFixReleases(
+  evidence: Record<string, unknown>,
+  laterCommitReachability: Map<string, LaterFixRelease>,
+): LaterFixRelease[] {
+  const commits = Array.isArray(evidence.notReachableFixCommits) ? evidence.notReachableFixCommits as unknown[] : [];
+  return commits
+    .map((commit) => laterCommitReachability.get(String(commit)))
+    .filter((item): item is LaterFixRelease => !!item);
+}
+
+function earliestLaterFixRelease(releases: LaterFixRelease[]): LaterFixRelease | null {
+  return [...releases].sort((a, b) =>
+    String(a.publishedAt ?? '').localeCompare(String(b.publishedAt ?? '')) ||
+    a.releaseTag.localeCompare(b.releaseTag))[0] ?? null;
 }
 
 function adjustNoReleaseFixProofStatus(

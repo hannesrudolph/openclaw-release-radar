@@ -298,6 +298,46 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'related_pr_without_release_fix');
   });
 
+  it('splits fixed-after release proof by later stable reachability', () => {
+    const evidence = {
+      notReachableFixCommits: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      hasNotReachableFixCommit: true,
+    };
+    const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('fixed_after_release', 'Fix exists after this tag.'),
+      evidence,
+      'v1',
+      new Map([['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', {
+        releaseTag: 'v2',
+        publishedAt: '2026-06-02T00:00:00Z',
+        proofType: 'commit',
+        commitOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      }]]),
+    );
+
+    assert.equal(adjusted.status, 'fixed_in_later_release');
+    assert.deepEqual((evidence as any).laterFixProof, {
+      releaseTag: 'v2',
+      publishedAt: '2026-06-02T00:00:00Z',
+      proofType: 'commit',
+      commitOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+  });
+
+  it('marks fixed-after proof absent from scored stables separately', () => {
+    const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('fixed_after_release', 'Fix exists after this tag.'),
+      {
+        notReachableFixCommits: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+        hasNotReachableFixCommit: true,
+      },
+      'v1',
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'fixed_not_in_scored_releases');
+  });
+
   it('classifies not-planned closures with reachable proof separately from bare admin closures', () => {
     const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
       result('admin_not_planned_unverified', 'No rationale.'),

@@ -218,6 +218,20 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
           `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
       }
+      if (row.status === 'fixed_in_later_release') {
+        expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
+          `fixed_in_later_release issue #${row.issue_number} must have not-reachable PR or commit evidence for this tag`);
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('COMPLETED'),
+          `fixed_in_later_release issue #${row.issue_number} must have COMPLETED state reason`);
+        expect(failures, tag, evidence.laterFixProof?.releaseTag && ['pr', 'commit'].includes(evidence.laterFixProof?.proofType),
+          `fixed_in_later_release issue #${row.issue_number} must include laterFixProof metadata`);
+      }
+      if (row.status === 'fixed_not_in_scored_releases') {
+        expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
+          `fixed_not_in_scored_releases issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+        expect(failures, tag, !evidence.laterFixProof,
+          `fixed_not_in_scored_releases issue #${row.issue_number} must not include laterFixProof metadata`);
+      }
       if (row.status === 'duplicate_to_fixed_after_release') {
         expect(failures, tag, canonicalFixedAfterRelease(evidence),
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
@@ -355,6 +369,18 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `non_bug_fixed_after_release issue #${row.issue_number} must not be negative`);
         expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
           `non_bug_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+      }
+      if (row.status === 'non_bug_fixed_in_later_release') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `non_bug_fixed_in_later_release issue #${row.issue_number} must not be negative`);
+        expect(failures, tag, evidence.laterFixProof?.releaseTag && ['pr', 'commit'].includes(evidence.laterFixProof?.proofType),
+          `non_bug_fixed_in_later_release issue #${row.issue_number} must include laterFixProof metadata`);
+      }
+      if (row.status === 'non_bug_fixed_not_in_scored_releases') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not be negative`);
+        expect(failures, tag, !evidence.laterFixProof,
+          `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not include laterFixProof metadata`);
       }
       if (row.status === 'non_bug_linked_without_merge') {
         expect(failures, tag, row.sentiment !== 'negative',

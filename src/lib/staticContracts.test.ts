@@ -55,6 +55,8 @@ describe('static scoring/UI contracts', () => {
     [
       'fixed_in_release',
       'fixed_after_release',
+      'fixed_in_later_release',
+      'fixed_not_in_scored_releases',
       'duplicate_to_fixed_in_release',
       'duplicate_to_open_canonical',
       'duplicate_to_closed_canonical',
@@ -88,6 +90,8 @@ describe('static scoring/UI contracts', () => {
       'no_timeline_event',
       'non_bug_fixed_in_release',
       'non_bug_fixed_after_release',
+      'non_bug_fixed_in_later_release',
+      'non_bug_fixed_not_in_scored_releases',
       'non_bug_linked_without_merge',
       'non_bug_duplicate_to_fixed_in_release',
       'non_bug_duplicate_to_open_canonical',
