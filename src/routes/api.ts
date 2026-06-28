@@ -3,7 +3,7 @@ import { config } from '../config';
 import { getCached, setCached } from '../lib/cache';
 import {
   getRefreshState,
-  isOpenFeltSeriousIssue,
+  classifyIssueRowWithLabels,
   issuesForVersion,
   listReleasesDb,
   openedDuringReign,
@@ -14,12 +14,14 @@ import {
   getRelease,
   getReleaseScoreAudit,
   latestComparisonSnapshot,
+  labelsForIssueAt,
   listAdvisories,
   type AdvisoryRow,
 } from '../lib/db';
 import { enrichGateEvidenceWithClosureProof } from '../lib/closureProofPayload';
+import { releaseLabelCutoff } from '../lib/labelCutoff';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
-import { bandFor, type InstallStatus } from '../lib/score';
+import { bandFor, isFeltSignal, type InstallStatus } from '../lib/score';
 import { surfaceOf } from '../lib/surfaces';
 import { SCORE_HISTORY_CHART_LIMIT } from '../lib/historyWindow';
 
@@ -338,10 +340,12 @@ api.get('/releases/:tag/review', (req, res) => {
 // returning every attributed issue per release inflates the payload (we observed
 // 5 MB for openclaw with ~1100 negs × 10 releases). For the public-API surface
 // we cap to the most relevant issues per release: negatives first, sorted by
-// severity, then positives.
+// effective severity/reach, then positives.
 const PUBLIC_ISSUES_PER_RELEASE = 25;
 const SEVERITY_RANK: Record<string, number> = { critical: 0, high: 1, medium: 2, low: 3 };
 const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutral: 2 };
+const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
+const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 3 };
 
 function buildPublicPayload() {
   const { lastRefreshAt } = getRefreshState();
@@ -356,29 +360,57 @@ function buildPublicPayload() {
   const releases = allReleases.map((r) => {
     const audit = getReleaseScoreAudit(r.tag);
     const auditSummary = scoreAuditSummary(audit);
+    const labelCutoff = releaseLabelCutoff(r);
+    const classifyPublicIssue = (i: ReturnType<typeof issuesForVersion>[number]) => {
+      const labels = labelsForIssueAt(i.number, parseJson(i.labels, [] as string[]), labelCutoff, {
+        useFallbackWhenNoEvents: labelCutoff == null,
+      });
+      return { issue: i, classification: classifyIssueRowWithLabels(i, labels), labels };
+    };
     const all = issuesForVersion(r.tag);
-    const sorted = [...all].sort((a, b) => {
-      const s = (SENTIMENT_RANK[a.sentiment] ?? 9) - (SENTIMENT_RANK[b.sentiment] ?? 9);
+    const sorted = all.map(classifyPublicIssue).sort((a, b) => {
+      const s = (SENTIMENT_RANK[a.classification.sentiment] ?? 9) - (SENTIMENT_RANK[b.classification.sentiment] ?? 9);
       if (s !== 0) return s;
-      return (SEVERITY_RANK[a.severity] ?? 9) - (SEVERITY_RANK[b.severity] ?? 9);
+      const severity = (SEVERITY_RANK[a.classification.severity] ?? 9) - (SEVERITY_RANK[b.classification.severity] ?? 9);
+      if (severity !== 0) return severity;
+      const scope = (SCOPE_RANK[a.classification.scope] ?? 9) - (SCOPE_RANK[b.classification.scope] ?? 9);
+      if (scope !== 0) return scope;
+      return (USERS_RANK[a.classification.affectedUsers] ?? 9) - (USERS_RANK[b.classification.affectedUsers] ?? 9);
     });
-    const issueSummary = (i: typeof sorted[number]) => ({
+    const issueSummary = ({ issue: i, classification }: typeof sorted[number]) => ({
       number:        i.number,
       title:         i.title,
       url:           i.html_url,
       state:         i.state,
       closedAt:      i.closed_at,
       surface:       ((surface) => surface ? { label: surface.label, icon: surface.icon } : null)(surfaceOf(i.title)),
-      sentiment:     i.sentiment,
-      severity:      i.severity,
-      scope:         i.scope,
-      hasWorkaround: i.has_workaround === 1,
-      confidence:    i.confidence,
-      rationale:     i.rationale,
+      sentiment:     classification.sentiment,
+      severity:      classification.severity,
+      scope:         classification.scope,
+      hasWorkaround: classification.workaroundStatus === 'confirmed' || i.has_workaround === 1,
+      confidence:    classification.confidence,
+      rationale:     classification.rationale,
     });
     const topIssues = sorted.slice(0, PUBLIC_ISSUES_PER_RELEASE).map(issueSummary);
     const watchIssues = openedDuringReign(r.tag)
-      .filter(isOpenFeltSeriousIssue)
+      .map(classifyPublicIssue)
+      .filter(({ issue, classification, labels }) => issue.state === 'open' && isFeltSignal({
+        ...classification,
+        issueNumber: issue.number,
+        title: issue.title,
+        duplicateCluster: issue.duplicate_cluster,
+        author: issue.author,
+        authorAssociation: issue.author_association,
+        isBot: issue.is_bot,
+        comments: issue.comments,
+        uniqueHumanCommenterCount: issue.unique_human_commenters,
+        maintainerCommenterCount: issue.maintainer_commenters,
+        contributorCommenterCount: issue.contributor_commenters,
+        commenterScanTruncated: issue.commenter_scan_truncated,
+        reactionTotal: issue.reaction_total,
+        positiveReactionCount: issue.positive_reactions,
+        labels,
+      }))
       .map(issueSummary);
 
     return {

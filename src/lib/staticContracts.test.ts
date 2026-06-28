@@ -172,4 +172,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /export const SCORE_EXPLANATION_LIMIT_CODES/);
     assert.match(scorer, /export const SCORE_EXPLANATION_POSITIVE_CODES/);
   });
+
+  it('public issue summaries use effective scoring classifications', () => {
+    const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    assert.match(api, /classifyIssueRowWithLabels/);
+    assert.match(api, /labelsForIssueAt/);
+    assert.match(api, /classification\.severity/);
+    assert.doesNotMatch(api, /SEVERITY_RANK\[a\.severity\]/);
+  });
 });
