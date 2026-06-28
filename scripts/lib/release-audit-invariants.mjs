@@ -133,6 +133,10 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       expect(failures, tag, knownProofStatuses.has(row.status), `unknown proof status ${row.status} for issue #${row.issue_number}`);
       const evidence = parseJson(row.evidence_json, {});
       verifyProofEvidenceShape({ failures, tag, row, evidence });
+      const prEvidence = typeof reader.prReachabilityEvidenceForIssue === 'function'
+        ? reader.prReachabilityEvidenceForIssue(tag, row.issue_number)
+        : [];
+      verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence });
       if (row.status === 'fixed_in_release') {
         expect(failures, tag, evidence.hasReachableClosingPr === true || evidence.hasReachableFixCommit === true,
           `fixed_in_release issue #${row.issue_number} must have reachable PR or commit evidence`);
@@ -249,6 +253,23 @@ function verifyProofFreshness({ failures, tag, proofRows, audit }) {
       expect(failures, tag, checkedAt >= closedAt,
         `proof issue #${row.issue_number} checked_at (${row.checked_at}) must be newer than closure time (${evidence.closedAt})`);
     }
+  }
+}
+
+function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence }) {
+  for (const pr of prEvidence) {
+    if (pr.release_tag_commit_oid != null) {
+      expect(failures, tag, pr.tag_commit_oid === pr.release_tag_commit_oid,
+        `proof issue #${row.issue_number} PR #${pr.pr_number} reachability tag commit (${pr.tag_commit_oid}) must match release commit (${pr.release_tag_commit_oid})`);
+    }
+  }
+  if (evidence.hasReachableClosingPr === true) {
+    expect(failures, tag, prEvidence.some((pr) => pr.merged === 1 && pr.status === 'reachable'),
+      `proof issue #${row.issue_number} hasReachableClosingPr must have a merged reachable PR row`);
+  }
+  if (evidence.hasNotReachableClosingPr === true) {
+    expect(failures, tag, prEvidence.some((pr) => pr.merged === 1 && pr.status === 'not_reachable'),
+      `proof issue #${row.issue_number} hasNotReachableClosingPr must have a merged not-reachable PR row`);
   }
 }
 

@@ -21,6 +21,7 @@ function reader(overrides: Partial<{
   verified: any[];
   unverified: any[];
   proofRows: any[];
+  prEvidence: any[];
   audit: any;
 }> = {}) {
   const data = {
@@ -44,6 +45,14 @@ function reader(overrides: Partial<{
         stateReasons: ['COMPLETED'],
       }),
     }],
+    prEvidence: [{
+      issue_number: 1,
+      pr_number: 1,
+      merged: 1,
+      status: 'reachable',
+      tag_commit_oid: 'tag-commit',
+      release_tag_commit_oid: 'tag-commit',
+    }],
     audit: {
       prompt_version: 6,
       scored_at: auditScoredAt,
@@ -66,6 +75,7 @@ function reader(overrides: Partial<{
     verifiedFixedForRelease: () => data.verified,
     unverifiedClosedForRelease: () => data.unverified,
     proofRowsFor: () => data.proofRows.map((row: any) => ({ checked_at: proofCheckedAt, ...row })),
+    prReachabilityEvidenceForIssue: () => data.prEvidence,
     getReleaseScoreAudit: () => data.audit,
   };
 }
@@ -234,6 +244,15 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /must not be newer than audit scored_at/.test(failure)));
+  });
+
+  it('fails when reachable PR proof lacks backing reachability rows', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        prEvidence: [],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /merged reachable PR row/.test(failure)));
   });
 
   it('fails when canonical-open proof does not resolve to open terminal', async () => {

@@ -235,6 +235,27 @@ export class ReleaseAuditReader {
     `).all(tag);
   }
 
+  prReachabilityEvidenceForIssue(tag, issueNumber) {
+    return this.db.prepare(`
+      SELECT l.issue_number,
+             l.pr_number,
+             l.source,
+             l.will_close_target,
+             p.merged,
+             p.merge_commit_oid,
+             rpr.status,
+             rpr.tag_commit_oid,
+             rc.tag_commit_oid AS release_tag_commit_oid
+      FROM issue_pr_links l
+      JOIN pull_request_fixes p ON p.pr_number=l.pr_number
+      JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_number=l.pr_number
+      LEFT JOIN release_commits rc ON rc.tag=rpr.tag
+      WHERE l.issue_number=?
+        AND ${CREDITED_FIX_LINK_SQL}
+      ORDER BY l.pr_number
+    `).all(tag, issueNumber);
+  }
+
   getReleaseScoreAudit(tag) {
     return this.db.prepare(`
       SELECT *
