@@ -257,7 +257,10 @@ export async function refresh(): Promise<{
           expectedIntegrity: stats.integrity,
           expectedTarballUrl: stats.registryTarballUrl,
         });
-        const evidenceReport = await verifyEvidenceReportUrl(stats.fullReleaseCiReportUrl, stats.fullReleaseValidationUrl);
+        const evidenceReport = await verifyEvidenceReportUrl(stats.fullReleaseCiReportUrl, stats.fullReleaseValidationUrl, {
+          expectedReleaseTag: r.tag_name,
+          expectedReleaseSha: stats.releaseSha,
+        });
         updateReleaseArtifactVerification({
           tag: r.tag_name,
           registry_version: artifact.version,
