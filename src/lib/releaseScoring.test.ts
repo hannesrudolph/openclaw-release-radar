@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   buildReleaseScoreRun,
   ISSUE_EVIDENCE_SCHEMA_VERSION,
+  LABEL_TIMELINE_SCHEMA_VERSION,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_EXPLANATION_SCHEMA_VERSION,
@@ -142,6 +143,7 @@ describe('release score explanations', () => {
     assert.ok(sampleEvidenceIssue?.classification);
     assert.equal(typeof sampleEvidenceIssue.classificationDiff, 'object');
     assert.equal(typeof labelTimeline.issueCount, 'number');
+    assert.equal(labelTimeline.schemaVersion, LABEL_TIMELINE_SCHEMA_VERSION);
     assert.equal(typeof labelTimeline.historicalCurrentLabelFallbackAllowed, 'boolean');
   });
 

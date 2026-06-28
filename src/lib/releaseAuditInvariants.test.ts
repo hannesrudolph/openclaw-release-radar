@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import { verifyReleaseAudit } from '../../scripts/lib/release-audit-invariants.mjs';
 
 const labelTimelineFixture = {
+  schemaVersion: 1,
   cutoffAt: null,
   issueCount: 1,
   currentLabelCount: 1,
@@ -614,6 +615,28 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /persisted issueEvidence schemaVersion/.test(failure)));
+  });
+
+  it('fails when label timeline schema version is missing', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: { ...labelTimelineFixture, schemaVersion: undefined },
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /labelTimeline schemaVersion/.test(failure)));
   });
 
   it('fails when canonical-open proof does not resolve to open terminal', async () => {

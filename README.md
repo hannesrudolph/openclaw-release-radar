@@ -204,6 +204,7 @@ That structured `explanation` object contains:
 - `verdict`: install-facing interpretation of the score.
 
 The `/api/releases/:tag/review` `local.issueEvidence` object also exposes `schemaVersion`. Current value: `1`.
+The `/api/releases/:tag/review` `local.gateEvidence.labelTimeline` object also exposes `schemaVersion`. Current value: `1`.
 
 ## Development Commands
 

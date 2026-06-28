@@ -101,6 +101,7 @@ const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low:
 const SHORT_ISSUE_TITLE_LENGTH = 110;
 export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
+export const LABEL_TIMELINE_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
   'source_carryover_risk',
@@ -847,6 +848,7 @@ function labelTimelineCoverage(
     }
   }
   return {
+    schemaVersion: LABEL_TIMELINE_SCHEMA_VERSION,
     cutoffAt,
     issueCount: byIssue.size,
     currentLabelCount: current,

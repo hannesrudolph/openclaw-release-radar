@@ -95,6 +95,7 @@ const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
 const issueEvidenceSchemaVersion = 1;
+const labelTimelineSchemaVersion = 1;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -356,6 +357,8 @@ function verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit }) {
 function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
   expect(failures, tag, isObject(labelTimeline), 'persisted audit gateEvidence must include labelTimeline coverage');
   if (!isObject(labelTimeline)) return;
+  expect(failures, tag, labelTimeline.schemaVersion === labelTimelineSchemaVersion,
+    `labelTimeline schemaVersion (${labelTimeline.schemaVersion}) must equal ${labelTimelineSchemaVersion}`);
   for (const key of ['issueCount', 'currentLabelCount', 'timelineLabelCount', 'snapshotLabelCount', 'missingTimelineCount', 'missingTimelineWithCurrentLabelsCount']) {
     expect(failures, tag, Number.isInteger(labelTimeline[key]) && labelTimeline[key] >= 0,
       `labelTimeline ${key} must be a non-negative integer`);
