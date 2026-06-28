@@ -5,14 +5,18 @@ const base = (process.env.API_BASE || process.argv[2] || 'http://127.0.0.1:8787'
 const releases = await json('/api/releases');
 const publicPayload = await json('/api/public');
 const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
+const publicRecommended = (publicPayload.releases ?? []).filter((release) => release.recommended);
+if (publicRecommended.length !== 1) throw new Error(`Expected exactly one public recommended release, got ${publicRecommended.length}`);
 const eligibleNonRecommended = releases.find((r) => r.status === 'eligible' && !r.recommended);
 if (!eligibleNonRecommended) throw new Error('No eligible non-recommended release available for UI smoke');
 
 let fixCreditTag = null;
 let fixCreditText = null;
 let explanationText = null;
+const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
+  reviewByTag.set(release.tag, review);
   const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
   if (credit) {
     fixCreditTag = release.tag;
@@ -48,6 +52,21 @@ try {
   if (/\b(upstream|comparison)\b/i.test(bodyText)) {
     throw new Error('Visible UI leaked upstream/comparison wording');
   }
+  const renderedRows = page.locator('#releases .release');
+  const renderedCount = await renderedRows.count();
+  if (renderedCount !== publicPayload.releases.length) {
+    throw new Error(`Rendered release row count ${renderedCount} did not match public releases ${publicPayload.releases.length}`);
+  }
+  for (const release of publicPayload.releases) {
+    const row = page.locator(`.release[data-tag="${release.tag}"]`);
+    if (await row.count() !== 1) throw new Error(`Expected one DOM row for ${release.tag}`);
+  }
+  const recommendedRows = page.locator('#releases .release--recommended');
+  if (await recommendedRows.count() !== 1) throw new Error(`Expected exactly one recommended DOM row`);
+  const recommendedTag = await recommendedRows.first().getAttribute('data-tag');
+  if (recommendedTag !== publicRecommended[0].tag) {
+    throw new Error(`Recommended DOM row ${recommendedTag} did not match public API ${publicRecommended[0].tag}`);
+  }
 
   const fixPanel = await openScoreBreakdown(page, fixCreditTag);
   await fixPanel.getByText('Model', { exact: true }).waitFor();
@@ -80,6 +99,21 @@ try {
     throw new Error('eligible non-recommended breakdown used safe-to-install wording');
   }
 
+  for (const release of publicPayload.releases) {
+    const review = reviewByTag.get(release.tag) ?? await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
+    const panel = await openScoreBreakdown(page, release.tag);
+    const input = review.local?.input ?? {};
+    const expectedRawClassified = `${input.classifiedIssueCount ?? '—'} / ${input.rawIssueCount ?? '—'}`;
+    await panel.locator('.score-review__item').filter({ hasText: 'Raw/classified' }).getByText(expectedRawClassified).waitFor();
+    const expectedCoverage = `${Math.round((review.local?.components?.evidenceCoverage ?? 0) * 100)}%`;
+    await panel.locator('.score-review__item').filter({ hasText: 'Evidence coverage' }).getByText(expectedCoverage).waitFor();
+    const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
+    if (credit) {
+      const expectedCredit = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
+      await panel.locator('.score-review__item').filter({ hasText: 'Release fix credit' }).getByText(expectedCredit).waitFor();
+    }
+  }
+
   console.log(`UI smoke passed: fix credit ${fixCreditTag}; eligible non-recommended ${eligibleNonRecommended.tag}`);
 } finally {
   await browser.close();
@@ -93,11 +127,14 @@ async function json(path) {
 
 async function openScoreBreakdown(page, tag) {
   const row = page.locator(`.release[data-tag="${tag}"]`);
-  await row.click();
   const panel = page.locator(`#det-${cssId(tag)}`);
-  await panel.waitFor({ state: 'visible' });
+  if (!(await panel.isVisible())) {
+    await row.click();
+    await panel.waitFor({ state: 'visible' });
+  }
   const summary = panel.locator('summary.evidence-toggle__summary', { hasText: 'Show score breakdown' });
-  await summary.click();
+  const isOpen = await summary.evaluate((el) => el.parentElement?.hasAttribute('open') === true);
+  if (!isOpen) await summary.click();
   return panel;
 }
 
