@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   buildReleaseScoreRun,
+  ISSUE_EVIDENCE_SCHEMA_VERSION,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_EXPLANATION_SCHEMA_VERSION,
@@ -48,6 +49,7 @@ describe('release score explanations', () => {
     const evidence = run.scored[0].debtEvidence as any;
 
     assert.equal(explanation.schemaVersion, SCORE_EXPLANATION_SCHEMA_VERSION);
+    assert.equal(evidence.schemaVersion, ISSUE_EVIDENCE_SCHEMA_VERSION);
     assert.equal(explanation.limits.length, explanation.limitDetails.length);
     assert.equal(explanation.positives.length, explanation.positiveDetails.length);
     assert.ok(explanation.limitDetails.every((detail, idx) => detail.text === explanation.limits[idx]));

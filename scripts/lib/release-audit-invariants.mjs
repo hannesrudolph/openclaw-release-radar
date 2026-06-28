@@ -94,6 +94,7 @@ const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
 const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
+const issueEvidenceSchemaVersion = 1;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -277,10 +278,13 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const audit = reader.getReleaseScoreAudit(tag);
     if (audit) {
     const gate = parseJson(audit.gate_evidence_json, {});
+    const issueEvidence = parseJson(audit.issue_evidence_json, {});
     verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit });
     verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
     verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
     verifyProofFreshness({ failures, tag, proofRows, audit });
+    expect(failures, tag, issueEvidence.schemaVersion === issueEvidenceSchemaVersion,
+      `persisted issueEvidence schemaVersion (${issueEvidence.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
     const fix = gate.fixProvenance ?? {};
     expect(failures, tag, fix.verifiedFixedCount === verified.length,
       `audit verifiedFixedCount (${fix.verifiedFixedCount}) must match verifiedFixedForRelease (${verified.length})`);
@@ -918,6 +922,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, releaseApi.band === review.local?.band,
         `releases band (${releaseApi.band}) must match review band (${review.local?.band})`);
     }
+    expect(failures, release.tag, review.local?.issueEvidence?.schemaVersion === issueEvidenceSchemaVersion,
+      `review issueEvidence schemaVersion (${review.local?.issueEvidence?.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
     if (publicRelease) {
       expect(failures, release.tag, publicRelease.band === review.local?.band,
         `public band (${publicRelease.band}) must match review band (${review.local?.band})`);

@@ -100,6 +100,7 @@ export interface ScoreExplanationIssueRef {
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 const SHORT_ISSUE_TITLE_LENGTH = 110;
 export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
+export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
   'source_carryover_risk',
@@ -367,6 +368,7 @@ function scoreRelease(args: {
   };
 
   const debtEvidence = {
+    schemaVersion: ISSUE_EVIDENCE_SCHEMA_VERSION,
     debtSummary: {
       verified: debtTierSummary(activeDebt.evidence, 'verified'),
       carryover: debtTierSummary(activeDebt.evidence, 'carryover'),

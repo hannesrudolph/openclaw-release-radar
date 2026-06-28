@@ -97,6 +97,7 @@ function reader(overrides: Partial<{
     audit: {
       prompt_version: 6,
       scored_at: auditScoredAt,
+      issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
       gate_evidence_json: JSON.stringify({
         labelTimeline: labelTimelineFixture,
         fixProvenance: {
@@ -109,6 +110,9 @@ function reader(overrides: Partial<{
     },
     ...overrides,
   };
+  if (data.audit && data.audit.issue_evidence_json === undefined) {
+    data.audit = { ...data.audit, issue_evidence_json: JSON.stringify({ schemaVersion: 1 }) };
+  }
   return {
     listReleases: () => data.releases,
     rawClosedDuringReign: () => data.rawClosed,
@@ -245,6 +249,7 @@ describe('verifyReleaseAudit', () => {
               rawIssueCount: 1,
               classifiedIssueCount: 1,
             },
+            issueEvidence: { schemaVersion: 1 },
             gateEvidence: {
               fixProvenance: {
                 closureProof: closureProofFixture(),
@@ -587,6 +592,28 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /persisted releaseFixCredit schemaVersion/.test(failure)));
+  });
+
+  it('fails when persisted issue evidence schema version is missing', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          issue_evidence_json: '{}',
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /persisted issueEvidence schemaVersion/.test(failure)));
   });
 
   it('fails when canonical-open proof does not resolve to open terminal', async () => {
