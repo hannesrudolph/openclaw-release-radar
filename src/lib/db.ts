@@ -254,6 +254,14 @@ CREATE TABLE IF NOT EXISTS issue_label_events (
   fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS issue_label_snapshots (
+  issue_number INTEGER NOT NULL,
+  snapshot_at TEXT NOT NULL,
+  labels_json TEXT NOT NULL,
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (issue_number, snapshot_at)
+);
+
 CREATE TABLE IF NOT EXISTS issue_closure_proofs (
   release_tag TEXT NOT NULL,
   issue_number INTEGER NOT NULL,
@@ -293,6 +301,7 @@ CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_event
 CREATE INDEX IF NOT EXISTS idx_issue_reopen_events_issue_time ON issue_reopen_events(issue_number, reopened_at);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
+CREATE INDEX IF NOT EXISTS idx_issue_label_snapshots_issue_time ON issue_label_snapshots(issue_number, snapshot_at);
 CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
 CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
 `);
@@ -762,6 +771,28 @@ export function upsertIssueLabelEvent(input: IssueLabelEventInput): void {
   upsertIssueLabelEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
+export interface IssueLabelSnapshotInput {
+  issue_number: number;
+  snapshot_at: string;
+  labels_json: string;
+}
+
+const upsertIssueLabelSnapshotStmt = db.prepare(`
+INSERT INTO issue_label_snapshots (
+  issue_number, snapshot_at, labels_json, fetched_at
+)
+VALUES (
+  :issue_number, :snapshot_at, :labels_json, :fetched_at
+)
+ON CONFLICT(issue_number, snapshot_at) DO UPDATE SET
+  labels_json=excluded.labels_json,
+  fetched_at=excluded.fetched_at
+`);
+
+export function upsertIssueLabelSnapshot(input: IssueLabelSnapshotInput): void {
+  upsertIssueLabelSnapshotStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
 const issueLabelEventsUntilStmt = db.prepare(`
 SELECT action, label_name
 FROM issue_label_events
@@ -771,19 +802,56 @@ ORDER BY created_at ASC, event_id ASC
 `);
 
 const issueLabelEventCountStmt = db.prepare(`SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?`);
+const issueLabelSnapshotAtStmt = db.prepare(`
+SELECT labels_json
+FROM issue_label_snapshots
+WHERE issue_number=?
+  AND snapshot_at <= ?
+ORDER BY snapshot_at DESC
+LIMIT 1
+`);
+const issueLabelSnapshotCountAtStmt = db.prepare(`
+SELECT COUNT(*) AS count
+FROM issue_label_snapshots
+WHERE issue_number=?
+  AND snapshot_at <= ?
+`);
 
 export function issueLabelEventCount(issueNumber: number): number {
   return Number((issueLabelEventCountStmt.get(issueNumber) as { count: number }).count ?? 0);
+}
+
+export function issueLabelSnapshotCountAt(issueNumber: number, cutoff: string | null): number {
+  if (!cutoff) return 0;
+  return Number((issueLabelSnapshotCountAtStmt.get(issueNumber, cutoff) as { count: number }).count ?? 0);
+}
+
+export function labelSnapshotForIssueAt(issueNumber: number, cutoff: string | null): string[] | null {
+  if (!cutoff) return null;
+  const row = issueLabelSnapshotAtStmt.get(issueNumber, cutoff) as { labels_json: string } | undefined;
+  if (!row?.labels_json) return null;
+  try {
+    const labels = JSON.parse(row.labels_json);
+    return Array.isArray(labels) ? labels.filter((label): label is string => typeof label === 'string') : null;
+  } catch {
+    return null;
+  }
 }
 
 export function labelsForIssueAt(
   issueNumber: number,
   fallbackLabels: string[],
   cutoff: string | null,
-  options: { useFallbackWhenNoEvents?: boolean } = {},
+  options: { useFallbackWhenNoEvents?: boolean; useSnapshotWhenNoEvents?: boolean } = {},
 ): string[] {
   const eventCount = issueLabelEventCount(issueNumber);
-  if (eventCount === 0) return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
+  if (eventCount === 0) {
+    if (options.useSnapshotWhenNoEvents && cutoff) {
+      const snapshot = labelSnapshotForIssueAt(issueNumber, cutoff);
+      if (snapshot) return snapshot;
+    }
+    return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
+  }
   const labels = new Set<string>();
   const rows = issueLabelEventsUntilStmt.all(issueNumber, cutoff, cutoff) as Array<{ action: string; label_name: string }>;
   for (const row of rows) {

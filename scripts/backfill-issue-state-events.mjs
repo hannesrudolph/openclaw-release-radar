@@ -1,6 +1,7 @@
 import {
   db,
   upsertIssueClosureEvent,
+  upsertIssueLabelSnapshot,
   upsertIssuePrLink,
   upsertIssueReopenEvent,
   upsertPullRequestFix,
@@ -13,10 +14,12 @@ const batchSize = Number(args.batchSize ?? args['batch-size'] ?? 50);
 const dryRun = args['dry-run'] === true;
 
 const issueNumbers = roughScoredIssueUniverse(limit);
+const snapshotAt = new Date().toISOString();
 console.log(JSON.stringify({
   selectedIssues: issueNumbers.length,
   limit,
   batchSize,
+  snapshotAt,
   dryRun,
 }, null, 2));
 
@@ -26,6 +29,7 @@ let prLinks = 0;
 let pullRequests = 0;
 
 if (!dryRun) {
+  snapshotCurrentLabels(issueNumbers, snapshotAt);
   for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
     const chunk = issueNumbers.slice(offset, offset + batchSize);
     const evidenceByIssue = await listIssueFixEvidenceBatch(chunk);
@@ -121,6 +125,28 @@ function roughScoredIssueUniverse(releaseLimit) {
     ORDER BY i.number DESC
   `).all(releaseLimit);
   return rows.map((row) => Number(row.number)).filter((number) => Number.isInteger(number));
+}
+
+function snapshotCurrentLabels(issueNumbers, snapshotAt) {
+  if (!issueNumbers.length) return;
+  for (let offset = 0; offset < issueNumbers.length; offset += 500) {
+    const chunk = issueNumbers.slice(offset, offset + 500);
+    const rows = db.prepare(`
+      WITH selected(issue_number) AS (
+        SELECT value FROM json_each(?)
+      )
+      SELECT i.number, i.labels
+      FROM issues i
+      JOIN selected s ON s.issue_number=i.number
+    `).all(JSON.stringify(chunk));
+    for (const row of rows) {
+      upsertIssueLabelSnapshot({
+        issue_number: Number(row.number),
+        snapshot_at: snapshotAt,
+        labels_json: String(row.labels ?? '[]'),
+      });
+    }
+  }
 }
 
 function parseArgs(argv) {

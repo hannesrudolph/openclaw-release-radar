@@ -78,9 +78,11 @@ Current labels can be misleading because labels may be added or removed after a 
 
 Refresh fetches label timelines for every issue that overlaps the monitored release window, even if the issue no longer has current labels. Label timeline GraphQL connections are cursor-paginated until exhausted.
 
-When scoring a historical release, it reconstructs the label set at that release's cutoff time. If no label timeline events were fetched for an issue at a historical cutoff, the scorer does not fall back to current labels; it scores that issue without label-derived overrides and records the missing timeline coverage in `gateEvidence.labelTimeline`. For the latest release, there is no historical cutoff yet, so current labels are used.
+When scoring a historical release, it reconstructs the label set at that release's cutoff time. If no label timeline events were fetched for an issue at a historical cutoff, the scorer does not fall back to current labels; it scores that issue without label-derived overrides and records the missing timeline coverage in `gateEvidence.labelTimeline`.
 
-Audit rows include both effective labels and current labels where relevant, plus `labelSource` and `labelTimelineEventCount` for issue evidence.
+For the latest release, the cutoff is the exact score timestamp. Refresh and `backfill:issue-state-events` persist current-label snapshots in `issue_label_snapshots`; when a latest-release issue lacks label timeline events, the scorer uses the newest snapshot at or before the score timestamp. This keeps the latest score audit reproducible instead of letting later label edits mutate past evidence.
+
+Audit rows include both effective labels and current labels where relevant, plus `labelSource` and `labelTimelineEventCount` for issue evidence. `gateEvidence.labelTimeline` separates `current`, `timeline`, `snapshot`, and `missing_timeline` sources.
 
 ## Release Fix Credit
 

@@ -316,12 +316,13 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
 function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
   expect(failures, tag, isObject(labelTimeline), 'persisted audit gateEvidence must include labelTimeline coverage');
   if (!isObject(labelTimeline)) return;
-  for (const key of ['issueCount', 'currentLabelCount', 'timelineLabelCount', 'missingTimelineCount', 'missingTimelineWithCurrentLabelsCount']) {
+  for (const key of ['issueCount', 'currentLabelCount', 'timelineLabelCount', 'snapshotLabelCount', 'missingTimelineCount', 'missingTimelineWithCurrentLabelsCount']) {
     expect(failures, tag, Number.isInteger(labelTimeline[key]) && labelTimeline[key] >= 0,
       `labelTimeline ${key} must be a non-negative integer`);
   }
   const sourceTotal = Number(labelTimeline.currentLabelCount ?? -1) +
     Number(labelTimeline.timelineLabelCount ?? -1) +
+    Number(labelTimeline.snapshotLabelCount ?? -1) +
     Number(labelTimeline.missingTimelineCount ?? -1);
   expect(failures, tag, sourceTotal === labelTimeline.issueCount,
     `labelTimeline source counts (${sourceTotal}) must equal issueCount (${labelTimeline.issueCount})`);

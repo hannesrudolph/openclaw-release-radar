@@ -348,6 +348,35 @@ describe('release fix provenance', () => {
     );
   });
 
+  it('uses label snapshots at cutoff when timeline events are absent', async () => {
+    const db = await freshDb('label-snapshot-cutoff');
+    db.upsertIssueLabelSnapshot({
+      issue_number: 7201,
+      snapshot_at: '2026-06-02T00:00:00Z',
+      labels_json: JSON.stringify(['bug', 'P1']),
+    });
+    db.upsertIssueLabelSnapshot({
+      issue_number: 7201,
+      snapshot_at: '2026-06-03T00:00:00Z',
+      labels_json: JSON.stringify(['bug']),
+    });
+
+    assert.deepEqual(
+      db.labelsForIssueAt(7201, ['fallback'], '2026-06-02T12:00:00Z', {
+        useFallbackWhenNoEvents: false,
+        useSnapshotWhenNoEvents: true,
+      }).sort(),
+      ['P1', 'bug'],
+    );
+    assert.deepEqual(
+      db.labelsForIssueAt(7201, ['fallback'], '2026-06-03T12:00:00Z', {
+        useFallbackWhenNoEvents: false,
+        useSnapshotWhenNoEvents: true,
+      }),
+      ['bug'],
+    );
+  });
+
   it('counts only completed issues fixed by merged reachable PRs or proof rows', async () => {
     const db = await freshDb('verified-fixed');
     seedRelease(db, 'v1');

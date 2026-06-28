@@ -20,6 +20,7 @@ import { closureProofPayload, enrichGateEvidenceWithClosureProof } from './closu
 import {
   getReleaseCommit,
   issueLabelEventCount,
+  issueLabelSnapshotCountAt,
   issueCountForVersion,
   issuesForVersion,
   labelsForIssueAt,
@@ -47,6 +48,7 @@ export interface ReleaseScoreRunOptions {
 
 export interface ReleaseScoreResult {
   rel: ReleaseRow;
+  scoredAt: string;
   conf: InstallConfidence;
   input: InstallInput;
   explanation: ScoreExplanation;
@@ -135,16 +137,17 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     return { affected, load };
   };
 
-  const scoredWithoutExplanation = releases.map((release, idx) =>
-    scoreRelease({
+  const scoredWithoutExplanation = releases.map((release, idx) => {
+    const now = options.nowForRelease?.(release) ?? Date.now();
+    return scoreRelease({
       release,
       idx,
       allFetchedTags: options.allFetchedTags,
       stableTagsNewestFirst: options.stableTagsNewestFirst,
       cveFor,
-      now: options.nowForRelease?.(release) ?? Date.now(),
-    }),
-  );
+      now,
+    });
+  });
   const recommendedTag = pickRecommended(
     scoredWithoutExplanation.map((s) => ({ tag: s.rel.tag, status: s.conf.status, score: s.conf.score })),
   );
@@ -157,7 +160,7 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
 
 export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
   for (const result of run.scored) {
-    const scoredAt = new Date().toISOString();
+    const scoredAt = result.scoredAt;
     const recommended = result.rel.tag === run.recommendedTag ? 1 : 0;
     updateReleaseScore({
       tag: result.rel.tag,
@@ -204,25 +207,29 @@ function scoreRelease(args: {
   now: number;
 }): ReleaseScoreResult {
   const { release: rel } = args;
-  const labelCutoff = releaseLabelCutoff(rel);
+  const labelCutoff = releaseLabelCutoff(rel, args.now);
   const labelInfoByIssue = new Map<number, {
     labels: string[];
     currentLabels: string[];
     timelineEventCount: number;
-    source: 'current' | 'timeline' | 'missing_timeline';
+    source: 'current' | 'timeline' | 'snapshot' | 'missing_timeline';
   }>();
   const labelInfo = (row: JoinedIssue) => {
     const cached = labelInfoByIssue.get(row.number);
     if (cached) return cached;
     const currentLabels = safeParseLabels(row.labels);
     const timelineEventCount = issueLabelEventCount(row.number);
+    const snapshotCount = issueLabelSnapshotCountAt(row.number, labelCutoff);
     const labels = labelsForIssueAt(row.number, currentLabels, labelCutoff, {
       useFallbackWhenNoEvents: labelCutoff == null,
+      useSnapshotWhenNoEvents: labelCutoff != null,
     });
-    const source: 'current' | 'timeline' | 'missing_timeline' = labelCutoff == null
+    const source: 'current' | 'timeline' | 'snapshot' | 'missing_timeline' = labelCutoff == null
       ? 'current'
       : timelineEventCount > 0
         ? 'timeline'
+        : snapshotCount > 0
+          ? 'snapshot'
         : 'missing_timeline';
     const info = { labels, currentLabels, timelineEventCount, source };
     labelInfoByIssue.set(row.number, info);
@@ -291,7 +298,7 @@ function scoreRelease(args: {
   const brokenSurfaces = JSON.stringify(topBrokenSurfaces(openedFeltRows.map((row) => row.title)));
   const cve = args.cveFor(rel.tag);
   const releaseCommit = getReleaseCommit(rel.tag);
-  const closureProof = closureProofPayload(rel.tag);
+  const closureProof = closureProofPayload(rel.tag, labelCutoff);
   const unresolvedClosureRiskWeight = closureRiskWeight(closureProof?.riskSummary);
   const input: InstallInput = {
     publishedAt: rel.published_at,
@@ -441,6 +448,7 @@ function scoreRelease(args: {
 
   return {
     rel,
+    scoredAt: new Date(args.now).toISOString(),
     conf,
     input,
     explanation: {
@@ -713,7 +721,7 @@ function labelTimelineCoverage(
     labels: string[];
     currentLabels: string[];
     timelineEventCount: number;
-    source: 'current' | 'timeline' | 'missing_timeline';
+    source: 'current' | 'timeline' | 'snapshot' | 'missing_timeline';
   },
   cutoffAt: string | null,
 ): Record<string, unknown> {
@@ -721,12 +729,14 @@ function labelTimelineCoverage(
   for (const row of rows) byIssue.set(row.number, row);
   let current = 0;
   let timeline = 0;
+  let snapshot = 0;
   let missingTimeline = 0;
   let missingTimelineWithCurrentLabels = 0;
   for (const row of byIssue.values()) {
     const info = labelInfo(row);
     if (info.source === 'current') current++;
     else if (info.source === 'timeline') timeline++;
+    else if (info.source === 'snapshot') snapshot++;
     else {
       missingTimeline++;
       if (info.currentLabels.length > 0) missingTimelineWithCurrentLabels++;
@@ -737,6 +747,7 @@ function labelTimelineCoverage(
     issueCount: byIssue.size,
     currentLabelCount: current,
     timelineLabelCount: timeline,
+    snapshotLabelCount: snapshot,
     missingTimelineCount: missingTimeline,
     missingTimelineWithCurrentLabelsCount: missingTimelineWithCurrentLabels,
     historicalCurrentLabelFallbackAllowed: cutoffAt == null,

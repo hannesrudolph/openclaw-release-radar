@@ -5,6 +5,8 @@ import {
   getRelease,
   type ClosureProofRiskRow,
   getReleaseScoreAudit,
+  issueLabelEventCount,
+  issueLabelSnapshotCountAt,
   labelsForIssueAt,
   updateReleaseScoreAuditGateEvidence,
 } from './db';
@@ -90,11 +92,14 @@ const USERS_RISK_WEIGHT: Record<string, number> = {
   unknown: 0.65,
 };
 
-export function closureProofPayload(tag: string) {
+export function closureProofPayload(tag: string, labelCutoffOverride?: string | null) {
   const summaryRows = closureProofSummary(tag);
   if (!summaryRows.length) return null;
   const release = getRelease(tag);
-  const labelCutoff = release ? releaseLabelCutoff(release) : null;
+  const audit = getReleaseScoreAudit(tag);
+  const labelCutoff = labelCutoffOverride !== undefined
+    ? labelCutoffOverride
+    : release ? releaseLabelCutoff(release, audit?.scored_at ?? null) : null;
   const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
   const byRiskDisposition = countByRiskDisposition(summaryRows);
   const weightedRisk = weightedRiskForRows(closureProofRiskRows(tag), labelCutoff);
@@ -215,7 +220,9 @@ export function persistClosureProofInScoreAudit(tag: string): boolean {
   if (!audit) return false;
   const gateEvidence = parseJson(audit.gate_evidence_json, null);
   if (!gateEvidence) return false;
-  const enriched = enrichGateEvidenceWithClosureProof(tag, gateEvidence);
+  const release = getRelease(tag);
+  const labelCutoff = release ? releaseLabelCutoff(release, audit.scored_at) : null;
+  const enriched = enrichGateEvidenceWithClosureProof(tag, gateEvidence, closureProofPayload(tag, labelCutoff));
   updateReleaseScoreAuditGateEvidence(tag, JSON.stringify(enriched));
   return true;
 }
@@ -307,6 +314,7 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
   rawClassification: IssueClassification;
   classification: IssueClassification;
   classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
+  labelSource: string;
 } | null {
   if (!row.sentiment || !row.severity || !row.scope || !row.functionality || !row.affected_users) {
     return null;
@@ -314,7 +322,10 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
   const currentLabels = parseJson<string[]>(row.labels, []);
   const labels = labelsForIssueAt(row.issue_number, currentLabels, labelCutoff, {
     useFallbackWhenNoEvents: labelCutoff == null,
+    useSnapshotWhenNoEvents: labelCutoff != null,
   });
+  const timelineEventCount = issueLabelEventCount(row.issue_number);
+  const snapshotCount = issueLabelSnapshotCountAt(row.issue_number, labelCutoff);
   const rawClassification = rowToClassification(row);
   const classification = applyTitleIssueShapeHint(
     applyLabelOverrides(
@@ -329,7 +340,15 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
     rawClassification,
     classification,
     classificationDiff: classificationDiff(rawClassification, classification),
+    labelSource: rowLabelSource(labelCutoff, timelineEventCount, snapshotCount),
   };
+}
+
+function rowLabelSource(labelCutoff: string | null, timelineEventCount: number, snapshotCount: number): string {
+  if (labelCutoff == null) return 'current';
+  if (timelineEventCount > 0) return 'timeline';
+  if (snapshotCount > 0) return 'snapshot';
+  return 'missing_timeline';
 }
 
 function rowToClassification(row: ClosureRiskSourceRow): IssueClassification {

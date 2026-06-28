@@ -7,6 +7,7 @@ const labelTimelineFixture = {
   issueCount: 1,
   currentLabelCount: 1,
   timelineLabelCount: 0,
+  snapshotLabelCount: 0,
   missingTimelineCount: 0,
   missingTimelineWithCurrentLabelsCount: 0,
   historicalCurrentLabelFallbackAllowed: true,

@@ -65,6 +65,7 @@ import {
   upsertIssue,
   upsertIssueClosureEvent,
   upsertIssueLabelEvent,
+  upsertIssueLabelSnapshot,
   upsertIssuePrLink,
   upsertIssueReopenEvent,
   upsertPullRequestFix,
@@ -172,6 +173,7 @@ export async function refresh(): Promise<{
   const t0 = Date.now();
 
   try {
+    const refreshStartedAt = new Date(t0).toISOString();
     // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
     // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
     // computation (betaCount, hoursToNextRelease, aggregate breaking) but only
@@ -420,6 +422,11 @@ export async function refresh(): Promise<{
             created_at: event.createdAt,
           });
         }
+        upsertIssueLabelSnapshot({
+          issue_number: issue.number,
+          snapshot_at: refreshStartedAt,
+          labels_json: labelsJson,
+        });
         const stateEvidence = stateEvidenceByIssue.get(issue.number);
         if (stateEvidence) persistIssueStateEvidence(stateEvidence);
 

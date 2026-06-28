@@ -230,7 +230,7 @@ npm start
 
 `npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts for every scored stable release.
 
-`npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence for the current scored issue universe so release attribution uses issue open intervals instead of one continuous created-to-final-close span.
+`npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence.
 
 `npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit.
 

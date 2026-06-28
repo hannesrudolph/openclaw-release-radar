@@ -218,7 +218,8 @@ export class ReleaseAuditReader {
 
   proofRowsFor(tag) {
     const release = this.db.prepare(`SELECT tag, published_at, hours_to_next_stable FROM releases WHERE tag=?`).get(tag);
-    const cutoff = releaseLabelCutoff(release);
+    const audit = this.getReleaseScoreAudit(tag);
+    const cutoff = releaseLabelCutoff(release, audit?.scored_at ?? null);
     const rows = this.db.prepare(`
       SELECT p.release_tag, p.issue_number, p.status, p.summary, p.evidence_json, p.checked_at,
              i.title, i.labels,
@@ -235,6 +236,7 @@ export class ReleaseAuditReader {
       ...row,
       effective_labels: labelsForIssueAt(this.db, row.issue_number, parseLabels(row.labels), cutoff, {
         useFallbackWhenNoEvents: cutoff == null,
+        useSnapshotWhenNoEvents: cutoff != null,
       }),
     }));
   }
@@ -270,8 +272,12 @@ export class ReleaseAuditReader {
   }
 }
 
-function releaseLabelCutoff(rel) {
-  if (!rel?.published_at || rel.hours_to_next_stable == null) return null;
+function releaseLabelCutoff(rel, now = null) {
+  if (!rel?.published_at) return null;
+  if (rel.hours_to_next_stable == null) {
+    const millis = typeof now === 'string' ? Date.parse(now) : typeof now === 'number' ? now : NaN;
+    return Number.isFinite(millis) ? new Date(millis).toISOString() : null;
+  }
   const publishedAt = Date.parse(rel.published_at);
   if (!Number.isFinite(publishedAt)) return null;
   return new Date(publishedAt + Number(rel.hours_to_next_stable) * 3_600_000).toISOString();
@@ -290,7 +296,21 @@ function labelsForIssueAt(db, issueNumber, fallbackLabels, cutoff, options = {})
   const eventCount = Number(db.prepare(`
     SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?
   `).get(issueNumber)?.count ?? 0);
-  if (eventCount === 0) return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
+  if (eventCount === 0) {
+    if (options.useSnapshotWhenNoEvents && cutoff) {
+      const snapshot = db.prepare(`
+        SELECT labels_json
+        FROM issue_label_snapshots
+        WHERE issue_number=?
+          AND snapshot_at <= ?
+        ORDER BY snapshot_at DESC
+        LIMIT 1
+      `).get(issueNumber, cutoff);
+      const labels = parseLabels(snapshot?.labels_json);
+      if (labels.length) return labels;
+    }
+    return options.useFallbackWhenNoEvents === false ? [] : fallbackLabels;
+  }
   const labels = new Set();
   const rows = db.prepare(`
     SELECT action, label_name
