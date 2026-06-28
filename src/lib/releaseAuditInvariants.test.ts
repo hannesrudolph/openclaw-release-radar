@@ -202,7 +202,7 @@ describe('verifyReleaseAudit', () => {
         return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt };
       }
       if (url.endsWith('/api/config')) {
-        return { schemaVersion: 1, releases: 10, refreshMinutes: 30 };
+        return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
       }
       if (url.endsWith('/api/public')) {
         return {

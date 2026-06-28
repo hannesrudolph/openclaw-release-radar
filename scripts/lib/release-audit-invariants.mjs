@@ -11,6 +11,7 @@ export const knownProofStatuses = new Set([
   'duplicate_to_open_canonical',
   'duplicate_to_closed_canonical',
   'duplicate_to_fixed_after_release',
+  'superseded_to_open_pr',
   'canonical_cycle_or_self_reference',
   'duplicate_or_superseded',
   'not_planned',
@@ -43,6 +44,7 @@ const riskDispositionByProofStatus = new Map([
   ['main_only_claim', 'known_not_in_release'],
   ['duplicate_to_fixed_after_release', 'known_not_in_release'],
   ['duplicate_to_open_canonical', 'open_canonical_risk'],
+  ['superseded_to_open_pr', 'open_canonical_risk'],
   ['duplicate_to_closed_canonical', 'unsupported_closure_claim'],
   ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
   ['duplicate_or_superseded', 'unsupported_closure_claim'],
@@ -281,6 +283,11 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_open_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'open',
           `duplicate_to_open_canonical issue #${row.issue_number} must resolve to an open terminal`);
+      }
+      if (row.status === 'superseded_to_open_pr') {
+        expect(failures, tag, Array.isArray(evidence.canonicalOpenPrs) &&
+          evidence.canonicalOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
+          `superseded_to_open_pr issue #${row.issue_number} must include open canonical PR evidence`);
       }
       if (row.status === 'duplicate_to_closed_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
@@ -884,8 +891,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     `config schemaVersion must be ${configPayloadSchemaVersion}, got ${JSON.stringify(configPayload.schemaVersion)}`);
   expect(failures, 'api/config', Number.isInteger(configPayload.releases) && configPayload.releases > 0,
     'config releases must be a positive integer');
-  expect(failures, 'api/config', typeof configPayload.refreshMinutes === 'number' && configPayload.refreshMinutes > 0,
-    'config refreshMinutes must be a positive number');
+  expect(failures, 'api/config', Number.isInteger(configPayload.refreshMinutes) && configPayload.refreshMinutes >= 0,
+    'config refreshMinutes must be a non-negative integer; 0 means periodic refresh is disabled');
 
   const publicPayload = await fetchJson(`${apiBase}/api/public`);
   verifyAllowedKeys({ failures, tag: 'api/public', label: 'public top-level', value: publicPayload, allowed: publicTopLevelKeys });

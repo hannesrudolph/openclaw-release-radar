@@ -61,6 +61,28 @@ describe('closure proof canonical roll-up', () => {
     });
   });
 
+  it('classifies duplicate closures with open PR context as open canonical risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      97322,
+      result('duplicate_or_superseded', 'Closed as superseded.'),
+      {
+        canonicalIssues: [],
+        linkedPrs: [{
+          number: 85651,
+          title: 'feat(continuation): context-pressure-aware continuation',
+          state: 'OPEN',
+          merged: 0,
+          source: 'ClosureComment.prMention',
+        }],
+      },
+      new Map([[97322, []]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'superseded_to_open_pr');
+    assert.equal((adjusted.evidence.canonicalOpenPrs as any[])[0].number, 85651);
+  });
+
   it('recognizes common duplicate-of text as canonical graph targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(

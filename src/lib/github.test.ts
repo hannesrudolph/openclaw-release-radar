@@ -141,6 +141,7 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 95532,
+        source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-24T10:00:00Z',
         author: 'clawsweeper',
         authorAssociation: 'CONTRIBUTOR',
@@ -149,6 +150,7 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 95900,
+        source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-25T15:05:01Z',
         author: 'obviyus',
         authorAssociation: 'MEMBER',
@@ -157,12 +159,40 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 96040,
+        source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-24T13:00:00Z',
         author: 'maintainer',
         authorAssociation: 'MEMBER',
         trustedSource: true,
       },
     ]);
+  });
+
+  it('extracts trusted canonical PR context without marking it fix proof', () => {
+    const mentions = __githubTest.closureCommentPrMentions(97322, [
+      {
+        body: 'Close as superseded: this is tracked in the active continuation work. Canonical path: Open PR https://github.com/openclaw/openclaw/pull/85651 owns this feature work.',
+        created_at: '2026-06-27T20:23:27Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
+      },
+      {
+        body: 'Maybe the release note points at https://github.com/openclaw/openclaw/pull/85652.',
+        created_at: '2026-06-27T20:24:27Z',
+        user: { login: 'reporter' },
+        author_association: 'NONE',
+      },
+    ]);
+
+    assert.deepEqual(mentions, [{
+      issueNumber: 97322,
+      prNumber: 85651,
+      source: 'ClosureComment.prMention',
+      referencedAt: '2026-06-27T20:23:27Z',
+      author: 'clawsweeper',
+      authorAssociation: 'CONTRIBUTOR',
+      trustedSource: true,
+    }]);
   });
 
   it('extracts closure-comment commit proof without trusting incidental hashes', () => {

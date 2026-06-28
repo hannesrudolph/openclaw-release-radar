@@ -117,6 +117,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
 - `duplicate_to_fixed_after_release`: closure moved the report to a canonical issue that has release proof, but that proof is not reachable from this release tag.
+- `superseded_to_open_pr`: closure moved the report to a referenced PR that remains open and unmerged.
 - `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
@@ -136,7 +137,7 @@ The closure proof payload also rolls status buckets into risk dispositions:
 - `credited_release_fix`: hard proof that the release tag contains the fix.
 - `resolved_by_canonical_release_fix`: duplicate/superseded report whose canonical fix is proven reachable from the release tag.
 - `known_not_in_release`: a PR/commit or closure note indicates the fix is on main or after this tag, so it is not proof for this release.
-- `open_canonical_risk`: the report was moved to a canonical issue that remains open.
+- `open_canonical_risk`: the report was moved to a canonical issue or PR that remains open.
 - `unsupported_closure_claim`: an already-present, duplicate, superseded, or closed-canonical claim that lacks reachable release code proof.
 - `neutral_or_non_actionable`: not bug evidence, not planned/actionable, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.

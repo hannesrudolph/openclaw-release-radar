@@ -1,7 +1,7 @@
 import { config } from '../config';
 import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
-import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
+import { creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { checkReleaseCommitReachability, type CommitReachability } from './releaseReachability';
@@ -119,7 +119,36 @@ SELECT
      AND e.closer_oid IS NOT NULL
     THEN e.closer_oid
     END
-  ) AS direct_closer_commits
+  ) AS direct_closer_commits,
+  (
+    SELECT COALESCE(json_group_array(json_object(
+      'number', linked.pr_number,
+      'source', linked.source,
+      'willCloseTarget', linked.will_close_target,
+      'referencedAt', linked.referenced_at,
+      'title', linked.title,
+      'url', linked.url,
+      'state', linked.state,
+      'merged', linked.merged,
+      'mergedAt', linked.merged_at
+    )), '[]')
+    FROM (
+      SELECT DISTINCT
+        l2.pr_number,
+        l2.source,
+        l2.will_close_target,
+        l2.referenced_at,
+        p2.title,
+        p2.url,
+        p2.state,
+        p2.merged,
+        p2.merged_at
+      FROM issue_pr_links l2
+      LEFT JOIN pull_request_fixes p2 ON p2.pr_number=l2.pr_number
+      WHERE l2.issue_number=i.number
+      ORDER BY CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END, l2.pr_number
+    ) linked
+  ) AS linked_prs_json
 FROM selected
 JOIN issues i ON i.number=selected.issue_number
 LEFT JOIN classifications c ON c.issue_number=i.number
@@ -263,6 +292,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       closedAt: row.closed_at,
       closureEventClosedAt: splitCsv(row.closure_event_closed_at),
       closingPrs: splitCsv(row.closing_prs),
+      linkedPrs: parseJsonArray(row.linked_prs_json),
       fixCommitProof: commitProof,
       canonicalFixCommitProof: canonicalCommitProof,
       directFixCommitProof: directCommitProof,
@@ -516,6 +546,14 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
+  const openPrs = canonicalOpenPrs(evidence);
+  if (openPrs.length) {
+    return {
+      status: 'superseded_to_open_pr',
+      summary: 'Closed as duplicate/superseded; referenced canonical PR remains open and unmerged.',
+      evidence: { ...nextEvidence, canonicalOpenPrs: openPrs },
+    };
+  }
   if (resolution.terminalIssue?.state === 'closed') {
     return {
       status: 'duplicate_to_closed_canonical',
@@ -723,7 +761,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       upsertIssuePrLink({
         issue_number: mention.issueNumber,
         pr_number: mention.prNumber,
-        source: CLOSURE_COMMENT_FIX_PROOF_SOURCE,
+        source: mention.source,
         will_close_target: null,
         referenced_at: mention.referencedAt,
       });
@@ -747,6 +785,27 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
 function splitCsv(value: unknown): string[] {
   if (!value) return [];
   return String(value).split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function parseJsonArray(value: unknown): unknown[] {
+  if (!value) return [];
+  try {
+    const parsed = JSON.parse(String(value));
+    return Array.isArray(parsed) ? parsed.filter(Boolean) : [];
+  } catch {
+    return [];
+  }
+}
+
+function canonicalOpenPrs(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
+  return linkedPrs
+    .filter((item): item is Record<string, unknown> => {
+      if (!item || typeof item !== 'object') return false;
+      const state = String(item.state ?? '').toUpperCase();
+      return state === 'OPEN' && Number(item.merged ?? 0) === 0;
+    })
+    .slice(0, 5);
 }
 
 function unique(values: string[]): string[] {

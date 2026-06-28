@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, CLOSURE_COMMENT_PR_MENTION_SOURCE } from './fixProvenance';
 import { firstPatchedVersion } from './versionMatch';
 
 const API = 'https://api.github.com/graphql';
@@ -241,6 +242,7 @@ export interface GhIssueFixEvidence {
 export interface ClosureCommentPrMention {
   issueNumber: number;
   prNumber: number;
+  source: typeof CLOSURE_COMMENT_FIX_PROOF_SOURCE | typeof CLOSURE_COMMENT_PR_MENTION_SOURCE;
   referencedAt: string | null;
   author: string | null;
   authorAssociation: string | null;
@@ -1172,14 +1174,17 @@ export function closureCommentPrMentions(
   const byPr = new Map<number, ClosureCommentPrMention>();
   for (const comment of comments) {
     const body = comment.body ?? '';
+    const text = body.replace(/\s+/g, ' ');
+    const source = closureCommentPrMentionSource(text);
+    if (!source) continue;
     const trust = closureProofCommentTrust(comment);
     if (!trust.trustedSource) continue;
-    for (const prNumber of extractClosureCommentPrNumbers(body)) {
+    for (const prNumber of extractClosureCommentPrNumbers(text)) {
       if (prNumber === issueNumber) continue;
       const existing = byPr.get(prNumber);
       const referencedAt = comment.created_at ?? comment.createdAt ?? null;
-      if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
-        byPr.set(prNumber, { issueNumber, prNumber, referencedAt, ...trust });
+      if (shouldReplacePrMention(existing, source, referencedAt)) {
+        byPr.set(prNumber, { issueNumber, prNumber, source, referencedAt, ...trust });
       }
     }
   }
@@ -1244,7 +1249,6 @@ function closureProofCommentTrust(comment: {
 function extractClosureCommentPrNumbers(body: string): number[] {
   const numbers = new Set<number>();
   const text = body.replace(/\s+/g, ' ');
-  if (!isClosureFixProofComment(text)) return [];
 
   for (const match of text.matchAll(/https?:\/\/(?:api\.)?github\.com\/repos\/openclaw\/openclaw\/pulls?\/(\d+)|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/(\d+)/gi)) {
     addPrNumber(numbers, match[1] ?? match[2]);
@@ -1263,6 +1267,25 @@ function extractClosureCommentPrNumbers(body: string): number[] {
   return [...numbers].sort((a, b) => a - b);
 }
 
+function closureCommentPrMentionSource(
+  text: string,
+): ClosureCommentPrMention['source'] | null {
+  if (isClosureFixProofComment(text)) return CLOSURE_COMMENT_FIX_PROOF_SOURCE;
+  if (isClosurePrContextComment(text)) return CLOSURE_COMMENT_PR_MENTION_SOURCE;
+  return null;
+}
+
+function shouldReplacePrMention(
+  existing: ClosureCommentPrMention | undefined,
+  source: ClosureCommentPrMention['source'],
+  referencedAt: string | null,
+): boolean {
+  if (!existing) return true;
+  if (existing.source !== CLOSURE_COMMENT_FIX_PROOF_SOURCE && source === CLOSURE_COMMENT_FIX_PROOF_SOURCE) return true;
+  if (existing.source === CLOSURE_COMMENT_FIX_PROOF_SOURCE && source !== CLOSURE_COMMENT_FIX_PROOF_SOURCE) return false;
+  return !!referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt);
+}
+
 function isClosureFixProofComment(text: string): boolean {
   return (
     /\b(?:fix(?:e[sd])?|implemented|addressed)\s+(?:on\s+`?main`?\s+)?by\s+#\d+\b/i.test(text) ||
@@ -1270,6 +1293,14 @@ function isClosureFixProofComment(text: string): boolean {
     /\bmerged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
     /\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b.{0,160}\bmerged\s+(?:pr|pull request)\b/i.test(text) ||
     /\b(?:pr|pull request)\s*#?\d+\b.{0,120}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\s+(?:this|the report|the issue)\b/i.test(text)
+  );
+}
+
+function isClosurePrContextComment(text: string): boolean {
+  return (
+    /\b(?:close[sd]?|closing)\b.{0,160}\b(?:duplicate|dupe|superseded|already tracked|covered by)\b.{0,240}\b(?:open\s+)?(?:pr|pull request|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/\d+)/i.test(text) ||
+    /\b(?:duplicate|dupe|superseded|canonical|tracked|active)\b.{0,200}\b(?:open\s+)?(?:pr|pull request|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/\d+)/i.test(text) ||
+    /\bcanonical path:\s*(?:open\s+)?(?:pr|pull request|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/\d+)/i.test(text)
   );
 }
 
