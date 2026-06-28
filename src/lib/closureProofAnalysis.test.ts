@@ -8,6 +8,26 @@ function result(status: ClosureProofResult['status'], summary = status): Closure
 }
 
 describe('closure proof canonical roll-up', () => {
+  it('expands canonical chains from fetched canonical issue comments', async () => {
+    const graph = new Map([[10, [20]]]);
+    const comments = new Map<number, any[]>([
+      [10, [{ body: 'Canonical: #20' }]],
+    ]);
+
+    await __closureProofAnalysisTest.expandCanonicalGraph(
+      graph,
+      comments,
+      [20],
+      async (numbers: number[]) => new Map(numbers.map((number) => [
+        number,
+        number === 20 ? [{ body: 'Root-cause tracker: #30' }] : [],
+      ])),
+    );
+
+    assert.deepEqual(graph.get(20), [30]);
+    assert.deepEqual(__closureProofAnalysisTest.canonicalIssueNumbersReachableFrom(10, graph), [20, 30]);
+  });
+
   it('classifies duplicate closures by terminal canonical fixed-after proof', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,

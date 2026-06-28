@@ -140,25 +140,24 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
-  const directCanonicalIssuesByIssue = new Map<number, number[]>();
+  const allCommentsByIssue = new Map(commentsByIssue);
   const canonicalIssueNumbers = new Set<number>();
+  const canonicalGraph = new Map<number, number[]>();
   for (const issueNumber of issueNumbers) {
     const numbers = canonicalIssueNumbersFromComments(commentsByIssue.get(issueNumber) ?? [], issueNumber);
-    directCanonicalIssuesByIssue.set(issueNumber, numbers);
+    canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
-  const canonicalCommentsByIssue = await listIssueCommentsBatch(
-    [...canonicalIssueNumbers].filter((number) => !issueNumbers.includes(number)),
-  );
+  await expandCanonicalGraph(canonicalGraph, allCommentsByIssue, [...canonicalIssueNumbers]);
   const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
   const allCommitOids = new Set<string>();
   for (const issueNumber of issueNumbers) {
     const mentions = [
       ...closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
-      ...(directCanonicalIssuesByIssue.get(issueNumber) ?? []).flatMap((canonicalIssueNumber) =>
+      ...canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
         closureCommentCommitMentions(
           issueNumber,
-          commentsByIssue.get(canonicalIssueNumber) ?? canonicalCommentsByIssue.get(canonicalIssueNumber) ?? [],
+          allCommentsByIssue.get(canonicalIssueNumber) ?? [],
           canonicalIssueNumber,
         ),
       ),
@@ -220,7 +219,6 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     preparedRows.push({ issueNumber: row.number, result, evidence });
   }
 
-  const canonicalGraph = new Map<number, number[]>();
   for (const item of preparedRows) {
     const canonicalIssues = Array.isArray(item.evidence.canonicalIssues)
       ? (item.evidence.canonicalIssues as unknown[]).filter((n): n is number => typeof n === 'number')
@@ -311,6 +309,39 @@ function canonicalIssueNumbersFromText(text: string): number[] {
   return [...numbers].sort((a, b) => a - b);
 }
 
+async function expandCanonicalGraph(
+  canonicalGraph: Map<number, number[]>,
+  commentsByIssue: Map<number, GhComment[]>,
+  seedIssueNumbers: number[],
+  fetchComments: (issueNumbers: number[]) => Promise<Map<number, GhComment[]>> = listIssueCommentsBatch,
+): Promise<void> {
+  const parsed = new Set(canonicalGraph.keys());
+  let frontier = uniqueNumbers(seedIssueNumbers.filter((number) => Number.isInteger(number)));
+  for (let depth = 0; depth < 8 && frontier.length; depth++) {
+    const missing = frontier.filter((number) => !commentsByIssue.has(number));
+    if (missing.length) {
+      const fetched = await fetchComments(missing);
+      for (const number of missing) commentsByIssue.set(number, fetched.get(number) ?? []);
+    }
+    const nextFrontier: number[] = [];
+    for (const issueNumber of frontier) {
+      if (parsed.has(issueNumber)) continue;
+      parsed.add(issueNumber);
+      const targets = canonicalIssueNumbersFromComments(commentsByIssue.get(issueNumber) ?? [], issueNumber);
+      canonicalGraph.set(issueNumber, targets);
+      for (const target of targets) {
+        if (!parsed.has(target)) nextFrontier.push(target);
+      }
+    }
+    frontier = uniqueNumbers(nextFrontier);
+  }
+}
+
+function canonicalIssueNumbersReachableFrom(sourceIssueNumber: number, graph: Map<number, number[]>): number[] {
+  const path = canonicalResolution(sourceIssueNumber, graph).path;
+  return path.slice(1);
+}
+
 function adjustCanonicalDuplicateStatus(
   sourceIssueNumber: number,
   result: ClosureProofResult,
@@ -398,6 +429,8 @@ function canonicalResolution(
 
 export const __closureProofAnalysisTest = {
   adjustCanonicalDuplicateStatus,
+  expandCanonicalGraph,
+  canonicalIssueNumbersReachableFrom,
 };
 
 function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {
@@ -537,6 +570,10 @@ function splitCsv(value: unknown): string[] {
 
 function unique(values: string[]): string[] {
   return [...new Set(values)].sort();
+}
+
+function uniqueNumbers(values: number[]): number[] {
+  return [...new Set(values)].sort((a, b) => a - b);
 }
 
 function canonicalIssueDetails(sourceIssueNumber: number, numbers: number[]): Array<{
