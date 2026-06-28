@@ -99,6 +99,30 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [76042]);
   });
 
+  it('extracts broad covered-by issue references from duplicate comments', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close as duplicate/superseded: this is covered by broader reports, especially #88562 and #90774.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [88562, 90774]);
+  });
+
+  it('does not treat bare canonical PR refs as canonical issue refs', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close as superseded. Canonical path: Open PR #85651 owns this work.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, []);
+  });
+
   it('uses close-time comments that say closing this as a duplicate', () => {
     const result = classifyClosureProof(input({
       closedAt: '2026-06-25T22:25:56Z',

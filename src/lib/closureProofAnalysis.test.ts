@@ -29,6 +29,15 @@ describe('closure proof canonical roll-up', () => {
     assert.deepEqual(__closureProofAnalysisTest.canonicalIssueNumbersReachableFrom(10, graph), [20, 30]);
   });
 
+  it('does not return the source issue as reachable canonical context when cycles loop back', () => {
+    const graph = new Map([
+      [10, [20]],
+      [20, [10]],
+    ]);
+
+    assert.deepEqual(__closureProofAnalysisTest.canonicalIssueNumbersReachableFrom(10, graph), [20]);
+  });
+
   it('classifies duplicate closures by terminal canonical fixed-after proof', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,
@@ -617,12 +626,24 @@ describe('closure proof canonical roll-up', () => {
       ),
       [67016],
     );
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Close as duplicate/superseded: this is covered by broader reports, especially #88562 and #90774.',
+      ),
+      [88562, 90774],
+    );
   });
 
   it('does not treat canonical PR links as canonical issue targets', () => {
     assert.deepEqual(
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(
         'Canonical path: Open PR https://github.com/openclaw/openclaw/pull/85651 owns this feature work.',
+      ),
+      [],
+    );
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromText(
+        'Close as superseded. Canonical path: Open PR #85651 owns this feature work.',
       ),
       [],
     );

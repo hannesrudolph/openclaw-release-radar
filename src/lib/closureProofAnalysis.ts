@@ -553,11 +553,38 @@ function canonicalIssueNumbersFromText(text: string): number[] {
   for (const re of canonicalReferenceRes) {
     re.lastIndex = 0;
     for (const match of text.matchAll(re)) {
+      if (shouldSkipBarePrCanonicalMatch(text, match)) continue;
       const number = Number(match[1]);
       if (Number.isInteger(number) && number > 0) numbers.add(number);
     }
   }
+  for (const number of canonicalIssueNumbersFromSignalLines(text)) numbers.add(number);
   return [...numbers].sort((a, b) => a - b);
+}
+
+function canonicalIssueNumbersFromSignalLines(text: string): number[] {
+  const numbers = new Set<number>();
+  const signalRe = /\b(?:covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
+  for (const line of text.split(/\n+/)) {
+    if (!signalRe.test(line)) continue;
+    const prContext = /\b(?:PR|pull request)\b|\/pull\//i.test(line);
+    for (const match of line.matchAll(/https?:\/\/github\.com\/openclaw\/openclaw\/issues\/(\d+)\b|#(\d+)\b/gim)) {
+      if (prContext && !match[1]) continue;
+      const number = Number(match[1] ?? match[2]);
+      if (Number.isInteger(number) && number > 0) numbers.add(number);
+    }
+  }
+  return [...numbers].sort((a, b) => a - b);
+}
+
+function shouldSkipBarePrCanonicalMatch(text: string, match: RegExpMatchArray): boolean {
+  const matchedText = match[0] ?? '';
+  if (/\/issues\//i.test(matchedText)) return false;
+  const index = typeof match.index === 'number' ? match.index : -1;
+  const lineStart = index >= 0 ? text.lastIndexOf('\n', index) + 1 : 0;
+  const lineEnd = index >= 0 ? text.indexOf('\n', index) : -1;
+  const line = text.slice(lineStart, lineEnd >= 0 ? lineEnd : undefined);
+  return /\b(?:PR|pull request)\b|\/pull\//i.test(line);
 }
 
 async function expandCanonicalGraph(
@@ -590,7 +617,7 @@ async function expandCanonicalGraph(
 
 function canonicalIssueNumbersReachableFrom(sourceIssueNumber: number, graph: Map<number, number[]>): number[] {
   const path = canonicalResolution(sourceIssueNumber, graph).path;
-  return path.slice(1);
+  return uniqueNumbers(path.slice(1).filter((number) => number !== sourceIssueNumber));
 }
 
 function terminalCanonicalIssuesNeedingEvidence(
