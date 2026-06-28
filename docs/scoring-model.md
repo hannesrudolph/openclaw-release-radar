@@ -134,6 +134,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `admin_not_planned_unverified`: a negative report was closed with GitHub `NOT_PLANNED`, but no reachable release fix proof or concrete close-time non-actionable rationale was found.
+- `admin_not_planned_no_context`: a negative report was closed with GitHub `NOT_PLANNED`, but the audit found no trusted close-time rationale comment at all.
 - `not_planned_with_release_fix_proof`: a negative report was closed with GitHub `NOT_PLANNED`, but trusted release-reachable fix proof exists. It resolves closure risk without direct GitHub fix-credit.
 - `not_planned_fixed_after_release`: a negative report was closed with GitHub `NOT_PLANNED`, and trusted fix proof exists only after the scored release tag.
 - `not_planned_with_open_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` while related open PR context still exists.

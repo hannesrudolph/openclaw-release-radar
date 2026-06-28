@@ -624,6 +624,23 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'not_planned_with_open_pr_context');
   });
 
+  it('classifies no-context not-planned closures with open PR context separately', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_no_context', 'No close-time context.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{
+          number: 97423,
+          state: 'OPEN',
+          merged: 0,
+          source: 'CrossReferencedEvent',
+        }],
+      },
+    );
+
+    assert.equal(adjusted.status, 'not_planned_with_open_pr_context');
+  });
+
   it('classifies not-planned related PR context by reachability', () => {
     const reachable = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
       result('admin_not_planned_unverified', 'No rationale.'),

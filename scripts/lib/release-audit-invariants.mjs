@@ -314,11 +314,24 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'admin_not_planned_unverified') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `admin_not_planned_unverified issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, Number(evidence.closureContextCommentCount ?? 0) > 0,
+          `admin_not_planned_unverified issue #${row.issue_number} must include close-time context; use admin_not_planned_no_context when none exists`);
         expect(failures, tag, evidence.hasReachableFixCommit !== true && evidence.hasReachableClosingPr !== true &&
           evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true,
           `admin_not_planned_unverified issue #${row.issue_number} must not have direct fix proof; use a not_planned_* proof status`);
         expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
           `admin_not_planned_unverified issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
+      }
+      if (row.status === 'admin_not_planned_no_context') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `admin_not_planned_no_context issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, Number(evidence.closureContextCommentCount ?? -1) === 0,
+          `admin_not_planned_no_context issue #${row.issue_number} must have zero close-time rationale comments`);
+        expect(failures, tag, evidence.hasReachableFixCommit !== true && evidence.hasReachableClosingPr !== true &&
+          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true,
+          `admin_not_planned_no_context issue #${row.issue_number} must not have direct fix proof; use a not_planned_* proof status`);
+        expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
+          `admin_not_planned_no_context issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
       }
       if (row.status === 'insufficient_info') {
         expect(failures, tag, Array.isArray(evidence.matchingComments) && evidence.matchingComments.length > 0,

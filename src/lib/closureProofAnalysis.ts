@@ -1108,7 +1108,7 @@ function adjustAdminTitleOnlyStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
 ): ClosureProofResult {
-  if (result.status !== 'admin_not_planned_unverified') return result;
+  if (!isAdminNotPlannedRiskStatus(result.status)) return result;
   const title = String(evidence.title ?? '');
   if (/\b(?:deleted|withdrawn)\s+by\s+author\s+request\b/i.test(title)) {
     return {
@@ -1430,7 +1430,7 @@ function adjustNotPlannedEvidenceStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
 ): ClosureProofResult {
-  if (result.status !== 'admin_not_planned_unverified') return result;
+  if (!isAdminNotPlannedRiskStatus(result.status)) return result;
   const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
   if (evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true) {
     return {
@@ -1497,6 +1497,10 @@ function adjustNotPlannedEvidenceStatus(
     };
   }
   return result;
+}
+
+function isAdminNotPlannedRiskStatus(status: string): boolean {
+  return status === 'admin_not_planned_unverified' || status === 'admin_not_planned_no_context';
 }
 
 type RelatedPrContext = {

@@ -431,8 +431,22 @@ describe('classifyClosureProof', () => {
         body: 'Current main already contains related cache-size work.',
       }],
     }));
-    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.status, 'admin_not_planned_no_context');
     assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
+  it('keeps not-planned admin closures with unsupported close-time context separate', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-27T21:45:31Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-06-27T21:45:30Z',
+        body: 'Closing this here because we are not keeping a separate report for this path.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
   it('keeps outside-repository not-planned closures neutral when close-time rationale is concrete', () => {

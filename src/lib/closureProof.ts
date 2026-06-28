@@ -236,6 +236,13 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   }
 
   if (reasons.has('NOT_PLANNED') && !NON_ACTIONABLE_RATIONALE_RE.test(combinedComments)) {
+    if (closureContextComments.length === 0) {
+      return {
+        status: 'admin_not_planned_no_context',
+        summary: 'Closed as not planned without trusted close-time rationale, release-fix proof, or non-actionable context.',
+        evidence,
+      };
+    }
     return {
       status: 'admin_not_planned_unverified',
       summary: 'Closed as not planned without trusted release-fix proof or a concrete non-actionable rationale.',
