@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { __closureProofAnalysisTest } from './closureProofAnalysis.ts';
+import { closureRationaleComments } from './closureProof.ts';
 import type { ClosureProofResult } from './closureProof.ts';
 
 function result(status: ClosureProofResult['status'], summary = status): ClosureProofResult {
@@ -65,6 +66,44 @@ describe('closure proof canonical roll-up', () => {
       __closureProofAnalysisTest.canonicalIssueNumbersFromText(
         'Closing this as duplicate of https://github.com/openclaw/openclaw/issues/96857.',
       ),
+      [96857],
+    );
+  });
+
+  it('ignores stale canonical comments when building source closure graph edges', () => {
+    const comments = [
+      { created_at: '2026-06-20T10:00:00Z', body: 'Keep open. Canonical: #96857' },
+      { created_at: '2026-06-28T10:00:00Z', body: 'Closing as not planned.' },
+    ];
+    const closureComments = closureRationaleComments(comments, '2026-06-28T10:05:00Z');
+
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromComments(closureComments, 10),
+      [],
+    );
+  });
+
+  it('ignores close-time keep-open canonical review comments', () => {
+    const comments = [
+      { created_at: '2026-06-28T10:00:00Z', body: 'Keep open: this is the canonical report. Canonical: #96857' },
+    ];
+    const closureComments = closureRationaleComments(comments, '2026-06-28T10:05:00Z');
+
+    assert.deepEqual(closureComments, []);
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromComments(closureComments, 10),
+      [],
+    );
+  });
+
+  it('keeps close-time canonical comments as source closure graph edges', () => {
+    const comments = [
+      { created_at: '2026-06-28T10:00:00Z', body: 'Closing as duplicate of #96857.' },
+    ];
+    const closureComments = closureRationaleComments(comments, '2026-06-28T10:05:00Z');
+
+    assert.deepEqual(
+      __closureProofAnalysisTest.canonicalIssueNumbersFromComments(closureComments, 10),
       [96857],
     );
   });

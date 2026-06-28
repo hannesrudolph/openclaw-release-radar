@@ -36,6 +36,8 @@ The normal score starts from a base value, then applies bounded components:
 
 Still-open release-local reports are not counted again in the opened-vs-fixed regression balance; they already score as active open debt. The regression component uses field-visible reports opened during the release window that are no longer open, plus verified fixes, so a single unresolved report does not lower the score twice.
 
+When unresolved closed-release risk is heavy, the model also applies a score ceiling of `7.9`. This prevents CI/artifact/survival bonuses from making a release look `solid` while many closed-window issues are known not to be fixed in the tag, moved to open canonicals, or still unsupported by release proof.
+
 ## Issue Evidence Rules
 
 Issue evidence is cluster-aware:

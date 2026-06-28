@@ -140,6 +140,57 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, []);
   });
 
+  it('does not use stale review comments as the closure rationale', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-25T01:31:42Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-18T19:14:00Z',
+        body: 'Keep open. Current main and v2026.6.8 still run this path serially.',
+      }],
+    }));
+    assert.equal(result.status, 'no_code_proof');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
+    assert.deepEqual(result.evidence.matchingComments, []);
+  });
+
+  it('does not treat keep-open current-main review text as an already-present closure claim', () => {
+    const result = classifyClosureProof(input({
+      comments: [{
+        author: 'bot',
+        body: 'Keep open: current main and the latest release still lack the required fallback before closing this issue.',
+      }],
+    }));
+    assert.equal(result.status, 'no_code_proof');
+  });
+
+  it('uses close-time comments as the closure rationale', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-25T01:31:42Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-24T19:14:00Z',
+        body: 'Close: current main and tagged releases already implement this behavior.',
+      }],
+    }));
+    assert.equal(result.status, 'already_present_claim');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+  });
+
+  it('still treats stale not-planned closures as administrative when no close-time rationale exists', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-27T21:45:31Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-20T21:45:31Z',
+        body: 'Current main already contains related cache-size work.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
   it('keeps duplicate/superseded closures distinct from already-present claims', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['COMPLETED'],

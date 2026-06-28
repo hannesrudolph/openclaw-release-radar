@@ -129,6 +129,12 @@ describe('GitHub GraphQL mapping', () => {
         user: { login: 'maintainer' },
         author_association: 'MEMBER',
       },
+      {
+        body: 'This is fixed on `main` by #95900 / 2aa9d676356455102fe4189e5e5d470c06eead94. Closing as fixed on main; users on 2026.6.10 will pick this up with the next release.',
+        created_at: '2026-06-25T15:05:01Z',
+        user: { login: 'obviyus' },
+        author_association: 'MEMBER',
+      },
     ]);
 
     assert.deepEqual(mentions, [
@@ -138,6 +144,14 @@ describe('GitHub GraphQL mapping', () => {
         referencedAt: '2026-06-24T10:00:00Z',
         author: 'clawsweeper',
         authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
+      },
+      {
+        issueNumber: 9000,
+        prNumber: 95900,
+        referencedAt: '2026-06-25T15:05:01Z',
+        author: 'obviyus',
+        authorAssociation: 'MEMBER',
         trustedSource: true,
       },
       {

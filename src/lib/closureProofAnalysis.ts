@@ -1,5 +1,5 @@
 import { db, deleteIssueClosureProofsForRelease, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
-import { classifyClosureProof, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
+import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { CLOSURE_COMMENT_FIX_PROOF_SOURCE, creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
@@ -140,8 +140,12 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   const allCommentsByIssue = new Map(commentsByIssue);
   const canonicalIssueNumbers = new Set<number>();
   const canonicalGraph = new Map<number, number[]>();
+  const closedAtByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
   for (const issueNumber of issueNumbers) {
-    const numbers = canonicalIssueNumbersFromComments(commentsByIssue.get(issueNumber) ?? [], issueNumber);
+    const numbers = canonicalIssueNumbersFromComments(
+      closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber)),
+      issueNumber,
+    );
     canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
@@ -203,6 +207,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     const result = classifyClosureProof({
       issueNumber: row.number,
       issueAuthor: row.author,
+      closedAt: row.closed_at,
       sentiment: row.sentiment,
       stateReasons: splitCsv(row.state_reasons),
       closureActors: splitCsv(row.closure_actors),
@@ -466,6 +471,7 @@ function canonicalResolution(
 export const __closureProofAnalysisTest = {
   adjustCanonicalDuplicateStatus,
   canonicalIssueNumbersFromText,
+  canonicalIssueNumbersFromComments,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
 };

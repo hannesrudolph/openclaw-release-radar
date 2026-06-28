@@ -1221,11 +1221,17 @@ function extractClosureCommentPrNumbers(body: string): number[] {
     addPrNumber(numbers, match[1]);
   }
 
+  const fixedByIssueOrPrRefRe = /\b(?:fix(?:e[sd])?|implemented|addressed)\s+(?:on\s+`?main`?\s+)?by\s+#(\d+)\b/gi;
+  for (const match of text.matchAll(fixedByIssueOrPrRefRe)) {
+    addPrNumber(numbers, match[1]);
+  }
+
   return [...numbers].sort((a, b) => a - b);
 }
 
 function isClosureFixProofComment(text: string): boolean {
   return (
+    /\b(?:fix(?:e[sd])?|implemented|addressed)\s+(?:on\s+`?main`?\s+)?by\s+#\d+\b/i.test(text) ||
     /\bfound\s+the\s+merged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
     /\bmerged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
     /\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b.{0,160}\bmerged\s+(?:pr|pull request)\b/i.test(text) ||

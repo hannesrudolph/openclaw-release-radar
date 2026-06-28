@@ -15,6 +15,8 @@ const HOTFIX_GAP_HOURS = 6;
 const PIVOT_HOURS = 24;
 const BASE = 7.5;
 const HOTFIX_SCORE_CAP = 4.9;
+const HEAVY_CLOSURE_RISK_THRESHOLD = 80;
+const HEAVY_CLOSURE_SCORE_CAP = 7.9;
 
 const SURVIVAL_MIN = -2.5;
 const SURVIVAL_MAX = 1.8;
@@ -98,6 +100,7 @@ export interface InstallComponents {
   carryoverDebt: number;
   staleDebt: number;
   closureRisk: number;
+  closureRiskCeiling: number;
   coverage: number;
   survival: number;
   shakeout: number;
@@ -701,6 +704,9 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
     0,
     10,
   );
+  if (input.unresolvedClosureRiskWeight >= HEAVY_CLOSURE_RISK_THRESHOLD) {
+    score = Math.min(score, HEAVY_CLOSURE_SCORE_CAP);
+  }
   if (hotfix) score = Math.min(score, HOTFIX_SCORE_CAP);
 
   const rounded = round1(score);
@@ -715,6 +721,9 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
       carryoverDebt: round1(carryoverDebt),
       staleDebt: round1(staleDebt),
       closureRisk: round1(closureRisk),
+      closureRiskCeiling: input.unresolvedClosureRiskWeight >= HEAVY_CLOSURE_RISK_THRESHOLD
+        ? HEAVY_CLOSURE_SCORE_CAP
+        : 0,
       coverage: round1(coverage.points),
       survival: round1(survival),
       shakeout: round1(shakeout),

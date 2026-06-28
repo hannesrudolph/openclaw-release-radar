@@ -578,6 +578,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
       ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including neutral or non-actionable closures.` +
       ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
+      ((components.closureRiskCeiling ?? 0) > 0 ? ` Heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
       {
@@ -588,6 +589,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
           unresolvedClosureRiskWeight: roundMetric(input.unresolvedClosureRiskWeight),
           cappedPenalty: Math.abs(numberOrZero(components.closureRisk)),
+          scoreCeiling: Number(components.closureRiskCeiling ?? 0) || null,
           resolvedByCanonicalReleaseFixCount: Number(riskSummary.resolvedByCanonicalReleaseFixCount ?? 0),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),

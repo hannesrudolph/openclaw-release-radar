@@ -196,6 +196,35 @@ describe('installConfidence — graded signals', () => {
     assert.equal(heavy.components?.closureRisk, -0.5);
   });
 
+  it('heavy unresolved closed-release risk caps otherwise strong eligible scores below solid', () => {
+    const strong = installConfidence(mk({
+      hoursToNextStable: 96,
+      betaCount: 10,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: 7,
+      releaseCheckSuccess: 7,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+    }), NOW);
+    const risky = installConfidence(mk({
+      hoursToNextStable: 96,
+      betaCount: 10,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: 7,
+      releaseCheckSuccess: 7,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+      unresolvedClosureRiskWeight: 160,
+    }), NOW);
+    assert.ok(strong.score! >= 8);
+    assert.equal(risky.score, 7.9);
+    assert.equal(risky.components?.closureRiskCeiling, 7.9);
+  });
+
   it('incomplete evidence coverage lowers confidence', () => {
     const complete = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 100 }), NOW);
     const partial = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 40 }), NOW);
