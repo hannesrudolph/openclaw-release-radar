@@ -61,6 +61,35 @@ describe('closure proof canonical roll-up', () => {
     });
   });
 
+  it('classifies closed canonical targets without terminal proof as missing evidence', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [96343] },
+      new Map([[10, [96343]]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_closed_canonical_missing_proof');
+    assert.equal((adjusted.evidence.canonicalResolution as any).terminalIssue?.number, 96343);
+  });
+
+  it('classifies closed canonical targets with missing terminal timeline as missing evidence', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [96343] },
+      new Map([[10, [96343]]]),
+      new Map([[96343, result('no_timeline_event', 'Canonical has no close event.')]]),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_closed_canonical_missing_proof');
+    assert.deepEqual((adjusted.evidence.canonicalResolution as any).terminalProof, {
+      status: 'no_timeline_event',
+      summary: 'Canonical has no close event.',
+    });
+  });
+
   it('classifies duplicate closures with open PR context as open canonical risk', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       97322,

@@ -116,6 +116,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_to_fixed_in_release`: closure moved the report to a canonical issue or canonical fix/source commit that is reachable from this release tag.
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
+- `duplicate_to_closed_canonical_missing_proof`: closure moved the report to a canonical issue that is closed, but the audit has no terminal closure proof for the canonical issue.
 - `duplicate_to_fixed_after_release`: closure moved the report to a canonical issue that has release proof, but that proof is not reachable from this release tag.
 - `superseded_to_open_pr`: trusted close-time closure context moved the report to a referenced PR that remains open and unmerged.
 - `duplicate_with_open_pr_context`: the issue is closed as duplicate/superseded and related open PR references exist, but no trusted close-time closure note marks those PRs as canonical.

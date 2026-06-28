@@ -4,6 +4,7 @@ export type ClosureProofStatus =
   | 'duplicate_to_fixed_in_release'
   | 'duplicate_to_open_canonical'
   | 'duplicate_to_closed_canonical'
+  | 'duplicate_to_closed_canonical_missing_proof'
   | 'duplicate_to_fixed_after_release'
   | 'superseded_to_open_pr'
   | 'duplicate_with_open_pr_context'

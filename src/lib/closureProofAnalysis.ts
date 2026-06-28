@@ -562,9 +562,18 @@ function adjustCanonicalDuplicateStatus(
     };
   }
   if (resolution.terminalIssue?.state === 'closed') {
+    if (!terminalProof || terminalProof.status === 'no_timeline_event' || terminalProof.status === 'unknown') {
+      return {
+        status: 'duplicate_to_closed_canonical_missing_proof',
+        summary: terminalProof
+          ? 'Closed as duplicate/superseded; canonical issue is closed, but canonical closure proof is missing or incomplete.'
+          : 'Closed as duplicate/superseded; canonical issue is closed, but no canonical closure proof was available for this release audit.',
+        evidence: nextEvidence,
+      };
+    }
     return {
       status: 'duplicate_to_closed_canonical',
-      summary: 'Closed as duplicate/superseded; canonical issue is also closed.',
+      summary: 'Closed as duplicate/superseded; canonical issue is also closed without reachable release-fix proof.',
       evidence: nextEvidence,
     };
   }

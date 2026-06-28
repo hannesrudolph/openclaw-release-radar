@@ -10,6 +10,7 @@ export const knownProofStatuses = new Set([
   'duplicate_to_fixed_in_release',
   'duplicate_to_open_canonical',
   'duplicate_to_closed_canonical',
+  'duplicate_to_closed_canonical_missing_proof',
   'duplicate_to_fixed_after_release',
   'superseded_to_open_pr',
   'duplicate_with_open_pr_context',
@@ -49,6 +50,7 @@ const riskDispositionByProofStatus = new Map([
   ['superseded_to_open_pr', 'open_canonical_risk'],
   ['duplicate_with_open_pr_context', 'open_canonical_risk'],
   ['duplicate_to_closed_canonical', 'unsupported_closure_claim'],
+  ['duplicate_to_closed_canonical_missing_proof', 'missing_evidence'],
   ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
   ['duplicate_or_superseded', 'unsupported_closure_claim'],
   ['already_present_claim', 'unsupported_closure_claim'],
@@ -302,6 +304,15 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_closed_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, !!evidence.canonicalResolution?.terminalProof,
+          `duplicate_to_closed_canonical issue #${row.issue_number} must include terminal proof; missing terminal proof should use duplicate_to_closed_canonical_missing_proof`);
+      }
+      if (row.status === 'duplicate_to_closed_canonical_missing_proof') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_closed_canonical_missing_proof issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, !evidence.canonicalResolution?.terminalProof ||
+          ['no_timeline_event', 'unknown'].includes(evidence.canonicalResolution.terminalProof.status),
+          `duplicate_to_closed_canonical_missing_proof issue #${row.issue_number} must have missing/incomplete terminal proof`);
       }
       if (row.status === 'admin_not_planned_unverified') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
