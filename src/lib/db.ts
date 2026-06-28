@@ -924,6 +924,226 @@ export function releaseScoreAuditFreshness(): { count: number; max_scored_at: st
   };
 }
 
+export interface ReleaseDataFreshnessSource {
+  source: string;
+  maxAt: string | null;
+  ageHoursAtScore: number | null;
+}
+
+export interface ReleaseDataFreshness {
+  schemaVersion: 1;
+  tag: string;
+  scoredAt: string | null;
+  issueUpdatedAtMax: string | null;
+  issueUpdatedAgeHoursAtScore: number | null;
+  closureProofCheckedAtMax: string | null;
+  sourceFetchedAtMax: string | null;
+  sourceFetchedAgeHoursAtScore: number | null;
+  sources: ReleaseDataFreshnessSource[];
+}
+
+const releaseDataFreshnessStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND c.closed_at > i.created_at),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND c.closed_at > r.reopened_at),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+),
+issue_universe AS (
+  SELECT DISTINCT i.number
+  FROM issues i
+  JOIN target
+  WHERE target.start_at IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM issue_open_intervals interval
+      WHERE interval.issue_number=i.number
+        AND interval.open_at < target.end_at
+        AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+    )
+),
+closed_universe AS (
+  SELECT DISTINCT i.number
+  FROM issues i
+  JOIN target
+  WHERE i.closed_at IS NOT NULL
+    AND i.closed_at >= target.start_at
+    AND i.closed_at < target.end_at
+),
+pr_universe AS (
+  SELECT DISTINCT l.pr_repository_name_with_owner, l.pr_number
+  FROM issue_pr_links l
+  JOIN closed_universe c ON c.number=l.issue_number
+  WHERE ${creditedFixLinkSql('l')}
+),
+sources(source, max_ts) AS (
+  SELECT 'release_metadata', MAX(updated_at)
+  FROM (
+    SELECT fetched_at AS updated_at FROM release_commits WHERE tag=?
+    UNION ALL
+    SELECT fetched_at FROM advisories
+  )
+  UNION ALL
+  SELECT 'issue_rows', MAX(i.updated_at)
+  FROM issues i JOIN issue_universe u ON u.number=i.number
+  UNION ALL
+  SELECT 'classification_rows', MAX(c.classified_at)
+  FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
+  UNION ALL
+  SELECT 'label_events', MAX(e.fetched_at)
+  FROM issue_label_events e JOIN issue_universe u ON u.number=e.issue_number
+  UNION ALL
+  SELECT 'label_snapshots', MAX(s.fetched_at)
+  FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
+  UNION ALL
+  SELECT 'closure_proofs', MAX(p.checked_at)
+  FROM issue_closure_proofs p
+  JOIN target ON target.tag=p.release_tag
+  UNION ALL
+  SELECT 'closure_events', MAX(e.fetched_at)
+  FROM issue_closure_events e JOIN closed_universe u ON u.number=e.issue_number
+  UNION ALL
+  SELECT 'reopen_events', MAX(r.fetched_at)
+  FROM issue_reopen_events r JOIN issue_universe u ON u.number=r.issue_number
+  UNION ALL
+  SELECT 'issue_pr_links', MAX(l.fetched_at)
+  FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
+  UNION ALL
+  SELECT 'issue_commit_references', MAX(c.fetched_at)
+  FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number
+  UNION ALL
+  SELECT 'pull_request_fixes', MAX(p.fetched_at)
+  FROM pull_request_fixes p
+  JOIN pr_universe u ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner AND u.pr_number=p.pr_number
+  UNION ALL
+  SELECT 'release_pr_reachability', MAX(r.checked_at)
+  FROM release_pr_reachability r
+  JOIN pr_universe u ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND u.pr_number=r.pr_number
+  WHERE r.tag=?
+)
+SELECT source, max_ts
+FROM sources
+ORDER BY source
+`);
+
+const latestScoredStableReleaseTagStmt = db.prepare(`
+SELECT tag
+FROM releases
+WHERE prerelease=0
+  AND final_score IS NOT NULL
+ORDER BY published_at DESC
+LIMIT 1
+`);
+
+export function latestScoredStableReleaseTag(): string | null {
+  const row = latestScoredStableReleaseTagStmt.get() as { tag: string } | undefined;
+  return row?.tag ?? null;
+}
+
+export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
+  const audit = getReleaseScoreAudit(tag);
+  const scoredAt = audit?.scored_at ?? null;
+  const rows = releaseDataFreshnessStmt.all(tag, tag, tag) as Array<{ source: string; max_ts: string | null }>;
+  const sources = rows.map((row) => ({
+    source: row.source,
+    maxAt: row.max_ts ?? null,
+    ageHoursAtScore: ageHoursAtScore(row.max_ts ?? null, scoredAt),
+  }));
+  const sourceFetchedAtMax = maxTimestamp(sources.map((source) => source.maxAt));
+  const issueUpdatedAtMax = sources.find((source) => source.source === 'issue_rows')?.maxAt ?? null;
+  const closureProofCheckedAtMax = sources.find((source) => source.source === 'closure_proofs')?.maxAt ?? null;
+  return {
+    schemaVersion: 1,
+    tag,
+    scoredAt,
+    issueUpdatedAtMax,
+    issueUpdatedAgeHoursAtScore: ageHoursAtScore(issueUpdatedAtMax, scoredAt),
+    closureProofCheckedAtMax,
+    sourceFetchedAtMax,
+    sourceFetchedAgeHoursAtScore: ageHoursAtScore(sourceFetchedAtMax, scoredAt),
+    sources,
+  };
+}
+
+const dataFreshnessCacheRowsStmt = db.prepare(`
+SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS max_ts FROM issues
+UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
+UNION ALL SELECT 'issue_label_events', COUNT(*), MAX(fetched_at) FROM issue_label_events
+UNION ALL SELECT 'issue_label_snapshots', COUNT(*), MAX(fetched_at) FROM issue_label_snapshots
+UNION ALL SELECT 'issue_closure_proofs', COUNT(*), MAX(checked_at) FROM issue_closure_proofs
+UNION ALL SELECT 'issue_closure_events', COUNT(*), MAX(fetched_at) FROM issue_closure_events
+UNION ALL SELECT 'issue_reopen_events', COUNT(*), MAX(fetched_at) FROM issue_reopen_events
+UNION ALL SELECT 'issue_pr_links', COUNT(*), MAX(fetched_at) FROM issue_pr_links
+UNION ALL SELECT 'issue_commit_references', COUNT(*), MAX(fetched_at) FROM issue_commit_references
+UNION ALL SELECT 'pull_request_fixes', COUNT(*), MAX(fetched_at) FROM pull_request_fixes
+UNION ALL SELECT 'release_pr_reachability', COUNT(*), MAX(checked_at) FROM release_pr_reachability
+UNION ALL SELECT 'release_commits', COUNT(*), MAX(fetched_at) FROM release_commits
+UNION ALL SELECT 'advisories', COUNT(*), MAX(fetched_at) FROM advisories
+`);
+
+export function dataFreshnessCacheDigest(): { count: number; max_ts: string | null; digest: string } {
+  const rows = dataFreshnessCacheRowsStmt.all() as Array<{ source: string; count: number; max_ts: string | null }>;
+  const hash = createHash('sha256');
+  let count = 0;
+  let maxTs: string | null = null;
+  for (const row of rows) {
+    count += Number(row.count ?? 0);
+    if (row.max_ts && (!maxTs || row.max_ts > maxTs)) maxTs = row.max_ts;
+    hash.update(JSON.stringify(row));
+    hash.update('\n');
+  }
+  return { count, max_ts: maxTs, digest: hash.digest('hex') };
+}
+
+function ageHoursAtScore(sourceAt: string | null, scoredAt: string | null): number | null {
+  if (!sourceAt || !scoredAt) return null;
+  const sourceMs = Date.parse(sourceAt);
+  const scoredMs = Date.parse(scoredAt);
+  if (!Number.isFinite(sourceMs) || !Number.isFinite(scoredMs)) return null;
+  return Math.round(((scoredMs - sourceMs) / 3_600_000) * 100) / 100;
+}
+
+function maxTimestamp(values: Array<string | null>): string | null {
+  return values
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+}
+
 const updateReleaseScoreAuditGateEvidenceStmt = db.prepare(`
 UPDATE release_score_audits
 SET gate_evidence_json=?

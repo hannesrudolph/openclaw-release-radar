@@ -10,12 +10,15 @@ import {
 } from '../lib/refresh';
 import {
   comparisonReleases,
+  dataFreshnessCacheDigest,
   getLastScoredAt,
   getRelease,
   getReleaseScoreAudit,
+  latestScoredStableReleaseTag,
   latestComparisonSnapshot,
   labelsForIssueAt,
   listAdvisories,
+  releaseDataFreshness,
   releaseScoreAuditFreshness,
   type AdvisoryRow,
 } from '../lib/db';
@@ -141,12 +144,14 @@ api.get('/config', (_req, res) => {
 api.get('/status', (_req, res) => {
   const state = getRefreshState();
   const lastScoredAt = getLastScoredAt();
+  const latestScoredTag = latestScoredStableReleaseTag();
   res.json({
     schemaVersion: STATUS_PAYLOAD_SCHEMA_VERSION,
     ...state,
     lastRefreshAt: lastScoredAt ?? state.lastRefreshAt,
     processLastRefreshAt: state.lastRefreshAt,
     lastScoredAt,
+    dataFreshness: latestScoredTag ? releaseDataFreshness(latestScoredTag) : null,
   });
 });
 
@@ -214,6 +219,20 @@ function scoreExplanation(audit: ReturnType<typeof getReleaseScoreAudit>) {
   return components?.explanation ?? null;
 }
 
+function freshnessForRelease(
+  release: { tag: string; published_at: string | null; hours_to_next_stable?: number | null },
+  audit: ReturnType<typeof getReleaseScoreAudit>,
+) {
+  const labelRelease = {
+    ...release,
+    hours_to_next_stable: release.hours_to_next_stable ?? null,
+  };
+  return {
+    ...releaseDataFreshness(release.tag),
+    labelCutoffAt: releaseLabelCutoff(labelRelease, audit?.scored_at ?? null),
+  };
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
@@ -241,6 +260,7 @@ api.get('/releases', (_req, res) => {
         scoredAt: r.scored_at,
         scoreAudit: scoreAuditSummary(audit),
         explanation: scoreExplanation(audit),
+        dataFreshness: freshnessForRelease(r, audit),
         advisories: {
           affected: summarizeAdvisories(status.affected),
           patched: summarizeAdvisories(status.patched),
@@ -283,6 +303,7 @@ api.get('/comparison', (_req, res) => {
         negativeIssues: release.negative_issues,
         positiveIssues: release.positive_issues,
         scoredAt: release.scored_at,
+        dataFreshness: freshnessForRelease(release, audit),
         modelVersion: audit?.score_model_version ?? null,
         components: parseJson(audit?.components_json, null),
         input: parseJson(audit?.input_json, null),
@@ -323,6 +344,7 @@ api.get('/releases/:tag/review', (req, res) => {
       negativeIssues: release.negative_issues,
       positiveIssues: release.positive_issues,
       scoredAt: release.scored_at,
+      dataFreshness: freshnessForRelease(release, audit),
       modelVersion: audit?.score_model_version ?? null,
       promptVersion: audit?.prompt_version ?? null,
       input: parseJson(audit?.input_json, null),
@@ -370,12 +392,18 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
 const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 3 };
 
-function publicCacheKey(freshness = releaseScoreAuditFreshness()): string {
+function publicCacheKey(
+  freshness = releaseScoreAuditFreshness(),
+  sourceFreshness = dataFreshnessCacheDigest(),
+): string {
   return [
     PUBLIC_PAYLOAD_SCHEMA_VERSION,
     freshness.max_scored_at ?? '',
     freshness.count,
     freshness.digest,
+    sourceFreshness.max_ts ?? '',
+    sourceFreshness.count,
+    sourceFreshness.digest,
   ].join(':');
 }
 
@@ -469,6 +497,7 @@ function buildPublicPayload() {
       scoredAt:          r.scored_at,
       scoreAudit:        auditSummary,
       explanation:       scoreExplanation(audit),
+      dataFreshness:     freshnessForRelease(r, audit),
       totalAttributedIssues: all.length,
       issues:            topIssues,
       watchIssues,

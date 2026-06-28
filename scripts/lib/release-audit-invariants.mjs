@@ -82,6 +82,7 @@ const knownExplanationCodes = new Set([
 const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
 const publicReleaseKeys = new Set([
   'band',
+  'dataFreshness',
   'explanation',
   'issues',
   'negativeIssues',
@@ -758,6 +759,48 @@ function verifyAllowedKeys({ failures, tag, label, value, allowed }) {
     `${label} must not expose unknown keys: ${extra.join(', ')}`);
 }
 
+function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredAt = null }) {
+  expect(failures, tag, isObject(dataFreshness), 'dataFreshness must be present');
+  if (!isObject(dataFreshness)) return;
+  expect(failures, tag, dataFreshness.schemaVersion === 1,
+    `dataFreshness schemaVersion must be 1, got ${JSON.stringify(dataFreshness.schemaVersion)}`);
+  expect(failures, tag, dataFreshness.tag === releaseTag,
+    `dataFreshness tag (${dataFreshness.tag}) must match release tag (${releaseTag})`);
+  if (scoredAt != null) {
+    expect(failures, tag, dataFreshness.scoredAt === scoredAt,
+      `dataFreshness scoredAt (${dataFreshness.scoredAt}) must match release scored_at (${scoredAt})`);
+  }
+  expect(failures, tag, Array.isArray(dataFreshness.sources) && dataFreshness.sources.length > 0,
+    'dataFreshness sources must be a non-empty array');
+  const sources = new Map((dataFreshness.sources ?? []).map((source) => [source?.source, source]));
+  for (const required of ['issue_rows', 'classification_rows', 'closure_proofs', 'release_metadata']) {
+    expect(failures, tag, sources.has(required), `dataFreshness sources must include ${required}`);
+  }
+  expect(failures, tag, dataFreshness.issueUpdatedAtMax === (sources.get('issue_rows')?.maxAt ?? null),
+    'dataFreshness issueUpdatedAtMax must match issue_rows source');
+  expect(failures, tag, dataFreshness.closureProofCheckedAtMax === (sources.get('closure_proofs')?.maxAt ?? null),
+    'dataFreshness closureProofCheckedAtMax must match closure_proofs source');
+  for (const source of dataFreshness.sources ?? []) {
+    expect(failures, tag, typeof source?.source === 'string' && source.source.length > 0,
+      'dataFreshness source name must be present');
+    if (source?.maxAt != null) {
+      expect(failures, tag, Number.isFinite(Date.parse(source.maxAt)),
+        `dataFreshness ${source.source} maxAt must be a valid timestamp`);
+    }
+    if (source?.ageHoursAtScore != null) {
+      expect(failures, tag, typeof source.ageHoursAtScore === 'number' && Number.isFinite(source.ageHoursAtScore),
+        `dataFreshness ${source.source} ageHoursAtScore must be numeric`);
+    }
+  }
+  for (const key of ['issueUpdatedAgeHoursAtScore', 'sourceFetchedAgeHoursAtScore']) {
+    const value = dataFreshness[key];
+    if (value != null) {
+      expect(failures, tag, typeof value === 'number' && Number.isFinite(value),
+        `dataFreshness ${key} must be numeric`);
+    }
+  }
+}
+
 function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public release' }) {
   if (Array.isArray(value)) {
     value.forEach((item, idx) => verifyNoForbiddenPublicKeys({ failures, tag, value: item, path: `${path}[${idx}]` }));
@@ -1210,6 +1253,9 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     expect(failures, 'api/status', status.lastRefreshAt === status.lastScoredAt,
       `lastRefreshAt (${status.lastRefreshAt}) must equal lastScoredAt (${status.lastScoredAt})`);
   }
+  if (status.dataFreshness) {
+    verifyDataFreshness({ failures, tag: 'api/status', dataFreshness: status.dataFreshness, releaseTag: status.dataFreshness.tag });
+  }
 
   const configPayload = await fetchJson(`${apiBase}/api/config`);
   expect(failures, 'api/config', configPayload.schemaVersion === configPayloadSchemaVersion,
@@ -1274,6 +1320,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, releaseApi.scoredAt === release.scored_at,
         `releases scoredAt (${releaseApi.scoredAt}) must match DB scored_at (${release.scored_at})`);
       verifyScoreAuditSummary({ failures, tag: release.tag, summary: releaseApi.scoreAudit });
+      verifyDataFreshness({ failures, tag: release.tag, dataFreshness: releaseApi.dataFreshness, releaseTag: release.tag, scoredAt: release.scored_at });
       verifyScoreExplanation({
         failures,
         tag: release.tag,
@@ -1301,6 +1348,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       expect(failures, release.tag, publicRelease.scoredAt === release.scored_at,
         `public scoredAt (${publicRelease.scoredAt}) must match DB scored_at (${release.scored_at})`);
       verifyScoreAuditSummary({ failures, tag: release.tag, summary: publicRelease.scoreAudit });
+      verifyDataFreshness({ failures, tag: release.tag, dataFreshness: publicRelease.dataFreshness, releaseTag: release.tag, scoredAt: release.scored_at });
       expect(failures, release.tag, publicRelease.totalAttributedIssues === publicRelease.scoreAudit?.rawIssueCount,
         `public totalAttributedIssues (${publicRelease.totalAttributedIssues}) must match scoreAudit rawIssueCount (${publicRelease.scoreAudit?.rawIssueCount})`);
       const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
@@ -1348,6 +1396,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       `review recommended (${review.local?.recommended}) must match DB recommended (${release.recommended === 1})`);
     expect(failures, release.tag, review.local?.scoredAt === release.scored_at,
       `review scoredAt (${review.local?.scoredAt}) must match DB scored_at (${release.scored_at})`);
+    verifyDataFreshness({ failures, tag: release.tag, dataFreshness: review.local?.dataFreshness, releaseTag: release.tag, scoredAt: release.scored_at });
     if (releaseApi) {
       expect(failures, release.tag, releaseApi.band === review.local?.band,
         `releases band (${releaseApi.band}) must match review band (${review.local?.band})`);
@@ -1407,6 +1456,8 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         expect(failures, release.tag, comparison.local[field] === expected,
           `comparison local ${field} (${comparison.local[field]}) must match review (${expected})`);
       }
+      expectJsonEqual(failures, release.tag, 'comparison local dataFreshness must match review dataFreshness',
+        comparison.local.dataFreshness, review.local?.dataFreshness);
       expectJsonEqual(failures, release.tag, 'comparison local explanation must match review explanation',
         comparison.local.components?.explanation, review.local?.components?.explanation);
     }

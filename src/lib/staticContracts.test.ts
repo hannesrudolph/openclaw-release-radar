@@ -50,6 +50,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /scoreDetailMetricsHtml/);
     assert.match(html, /scoreDetailBucketsHtml/);
     assert.match(html, /score-explain__proof/);
+    assert.match(html, /Source freshness/);
+    assert.match(html, /dataFreshnessText/);
     assert.match(html, /Object\.entries\(value\)/);
     assert.match(html, /\.slice\(0,\s*14\)/);
   });
@@ -264,9 +266,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 1/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
+    assert.match(api, /dataFreshnessCacheDigest/);
     assert.match(api, /freshness\.max_scored_at/);
     assert.match(api, /freshness\.count/);
     assert.match(api, /freshness\.digest/);
+    assert.match(api, /dataFreshness:\s+freshnessForRelease/);
     assert.match(api, /classifyIssueRowWithLabels/);
     assert.match(api, /labelsForIssueAt/);
     assert.match(api, /releaseLabelCutoff\(r,\s*audit\?\.scored_at/);

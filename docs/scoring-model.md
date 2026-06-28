@@ -208,6 +208,8 @@ After closure proof analysis, the same `closureProof` and `releaseFixCredit` pay
 
 Closure proof examples are selected after risk weighting and sorted by descending `riskWeight`. They expose raw classification, effective classification, classification diffs, effective labels, and per-issue risk weight so reviewers can see which deterministic overrides affected closure-risk scoring.
 
+Each release review also exposes `dataFreshness`. `scoredAt` is when the score/audit payload was computed. `issueUpdatedAtMax` is the newest GitHub issue row included in the release issue universe. `issueUpdatedAgeHoursAtScore` makes that gap explicit, because a freshly computed score can still be based on issue rows, labels, or source metadata fetched earlier. The review UI shows this as `Source freshness`, and the API includes per-source timestamps for issue rows, classifications, label events/snapshots, closure proof, closure events, PR links, PR metadata, and release reachability.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence.

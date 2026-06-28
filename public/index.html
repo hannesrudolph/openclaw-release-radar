@@ -2205,6 +2205,7 @@ function scoreReviewHtml(r) {
   const closureRiskLine = closureRisk
     ? `${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved · ${esc(closureRisk.knownNotInReleaseCount ?? 0)} known not in tag · ${esc(closureRisk.neutralOrNonActionableCount ?? 0)} not scored`
     : '';
+  const dataFreshnessLine = dataFreshnessText(local.dataFreshness);
   const signalSummary = scoreSignalSummary(local);
   const componentEntries = Object.entries(components);
   const compHtml = componentEntries.length
@@ -2220,6 +2221,7 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(local.modelVersion ?? 'unknown')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Score</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
+    + (dataFreshnessLine ? `<div class="score-review__item"><span class="score-review__label">Source freshness</span><span class="score-review__value">${dataFreshnessLine}</span></div>` : '')
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closure ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
@@ -2234,6 +2236,22 @@ function scoreReviewHtml(r) {
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';
+}
+
+function dataFreshnessText(freshness) {
+  if (!freshness) return '';
+  const issueAt = freshness.issueUpdatedAtMax ? compactDateTime(freshness.issueUpdatedAtMax) : 'unknown issue time';
+  const scoredAt = freshness.scoredAt ? compactDateTime(freshness.scoredAt) : 'unknown score time';
+  const lag = Number.isFinite(freshness.issueUpdatedAgeHoursAtScore)
+    ? ` · ${metricValue(freshness.issueUpdatedAgeHoursAtScore)}h issue lag`
+    : '';
+  return `${esc(issueAt)} issues · ${esc(scoredAt)} score${esc(lag)}`;
+}
+
+function compactDateTime(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value ?? '');
+  return date.toISOString().replace(/:\d{2}\.\d{3}Z$/, 'Z');
 }
 
 // Wrap evidence in a collapsed disclosure so the expanded release shows just the

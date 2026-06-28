@@ -200,8 +200,24 @@ describe('verifyReleaseAudit', () => {
         }],
         verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
       };
+      const dataFreshness = {
+        schemaVersion: 1,
+        tag: 'v1',
+        scoredAt: auditScoredAt,
+        issueUpdatedAtMax: '2026-01-01T23:00:00Z',
+        issueUpdatedAgeHoursAtScore: 1,
+        closureProofCheckedAtMax: proofCheckedAt,
+        sourceFetchedAtMax: proofCheckedAt,
+        sourceFetchedAgeHoursAtScore: 0,
+        sources: [
+          { source: 'issue_rows', maxAt: '2026-01-01T23:00:00Z', ageHoursAtScore: 1 },
+          { source: 'classification_rows', maxAt: '2026-01-01T23:10:00Z', ageHoursAtScore: 0.83 },
+          { source: 'closure_proofs', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+          { source: 'release_metadata', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+        ],
+      };
       if (url.endsWith('/api/status')) {
-        return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt };
+        return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: auditScoredAt, lastScoredAt: auditScoredAt, dataFreshness };
       }
       if (url.endsWith('/api/config')) {
         return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
@@ -224,6 +240,7 @@ describe('verifyReleaseAudit', () => {
             scoredAt: auditScoredAt,
             scoreAudit,
             explanation,
+            dataFreshness,
             totalAttributedIssues: 1,
             issues: [{
               number: 1,
@@ -248,6 +265,7 @@ describe('verifyReleaseAudit', () => {
           scoredAt: auditScoredAt,
           scoreAudit,
           explanation,
+          dataFreshness,
         }];
       }
       if (url.endsWith('/api/releases/history')) {
@@ -274,6 +292,7 @@ describe('verifyReleaseAudit', () => {
               negativeIssues: 1,
               positiveIssues: 0,
               scoredAt: auditScoredAt,
+              dataFreshness,
               components: { explanation },
               gateEvidence: {
                 schemaVersion: 1,
@@ -303,6 +322,7 @@ describe('verifyReleaseAudit', () => {
             negativeIssues: 1,
             positiveIssues: 0,
             scoredAt: auditScoredAt,
+            dataFreshness,
             input: {
               schemaVersion: 1,
               rawIssueCount: 1,
