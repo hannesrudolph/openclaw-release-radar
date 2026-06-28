@@ -729,7 +729,14 @@ function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvi
     const repo = String(linkedPr?.repositoryNameWithOwner ?? '');
     const number = Number(linkedPr?.number ?? 0);
     const merged = Number(linkedPr?.merged ?? 0) === 1;
-    if (repo !== 'openclaw/openclaw' || !merged || !Number.isInteger(number) || number <= 0) continue;
+    if (!merged || !Number.isInteger(number) || number <= 0) continue;
+    if (repo !== 'openclaw/openclaw') {
+      expect(failures, tag, linkedPr.reachabilityStatus === 'external_repo_unchecked',
+        `proof issue #${row.issue_number} external linked PR ${repo}#${number} must carry external_repo_unchecked reachabilityStatus`);
+      expect(failures, tag, linkedPr.reachabilityEvidence === 'external_repository_not_checked_against_openclaw_release_tag',
+        `proof issue #${row.issue_number} external linked PR ${repo}#${number} must explain why release reachability is not checked`);
+      continue;
+    }
     expect(failures, tag, ['reachable', 'not_reachable', 'unknown'].includes(linkedPr.reachabilityStatus),
       `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityStatus`);
     expect(failures, tag, typeof linkedPr.reachabilityMethod === 'string' || linkedPr.reachabilityMethod == null,

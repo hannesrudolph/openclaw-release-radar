@@ -213,6 +213,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /enrichLinkedPrReachability/);
     assert.match(analysis, /reachabilityStatus/);
     assert.match(analysis, /reachabilityEvidence/);
+    assert.match(analysis, /external_repo_unchecked/);
+    assert.match(analysis, /external_repository_not_checked_against_openclaw_release_tag/);
   });
 
   it('refresh fetches label timelines for all monitored-window issues', () => {

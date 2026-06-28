@@ -477,8 +477,18 @@ function enrichLinkedPrReachability(releaseTag: string, rawLinkedPrs: unknown[])
     const repo = String(pr.repositoryNameWithOwner ?? '');
     const prNumber = Number(pr.number ?? 0);
     const merged = Number(pr.merged ?? 0) === 1;
-    if (repo !== trackedPrRepositoryNameWithOwner || !merged || !Number.isInteger(prNumber) || prNumber <= 0) {
+    if (!Number.isInteger(prNumber) || prNumber <= 0 || !merged) {
       return pr;
+    }
+    if (repo !== trackedPrRepositoryNameWithOwner) {
+      return {
+        ...pr,
+        reachabilityStatus: 'external_repo_unchecked',
+        reachabilityMethod: null,
+        tagCommitOid: null,
+        mergeCommitOid: null,
+        reachabilityEvidence: 'external_repository_not_checked_against_openclaw_release_tag',
+      };
     }
     const reachability = releasePrReachabilityStatusStmt.get(releaseTag, repo, prNumber) as {
       status: string;
