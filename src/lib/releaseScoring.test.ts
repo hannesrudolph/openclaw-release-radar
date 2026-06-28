@@ -47,6 +47,7 @@ describe('release score explanations', () => {
     assert.ok(closure);
     assert.equal(typeof closure.metrics?.notCountedClosedCount, 'number');
     assert.equal(typeof closure.metrics?.unresolvedForReleaseCount, 'number');
+    assert.equal(typeof closure.metrics?.unresolvedClosureRiskWeight, 'number');
     assert.equal(typeof closure.metrics?.neutralOrNonActionableCount, 'number');
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);

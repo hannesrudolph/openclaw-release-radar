@@ -115,6 +115,8 @@ try {
     await panel.locator('.score-review__item').filter({ hasText: 'Raw/classified' }).getByText(expectedRawClassified).waitFor();
     const expectedCoverage = `${Math.round((review.local?.components?.evidenceCoverage ?? 0) * 100)}%`;
     await panel.locator('.score-review__item').filter({ hasText: 'Evidence coverage' }).getByText(expectedCoverage).waitFor();
+    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Source ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
+    await panel.locator('.score-review__item').filter({ hasText: 'Risk weights' }).getByText(expectedRiskWeights).waitFor();
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (credit) {
       const expectedCredit = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;

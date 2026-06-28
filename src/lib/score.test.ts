@@ -33,6 +33,7 @@ function mk(over: Partial<InstallInput> = {}): InstallInput {
     verifiedDebtWeight: 0,
     carryoverDebtWeight: 0,
     staleDebtWeight: 0,
+    unresolvedClosureRiskWeight: 0,
     rawIssueCount: 0,
     classifiedIssueCount: 0,
     cveAffected: false,
@@ -183,6 +184,16 @@ describe('installConfidence — graded signals', () => {
     assert.ok(verified < carryover);
     assert.ok(carryover < base);
     assert.ok(stale > verified);
+  });
+
+  it('unresolved closed-release risk lowers confidence but stays capped', () => {
+    const base = installConfidence(mk(), NOW);
+    const some = installConfidence(mk({ unresolvedClosureRiskWeight: 8 }), NOW);
+    const heavy = installConfidence(mk({ unresolvedClosureRiskWeight: 800 }), NOW);
+    assert.ok(some.score! < base.score!);
+    assert.ok(heavy.score! < some.score!);
+    assert.ok((base.score! - heavy.score!) <= 0.6);
+    assert.equal(heavy.components?.closureRisk, -0.5);
   });
 
   it('incomplete evidence coverage lowers confidence', () => {

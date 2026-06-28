@@ -16,7 +16,7 @@ import {
 import { hasHotfixSuccessor } from './releaseNotes';
 import { stableDistance, matchesRange } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
-import { enrichGateEvidenceWithClosureProof } from './closureProofPayload';
+import { closureProofPayload, enrichGateEvidenceWithClosureProof } from './closureProofPayload';
 import {
   getReleaseCommit,
   issueLabelEventCount,
@@ -283,6 +283,8 @@ function scoreRelease(args: {
   const brokenSurfaces = JSON.stringify(topBrokenSurfaces(openedFeltRows.map((row) => row.title)));
   const cve = args.cveFor(rel.tag);
   const releaseCommit = getReleaseCommit(rel.tag);
+  const closureProof = closureProofPayload(rel.tag);
+  const unresolvedClosureRiskWeight = closureRiskWeight(closureProof?.riskSummary);
   const input: InstallInput = {
     publishedAt: rel.published_at,
     isLatest: args.idx === 0,
@@ -295,6 +297,7 @@ function scoreRelease(args: {
     verifiedDebtWeight: activeDebt.loads.verified,
     carryoverDebtWeight: activeDebt.loads.carryover,
     staleDebtWeight: activeDebt.loads.stale,
+    unresolvedClosureRiskWeight,
     rawIssueCount: issueCountForVersion(rel.tag),
     classifiedIssueCount: attributed.length,
     cveAffected: cve.affected,
@@ -414,7 +417,7 @@ function scoreRelease(args: {
       verifiedFixedCount: verifiedFixed.length,
       unverifiedClosedCount: unverifiedClosed.length,
     },
-  });
+  }, closureProof);
 
   return {
     rel,
@@ -525,6 +528,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           notCountedClosedCount: Number(closureProof.notCreditedCount ?? 0),
           analyzedClosedCount: Number(closureProof.analyzedClosedCount ?? 0),
           unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
+          unresolvedClosureRiskWeight: roundMetric(input.unresolvedClosureRiskWeight),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
           unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
@@ -690,6 +694,14 @@ function proofBucketsExceptFixed(buckets: unknown, fixedKey = 'fixed_in_release'
     .map(([status, count]) => [status, Number(count)] as const)
     .filter(([, count]) => Number.isFinite(count) && count > 0);
   return Object.fromEntries(entries);
+}
+
+function closureRiskWeight(riskSummary: any): number {
+  if (!riskSummary || typeof riskSummary !== 'object') return 0;
+  return numberOrZero(riskSummary.knownNotInReleaseCount) +
+    numberOrZero(riskSummary.openCanonicalRiskCount) * 1.2 +
+    numberOrZero(riskSummary.unsupportedClosureClaimCount) * 0.8 +
+    numberOrZero(riskSummary.missingEvidenceCount) * 1.5;
 }
 
 function numberOrZero(value: unknown): number {

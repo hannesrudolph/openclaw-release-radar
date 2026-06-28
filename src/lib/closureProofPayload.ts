@@ -88,8 +88,7 @@ export function closureProofPayload(tag: string) {
   };
 }
 
-export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any) {
-  const closureProof = closureProofPayload(tag);
+export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any, closureProof = closureProofPayload(tag)) {
   if (gateEvidence && closureProof) {
     gateEvidence.fixProvenance ??= {};
     gateEvidence.fixProvenance.closureProof = closureProof;

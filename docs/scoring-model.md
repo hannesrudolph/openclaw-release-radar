@@ -1,6 +1,6 @@
 # Scoring Model
 
-Current model: `evidence-v10-evidence-report`
+Current model: `evidence-v11-closure-risk`
 
 The score answers one question:
 
@@ -25,6 +25,7 @@ The normal score starts from a base value, then applies bounded components:
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
 - `carryoverDebt`: inherited source/static/current open risk. This is capped.
 - `staleDebt`: low-confidence, stale, needs-info, or weak evidence risk. This is heavily capped.
+- `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and excludes neutral/non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
 - `survival`: reward for standing as latest/current stable without hotfix replacement.
 - `shakeout`: small reward for beta/prerelease bake time.
@@ -51,7 +52,7 @@ The model deliberately separates:
 - field-confirmed breakage
 - source/static risk
 - weak or stale issue evidence
-- closed issues not counted for this release
+- unresolved closed issues not counted for this release
 - reachable fixes
 
 Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override.
@@ -111,7 +112,7 @@ The closure proof payload also rolls status buckets into risk dispositions:
 - `neutral_or_non_actionable`: not bug evidence, not planned/actionable, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.
 
-`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes neutral/non-actionable closures so the UI does not imply every non-credited closure is a broken user report.
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes neutral/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. The scorer converts that unresolved set into `unresolvedClosureRiskWeight` using a small weighted sum: known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5. The resulting `closureRisk` score component is capped at a 0.5 point penalty.
 
 The API exposes a coherent `releaseFixCredit` object:
 

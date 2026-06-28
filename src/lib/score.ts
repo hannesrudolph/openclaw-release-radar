@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v10-evidence-report';
+export const SCORE_MODEL_VERSION = 'evidence-v11-closure-risk';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -25,6 +25,7 @@ const BREAKING_MAX_BULLETS = 6;
 const VERIFIED_DEBT_MAX = -2.0;
 const CARRYOVER_DEBT_MAX = -0.6;
 const STALE_DEBT_MAX = -0.2;
+const CLOSURE_RISK_MAX = -0.5;
 const COVERAGE_MAX = -2.5;
 const REGRESSION_DOWN = -0.8;
 const REGRESSION_UP = 0.4;
@@ -73,6 +74,7 @@ export interface InstallInput {
   verifiedDebtWeight: number;
   carryoverDebtWeight: number;
   staleDebtWeight: number;
+  unresolvedClosureRiskWeight: number;
   rawIssueCount: number;
   classifiedIssueCount: number;
   cveAffected: boolean;
@@ -95,6 +97,7 @@ export interface InstallComponents {
   verifiedDebt: number;
   carryoverDebt: number;
   staleDebt: number;
+  closureRisk: number;
   coverage: number;
   survival: number;
   shakeout: number;
@@ -504,6 +507,10 @@ function staleDebtPoints(load: number): number {
   return clamp(-Math.log1p(Math.max(0, load)) * 0.05, STALE_DEBT_MAX, 0);
 }
 
+function closureRiskPoints(load: number): number {
+  return clamp(-Math.log1p(Math.max(0, load)) * 0.08, CLOSURE_RISK_MAX, 0);
+}
+
 function coveragePoints(rawIssueCount: number, classifiedIssueCount: number): {
   points: number;
   ratio: number;
@@ -611,6 +618,7 @@ function reasonFor(
   }
   if (debt.verified > 2) bits.push(`${Math.round(debt.verified)} field-confirmed blocker risk`);
   if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} source/carryover risk`);
+  if (input.unresolvedClosureRiskWeight > 0) bits.push(`${Math.round(input.unresolvedClosureRiskWeight)} unresolved closed-release risk`);
   if (input.feltClosedWeight > input.feltOpenedWeight && input.feltClosedWeight > 2) {
     bits.push('net-fixing field-visible bugs');
   } else if (input.feltOpenedWeight > input.feltClosedWeight && input.feltOpenedWeight > 2) {
@@ -679,6 +687,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
   const verifiedDebt = verifiedDebtPoints(input.verifiedDebtWeight);
   const carryoverDebt = carryoverDebtPoints(input.carryoverDebtWeight);
   const staleDebt = staleDebtPoints(input.staleDebtWeight);
+  const closureRisk = closureRiskPoints(input.unresolvedClosureRiskWeight);
   const survival = survivalPoints(input, age);
   const shakeout = shakeoutPoints(input.betaCount);
   const regression = regressionPoints(input.feltOpenedWeight, input.feltClosedWeight);
@@ -686,7 +695,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
   const releaseVerification = releaseVerificationPoints(input);
   const artifactVerification = artifactVerificationPoints(input);
   let score = clamp(
-    BASE + verifiedDebt + carryoverDebt + staleDebt + coverage.points + survival + shakeout + regression + breaking + releaseVerification + artifactVerification,
+    BASE + verifiedDebt + carryoverDebt + staleDebt + closureRisk + coverage.points + survival + shakeout + regression + breaking + releaseVerification + artifactVerification,
     0,
     10,
   );
@@ -703,6 +712,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
       verifiedDebt: round1(verifiedDebt),
       carryoverDebt: round1(carryoverDebt),
       staleDebt: round1(staleDebt),
+      closureRisk: round1(closureRisk),
       coverage: round1(coverage.points),
       survival: round1(survival),
       shakeout: round1(shakeout),
