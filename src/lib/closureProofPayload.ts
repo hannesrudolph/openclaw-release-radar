@@ -16,61 +16,16 @@ import {
   applyTitleFunctionalityHint,
   applyTitleIssueShapeHint,
 } from './labelOverrides';
+import {
+  CLOSURE_RISK_DISPOSITIONS,
+  CLOSURE_RISK_DISPOSITION_WEIGHT,
+  closureRiskDisposition,
+  type ClosureRiskDisposition,
+} from './closureProofTaxonomy';
 import type { IssueClassification } from './llm';
-
-export const CLOSURE_RISK_DISPOSITIONS = [
-  'credited_release_fix',
-  'resolved_by_canonical_release_fix',
-  'known_not_in_release',
-  'open_canonical_risk',
-  'unsupported_closure_claim',
-  'neutral_or_non_actionable',
-  'missing_evidence',
-] as const;
-
-export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
+export { CLOSURE_RISK_DISPOSITIONS, closureRiskDisposition } from './closureProofTaxonomy';
 export const CLOSURE_PROOF_SCHEMA_VERSION = 1;
 export const RELEASE_FIX_CREDIT_SCHEMA_VERSION = 1;
-
-const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<string, ClosureRiskDisposition> = {
-  fixed_in_release: 'credited_release_fix',
-  duplicate_to_fixed_in_release: 'resolved_by_canonical_release_fix',
-  fixed_after_release: 'known_not_in_release',
-  main_only_claim: 'known_not_in_release',
-  duplicate_to_fixed_after_release: 'known_not_in_release',
-  duplicate_to_open_canonical: 'open_canonical_risk',
-  superseded_to_open_pr: 'open_canonical_risk',
-  duplicate_with_open_pr_context: 'open_canonical_risk',
-  duplicate_to_closed_canonical: 'unsupported_closure_claim',
-  duplicate_to_closed_canonical_missing_proof: 'missing_evidence',
-  canonical_cycle_or_self_reference: 'unsupported_closure_claim',
-  duplicate_or_superseded: 'unsupported_closure_claim',
-  already_present_claim: 'unsupported_closure_claim',
-  admin_not_planned_unverified: 'unsupported_closure_claim',
-  repro_requested: 'unsupported_closure_claim',
-  no_code_proof: 'unsupported_closure_claim',
-  non_bug_neutral: 'neutral_or_non_actionable',
-  not_planned: 'neutral_or_non_actionable',
-  reporter_replaced: 'neutral_or_non_actionable',
-  reporter_withdrawn: 'neutral_or_non_actionable',
-  reporter_self_closed: 'neutral_or_non_actionable',
-  no_timeline_event: 'missing_evidence',
-  unknown: 'missing_evidence',
-};
-
-export function closureRiskDisposition(status: string): ClosureRiskDisposition {
-  return CLOSURE_RISK_DISPOSITION_BY_STATUS[status] ?? 'missing_evidence';
-}
-
-const DISPOSITION_RISK_WEIGHT: Record<ClosureRiskDisposition, number> = {
-  credited_release_fix: 0,
-  resolved_by_canonical_release_fix: 0,
-  known_not_in_release: 1,
-  open_canonical_risk: 1.2,
-  unsupported_closure_claim: 0.8,
-  neutral_or_non_actionable: 0,
-  missing_evidence: 1.5,
-};
 
 const SEVERITY_RISK_WEIGHT: Record<string, number> = {
   critical: 4,
@@ -329,7 +284,7 @@ type ClosureRiskSourceRow = ClosureRiskWeightRow & {
 
 export function closureRiskWeightForRow(row: ClosureRiskWeightRow): number {
   const disposition = closureRiskDisposition(row.status);
-  const dispositionWeight = DISPOSITION_RISK_WEIGHT[disposition] ?? 0;
+  const dispositionWeight = CLOSURE_RISK_DISPOSITION_WEIGHT[disposition] ?? 0;
   if (dispositionWeight <= 0) return 0;
   if (row.sentiment !== 'negative') return 0;
   const severity = SEVERITY_RISK_WEIGHT[row.severity ?? ''] ?? 0;

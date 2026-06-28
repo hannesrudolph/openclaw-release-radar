@@ -1,27 +1,5 @@
-export type ClosureProofStatus =
-  | 'fixed_in_release'
-  | 'fixed_after_release'
-  | 'duplicate_to_fixed_in_release'
-  | 'duplicate_to_open_canonical'
-  | 'duplicate_to_closed_canonical'
-  | 'duplicate_to_closed_canonical_missing_proof'
-  | 'duplicate_to_fixed_after_release'
-  | 'superseded_to_open_pr'
-  | 'duplicate_with_open_pr_context'
-  | 'canonical_cycle_or_self_reference'
-  | 'duplicate_or_superseded'
-  | 'not_planned'
-  | 'admin_not_planned_unverified'
-  | 'already_present_claim'
-  | 'main_only_claim'
-  | 'reporter_replaced'
-  | 'reporter_withdrawn'
-  | 'reporter_self_closed'
-  | 'repro_requested'
-  | 'no_code_proof'
-  | 'no_timeline_event'
-  | 'non_bug_neutral'
-  | 'unknown';
+import type { ClosureProofStatus } from './closureProofTaxonomy';
+export type { ClosureProofStatus } from './closureProofTaxonomy';
 
 export interface ClosureProofInput {
   issueNumber: number;

@@ -1,0 +1,79 @@
+export const CLOSURE_PROOF_STATUSES = [
+  'fixed_in_release',
+  'fixed_after_release',
+  'duplicate_to_fixed_in_release',
+  'duplicate_to_open_canonical',
+  'duplicate_to_closed_canonical',
+  'duplicate_to_closed_canonical_missing_proof',
+  'duplicate_to_fixed_after_release',
+  'superseded_to_open_pr',
+  'duplicate_with_open_pr_context',
+  'canonical_cycle_or_self_reference',
+  'duplicate_or_superseded',
+  'not_planned',
+  'admin_not_planned_unverified',
+  'already_present_claim',
+  'main_only_claim',
+  'reporter_replaced',
+  'reporter_withdrawn',
+  'reporter_self_closed',
+  'repro_requested',
+  'no_code_proof',
+  'no_timeline_event',
+  'non_bug_neutral',
+  'unknown',
+] as const;
+
+export type ClosureProofStatus = (typeof CLOSURE_PROOF_STATUSES)[number];
+
+export const CLOSURE_RISK_DISPOSITIONS = [
+  'credited_release_fix',
+  'resolved_by_canonical_release_fix',
+  'known_not_in_release',
+  'open_canonical_risk',
+  'unsupported_closure_claim',
+  'neutral_or_non_actionable',
+  'missing_evidence',
+] as const;
+
+export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
+
+export const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<ClosureProofStatus, ClosureRiskDisposition> = {
+  fixed_in_release: 'credited_release_fix',
+  duplicate_to_fixed_in_release: 'resolved_by_canonical_release_fix',
+  fixed_after_release: 'known_not_in_release',
+  main_only_claim: 'known_not_in_release',
+  duplicate_to_fixed_after_release: 'known_not_in_release',
+  duplicate_to_open_canonical: 'open_canonical_risk',
+  superseded_to_open_pr: 'open_canonical_risk',
+  duplicate_with_open_pr_context: 'open_canonical_risk',
+  duplicate_to_closed_canonical: 'unsupported_closure_claim',
+  duplicate_to_closed_canonical_missing_proof: 'missing_evidence',
+  canonical_cycle_or_self_reference: 'unsupported_closure_claim',
+  duplicate_or_superseded: 'unsupported_closure_claim',
+  already_present_claim: 'unsupported_closure_claim',
+  admin_not_planned_unverified: 'unsupported_closure_claim',
+  repro_requested: 'unsupported_closure_claim',
+  no_code_proof: 'unsupported_closure_claim',
+  non_bug_neutral: 'neutral_or_non_actionable',
+  not_planned: 'neutral_or_non_actionable',
+  reporter_replaced: 'neutral_or_non_actionable',
+  reporter_withdrawn: 'neutral_or_non_actionable',
+  reporter_self_closed: 'neutral_or_non_actionable',
+  no_timeline_event: 'missing_evidence',
+  unknown: 'missing_evidence',
+};
+
+export const CLOSURE_RISK_DISPOSITION_WEIGHT: Record<ClosureRiskDisposition, number> = {
+  credited_release_fix: 0,
+  resolved_by_canonical_release_fix: 0,
+  known_not_in_release: 1,
+  open_canonical_risk: 1.2,
+  unsupported_closure_claim: 0.8,
+  neutral_or_non_actionable: 0,
+  missing_evidence: 1.5,
+};
+
+export function closureRiskDisposition(status: string): ClosureRiskDisposition {
+  return CLOSURE_RISK_DISPOSITION_BY_STATUS[status as ClosureProofStatus] ?? 'missing_evidence';
+}

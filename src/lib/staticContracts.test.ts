@@ -93,6 +93,14 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /examplesByStatus/);
   });
 
+  it('release audit verifier uses shared closure proof taxonomy', () => {
+    const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
+    assert.match(verifier, /closureProofTaxonomy\.ts/);
+    assert.match(verifier, /new Set\(CLOSURE_PROOF_STATUSES\)/);
+    assert.match(verifier, /Object\.entries\(CLOSURE_RISK_DISPOSITION_BY_STATUS\)/);
+    assert.doesNotMatch(verifier, /'fixed_in_release'[\s\S]*'unknown'[\s\S]*\]\);/);
+  });
+
   it('issue title truncation is word-boundary aware in the UI fallback', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /function truncateAtWordBoundary/);
