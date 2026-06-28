@@ -1,9 +1,11 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
+  ARTIFACT_VERIFICATION_SCHEMA_VERSION,
   buildReleaseScoreRun,
   ISSUE_EVIDENCE_SCHEMA_VERSION,
   LABEL_TIMELINE_SCHEMA_VERSION,
+  RELEASE_CHECKS_SCHEMA_VERSION,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_EXPLANATION_SCHEMA_VERSION,
@@ -85,6 +87,10 @@ describe('release score explanations', () => {
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
     assert.ok((closure.issueRefs?.length ?? 0) >= 3);
     const closureProof = (run.scored[0].gateEvidence as any).fixProvenance?.closureProof ?? {};
+    const releaseChecks = (run.scored[0].gateEvidence as any).releaseChecks;
+    const artifactVerification = (run.scored[0].gateEvidence as any).artifactVerification;
+    if (releaseChecks) assert.equal(releaseChecks.schemaVersion, RELEASE_CHECKS_SCHEMA_VERSION);
+    assert.equal(artifactVerification.schemaVersion, ARTIFACT_VERIFICATION_SCHEMA_VERSION);
     const nonFixedClosureStatuses = Object.entries(closureProof.byStatus ?? {})
       .filter(([status, count]) => status !== 'fixed_in_release' && Number(count ?? 0) > 0)
       .map(([status]) => status);

@@ -202,6 +202,7 @@ The model verifies npm registry metadata against the release notes:
 It also checks whether the linked release evidence report exists and is non-empty. A verified npm artifact adds confidence. A missing linked evidence report offsets part of that confidence instead of being treated like an npm integrity mismatch.
 
 If the markdown evidence report link is missing but the release notes include a successful GitHub Actions `full release validation` run with a non-expired artifact, the scorer treats that action artifact as fallback release evidence. The original report URL and fallback action URL remain exposed in `gateEvidence.artifactVerification`.
+`gateEvidence.releaseChecks.schemaVersion` and `gateEvidence.artifactVerification.schemaVersion` are the release-check and artifact-verification contract versions. Current value: `1`.
 
 ## Inspecting Current Evidence
 

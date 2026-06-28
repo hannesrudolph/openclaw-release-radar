@@ -102,6 +102,8 @@ const SHORT_ISSUE_TITLE_LENGTH = 110;
 export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
 export const LABEL_TIMELINE_SCHEMA_VERSION = 1;
+export const RELEASE_CHECKS_SCHEMA_VERSION = 1;
+export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
   'source_carryover_risk',
@@ -422,6 +424,7 @@ function scoreRelease(args: {
     hoursToNextStable: rel.hours_to_next_stable,
     hasHotfixSuccessor: input.hasHotfixSuccessor,
     releaseChecks: releaseCommit ? {
+      schemaVersion: RELEASE_CHECKS_SCHEMA_VERSION,
       state: releaseCommit.check_state,
       total: releaseCommit.check_total,
       success: releaseCommit.check_success,
@@ -431,6 +434,7 @@ function scoreRelease(args: {
       contexts: parseJsonArray(releaseCommit.check_contexts_json).slice(0, 25),
     } : null,
     artifactVerification: {
+      schemaVersion: ARTIFACT_VERIFICATION_SCHEMA_VERSION,
       npmPackageUrl: rel.npm_package_url,
       releaseTarballUrl: rel.release_tarball_url,
       releaseIntegrity: rel.release_integrity,

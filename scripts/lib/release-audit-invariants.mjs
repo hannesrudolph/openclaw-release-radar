@@ -96,6 +96,8 @@ const closureProofSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
 const issueEvidenceSchemaVersion = 1;
 const labelTimelineSchemaVersion = 1;
+const releaseChecksSchemaVersion = 1;
+const artifactVerificationSchemaVersion = 1;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -282,6 +284,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const issueEvidence = parseJson(audit.issue_evidence_json, {});
     verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit });
     verifyLabelTimelineGate({ failures, tag, labelTimeline: gate.labelTimeline });
+    verifyReleaseChecksGate({ failures, tag, releaseChecks: gate.releaseChecks });
+    verifyArtifactVerificationGate({ failures, tag, artifactVerification: gate.artifactVerification });
     verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
     verifyProofFreshness({ failures, tag, proofRows, audit });
     expect(failures, tag, issueEvidence.schemaVersion === issueEvidenceSchemaVersion,
@@ -377,6 +381,41 @@ function verifyLabelTimelineGate({ failures, tag, labelTimeline }) {
     expect(failures, tag, labelTimeline.historicalCurrentLabelFallbackAllowed === false,
       'historical label cutoffs must not allow current-label fallback');
   }
+}
+
+function verifyReleaseChecksGate({ failures, tag, releaseChecks }) {
+  if (releaseChecks == null) return;
+  expect(failures, tag, isObject(releaseChecks), 'releaseChecks must be an object or null');
+  if (!isObject(releaseChecks)) return;
+  expect(failures, tag, releaseChecks.schemaVersion === releaseChecksSchemaVersion,
+    `releaseChecks schemaVersion (${releaseChecks.schemaVersion}) must equal ${releaseChecksSchemaVersion}`);
+  for (const key of ['total', 'success', 'failure', 'pending', 'skipped']) {
+    expect(failures, tag, Number.isInteger(releaseChecks[key]) && releaseChecks[key] >= 0,
+      `releaseChecks ${key} must be a non-negative integer`);
+  }
+  const counted = Number(releaseChecks.success ?? -1) + Number(releaseChecks.failure ?? -1) +
+    Number(releaseChecks.pending ?? -1) + Number(releaseChecks.skipped ?? -1);
+  expect(failures, tag, counted === releaseChecks.total,
+    `releaseChecks counted contexts (${counted}) must equal total (${releaseChecks.total})`);
+  expect(failures, tag, Array.isArray(releaseChecks.contexts),
+    'releaseChecks contexts must be an array');
+}
+
+function verifyArtifactVerificationGate({ failures, tag, artifactVerification }) {
+  expect(failures, tag, isObject(artifactVerification), 'artifactVerification must be an object');
+  if (!isObject(artifactVerification)) return;
+  expect(failures, tag, artifactVerification.schemaVersion === artifactVerificationSchemaVersion,
+    `artifactVerification schemaVersion (${artifactVerification.schemaVersion}) must equal ${artifactVerificationSchemaVersion}`);
+  expect(failures, tag, typeof artifactVerification.verified === 'boolean',
+    'artifactVerification verified must be boolean');
+  if (artifactVerification.releaseShaMatches != null) {
+    expect(failures, tag, typeof artifactVerification.releaseShaMatches === 'boolean',
+      'artifactVerification releaseShaMatches must be boolean or null');
+  }
+  expect(failures, tag, typeof artifactVerification.ciReportVerified === 'boolean',
+    'artifactVerification ciReportVerified must be boolean');
+  expect(failures, tag, typeof artifactVerification.releaseValidationVerified === 'boolean',
+    'artifactVerification releaseValidationVerified must be boolean');
 }
 
 function verifyClosedClassificationPromptVersion({ failures, tag, closed, audit }) {
@@ -927,6 +966,16 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     }
     expect(failures, release.tag, review.local?.issueEvidence?.schemaVersion === issueEvidenceSchemaVersion,
       `review issueEvidence schemaVersion (${review.local?.issueEvidence?.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
+    verifyReleaseChecksGate({
+      failures,
+      tag: release.tag,
+      releaseChecks: review.local?.gateEvidence?.releaseChecks,
+    });
+    verifyArtifactVerificationGate({
+      failures,
+      tag: release.tag,
+      artifactVerification: review.local?.gateEvidence?.artifactVerification,
+    });
     if (publicRelease) {
       expect(failures, release.tag, publicRelease.band === review.local?.band,
         `public band (${publicRelease.band}) must match review band (${review.local?.band})`);
