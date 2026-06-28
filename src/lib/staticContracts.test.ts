@@ -174,11 +174,29 @@ describe('static scoring/UI contracts', () => {
 
   it('legacy fix provenance ingestion runs the full proof pipeline', () => {
     const script = readFileSync(join(root, 'scripts/ingest-fix-provenance.mjs'), 'utf8');
+    assert.match(script, /releaseTagArg/);
+    assert.match(script, /await import\('\.\.\/src\/lib\/closureProofAnalysis\.ts'\)/);
     assert.match(script, /refreshClosureEvidenceForRelease/);
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
     assert.doesNotMatch(script, /listIssueFixEvidenceBatch/);
     assert.doesNotMatch(script, /upsertIssueClosureEvent/);
+  });
+
+  it('single-release proof scripts validate release tags before loading DB writers', () => {
+    const helper = readFileSync(join(root, 'scripts/lib/release-tag-arg.mjs'), 'utf8');
+    assert.match(helper, /--help/);
+    assert.match(helper, /startsWith\('-'\)/);
+    for (const file of [
+      'scripts/analyze-closure-proofs.mjs',
+      'scripts/ingest-fix-provenance.mjs',
+      'scripts/check-release-pr-reachability.mjs',
+    ]) {
+      const script = readFileSync(join(root, file), 'utf8');
+      assert.match(script, /releaseTagArg\(process\.argv\.slice\(2\)/, `${file} must validate args first`);
+      assert.doesNotMatch(script, /^import \{ .* \} from '\.\.\/src\/lib\//m, `${file} must not statically import DB/network modules`);
+      assert.match(script, /await import\('\.\.\/src\/lib\//, `${file} should dynamically import DB/network modules after validation`);
+    }
   });
 
   it('closed-window backfill classifies raw closed gaps and reruns proof pipeline', () => {
