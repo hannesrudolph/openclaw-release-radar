@@ -21,6 +21,7 @@
     "verify:release-audit": "tsx scripts/verify-release-audit-invariants.mjs",
     "verify:score": "tsx scripts/verify-new-scoring.mjs --check",
     "ui:smoke": "tsx scripts/ui-smoke.mjs",
+    "backfill:closed-windows": "tsx scripts/backfill-closed-windows.mjs",
     "import:public-snapshot": "tsx scripts/import-public-snapshot.mjs"
   },
   "engines": {

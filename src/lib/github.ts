@@ -333,11 +333,22 @@ function retryDelayMs(attempt: number, res?: Response): number {
 
 async function gh<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   for (let attempt = 0; ; attempt++) {
-    const res = await fetch(API, {
-      method: 'POST',
-      headers: headers(),
-      body: JSON.stringify({ query, variables }),
-    });
+    let res: Response;
+    try {
+      res = await fetch(API, {
+        method: 'POST',
+        headers: headers(),
+        body: JSON.stringify({ query, variables }),
+      });
+    } catch (e) {
+      if (attempt < 8) {
+        const delay = retryDelayMs(attempt);
+        console.warn(`[github] network error; retrying in ${Math.round(delay / 1000)}s: ${(e as Error).message}`);
+        await sleep(delay);
+        continue;
+      }
+      throw e;
+    }
     const body = await res.text();
     if (!res.ok) {
       const retryable = res.status === 403 || res.status === 429 || res.status >= 500;
@@ -570,6 +581,53 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
     if (!connection.pageInfo.hasNextPage || !connection.pageInfo.endCursor) return;
     after = connection.pageInfo.endCursor;
   }
+}
+
+export async function listIssuesBatch(issueNumbers: number[]): Promise<Map<number, GhIssue>> {
+  const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n) && n > 0);
+  const all = new Map<number, GhIssue>();
+  const batchSize = 25;
+  for (let offset = 0; offset < uniqueIssueNumbers.length; offset += batchSize) {
+    const chunk = uniqueIssueNumbers.slice(offset, offset + batchSize);
+    const data = await gh<{ repository: Record<string, IssueNode | null> | null }>(
+      buildIssuesBatchQuery(chunk.length),
+      repoVars(Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
+    );
+    const repo = assertRepo(data.repository);
+    for (let idx = 0; idx < chunk.length; idx++) {
+      const node = repo[`issue${idx}`];
+      if (node?.number) all.set(node.number, mapIssue(node));
+    }
+  }
+  return all;
+}
+
+function buildIssuesBatchQuery(size: number): string {
+  const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
+  const fields = Array.from({ length: size }, (_, idx) => `
+    issue${idx}: issue(number: $number${idx}) {
+      number
+      title
+      body
+      state
+      author { login }
+      authorAssociation
+      createdAt
+      updatedAt
+      closedAt
+      url
+      comments { totalCount }
+      reactionGroups {
+        content
+        reactors { totalCount }
+      }
+      labels(first: 100) { nodes { name } }
+    }`).join('\n');
+  return `query IssuesByNumber($owner: String!, $repo: String!, ${vars}) {
+    repository(owner: $owner, name: $repo) {
+      ${fields}
+    }
+  }`;
 }
 
 export async function listIssueComments(issueNumber: number): Promise<GhComment[]> {
@@ -1299,6 +1357,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 
 export const __githubTest = {
   buildReleaseCommitQuery,
+  buildIssuesBatchQuery,
   buildIssueFixEvidenceBatchQuery,
   buildIssueClosedByPrRefsQuery,
   buildIssueFixTimelineQuery,

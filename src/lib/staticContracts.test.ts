@@ -115,6 +115,18 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(script, /upsertIssueClosureEvent/);
   });
 
+  it('closed-window backfill classifies raw closed gaps and reruns proof pipeline', () => {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+    const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
+    assert.equal(pkg.scripts['backfill:closed-windows'], 'tsx scripts/backfill-closed-windows.mjs');
+    assert.match(script, /listIssuesBatch/);
+    assert.match(script, /classifyIssue/);
+    assert.match(script, /refreshClosureEvidenceForRelease/);
+    assert.match(script, /checkReleasePrReachability/);
+    assert.match(script, /analyzeClosureProofsForRelease/);
+    assert.match(script, /persistReleaseScoreRun/);
+  });
+
   it('closure proof analysis checks direct commit closers for release reachability', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
     assert.match(analysis, /direct_closer_commits/);

@@ -206,6 +206,7 @@ npm run verify:score
 npm run verify:release-audit
 npm run ui:smoke
 npm run analyze:closure-proofs -- v2026.6.10
+npm run backfill:closed-windows -- --all
 npm start
 ```
 
@@ -216,6 +217,8 @@ npm start
 `npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency for every scored stable release.
 
 `npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts for every scored stable release.
+
+`npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit.
 
 `npm run dev` runs TypeScript directly with watch mode.
 
