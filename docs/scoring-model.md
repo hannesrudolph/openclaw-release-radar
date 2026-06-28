@@ -130,6 +130,11 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_to_fixed_after_release`: closure moved the report to a canonical issue whose fix proof is not reachable from this release tag, including terminal canonical proof found in a later release audit.
 - `superseded_to_open_pr`: trusted close-time closure context moved the report to a referenced PR that remains open and unmerged.
 - `duplicate_with_open_pr_context`: the issue is closed as duplicate/superseded and related open PR references exist, but no trusted close-time closure note marks those PRs as canonical.
+- `duplicate_related_closed_unmerged_pr_context`: the issue is closed as duplicate/superseded and related PR context exists, but the referenced PRs closed without merging.
+- `duplicate_related_merged_pr_not_reachable_context`: the issue is closed as duplicate/superseded and related merged PR work exists, but that PR is not reachable from this release tag.
+- `duplicate_related_merged_pr_reachable_context_without_fix_credit`: the issue is closed as duplicate/superseded and related PR work is reachable from this release tag, but no trusted closing/fix proof is credited for this issue.
+- `duplicate_related_merged_pr_reachability_unknown`: the issue is closed as duplicate/superseded and related merged PR work exists, but release-tag reachability is unknown.
+- `duplicate_related_pr_without_release_fix`: the issue is closed as duplicate/superseded and related PR references exist, but none is trusted release-fix proof for this issue.
 - `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
@@ -179,6 +184,11 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `non_bug_duplicate_to_fixed_after_release`: non-negative duplicate/superseded item points to canonical fix proof that is not reachable from this release tag.
 - `non_bug_superseded_to_open_pr`: non-negative duplicate/superseded item points to an open, unmerged PR.
 - `non_bug_duplicate_with_open_pr_context`: non-negative duplicate/superseded item has related open PR context that is not marked canonical.
+- `non_bug_duplicate_related_closed_unmerged_pr_context`: non-negative duplicate/superseded item has related PR context that closed without merging.
+- `non_bug_duplicate_related_merged_pr_not_reachable_context`: non-negative duplicate/superseded item has related merged PR context that is not reachable from this release tag.
+- `non_bug_duplicate_related_merged_pr_reachable_context_without_fix_credit`: non-negative duplicate/superseded item has related reachable PR context but no direct fix credit.
+- `non_bug_duplicate_related_merged_pr_reachability_unknown`: non-negative duplicate/superseded item has related merged PR context with unknown release reachability.
+- `non_bug_duplicate_related_pr_without_release_fix`: non-negative duplicate/superseded item has related PR references that are not release-fix proof.
 - `non_bug_duplicate_or_superseded`: non-negative item was closed as duplicate/superseded, but no canonical issue or PR target was resolved.
 - `non_bug_not_actionable`: non-negative item was closed with concrete non-actionable, out-of-scope, or out-of-repository rationale.
 - `non_bug_neutral`: closed item is not negative bug evidence.

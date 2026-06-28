@@ -269,6 +269,26 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           evidence.relatedOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
           `duplicate_with_open_pr_context issue #${row.issue_number} must include related open PR evidence`);
       }
+      if (row.status === 'duplicate_related_closed_unmerged_pr_context') {
+        expect(failures, tag, relatedPrContext(evidence).closedUnmerged.length > 0,
+          `duplicate_related_closed_unmerged_pr_context issue #${row.issue_number} must include closed-unmerged related PR context`);
+      }
+      if (row.status === 'duplicate_related_merged_pr_not_reachable_context') {
+        expect(failures, tag, relatedPrContext(evidence).notReachable.length > 0,
+          `duplicate_related_merged_pr_not_reachable_context issue #${row.issue_number} must include not-reachable related PR context`);
+      }
+      if (row.status === 'duplicate_related_merged_pr_reachable_context_without_fix_credit') {
+        expect(failures, tag, relatedPrContext(evidence).reachable.length > 0,
+          `duplicate_related_merged_pr_reachable_context_without_fix_credit issue #${row.issue_number} must include reachable related PR context`);
+      }
+      if (row.status === 'duplicate_related_merged_pr_reachability_unknown') {
+        expect(failures, tag, relatedPrContext(evidence).unknownReachability.length > 0,
+          `duplicate_related_merged_pr_reachability_unknown issue #${row.issue_number} must include unknown-reachability related PR context`);
+      }
+      if (row.status === 'duplicate_related_pr_without_release_fix') {
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) && evidence.linkedPrs.length > 0,
+          `duplicate_related_pr_without_release_fix issue #${row.issue_number} must include linked PR context`);
+      }
       if (row.status === 'duplicate_to_closed_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
@@ -537,6 +557,31 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Array.isArray(evidence.relatedOpenPrs) &&
           evidence.relatedOpenPrs.some((pr) => String(pr?.state ?? '').toUpperCase() === 'OPEN' && Number(pr?.merged ?? 0) === 0),
           `non_bug_duplicate_with_open_pr_context issue #${row.issue_number} must include related open PR evidence`);
+      }
+      if (row.status === 'non_bug_duplicate_related_closed_unmerged_pr_context') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, relatedPrContext(evidence).closedUnmerged.length > 0,
+          `non_bug_duplicate_related_closed_unmerged_pr_context issue #${row.issue_number} must include closed-unmerged related PR context`);
+      }
+      if (row.status === 'non_bug_duplicate_related_merged_pr_not_reachable_context') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, relatedPrContext(evidence).notReachable.length > 0,
+          `non_bug_duplicate_related_merged_pr_not_reachable_context issue #${row.issue_number} must include not-reachable related PR context`);
+      }
+      if (row.status === 'non_bug_duplicate_related_merged_pr_reachable_context_without_fix_credit') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, relatedPrContext(evidence).reachable.length > 0,
+          `non_bug_duplicate_related_merged_pr_reachable_context_without_fix_credit issue #${row.issue_number} must include reachable related PR context`);
+      }
+      if (row.status === 'non_bug_duplicate_related_merged_pr_reachability_unknown') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, relatedPrContext(evidence).unknownReachability.length > 0,
+          `non_bug_duplicate_related_merged_pr_reachability_unknown issue #${row.issue_number} must include unknown-reachability related PR context`);
+      }
+      if (row.status === 'non_bug_duplicate_related_pr_without_release_fix') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, Array.isArray(evidence.linkedPrs) && evidence.linkedPrs.length > 0,
+          `non_bug_duplicate_related_pr_without_release_fix issue #${row.issue_number} must include linked PR context`);
       }
       if (row.status === 'non_bug_duplicate_or_superseded') {
         expectNonNegativeProof({ failures, tag, row });

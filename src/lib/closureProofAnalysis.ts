@@ -889,6 +889,9 @@ function adjustCanonicalDuplicateStatus(
       evidence: { ...nextEvidence, relatedOpenPrs: prContext.related },
     };
   }
+  const relatedContext = relatedPrContextFromPayload(evidence);
+  const relatedPrStatus = duplicateRelatedPrContextStatus(nonBugDuplicate, relatedContext, nextEvidence);
+  if (relatedPrStatus) return relatedPrStatus;
   if (resolution.terminalIssue?.state === 'closed') {
     if (!terminalProof || terminalProof.status === 'no_timeline_event' || terminalProof.status === 'unknown') {
       return {
@@ -909,6 +912,65 @@ function adjustCanonicalDuplicateStatus(
     };
   }
   return { ...result, evidence: nextEvidence };
+}
+
+function duplicateRelatedPrContextStatus(
+  nonBugDuplicate: boolean,
+  context: RelatedPrContext,
+  evidence: Record<string, unknown>,
+): ClosureProofResult | null {
+  const prefix = nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded';
+  if (context.reachable.length > 0) {
+    return {
+      status: nonBugDuplicate
+        ? 'non_bug_duplicate_related_merged_pr_reachable_context_without_fix_credit'
+        : 'duplicate_related_merged_pr_reachable_context_without_fix_credit',
+      summary: `${prefix}; related PR work is reachable from this release tag, but no trusted closing or fix proof is credited for this issue.`,
+      evidence,
+    };
+  }
+  if (context.notReachable.length > 0) {
+    return {
+      status: nonBugDuplicate
+        ? 'non_bug_duplicate_related_merged_pr_not_reachable_context'
+        : 'duplicate_related_merged_pr_not_reachable_context',
+      summary: `${prefix}; related merged PR work exists, but it is not reachable from this release tag.`,
+      evidence,
+    };
+  }
+  if (context.unknownReachability.length > 0) {
+    return {
+      status: nonBugDuplicate
+        ? 'non_bug_duplicate_related_merged_pr_reachability_unknown'
+        : 'duplicate_related_merged_pr_reachability_unknown',
+      summary: `${prefix}; related merged PR work exists, but release-tag reachability has not been proven.`,
+      evidence,
+    };
+  }
+  if (context.closedUnmerged.length > 0) {
+    return {
+      status: nonBugDuplicate
+        ? 'non_bug_duplicate_related_closed_unmerged_pr_context'
+        : 'duplicate_related_closed_unmerged_pr_context',
+      summary: `${prefix}; related PR context exists, but the referenced PRs closed without merging.`,
+      evidence,
+    };
+  }
+  const hasRelatedPrs = context.externalClosing.length > 0 ||
+    context.open.length > 0 ||
+    context.closedUnmerged.length > 0 ||
+    context.notReachable.length > 0 ||
+    context.reachable.length > 0 ||
+    context.unknownReachability.length > 0;
+  return hasRelatedPrs
+    ? {
+      status: nonBugDuplicate
+        ? 'non_bug_duplicate_related_pr_without_release_fix'
+        : 'duplicate_related_pr_without_release_fix',
+      summary: `${prefix}; related PR references exist, but none is credited as trusted release-fix proof for this issue.`,
+      evidence,
+    }
+    : null;
 }
 
 function openIssueInCanonicalPath(
