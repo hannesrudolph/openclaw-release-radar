@@ -580,16 +580,19 @@ function verifyProofFreshness({ failures, tag, proofRows, audit }) {
 
 function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence }) {
   for (const pr of prEvidence) {
+    const prLabel = `${pr.pr_repository_name_with_owner ?? 'unknown-repo'}#${pr.pr_number}`;
+    expect(failures, tag, typeof pr.pr_repository_name_with_owner === 'string' && pr.pr_repository_name_with_owner.includes('/'),
+      `proof issue #${row.issue_number} PR #${pr.pr_number} reachability evidence must include repository identity`);
     expect(failures, tag, ['reachable', 'not_reachable', 'unknown'].includes(pr.status),
-      `proof issue #${row.issue_number} PR #${pr.pr_number} reachability status ${pr.status} must be known`);
+      `proof issue #${row.issue_number} PR ${prLabel} reachability status ${pr.status} must be known`);
     if (pr.release_tag_commit_oid != null) {
       expect(failures, tag, pr.tag_commit_oid === pr.release_tag_commit_oid,
-        `proof issue #${row.issue_number} PR #${pr.pr_number} reachability tag commit (${pr.tag_commit_oid}) must match release commit (${pr.release_tag_commit_oid})`);
+        `proof issue #${row.issue_number} PR ${prLabel} reachability tag commit (${pr.tag_commit_oid}) must match release commit (${pr.release_tag_commit_oid})`);
     }
     if (pr.status === 'unknown') {
       const prReachabilityEvidence = parseJson(pr.evidence_json, {});
       expect(failures, tag, typeof prReachabilityEvidence.evidence === 'string' && prReachabilityEvidence.evidence.length > 0,
-        `proof issue #${row.issue_number} PR #${pr.pr_number} unknown reachability must include evidence reason`);
+        `proof issue #${row.issue_number} PR ${prLabel} unknown reachability must include evidence reason`);
     }
   }
   if (evidence.hasReachableClosingPr === true) {

@@ -141,6 +141,9 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 95532,
+        prRepositoryOwner: 'openclaw',
+        prRepositoryName: 'openclaw',
+        prRepositoryNameWithOwner: 'openclaw/openclaw',
         source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-24T10:00:00Z',
         author: 'clawsweeper',
@@ -150,6 +153,9 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 95900,
+        prRepositoryOwner: 'openclaw',
+        prRepositoryName: 'openclaw',
+        prRepositoryNameWithOwner: 'openclaw/openclaw',
         source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-25T15:05:01Z',
         author: 'obviyus',
@@ -159,6 +165,9 @@ describe('GitHub GraphQL mapping', () => {
       {
         issueNumber: 9000,
         prNumber: 96040,
+        prRepositoryOwner: 'openclaw',
+        prRepositoryName: 'openclaw',
+        prRepositoryNameWithOwner: 'openclaw/openclaw',
         source: 'ClosureComment.fixProof',
         referencedAt: '2026-06-24T13:00:00Z',
         author: 'maintainer',
@@ -187,6 +196,31 @@ describe('GitHub GraphQL mapping', () => {
     assert.deepEqual(mentions, [{
       issueNumber: 97322,
       prNumber: 85651,
+      prRepositoryOwner: 'openclaw',
+      prRepositoryName: 'openclaw',
+      prRepositoryNameWithOwner: 'openclaw/openclaw',
+      source: 'ClosureComment.prMention',
+      referencedAt: '2026-06-27T20:23:27Z',
+      author: 'clawsweeper',
+      authorAssociation: 'CONTRIBUTOR',
+      trustedSource: true,
+    }]);
+  });
+
+  it('preserves repository identity from trusted cross-repo PR URLs', () => {
+    const mentions = __githubTest.closureCommentPrMentions(101, [{
+      body: 'Close as superseded: Canonical path: Open PR https://github.com/openclaw/clownfish/pull/147 owns the external adapter work.',
+      created_at: '2026-06-27T20:23:27Z',
+      user: { login: 'clawsweeper' },
+      author_association: 'CONTRIBUTOR',
+    }]);
+
+    assert.deepEqual(mentions, [{
+      issueNumber: 101,
+      prNumber: 147,
+      prRepositoryOwner: 'openclaw',
+      prRepositoryName: 'clownfish',
+      prRepositoryNameWithOwner: 'openclaw/clownfish',
       source: 'ClosureComment.prMention',
       referencedAt: '2026-06-27T20:23:27Z',
       author: 'clawsweeper',
@@ -272,6 +306,7 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /\$number1: Int!/);
     assert.match(query, /pr0: pullRequest\(number: \$number0\)/);
     assert.match(query, /pr1: pullRequest\(number: \$number1\)/);
+    assert.match(query, /repository \{ name nameWithOwner url owner \{ login \} \}/);
     assert.match(query, /mergeCommit \{ oid \}/);
   });
 
@@ -281,6 +316,7 @@ describe('GitHub GraphQL mapping', () => {
     const timeline = __githubTest.buildIssueFixTimelineQuery();
 
     assert.match(batch, /closedByPullRequestsReferences\(first: 100, includeClosedPrs: true\)/);
+    assert.match(batch, /repository \{ name nameWithOwner url owner \{ login \} \}/);
     assert.match(batch, /timelineItems\(first: 100, itemTypes: \[CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT\]\)/);
     assert.match(batch, /\.\.\. on ReopenedEvent \{\s*id createdAt actor \{ login \}\s*\}/);
     assert.match(batch, /\.\.\. on ReferencedEvent \{\s*id createdAt isCrossRepository isDirectReference actor \{ login \}/);

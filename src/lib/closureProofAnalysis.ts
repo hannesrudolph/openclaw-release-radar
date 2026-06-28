@@ -2,7 +2,7 @@ import { config } from '../config';
 import { db, deleteIssueClosureProofsForRelease, deleteIssuePrLinksForIssues, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { creditedFixLinkSql } from './fixProvenance';
-import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, type ClosureCommentCommitMention, type GhComment } from './github';
+import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, pullRequestKey, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { checkReleaseCommitReachability, type CommitReachability } from './releaseReachability';
 
@@ -18,6 +18,8 @@ export interface ClosureProofAnalysisResult {
     commitReferences: number;
   };
 }
+
+const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
 
 const closedIssueRowsStmt = db.prepare(`
 WITH target AS (
@@ -82,35 +84,40 @@ SELECT
   GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
   GROUP_CONCAT(DISTINCT e.closed_at) AS closure_event_closed_at,
   COUNT(DISTINCT e.event_id) AS closure_events,
-  COUNT(DISTINCT CASE
-    WHEN e.state_reason='COMPLETED'
-     AND ${creditedFixLinkSql('l')}
-    THEN l.pr_number END
+    COUNT(DISTINCT CASE
+      WHEN e.state_reason='COMPLETED'
+       AND ${creditedFixLinkSql('l')}
+       AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+      THEN l.pr_repository_name_with_owner || '#' || l.pr_number END
   ) AS closing_links,
   COUNT(DISTINCT CASE
-    WHEN e.state_reason='COMPLETED'
-     AND ${creditedFixLinkSql('l')}
-     AND p.merged=1
-    THEN p.pr_number END
+      WHEN e.state_reason='COMPLETED'
+       AND ${creditedFixLinkSql('l')}
+       AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+       AND p.merged=1
+      THEN p.pr_repository_name_with_owner || '#' || p.pr_number END
   ) AS merged_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN e.state_reason='COMPLETED'
-     AND ${creditedFixLinkSql('l')}
-     AND p.merged=1
-     AND rpr.status='reachable'
-    THEN p.pr_number END
+      WHEN e.state_reason='COMPLETED'
+       AND ${creditedFixLinkSql('l')}
+       AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+       AND p.merged=1
+       AND rpr.status='reachable'
+      THEN p.pr_repository_name_with_owner || '#' || p.pr_number END
   ) AS reachable_closing_prs,
   COUNT(DISTINCT CASE
-    WHEN e.state_reason='COMPLETED'
-     AND ${creditedFixLinkSql('l')}
-     AND p.merged=1
-     AND rpr.status='not_reachable'
-    THEN p.pr_number END
+      WHEN e.state_reason='COMPLETED'
+       AND ${creditedFixLinkSql('l')}
+       AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+       AND p.merged=1
+       AND rpr.status='not_reachable'
+      THEN p.pr_repository_name_with_owner || '#' || p.pr_number END
   ) AS not_reachable_closing_prs,
   GROUP_CONCAT(DISTINCT CASE
-    WHEN e.state_reason='COMPLETED'
-     AND ${creditedFixLinkSql('l')}
-    THEN p.pr_number || ':' || COALESCE(p.title, '')
+      WHEN e.state_reason='COMPLETED'
+       AND ${creditedFixLinkSql('l')}
+       AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+      THEN p.pr_repository_name_with_owner || '#' || p.pr_number || ':' || COALESCE(p.title, '')
     END
   ) AS closing_prs,
   GROUP_CONCAT(DISTINCT CASE
@@ -121,9 +128,12 @@ SELECT
     END
   ) AS direct_closer_commits,
   (
-    SELECT COALESCE(json_group_array(json_object(
-      'number', linked.pr_number,
-      'source', linked.source,
+      SELECT COALESCE(json_group_array(json_object(
+        'number', linked.pr_number,
+        'repositoryOwner', linked.pr_repository_owner,
+        'repositoryName', linked.pr_repository_name,
+        'repositoryNameWithOwner', linked.pr_repository_name_with_owner,
+        'source', linked.source,
       'willCloseTarget', linked.will_close_target,
       'referencedAt', linked.referenced_at,
       'title', linked.title,
@@ -133,8 +143,11 @@ SELECT
       'mergedAt', linked.merged_at
     )), '[]')
     FROM (
-      SELECT DISTINCT
-        l2.pr_number,
+        SELECT DISTINCT
+          l2.pr_repository_owner,
+          l2.pr_repository_name,
+          l2.pr_repository_name_with_owner,
+          l2.pr_number,
         l2.source,
         l2.will_close_target,
         l2.referenced_at,
@@ -144,9 +157,9 @@ SELECT
         p2.merged,
         p2.merged_at
       FROM issue_pr_links l2
-      LEFT JOIN pull_request_fixes p2 ON p2.pr_number=l2.pr_number
+        LEFT JOIN pull_request_fixes p2 ON p2.pr_repository_name_with_owner=l2.pr_repository_name_with_owner AND p2.pr_number=l2.pr_number
       WHERE l2.issue_number=i.number
-      ORDER BY CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END, l2.pr_number
+        ORDER BY CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END, l2.pr_repository_name_with_owner, l2.pr_number
     ) linked
   ) AS linked_prs_json
 FROM selected
@@ -154,8 +167,8 @@ JOIN issues i ON i.number=selected.issue_number
 LEFT JOIN classifications c ON c.issue_number=i.number
 LEFT JOIN window_closure e ON e.issue_number=i.number
 LEFT JOIN issue_pr_links l ON l.issue_number=i.number
-LEFT JOIN pull_request_fixes p ON p.pr_number=l.pr_number
-LEFT JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_number=l.pr_number
+  LEFT JOIN pull_request_fixes p ON p.pr_repository_name_with_owner=l.pr_repository_name_with_owner AND p.pr_number=l.pr_number
+  LEFT JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_repository_name_with_owner=l.pr_repository_name_with_owner AND rpr.pr_number=l.pr_number
 GROUP BY i.number
 ORDER BY i.closed_at DESC
 `);
@@ -745,10 +758,10 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
       (SELECT COUNT(*)
        FROM issue_pr_links l
        JOIN selected s ON s.issue_number=l.issue_number) AS prLinks,
-      (SELECT COUNT(DISTINCT p.pr_number)
-       FROM pull_request_fixes p
-       JOIN issue_pr_links l ON l.pr_number=p.pr_number
-       JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests,
+        (SELECT COUNT(DISTINCT p.pr_repository_name_with_owner || '#' || p.pr_number)
+         FROM pull_request_fixes p
+         JOIN issue_pr_links l ON l.pr_repository_name_with_owner=p.pr_repository_name_with_owner AND l.pr_number=p.pr_number
+         JOIN selected s ON s.issue_number=l.issue_number) AS pullRequests,
       (SELECT COUNT(DISTINCT c.event_id)
        FROM issue_commit_references c
        JOIN selected s ON s.issue_number=c.issue_number) AS commitReferences
@@ -806,10 +819,13 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         reopenEvents++;
       }
-      for (const link of item.prLinks) {
-        upsertIssuePrLink({
-          issue_number: link.issueNumber,
-          pr_number: link.prNumber,
+        for (const link of item.prLinks) {
+          upsertIssuePrLink({
+            issue_number: link.issueNumber,
+            pr_repository_owner: link.prRepositoryOwner,
+            pr_repository_name: link.prRepositoryName,
+            pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
+            pr_number: link.prNumber,
           source: link.source,
           will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
           referenced_at: link.referencedAt,
@@ -833,9 +849,12 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         commitReferences++;
       }
-      for (const pr of item.pullRequests) {
-        upsertPullRequestFix({
-          pr_number: pr.number,
+        for (const pr of item.pullRequests) {
+          upsertPullRequestFix({
+            pr_repository_owner: pr.repositoryOwner,
+            pr_repository_name: pr.repositoryName,
+            pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+            pr_number: pr.number,
           title: pr.title,
           url: pr.url,
           state: pr.state,
@@ -850,20 +869,31 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
     const commentMentions = chunk.flatMap((issueNumber) =>
       closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
     );
-    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => mention.prNumber));
-    for (const mention of commentMentions) {
-      const pr = mentionedPrs.get(mention.prNumber);
-      if (!pr) continue;
-      upsertIssuePrLink({
-        issue_number: mention.issueNumber,
-        pr_number: mention.prNumber,
+      const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
+        prNumber: mention.prNumber,
+        prRepositoryOwner: mention.prRepositoryOwner,
+        prRepositoryName: mention.prRepositoryName,
+        prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+      })));
+      for (const mention of commentMentions) {
+        const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
+        if (!pr) continue;
+        upsertIssuePrLink({
+          issue_number: mention.issueNumber,
+          pr_repository_owner: mention.prRepositoryOwner,
+          pr_repository_name: mention.prRepositoryName,
+          pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
+          pr_number: mention.prNumber,
         source: mention.source,
         will_close_target: null,
         referenced_at: mention.referencedAt,
       });
       prLinks++;
-      upsertPullRequestFix({
-        pr_number: pr.number,
+        upsertPullRequestFix({
+          pr_repository_owner: pr.repositoryOwner,
+          pr_repository_name: pr.repositoryName,
+          pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+          pr_number: pr.number,
         title: pr.title,
         url: pr.url,
         state: pr.state,

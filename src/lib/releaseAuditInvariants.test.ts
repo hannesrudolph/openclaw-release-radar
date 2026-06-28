@@ -107,6 +107,7 @@ function reader(overrides: Partial<{
     }],
     prEvidence: [{
       issue_number: 1,
+      pr_repository_name_with_owner: 'openclaw/openclaw',
       pr_number: 1,
       merged: 1,
       status: 'reachable',
@@ -512,6 +513,7 @@ describe('verifyReleaseAudit', () => {
         }],
         prEvidence: [{
           issue_number: 1,
+          pr_repository_name_with_owner: 'openclaw/openclaw',
           pr_number: 1,
           merged: 1,
           status: 'unknown',

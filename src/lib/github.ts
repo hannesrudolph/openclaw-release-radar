@@ -169,6 +169,10 @@ export interface GhReleaseCheckContext {
 
 export interface GhPullRequestFix {
   number: number;
+  repositoryOwner: string | null;
+  repositoryName: string | null;
+  repositoryNameWithOwner: string | null;
+  repositoryUrl: string | null;
   title: string | null;
   url: string | null;
   state: string | null;
@@ -201,6 +205,9 @@ export interface GhIssueReopenEvent {
 export interface GhIssuePrLink {
   issueNumber: number;
   prNumber: number;
+  prRepositoryOwner: string | null;
+  prRepositoryName: string | null;
+  prRepositoryNameWithOwner: string | null;
   source: string;
   willCloseTarget: boolean | null;
   referencedAt: string | null;
@@ -242,6 +249,9 @@ export interface GhIssueFixEvidence {
 export interface ClosureCommentPrMention {
   issueNumber: number;
   prNumber: number;
+  prRepositoryOwner: string | null;
+  prRepositoryName: string | null;
+  prRepositoryNameWithOwner: string | null;
   source: typeof CLOSURE_COMMENT_FIX_PROOF_SOURCE | typeof CLOSURE_COMMENT_PR_MENTION_SOURCE;
   referencedAt: string | null;
   author: string | null;
@@ -1002,9 +1012,13 @@ function appendClosedByPullRequestReferences(
 ): void {
   for (const pr of nodes) {
     if (!pr?.number) continue;
+    const repo = prRepositoryIdentityFromPullRequest(pr);
     evidence.prLinks.push({
       issueNumber,
       prNumber: pr.number,
+      prRepositoryOwner: repo.owner,
+      prRepositoryName: repo.name,
+      prRepositoryNameWithOwner: repo.nameWithOwner,
       source: 'closedByPullRequestsReferences',
       willCloseTarget: true,
       referencedAt: pr.mergedAt ?? null,
@@ -1034,9 +1048,13 @@ function appendFixTimelineNodes(
         raw: node,
       });
       if (closer?.__typename === 'PullRequest' && typeof closer.number === 'number') {
+        const repo = prRepositoryIdentityFromPullRequest(closer);
         evidence.prLinks.push({
           issueNumber,
           prNumber: closer.number,
+          prRepositoryOwner: repo.owner,
+          prRepositoryName: repo.name,
+          prRepositoryNameWithOwner: repo.nameWithOwner,
           source: 'ClosedEvent.closer',
           willCloseTarget: true,
           referencedAt: node.createdAt ?? null,
@@ -1054,9 +1072,13 @@ function appendFixTimelineNodes(
     } else if (node.__typename === 'CrossReferencedEvent') {
       const source = node.source;
       if (source?.__typename === 'PullRequest' && typeof source.number === 'number') {
+        const repo = prRepositoryIdentityFromPullRequest(source);
         evidence.prLinks.push({
           issueNumber,
           prNumber: source.number,
+          prRepositoryOwner: repo.owner,
+          prRepositoryName: repo.name,
+          prRepositoryNameWithOwner: repo.nameWithOwner,
           source: 'CrossReferencedEvent',
           willCloseTarget: typeof node.willCloseTarget === 'boolean' ? node.willCloseTarget : null,
           referencedAt: node.createdAt ?? null,
@@ -1119,10 +1141,45 @@ async function appendRemainingFixTimelineNodes(
   }
 }
 
-export async function listPullRequestFixesBatch(prNumbers: number[]): Promise<Map<number, GhPullRequestFix>> {
-  const uniquePrNumbers = [...new Set(prNumbers)].filter((n) => Number.isInteger(n) && n > 0);
-  const all = new Map<number, GhPullRequestFix>();
+export interface PullRequestLookup {
+  prNumber: number;
+  prRepositoryOwner?: string | null;
+  prRepositoryName?: string | null;
+  prRepositoryNameWithOwner?: string | null;
+}
 
+export function pullRequestKey(repositoryNameWithOwner: string | null | undefined, prNumber: number): string {
+  return `${normalizePrRepositoryIdentity({ nameWithOwner: repositoryNameWithOwner }).nameWithOwner}#${prNumber}`;
+}
+
+export async function listPullRequestFixesBatch(prLookups: PullRequestLookup[]): Promise<Map<string, GhPullRequestFix>> {
+  const byRepo = new Map<string, { owner: string; name: string; nameWithOwner: string; numbers: Set<number> }>();
+  for (const lookup of prLookups) {
+    if (!Number.isInteger(lookup.prNumber) || lookup.prNumber <= 0) continue;
+    const repo = normalizePrRepositoryIdentity({
+      owner: lookup.prRepositoryOwner ?? null,
+      name: lookup.prRepositoryName ?? null,
+      nameWithOwner: lookup.prRepositoryNameWithOwner ?? null,
+    });
+    const entry = byRepo.get(repo.nameWithOwner) ?? { ...repo, numbers: new Set<number>() };
+    entry.numbers.add(lookup.prNumber);
+    byRepo.set(repo.nameWithOwner, entry);
+  }
+
+  const all = new Map<string, GhPullRequestFix>();
+  for (const repo of byRepo.values()) {
+    const fetched = await listPullRequestFixesForRepo(repo, [...repo.numbers]);
+    for (const [key, pr] of fetched) all.set(key, pr);
+  }
+  return all;
+}
+
+async function listPullRequestFixesForRepo(
+  repo: { owner: string; name: string; nameWithOwner: string },
+  prNumbers: number[],
+): Promise<Map<string, GhPullRequestFix>> {
+  const uniquePrNumbers = [...new Set(prNumbers)].filter((n) => Number.isInteger(n) && n > 0);
+  const all = new Map<string, GhPullRequestFix>();
   const batchSize = 25;
   for (let offset = 0; offset < uniquePrNumbers.length; offset += batchSize) {
     const chunk = uniquePrNumbers.slice(offset, offset + batchSize);
@@ -1130,27 +1187,31 @@ export async function listPullRequestFixesBatch(prNumbers: number[]): Promise<Ma
     try {
       data = await gh<{ repository: Record<string, any> | null }>(
         buildPullRequestFixesBatchQuery(chunk.length),
-        repoVars(Object.fromEntries(chunk.map((prNumber, idx) => [`number${idx}`, prNumber]))),
+        {
+          owner: repo.owner,
+          repo: repo.name,
+          ...Object.fromEntries(chunk.map((prNumber, idx) => [`number${idx}`, prNumber])),
+        },
       );
     } catch (e) {
       if (chunk.length > 1 && isMissingPullRequestError(e)) {
-        const fallback = await listPullRequestFixesBatch(chunk.slice(0, Math.ceil(chunk.length / 2)));
-        for (const [number, pr] of fallback) all.set(number, pr);
-        const rest = await listPullRequestFixesBatch(chunk.slice(Math.ceil(chunk.length / 2)));
-        for (const [number, pr] of rest) all.set(number, pr);
+        const fallback = await listPullRequestFixesForRepo(repo, chunk.slice(0, Math.ceil(chunk.length / 2)));
+        for (const [key, pr] of fallback) all.set(key, pr);
+        const rest = await listPullRequestFixesForRepo(repo, chunk.slice(Math.ceil(chunk.length / 2)));
+        for (const [key, pr] of rest) all.set(key, pr);
         continue;
       }
       if (chunk.length === 1 && isMissingPullRequestError(e)) continue;
       throw e;
     }
-    const repo = assertRepo(data.repository);
+    const responseRepo = assertRepo(data.repository);
     for (let idx = 0; idx < chunk.length; idx++) {
-      const pr = repo[`pr${idx}`];
+      const pr = responseRepo[`pr${idx}`];
       if (!pr?.number) continue;
-      all.set(pr.number, mapPullRequestFix(pr));
+      const mapped = mapPullRequestFix(pr);
+      all.set(pullRequestKey(mapped.repositoryNameWithOwner, mapped.number), mapped);
     }
   }
-
   return all;
 }
 
@@ -1171,7 +1232,7 @@ export function closureCommentPrMentions(
     authorAssociation?: string | null;
   }>,
 ): ClosureCommentPrMention[] {
-  const byPr = new Map<number, ClosureCommentPrMention>();
+  const byPr = new Map<string, ClosureCommentPrMention>();
   for (const comment of comments) {
     const body = comment.body ?? '';
     const text = body.replace(/\s+/g, ' ');
@@ -1179,16 +1240,28 @@ export function closureCommentPrMentions(
     if (!source) continue;
     const trust = closureProofCommentTrust(comment);
     if (!trust.trustedSource) continue;
-    for (const prNumber of extractClosureCommentPrNumbers(text)) {
-      if (prNumber === issueNumber) continue;
-      const existing = byPr.get(prNumber);
+    for (const ref of extractClosureCommentPrRefs(text)) {
+      if (ref.prNumber === issueNumber && ref.prRepositoryNameWithOwner === `${config.github.owner}/${config.github.repo}`) continue;
+      const key = pullRequestKey(ref.prRepositoryNameWithOwner, ref.prNumber);
+      const existing = byPr.get(key);
       const referencedAt = comment.created_at ?? comment.createdAt ?? null;
       if (shouldReplacePrMention(existing, source, referencedAt)) {
-        byPr.set(prNumber, { issueNumber, prNumber, source, referencedAt, ...trust });
+        byPr.set(key, {
+          issueNumber,
+          prNumber: ref.prNumber,
+          prRepositoryOwner: ref.prRepositoryOwner,
+          prRepositoryName: ref.prRepositoryName,
+          prRepositoryNameWithOwner: ref.prRepositoryNameWithOwner,
+          source,
+          referencedAt,
+          ...trust,
+        });
       }
     }
   }
-  return [...byPr.values()].sort((a, b) => a.prNumber - b.prNumber);
+  return [...byPr.values()].sort((a, b) =>
+    String(a.prRepositoryNameWithOwner ?? '').localeCompare(String(b.prRepositoryNameWithOwner ?? '')) ||
+    a.prNumber - b.prNumber);
 }
 
 export function closureCommentCommitMentions(
@@ -1246,25 +1319,40 @@ function closureProofCommentTrust(comment: {
   return { author, authorAssociation, trustedSource };
 }
 
-function extractClosureCommentPrNumbers(body: string): number[] {
-  const numbers = new Set<number>();
+function extractClosureCommentPrRefs(body: string): Array<{
+  prNumber: number;
+  prRepositoryOwner: string;
+  prRepositoryName: string;
+  prRepositoryNameWithOwner: string;
+}> {
+  const refs = new Map<string, {
+    prNumber: number;
+    prRepositoryOwner: string;
+    prRepositoryName: string;
+    prRepositoryNameWithOwner: string;
+  }>();
   const text = body.replace(/\s+/g, ' ');
 
-  for (const match of text.matchAll(/https?:\/\/(?:api\.)?github\.com\/repos\/openclaw\/openclaw\/pulls?\/(\d+)|https?:\/\/github\.com\/openclaw\/openclaw\/pull\/(\d+)/gi)) {
-    addPrNumber(numbers, match[1] ?? match[2]);
+  for (const match of text.matchAll(/https?:\/\/github\.com\/([^/\s]+)\/([^/\s]+)\/pull\/(\d+)\b|https?:\/\/api\.github\.com\/repos\/([^/\s]+)\/([^/\s]+)\/pulls?\/(\d+)\b/gi)) {
+    addPrRef(refs, {
+      owner: match[1] ?? match[4],
+      name: match[2] ?? match[5],
+      number: match[3] ?? match[6],
+    });
   }
 
   const qualifiedMentionRe = /\b(?:merged\s+PR|merged\s+pull request|PR|pull request)\s*(?:that appears to have closed this:?\s*)?(?:\[)?#(\d+)\b/gi;
   for (const match of text.matchAll(qualifiedMentionRe)) {
-    addPrNumber(numbers, match[1]);
+    addPrRef(refs, { number: match[1] });
   }
 
   const fixedByIssueOrPrRefRe = /\b(?:fix(?:e[sd])?|implemented|addressed)\s+(?:on\s+`?main`?\s+)?by\s+#(\d+)\b/gi;
   for (const match of text.matchAll(fixedByIssueOrPrRefRe)) {
-    addPrNumber(numbers, match[1]);
+    addPrRef(refs, { number: match[1] });
   }
 
-  return [...numbers].sort((a, b) => a - b);
+  return [...refs.values()].sort((a, b) =>
+    a.prRepositoryNameWithOwner.localeCompare(b.prRepositoryNameWithOwner) || a.prNumber - b.prNumber);
 }
 
 function closureCommentPrMentionSource(
@@ -1332,14 +1420,14 @@ function extractCommitOids(text: string): string[] {
   return [...commits].sort();
 }
 
-function addPrNumber(numbers: Set<number>, raw: string | undefined): void {
-  const n = Number(raw);
-  if (Number.isInteger(n) && n > 0) numbers.add(n);
-}
-
 function mapPullRequestFix(pr: any): GhPullRequestFix {
+  const repo = prRepositoryIdentityFromPullRequest(pr);
   return {
     number: pr.number,
+    repositoryOwner: repo.owner,
+    repositoryName: repo.name,
+    repositoryNameWithOwner: repo.nameWithOwner,
+    repositoryUrl: pr.repository?.url ?? null,
     title: pr.title ?? null,
     url: pr.url ?? null,
     state: pr.state ?? null,
@@ -1350,15 +1438,71 @@ function mapPullRequestFix(pr: any): GhPullRequestFix {
   };
 }
 
+function addPrRef(
+  refs: Map<string, {
+    prNumber: number;
+    prRepositoryOwner: string;
+    prRepositoryName: string;
+    prRepositoryNameWithOwner: string;
+  }>,
+  input: { owner?: string | null; name?: string | null; number?: string | number | null },
+): void {
+  const prNumber = Number(input.number);
+  if (!Number.isInteger(prNumber) || prNumber <= 0) return;
+  const repo = normalizePrRepositoryIdentity({
+    owner: input.owner ?? null,
+    name: input.name ?? null,
+  });
+  refs.set(pullRequestKey(repo.nameWithOwner, prNumber), {
+    prNumber,
+    prRepositoryOwner: repo.owner,
+    prRepositoryName: repo.name,
+    prRepositoryNameWithOwner: repo.nameWithOwner,
+  });
+}
+
+function prRepositoryIdentityFromPullRequest(pr: any): { owner: string; name: string; nameWithOwner: string } {
+  return normalizePrRepositoryIdentity({
+    owner: pr.repository?.owner?.login ?? null,
+    name: pr.repository?.name ?? null,
+    nameWithOwner: pr.repository?.nameWithOwner ?? null,
+    url: pr.url ?? null,
+  });
+}
+
+function normalizePrRepositoryIdentity(input: {
+  owner?: string | null;
+  name?: string | null;
+  nameWithOwner?: string | null;
+  url?: string | null;
+}): { owner: string; name: string; nameWithOwner: string } {
+  const nameWithOwner = String(input.nameWithOwner ?? '').trim();
+  if (nameWithOwner.includes('/')) {
+    const [owner, name] = nameWithOwner.split('/', 2);
+    if (owner && name) return { owner, name, nameWithOwner: `${owner}/${name}` };
+  }
+  const owner = String(input.owner ?? '').trim();
+  const name = String(input.name ?? '').trim();
+  if (owner && name) return { owner, name, nameWithOwner: `${owner}/${name}` };
+  const urlMatch = String(input.url ?? '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+(?:[/?#].*)?$/i);
+  if (urlMatch) return { owner: urlMatch[1], name: urlMatch[2], nameWithOwner: `${urlMatch[1]}/${urlMatch[2]}` };
+  return {
+    owner: config.github.owner,
+    name: config.github.repo,
+    nameWithOwner: `${config.github.owner}/${config.github.repo}`,
+  };
+}
+
 function buildIssueFixEvidenceBatchQuery(size: number): string {
   const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
   const fields = Array.from({ length: size }, (_, idx) => `
     issue${idx}: issue(number: $number${idx}) {
-      closedByPullRequestsReferences(first: 100, includeClosedPrs: true) {
-        nodes {
-          number title url state merged mergedAt baseRefName
-          mergeCommit { oid }
-        }
+	      closedByPullRequestsReferences(first: 100, includeClosedPrs: true) {
+	        nodes {
+	          number title url state merged mergedAt baseRefName
+	          repository { name nameWithOwner url owner { login } }
+	          mergeCommit { oid }
+	        }
         pageInfo { hasNextPage endCursor }
       }
       timelineItems(first: 100, itemTypes: [CLOSED_EVENT, REOPENED_EVENT, CROSS_REFERENCED_EVENT, REFERENCED_EVENT]) {
@@ -1368,10 +1512,11 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
             id createdAt stateReason actor { login }
             closer {
               __typename
-              ... on PullRequest {
-                number title url state merged mergedAt baseRefName
-                mergeCommit { oid }
-              }
+	              ... on PullRequest {
+	                number title url state merged mergedAt baseRefName
+	                repository { name nameWithOwner url owner { login } }
+	                mergeCommit { oid }
+	              }
               ... on Commit { oid committedDate url }
             }
           }
@@ -1382,10 +1527,11 @@ function buildIssueFixEvidenceBatchQuery(size: number): string {
             id createdAt willCloseTarget
             source {
               __typename
-              ... on PullRequest {
-                number title url state merged mergedAt baseRefName
-                mergeCommit { oid }
-              }
+	              ... on PullRequest {
+	                number title url state merged mergedAt baseRefName
+	                repository { name nameWithOwner url owner { login } }
+	                mergeCommit { oid }
+	              }
             }
           }
           ... on ReferencedEvent {
@@ -1413,10 +1559,11 @@ function buildIssueClosedByPrRefsQuery(): string {
     repository(owner: $owner, name: $repo) {
       issue(number: $number) {
         closedByPullRequestsReferences(first: 100, after: $after, includeClosedPrs: true) {
-          nodes {
-            number title url state merged mergedAt baseRefName
-            mergeCommit { oid }
-          }
+	          nodes {
+	            number title url state merged mergedAt baseRefName
+	            repository { name nameWithOwner url owner { login } }
+	            mergeCommit { oid }
+	          }
           pageInfo { hasNextPage endCursor }
         }
       }
@@ -1435,10 +1582,11 @@ function buildIssueFixTimelineQuery(): string {
               id createdAt stateReason actor { login }
               closer {
                 __typename
-                ... on PullRequest {
-                  number title url state merged mergedAt baseRefName
-                  mergeCommit { oid }
-                }
+	                ... on PullRequest {
+	                  number title url state merged mergedAt baseRefName
+	                  repository { name nameWithOwner url owner { login } }
+	                  mergeCommit { oid }
+	                }
                 ... on Commit { oid committedDate url }
               }
             }
@@ -1449,10 +1597,11 @@ function buildIssueFixTimelineQuery(): string {
               id createdAt willCloseTarget
               source {
                 __typename
-                ... on PullRequest {
-                  number title url state merged mergedAt baseRefName
-                  mergeCommit { oid }
-                }
+	                ... on PullRequest {
+	                  number title url state merged mergedAt baseRefName
+	                  repository { name nameWithOwner url owner { login } }
+	                  mergeCommit { oid }
+	                }
               }
             }
             ... on ReferencedEvent {
@@ -1475,10 +1624,11 @@ function buildIssueFixTimelineQuery(): string {
 function buildPullRequestFixesBatchQuery(size: number): string {
   const vars = Array.from({ length: size }, (_, idx) => `$number${idx}: Int!`).join(', ');
   const fields = Array.from({ length: size }, (_, idx) => `
-    pr${idx}: pullRequest(number: $number${idx}) {
-      number title url state merged mergedAt baseRefName
-      mergeCommit { oid }
-    }`).join('\n');
+	    pr${idx}: pullRequest(number: $number${idx}) {
+	      number title url state merged mergedAt baseRefName
+	      repository { name nameWithOwner url owner { login } }
+	      mergeCommit { oid }
+	    }`).join('\n');
   return `query PullRequestFixes($owner: String!, $repo: String!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}

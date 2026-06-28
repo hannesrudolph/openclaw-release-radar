@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs';
 import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { config } from '../config';
 import { db, deleteReleasePrReachabilityForRelease, upsertReleasePrReachability } from './db';
 import { creditedFixLinkSql } from './fixProvenance';
 
@@ -23,21 +24,32 @@ export interface CommitReachability {
 
 const remote = process.env.OPENCLAW_REPO_URL ?? 'https://github.com/openclaw/openclaw.git';
 const repoDir = resolve('.cache/openclaw.git');
+const trackedRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
 
 const candidateStmt = db.prepare(`
-SELECT DISTINCT p.pr_number, p.merge_commit_oid, p.base_ref_name
+SELECT DISTINCT
+  p.pr_repository_owner,
+  p.pr_repository_name,
+  p.pr_repository_name_with_owner,
+  p.pr_number,
+  p.merge_commit_oid,
+  p.base_ref_name
 FROM pull_request_fixes p
-JOIN issue_pr_links l ON l.pr_number = p.pr_number
+JOIN issue_pr_links l ON l.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND l.pr_number = p.pr_number
 JOIN issue_closure_events e ON e.issue_number = l.issue_number
 WHERE e.state_reason='COMPLETED'
   AND p.merged = 1
+  AND p.pr_repository_name_with_owner = ?
   AND ${creditedFixLinkSql('l')}
 `);
 
 const releaseCommitStmt = db.prepare('SELECT tag_commit_oid FROM release_commits WHERE tag=?');
 
 export async function checkReleasePrReachability(tag: string): Promise<ReleaseReachabilityResult> {
-  const candidates = candidateStmt.all() as Array<{
+  const candidates = candidateStmt.all(trackedRepositoryNameWithOwner) as Array<{
+    pr_repository_owner: string;
+    pr_repository_name: string;
+    pr_repository_name_with_owner: string;
     pr_number: number;
     merge_commit_oid: string | null;
     base_ref_name: string | null;
@@ -52,6 +64,9 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     for (const candidate of candidates) {
       upsertReleasePrReachability({
         tag,
+        pr_repository_owner: candidate.pr_repository_owner,
+        pr_repository_name: candidate.pr_repository_name,
+        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
         pr_number: candidate.pr_number,
         tag_commit_oid: null,
         merge_commit_oid: candidate.merge_commit_oid ?? null,
@@ -74,6 +89,9 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     for (const candidate of candidates) {
       upsertReleasePrReachability({
         tag,
+        pr_repository_owner: candidate.pr_repository_owner,
+        pr_repository_name: candidate.pr_repository_name,
+        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
         pr_number: candidate.pr_number,
         tag_commit_oid: release.tag_commit_oid,
         merge_commit_oid: candidate.merge_commit_oid ?? null,
@@ -91,6 +109,9 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     if (!commit) {
       upsertReleasePrReachability({
         tag,
+        pr_repository_owner: candidate.pr_repository_owner,
+        pr_repository_name: candidate.pr_repository_name,
+        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
         pr_number: candidate.pr_number,
         tag_commit_oid: release.tag_commit_oid,
         merge_commit_oid: null,
@@ -106,6 +127,9 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     if (exists.status !== 0) {
       upsertReleasePrReachability({
         tag,
+        pr_repository_owner: candidate.pr_repository_owner,
+        pr_repository_name: candidate.pr_repository_name,
+        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
         pr_number: candidate.pr_number,
         tag_commit_oid: release.tag_commit_oid,
         merge_commit_oid: commit,
@@ -121,6 +145,9 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     const interpreted = interpretMergeBaseResult(res, 'merge_commit_in_release_history');
     upsertReleasePrReachability({
       tag,
+      pr_repository_owner: candidate.pr_repository_owner,
+      pr_repository_name: candidate.pr_repository_name,
+      pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
       pr_number: candidate.pr_number,
       tag_commit_oid: release.tag_commit_oid,
       merge_commit_oid: commit,

@@ -144,9 +144,9 @@ export class ReleaseAuditReader {
             AND EXISTS (
               SELECT 1
               FROM window_closure e
-              JOIN issue_pr_links l ON l.issue_number = e.issue_number
-              JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-              JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
+                JOIN issue_pr_links l ON l.issue_number = e.issue_number
+                JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
+                JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
               WHERE e.issue_number = i.number
                 AND e.state_reason = 'COMPLETED'
                 AND p.merged = 1
@@ -196,9 +196,9 @@ export class ReleaseAuditReader {
           UNION ALL
           SELECT 1
           FROM window_closure e
-          JOIN issue_pr_links l ON l.issue_number = e.issue_number
-          JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-          JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
+            JOIN issue_pr_links l ON l.issue_number = e.issue_number
+            JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
+            JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
           WHERE e.issue_number = i.number
             AND c.sentiment = 'negative'
             AND e.state_reason = 'COMPLETED'
@@ -285,11 +285,11 @@ export class ReleaseAuditReader {
           AND i.closed_at >= target.published_at
           AND i.closed_at < target.end_at
       ),
-      pr_universe AS (
-        SELECT DISTINCT l.pr_number
-        FROM issue_pr_links l
-        JOIN closed_universe c ON c.number=l.issue_number
-        WHERE ${CREDITED_FIX_LINK_SQL}
+        pr_universe AS (
+          SELECT DISTINCT l.pr_repository_name_with_owner, l.pr_number
+          FROM issue_pr_links l
+          JOIN closed_universe c ON c.number=l.issue_number
+          WHERE ${CREDITED_FIX_LINK_SQL}
       )
       SELECT 'release_metadata' AS source, MAX(updated_at) AS max_ts
       FROM (
@@ -320,11 +320,11 @@ export class ReleaseAuditReader {
       FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
       ${commitReferenceFreshnessSql}
       UNION ALL
-      SELECT 'pull_request_fixes', MAX(p.fetched_at)
-      FROM pull_request_fixes p JOIN pr_universe u ON u.pr_number=p.pr_number
-      UNION ALL
-      SELECT 'release_pr_reachability', MAX(r.checked_at)
-      FROM release_pr_reachability r JOIN pr_universe u ON u.pr_number=r.pr_number
+        SELECT 'pull_request_fixes', MAX(p.fetched_at)
+        FROM pull_request_fixes p JOIN pr_universe u ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner AND u.pr_number=p.pr_number
+        UNION ALL
+        SELECT 'release_pr_reachability', MAX(r.checked_at)
+        FROM release_pr_reachability r JOIN pr_universe u ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND u.pr_number=r.pr_number
       WHERE r.tag=?
     `).all(tag, tag, tag);
   }
@@ -332,8 +332,9 @@ export class ReleaseAuditReader {
   prReachabilityEvidenceForIssue(tag, issueNumber) {
     return this.db.prepare(`
       SELECT l.issue_number,
-             l.pr_number,
-             l.source,
+               l.pr_repository_name_with_owner,
+               l.pr_number,
+               l.source,
              l.will_close_target,
              p.merged,
              p.merge_commit_oid,
@@ -342,12 +343,12 @@ export class ReleaseAuditReader {
              rpr.evidence_json,
              rc.tag_commit_oid AS release_tag_commit_oid
       FROM issue_pr_links l
-      JOIN pull_request_fixes p ON p.pr_number=l.pr_number
-      JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_number=l.pr_number
+        JOIN pull_request_fixes p ON p.pr_repository_name_with_owner=l.pr_repository_name_with_owner AND p.pr_number=l.pr_number
+        JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_repository_name_with_owner=l.pr_repository_name_with_owner AND rpr.pr_number=l.pr_number
       LEFT JOIN release_commits rc ON rc.tag=rpr.tag
       WHERE l.issue_number=?
         AND ${CREDITED_FIX_LINK_SQL}
-      ORDER BY l.pr_number
+        ORDER BY l.pr_repository_name_with_owner, l.pr_number
     `).all(tag, issueNumber);
   }
 

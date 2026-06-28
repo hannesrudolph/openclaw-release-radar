@@ -61,6 +61,9 @@ if (!dryRun) {
       for (const link of evidence.prLinks) {
         upsertIssuePrLink({
           issue_number: link.issueNumber,
+          pr_repository_owner: link.prRepositoryOwner,
+          pr_repository_name: link.prRepositoryName,
+          pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
           pr_number: link.prNumber,
           source: link.source,
           will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
@@ -70,6 +73,9 @@ if (!dryRun) {
       }
       for (const pr of evidence.pullRequests) {
         upsertPullRequestFix({
+          pr_repository_owner: pr.repositoryOwner,
+          pr_repository_name: pr.repositoryName,
+          pr_repository_name_with_owner: pr.repositoryNameWithOwner,
           pr_number: pr.number,
           title: pr.title,
           url: pr.url,

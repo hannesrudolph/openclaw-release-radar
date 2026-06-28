@@ -9,6 +9,60 @@ import { creditedFixLinkSql } from './fixProvenance';
 // node:sqlite is built into Node ≥ 22.5 (stable since 24). No native build, no prebuilds.
 
 export const dbReadOnly = process.env.RADAR_DB_READ_ONLY === '1' || process.env.RADAR_DB_READ_ONLY === 'true';
+const defaultPrRepositoryOwner = config.github.owner;
+const defaultPrRepositoryName = config.github.repo;
+const defaultPrRepositoryNameWithOwner = `${defaultPrRepositoryOwner}/${defaultPrRepositoryName}`;
+
+type PrRepositoryIdentity = {
+  pr_repository_owner: string;
+  pr_repository_name: string;
+  pr_repository_name_with_owner: string;
+};
+
+function normalizePrRepository(input: {
+  pr_repository_owner?: string | null;
+  pr_repository_name?: string | null;
+  pr_repository_name_with_owner?: string | null;
+  url?: string | null;
+}): PrRepositoryIdentity {
+  const explicitNameWithOwner = String(input.pr_repository_name_with_owner ?? '').trim();
+  if (explicitNameWithOwner.includes('/')) {
+    const [owner, name] = explicitNameWithOwner.split('/', 2);
+    if (owner && name) {
+      return {
+        pr_repository_owner: owner,
+        pr_repository_name: name,
+        pr_repository_name_with_owner: `${owner}/${name}`,
+      };
+    }
+  }
+  const owner = String(input.pr_repository_owner ?? '').trim();
+  const name = String(input.pr_repository_name ?? '').trim();
+  if (owner && name) {
+    return {
+      pr_repository_owner: owner,
+      pr_repository_name: name,
+      pr_repository_name_with_owner: `${owner}/${name}`,
+    };
+  }
+  const parsed = prRepositoryFromUrl(input.url ?? null);
+  if (parsed) return parsed;
+  return {
+    pr_repository_owner: defaultPrRepositoryOwner,
+    pr_repository_name: defaultPrRepositoryName,
+    pr_repository_name_with_owner: defaultPrRepositoryNameWithOwner,
+  };
+}
+
+function prRepositoryFromUrl(url: string | null): PrRepositoryIdentity | null {
+  const match = String(url ?? '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/pull\/\d+(?:[/?#].*)?$/i);
+  if (!match) return null;
+  return {
+    pr_repository_owner: match[1],
+    pr_repository_name: match[2],
+    pr_repository_name_with_owner: `${match[1]}/${match[2]}`,
+  };
+}
 
 if (!dbReadOnly) mkdirSync(dirname(config.db.path), { recursive: true });
 
@@ -240,12 +294,15 @@ CREATE TABLE IF NOT EXISTS issue_reopen_events (
 
 CREATE TABLE IF NOT EXISTS issue_pr_links (
   issue_number INTEGER NOT NULL,
+  pr_repository_owner TEXT NOT NULL,
+  pr_repository_name TEXT NOT NULL,
+  pr_repository_name_with_owner TEXT NOT NULL,
   pr_number INTEGER NOT NULL,
   source TEXT NOT NULL,
   will_close_target INTEGER,
   referenced_at TEXT,
   fetched_at TEXT NOT NULL,
-  PRIMARY KEY (issue_number, pr_number, source)
+  PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
 );
 
 CREATE TABLE IF NOT EXISTS issue_commit_references (
@@ -293,7 +350,10 @@ CREATE TABLE IF NOT EXISTS issue_closure_proofs (
 );
 
 CREATE TABLE IF NOT EXISTS pull_request_fixes (
-  pr_number INTEGER PRIMARY KEY,
+  pr_repository_owner TEXT NOT NULL,
+  pr_repository_name TEXT NOT NULL,
+  pr_repository_name_with_owner TEXT NOT NULL,
+  pr_number INTEGER NOT NULL,
   title TEXT,
   url TEXT,
   state TEXT,
@@ -301,11 +361,15 @@ CREATE TABLE IF NOT EXISTS pull_request_fixes (
   merged_at TEXT,
   merge_commit_oid TEXT,
   base_ref_name TEXT,
-  fetched_at TEXT NOT NULL
+  fetched_at TEXT NOT NULL,
+  PRIMARY KEY (pr_repository_name_with_owner, pr_number)
 );
 
 CREATE TABLE IF NOT EXISTS release_pr_reachability (
   tag TEXT NOT NULL,
+  pr_repository_owner TEXT NOT NULL,
+  pr_repository_name TEXT NOT NULL,
+  pr_repository_name_with_owner TEXT NOT NULL,
   pr_number INTEGER NOT NULL,
   tag_commit_oid TEXT,
   merge_commit_oid TEXT,
@@ -314,7 +378,7 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
   method TEXT NOT NULL DEFAULT 'git-merge-base',
   evidence_json TEXT NOT NULL DEFAULT '{}',
   checked_at TEXT NOT NULL,
-  PRIMARY KEY (tag, pr_number)
+  PRIMARY KEY (tag, pr_repository_name_with_owner, pr_number)
 );
 
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
@@ -384,32 +448,148 @@ for (const sql of [
 }
 
 try {
-  const cols = db.prepare(`PRAGMA table_info(release_pr_reachability)`).all() as Array<{ name: string }>;
-  if (cols.length > 0 && !cols.some((col) => col.name === 'tag_commit_oid')) {
-    db.exec(`DROP TABLE release_pr_reachability`);
+  const tableColumns = (table: string) =>
+    db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; pk: number }>;
+  const hasCompositePrKey = (table: string) => {
+    const cols = tableColumns(table);
+    const repoCol = cols.find((col) => col.name === 'pr_repository_name_with_owner');
+    return !!repoCol && repoCol.pk > 0;
+  };
+
+  if (!hasCompositePrKey('pull_request_fixes')) {
+    const rows = db.prepare(`SELECT * FROM pull_request_fixes`).all() as Array<any>;
+    db.exec(`DROP TABLE IF EXISTS pull_request_fixes_next`);
     db.exec(`
-    CREATE TABLE release_pr_reachability (
-      tag TEXT NOT NULL,
+    CREATE TABLE pull_request_fixes_next (
+      pr_repository_owner TEXT NOT NULL,
+      pr_repository_name TEXT NOT NULL,
+      pr_repository_name_with_owner TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
-      tag_commit_oid TEXT NOT NULL,
-      merge_commit_oid TEXT NOT NULL,
+      title TEXT,
+      url TEXT,
+      state TEXT,
+      merged INTEGER NOT NULL DEFAULT 0,
+      merged_at TEXT,
+      merge_commit_oid TEXT,
       base_ref_name TEXT,
-      status TEXT NOT NULL,
-      method TEXT NOT NULL DEFAULT 'git-merge-base',
-      evidence_json TEXT NOT NULL DEFAULT '{}',
-      checked_at TEXT NOT NULL,
-      PRIMARY KEY (tag, pr_number)
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (pr_repository_name_with_owner, pr_number)
     )`);
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO pull_request_fixes_next (
+        pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+        pr_number, title, url, state, merged, merged_at, merge_commit_oid, base_ref_name, fetched_at
+      )
+      VALUES (
+        :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
+        :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
+      )
+    `);
+    for (const row of rows) {
+      const repo = normalizePrRepository(row);
+      insert.run({
+        ...repo,
+        pr_number: row.pr_number,
+        title: row.title ?? null,
+        url: row.url ?? null,
+        state: row.state ?? null,
+        merged: Number(row.merged ?? 0),
+        merged_at: row.merged_at ?? null,
+        merge_commit_oid: row.merge_commit_oid ?? null,
+        base_ref_name: row.base_ref_name ?? null,
+        fetched_at: row.fetched_at ?? new Date().toISOString(),
+      });
+    }
+    db.exec(`DROP TABLE pull_request_fixes`);
+    db.exec(`ALTER TABLE pull_request_fixes_next RENAME TO pull_request_fixes`);
   }
-  const currentCols = db.prepare(`PRAGMA table_info(release_pr_reachability)`).all() as Array<{ name: string; notnull: number }>;
-  const tagCommit = currentCols.find((col) => col.name === 'tag_commit_oid');
-  const mergeCommit = currentCols.find((col) => col.name === 'merge_commit_oid');
-  if ((tagCommit?.notnull ?? 0) !== 0 || (mergeCommit?.notnull ?? 0) !== 0) {
+
+  if (!hasCompositePrKey('issue_pr_links')) {
+    const rows = db.prepare(`
+      SELECT l.*,
+        (
+          SELECT p.url
+          FROM pull_request_fixes p
+          WHERE p.pr_number=l.pr_number
+          ORDER BY CASE WHEN p.pr_repository_name_with_owner=? THEN 0 ELSE 1 END
+          LIMIT 1
+        ) AS pr_url
+      FROM issue_pr_links l
+    `).all(defaultPrRepositoryNameWithOwner) as Array<any>;
+    db.exec(`DROP TABLE IF EXISTS issue_pr_links_next`);
+    db.exec(`
+    CREATE TABLE issue_pr_links_next (
+      issue_number INTEGER NOT NULL,
+      pr_repository_owner TEXT NOT NULL,
+      pr_repository_name TEXT NOT NULL,
+      pr_repository_name_with_owner TEXT NOT NULL,
+      pr_number INTEGER NOT NULL,
+      source TEXT NOT NULL,
+      will_close_target INTEGER,
+      referenced_at TEXT,
+      fetched_at TEXT NOT NULL,
+      PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
+    )`);
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO issue_pr_links_next (
+        issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+        pr_number, source, will_close_target, referenced_at, fetched_at
+      )
+      VALUES (
+        :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
+        :pr_number, :source, :will_close_target, :referenced_at, :fetched_at
+      )
+    `);
+    for (const row of rows) {
+      const repo = normalizePrRepository({
+        pr_repository_owner: row.pr_repository_owner,
+        pr_repository_name: row.pr_repository_name,
+        pr_repository_name_with_owner: row.pr_repository_name_with_owner,
+        url: row.pr_url,
+      });
+      insert.run({
+        ...repo,
+        issue_number: row.issue_number,
+        pr_number: row.pr_number,
+        source: row.source,
+        will_close_target: row.will_close_target ?? null,
+        referenced_at: row.referenced_at ?? null,
+        fetched_at: row.fetched_at ?? new Date().toISOString(),
+      });
+    }
+    db.exec(`DROP TABLE issue_pr_links`);
+    db.exec(`ALTER TABLE issue_pr_links_next RENAME TO issue_pr_links`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_issue_pr_links_pr ON issue_pr_links(pr_repository_name_with_owner, pr_number)`);
+  }
+
+  const reachabilityCols = tableColumns('release_pr_reachability');
+  const reachabilityNeedsMigration = !hasCompositePrKey('release_pr_reachability') ||
+    (reachabilityCols.find((col) => col.name === 'tag_commit_oid')?.notnull ?? 0) !== 0 ||
+    (reachabilityCols.find((col) => col.name === 'merge_commit_oid')?.notnull ?? 0) !== 0;
+  if (reachabilityNeedsMigration) {
+    const hasTagCommit = reachabilityCols.some((col) => col.name === 'tag_commit_oid');
+    const hasMergeCommit = reachabilityCols.some((col) => col.name === 'merge_commit_oid');
+    const rows = db.prepare(`
+      SELECT
+        tag,
+        pr_number,
+        ${hasTagCommit ? 'tag_commit_oid' : 'NULL'} AS tag_commit_oid,
+        ${hasMergeCommit ? 'merge_commit_oid' : 'NULL'} AS merge_commit_oid,
+        base_ref_name,
+        status,
+        method,
+        evidence_json,
+        checked_at
+      FROM release_pr_reachability
+    `).all() as Array<any>;
     db.exec(`DROP TABLE IF EXISTS release_pr_reachability_next`);
     db.exec(`
     CREATE TABLE release_pr_reachability_next (
       tag TEXT NOT NULL,
+      pr_repository_owner TEXT NOT NULL,
+      pr_repository_name TEXT NOT NULL,
+      pr_repository_name_with_owner TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
       tag_commit_oid TEXT,
       merge_commit_oid TEXT,
@@ -418,21 +598,44 @@ try {
       method TEXT NOT NULL DEFAULT 'git-merge-base',
       evidence_json TEXT NOT NULL DEFAULT '{}',
       checked_at TEXT NOT NULL,
-      PRIMARY KEY (tag, pr_number)
+      PRIMARY KEY (tag, pr_repository_name_with_owner, pr_number)
     )`);
-    db.exec(`
-    INSERT INTO release_pr_reachability_next (
-      tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
-    )
-    SELECT tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
-    FROM release_pr_reachability
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO release_pr_reachability_next (
+        tag, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+        pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
+      )
+      VALUES (
+        :tag, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
+        :pr_number, :tag_commit_oid, :merge_commit_oid, :base_ref_name, :status, :method, :evidence_json, :checked_at
+      )
     `);
+    for (const row of rows) {
+      insert.run({
+        tag: row.tag,
+        pr_number: row.pr_number,
+        ...normalizePrRepository(row),
+        tag_commit_oid: row.tag_commit_oid ?? null,
+        merge_commit_oid: row.merge_commit_oid ?? null,
+        base_ref_name: row.base_ref_name ?? null,
+        status: row.status,
+        method: row.method ?? 'git-merge-base',
+        evidence_json: row.evidence_json ?? '{}',
+        checked_at: row.checked_at ?? new Date().toISOString(),
+      });
+    }
     db.exec(`DROP TABLE release_pr_reachability`);
     db.exec(`ALTER TABLE release_pr_reachability_next RENAME TO release_pr_reachability`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
   }
 } catch {
   // The main CREATE TABLE block handles first-run setup; this only repairs old local schemas.
+}
+
+try {
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_issue_pr_links_pr ON issue_pr_links(pr_repository_name_with_owner, pr_number)`);
+} catch {
+  // If a very old schema could not be repaired, later verification will surface the real failure.
 }
 }
 
@@ -1146,6 +1349,9 @@ export function upsertIssueReopenEvent(input: IssueReopenEventInput): void {
 
 export interface IssuePrLinkInput {
   issue_number: number;
+  pr_repository_owner?: string | null;
+  pr_repository_name?: string | null;
+  pr_repository_name_with_owner?: string | null;
   pr_number: number;
   source: string;
   will_close_target: number | null;
@@ -1153,16 +1359,28 @@ export interface IssuePrLinkInput {
 }
 
 const upsertIssuePrLinkStmt = db.prepare(`
-INSERT INTO issue_pr_links (issue_number, pr_number, source, will_close_target, referenced_at, fetched_at)
-VALUES (:issue_number, :pr_number, :source, :will_close_target, :referenced_at, :fetched_at)
-ON CONFLICT(issue_number, pr_number, source) DO UPDATE SET
+INSERT INTO issue_pr_links (
+  issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+  pr_number, source, will_close_target, referenced_at, fetched_at
+)
+VALUES (
+  :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
+  :pr_number, :source, :will_close_target, :referenced_at, :fetched_at
+)
+ON CONFLICT(issue_number, pr_repository_name_with_owner, pr_number, source) DO UPDATE SET
+  pr_repository_owner=excluded.pr_repository_owner,
+  pr_repository_name=excluded.pr_repository_name,
   will_close_target=excluded.will_close_target,
   referenced_at=excluded.referenced_at,
   fetched_at=excluded.fetched_at
 `);
 
 export function upsertIssuePrLink(input: IssuePrLinkInput): void {
-  upsertIssuePrLinkStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  upsertIssuePrLinkStmt.run({
+    ...input,
+    ...normalizePrRepository(input),
+    fetched_at: new Date().toISOString(),
+  });
 }
 
 const deleteIssuePrLinksForIssuesStmt = db.prepare(`
@@ -1221,6 +1439,9 @@ export function upsertIssueCommitReference(input: IssueCommitReferenceInput): vo
 }
 
 export interface PullRequestFixInput {
+  pr_repository_owner?: string | null;
+  pr_repository_name?: string | null;
+  pr_repository_name_with_owner?: string | null;
   pr_number: number;
   title: string | null;
   url: string | null;
@@ -1233,12 +1454,16 @@ export interface PullRequestFixInput {
 
 const upsertPullRequestFixStmt = db.prepare(`
 INSERT INTO pull_request_fixes (
+  pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
   pr_number, title, url, state, merged, merged_at, merge_commit_oid, base_ref_name, fetched_at
 )
 VALUES (
+  :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
   :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
 )
-ON CONFLICT(pr_number) DO UPDATE SET
+ON CONFLICT(pr_repository_name_with_owner, pr_number) DO UPDATE SET
+  pr_repository_owner=excluded.pr_repository_owner,
+  pr_repository_name=excluded.pr_repository_name,
   title=excluded.title,
   url=excluded.url,
   state=excluded.state,
@@ -1250,11 +1475,18 @@ ON CONFLICT(pr_number) DO UPDATE SET
 `);
 
 export function upsertPullRequestFix(input: PullRequestFixInput): void {
-  upsertPullRequestFixStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  upsertPullRequestFixStmt.run({
+    ...input,
+    ...normalizePrRepository(input),
+    fetched_at: new Date().toISOString(),
+  });
 }
 
 export interface ReleasePrReachabilityInput {
   tag: string;
+  pr_repository_owner?: string | null;
+  pr_repository_name?: string | null;
+  pr_repository_name_with_owner?: string | null;
   pr_number: number;
   tag_commit_oid: string | null;
   merge_commit_oid: string | null;
@@ -1266,14 +1498,16 @@ export interface ReleasePrReachabilityInput {
 
 const upsertReleasePrReachabilityStmt = db.prepare(`
 INSERT INTO release_pr_reachability (
-  tag, pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method,
-  evidence_json, checked_at
+  tag, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+  pr_number, tag_commit_oid, merge_commit_oid, base_ref_name, status, method, evidence_json, checked_at
 )
 VALUES (
-  :tag, :pr_number, :tag_commit_oid, :merge_commit_oid, :base_ref_name, :status, :method,
-  :evidence_json, :checked_at
+  :tag, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
+  :pr_number, :tag_commit_oid, :merge_commit_oid, :base_ref_name, :status, :method, :evidence_json, :checked_at
 )
-ON CONFLICT(tag, pr_number) DO UPDATE SET
+ON CONFLICT(tag, pr_repository_name_with_owner, pr_number) DO UPDATE SET
+  pr_repository_owner=excluded.pr_repository_owner,
+  pr_repository_name=excluded.pr_repository_name,
   tag_commit_oid=excluded.tag_commit_oid,
   merge_commit_oid=excluded.merge_commit_oid,
   base_ref_name=excluded.base_ref_name,
@@ -1286,6 +1520,7 @@ ON CONFLICT(tag, pr_number) DO UPDATE SET
 export function upsertReleasePrReachability(input: ReleasePrReachabilityInput): void {
   upsertReleasePrReachabilityStmt.run({
     ...input,
+    ...normalizePrRepository(input),
     method: input.method ?? 'git-merge-base',
     checked_at: new Date().toISOString(),
   });
@@ -1776,9 +2011,9 @@ WHERE
       AND EXISTS (
         SELECT 1
         FROM window_closure e
-        JOIN issue_pr_links l ON l.issue_number = e.issue_number
-        JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-        JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
+          JOIN issue_pr_links l ON l.issue_number = e.issue_number
+          JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
+          JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
         WHERE e.issue_number = i.number
           AND e.state_reason = 'COMPLETED'
           AND p.merged = 1
@@ -1827,9 +2062,9 @@ WHERE
     UNION ALL
     SELECT 1
     FROM window_closure e
-    JOIN issue_pr_links l ON l.issue_number = e.issue_number
-    JOIN pull_request_fixes p ON p.pr_number = l.pr_number
-    JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
+      JOIN issue_pr_links l ON l.issue_number = e.issue_number
+      JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
+      JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
     WHERE e.issue_number = i.number
       AND c.sentiment = 'negative'
       AND e.state_reason = 'COMPLETED'
