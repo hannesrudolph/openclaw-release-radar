@@ -118,6 +118,23 @@ const publicReleaseKeys = new Set([
   'url',
   'watchIssues',
 ]);
+const publicIssueKeys = new Set([
+  'closedAt',
+  'confidence',
+  'hasWorkaround',
+  'number',
+  'rationale',
+  'scope',
+  'sentiment',
+  'severity',
+  'state',
+  'surface',
+  'title',
+  'url',
+]);
+const publicSentimentRank = new Map([['negative', 0], ['positive', 1], ['neutral', 2]]);
+const publicSeverityRank = new Map([['critical', 0], ['high', 1], ['medium', 2], ['low', 3]]);
+const publicScopeRank = new Map([['broad', 0], ['moderate', 1], ['niche', 2]]);
 const forbiddenPublicKeys = new Set([
   'comparison',
   'delta',
@@ -370,6 +387,48 @@ function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public rele
       `${path} must not expose internal/comparison key ${key}`);
     verifyNoForbiddenPublicKeys({ failures, tag, value: child, path: `${path}.${key}` });
   }
+}
+
+function verifyPublicIssueSummaries({ failures, tag, publicRelease }) {
+  const issues = Array.isArray(publicRelease.issues) ? publicRelease.issues : [];
+  const watchIssues = Array.isArray(publicRelease.watchIssues) ? publicRelease.watchIssues : [];
+  for (const [name, rows] of [['issues', issues], ['watchIssues', watchIssues]]) {
+    rows.forEach((issue, index) => {
+      verifyAllowedKeys({
+        failures,
+        tag,
+        label: `public ${name}[${index}]`,
+        value: issue,
+        allowed: publicIssueKeys,
+      });
+      expect(failures, tag, Number.isInteger(issue.number) && issue.number > 0,
+        `public ${name}[${index}] must expose a positive issue number`);
+      expect(failures, tag, typeof issue.title === 'string' && issue.title.length > 0,
+        `public ${name}[${index}] must expose a title`);
+      expect(failures, tag, typeof issue.url === 'string' && /^https:\/\/github\.com\//.test(issue.url),
+        `public ${name}[${index}] must expose a GitHub URL`);
+    });
+  }
+  for (let i = 1; i < issues.length; i++) {
+    expect(failures, tag, publicIssueSortKey(issues[i - 1]) <= publicIssueSortKey(issues[i]),
+      'public issues must be sorted by effective sentiment/severity/scope');
+  }
+  for (const issue of watchIssues) {
+    expect(failures, tag, issue.state === 'open',
+      `public watch issue #${issue.number} must be open`);
+    expect(failures, tag, issue.sentiment === 'negative',
+      `public watch issue #${issue.number} must be negative`);
+    expect(failures, tag, issue.severity === 'critical' || issue.severity === 'high',
+      `public watch issue #${issue.number} must be high/critical`);
+  }
+}
+
+function publicIssueSortKey(issue) {
+  return [
+    publicSentimentRank.get(issue.sentiment) ?? 9,
+    publicSeverityRank.get(issue.severity) ?? 9,
+    publicScopeRank.get(issue.scope) ?? 9,
+  ].join(':');
 }
 
 function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
@@ -684,6 +743,7 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         expect(failures, release.tag, issueCount > 0,
           'public release with attributed issues must expose capped issue summaries');
       }
+      verifyPublicIssueSummaries({ failures, tag: release.tag, publicRelease });
       verifyScoreExplanation({
         failures,
         tag: release.tag,
