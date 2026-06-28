@@ -14,6 +14,8 @@ let fixCreditTag = null;
 let fixCreditText = null;
 let closureRiskText = null;
 let explanationText = null;
+let explanationIssueRef = null;
+let explanationMetricText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -31,12 +33,19 @@ for (const release of releases) {
       .find((line) => /closed issues .* not counted as release fixes/i.test(line))
       ?? review.local?.components?.explanation?.limits?.[0]
       ?? null;
+    const closureDetail = (review.local?.components?.explanation?.limitDetails ?? [])
+      .find((detail) => detail.code === 'closed_issues_not_counted_as_release_fixes');
+    explanationIssueRef = closureDetail?.issueRefs?.[0] ?? null;
+    const metric = closureDetail?.metrics?.unresolvedForReleaseCount;
+    explanationMetricText = Number.isFinite(metric) ? `unresolved: ${metric}` : null;
     break;
   }
 }
 if (!fixCreditTag) throw new Error('No release exposes releaseFixCredit for UI smoke');
 if (!explanationText) throw new Error(`No score explanation text available for ${fixCreditTag}`);
 if (!closureRiskText) throw new Error(`No closure risk summary available for ${fixCreditTag}`);
+if (!explanationIssueRef?.number || !explanationIssueRef?.url) throw new Error(`No explanation issue ref available for ${fixCreditTag}`);
+if (!explanationMetricText) throw new Error(`No explanation metric available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -86,6 +95,8 @@ try {
   if (!fixPanelText.includes(explanationText)) {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
   }
+  await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
+  await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();

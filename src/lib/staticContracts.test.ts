@@ -43,6 +43,9 @@ describe('static scoring/UI contracts', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /local\?\.components\?\.explanation/);
     assert.match(html, /structured\.limits/);
+    assert.match(html, /structured\.limitDetails/);
+    assert.match(html, /scoreDetailIssueRefsHtml/);
+    assert.match(html, /scoreDetailMetricsHtml/);
   });
 
   it('issue title truncation is word-boundary aware in the UI fallback', () => {

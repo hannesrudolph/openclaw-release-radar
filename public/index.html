@@ -284,6 +284,23 @@ main.main-home{max-width:880px}
 .score-explain p:last-child{margin-bottom:0}
 .score-explain ul{margin:0;padding-left:1.15rem;display:flex;flex-direction:column;gap:var(--space-2)}
 .score-explain strong{color:var(--text)}
+.score-explain__detail{display:flex;flex-direction:column;gap:var(--space-2)}
+.score-explain__metrics{display:flex;flex-wrap:wrap;gap:6px;margin-top:var(--space-2)}
+.score-explain__metric{
+  display:inline-flex;align-items:center;gap:4px;
+  border:1px solid var(--border-soft);border-radius:var(--radius-pill);
+  padding:1px 7px;font-size:var(--text-xs);
+  color:var(--muted);background:color-mix(in srgb,var(--text) 3%,transparent);
+}
+.score-explain__refs{display:flex;flex-wrap:wrap;gap:6px;margin-top:var(--space-2)}
+.score-explain__ref{
+  display:inline-flex;max-width:100%;
+  border:1px solid var(--border-soft);border-radius:var(--radius-pill);
+  padding:1px 7px;font-size:var(--text-xs);
+  color:var(--link);background:color-mix(in srgb,var(--link) 7%,transparent);
+  text-decoration:none;
+}
+.score-explain__ref:hover{border-color:var(--link)}
 
 .cta-track{
   margin-top:var(--space-10);
@@ -1692,6 +1709,74 @@ function sentenceSuffix(label, text) {
   return ` ${label}: ${text}${/[.!?]$/.test(text) ? '' : '.'}`;
 }
 
+function metricLabel(key) {
+  return ({
+    analyzedClosedCount: 'analyzed',
+    cappedPenalty: 'penalty',
+    classifiedIssueCount: 'classified',
+    countedClosedCount: 'counted fixes',
+    evidenceCoverage: 'coverage',
+    knownNotInReleaseCount: 'not in tag',
+    missingClassificationCount: 'missing classes',
+    missingEvidenceCount: 'missing proof',
+    neutralOrNonActionableCount: 'neutral',
+    notCountedClosedCount: 'not direct fixes',
+    openCanonicalRiskCount: 'open canonical',
+    openedCount: 'opened',
+    rawIssueCount: 'raw issues',
+    rawWeight: 'raw weight',
+    stillOpenCount: 'still open',
+    unverifiedClosedCount: 'unverified',
+    unresolvedClosureRiskWeight: 'closure weight',
+    unresolvedForReleaseCount: 'unresolved',
+    unsupportedClosureClaimCount: 'unsupported claim',
+  })[key] ?? key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
+function metricValue(value) {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return '—';
+    if (Number.isInteger(value)) return String(value);
+    return String(Math.round(value * 1000) / 1000);
+  }
+  if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (value == null || value === '') return '—';
+  return String(value);
+}
+
+function scoreDetailMetricsHtml(metrics) {
+  if (!metrics || typeof metrics !== 'object') return '';
+  const entries = Object.entries(metrics)
+    .filter(([, value]) => value != null && value !== '')
+    .slice(0, 8);
+  if (!entries.length) return '';
+  return `<div class="score-explain__metrics">${entries.map(([key, value]) =>
+    `<span class="score-explain__metric">${esc(metricLabel(key))}: ${esc(metricValue(value))}</span>`
+  ).join('')}</div>`;
+}
+
+function scoreDetailIssueRefsHtml(issueRefs) {
+  if (!Array.isArray(issueRefs) || !issueRefs.length) return '';
+  return `<div class="score-explain__refs">${issueRefs.slice(0, 5).map((issue) => {
+    const label = `#${issue.number} ${shortIssueTitle(issue)}`;
+    return issue.url
+      ? `<a class="score-explain__ref" href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+      : `<span class="score-explain__ref">${esc(label)}</span>`;
+  }).join('')}</div>`;
+}
+
+function scoreExplanationDetailsHtml(details, fallbackText) {
+  if (Array.isArray(details) && details.length) {
+    return details.map((detail) =>
+      `<li class="score-explain__detail"><span>${esc(detail.text ?? '')}</span>`
+      + scoreDetailMetricsHtml(detail.metrics)
+      + scoreDetailIssueRefsHtml(detail.issueRefs)
+      + '</li>'
+    ).join('');
+  }
+  return (fallbackText ?? []).map((line) => `<li>${esc(line)}</li>`).join('');
+}
+
 function closureStatusLabel(status) {
   return ({
     fixed_in_release: 'fixed in this release',
@@ -1828,15 +1913,18 @@ function whyNotTenHtml(local) {
   const structured = local?.components?.explanation;
   if (structured && Array.isArray(structured.limits)) {
     const positives = Array.isArray(structured.positives) ? structured.positives : [];
+    const positiveDetails = Array.isArray(structured.positiveDetails) ? structured.positiveDetails : [];
+    const limitDetails = Array.isArray(structured.limitDetails) ? structured.limitDetails : [];
     const limits = structured.limits.length ? structured.limits : ['No specific limiting evidence was provided for this score.'];
     const verdict = structured.verdict || installVerdictText(local);
     return '<div class="score-explain">'
       + `<div class="score-explain__title">${esc(structured.title || 'Why not 10?')}</div>`
       + (positives.length
-        ? `<p><strong>What looks good:</strong> ${esc(positives.join(' '))}</p>`
+        ? '<p><strong>What looks good:</strong></p>'
+          + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives) + '</ul>'
         : '')
       + '<p><strong>What keeps it below perfect:</strong></p>'
-      + '<ul>' + limits.map((reason) => `<li>${esc(reason)}</li>`).join('') + '</ul>'
+      + '<ul>' + scoreExplanationDetailsHtml(limitDetails, limits) + '</ul>'
       + `<p>${esc(verdict)}</p>`
       + '</div>';
   }
