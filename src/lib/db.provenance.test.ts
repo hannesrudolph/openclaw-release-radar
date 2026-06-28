@@ -243,6 +243,36 @@ describe('release fix provenance', () => {
     ]);
   });
 
+  it('score audit freshness digest changes when audit payload changes', async () => {
+    const db = await freshDb('score-audit-freshness');
+    const audit = {
+      release_tag: 'v1',
+      scored_at: '2026-06-02T00:00:00Z',
+      score_model_version: 'test-model',
+      prompt_version: 1,
+      final_score: 7.5,
+      status: 'eligible',
+      band: 'ok',
+      recommended: 1,
+      input_json: '{"rawIssueCount":1}',
+      components_json: '{"components":{}}',
+      issue_evidence_json: '{}',
+      gate_evidence_json: '{"a":1}',
+    };
+    db.upsertReleaseScoreAudit(audit);
+    const first = db.releaseScoreAuditFreshness();
+    db.upsertReleaseScoreAudit({
+      ...audit,
+      gate_evidence_json: '{"a":2}',
+    });
+    const second = db.releaseScoreAuditFreshness();
+
+    assert.equal(first.count, 1);
+    assert.equal(first.max_scored_at, audit.scored_at);
+    assert.equal(second.max_scored_at, audit.scored_at);
+    assert.notEqual(first.digest, second.digest);
+  });
+
   it('stores release check rollup evidence with the release commit', async () => {
     const db = await freshDb('release-checks');
     seedRelease(db, 'v1');

@@ -1,6 +1,7 @@
 import { DatabaseSync } from 'node:sqlite';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { createHash } from 'node:crypto';
 import { config } from '../config';
 import type { IssueClassification } from './llm';
 import { creditedFixLinkSql } from './fixProvenance';
@@ -650,6 +651,40 @@ export interface ReleaseScoreAuditRow extends ReleaseScoreAuditInput {}
 const getReleaseScoreAuditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 export function getReleaseScoreAudit(tag: string): ReleaseScoreAuditRow | undefined {
   return getReleaseScoreAuditStmt.get(tag) as ReleaseScoreAuditRow | undefined;
+}
+
+const releaseScoreAuditFreshnessStmt = db.prepare(`
+SELECT
+  release_tag,
+  scored_at,
+  score_model_version,
+  prompt_version,
+  final_score,
+  status,
+  band,
+  recommended,
+  input_json,
+  components_json,
+  issue_evidence_json,
+  gate_evidence_json
+FROM release_score_audits
+ORDER BY release_tag
+`);
+export function releaseScoreAuditFreshness(): { count: number; max_scored_at: string | null; digest: string } {
+  const rows = releaseScoreAuditFreshnessStmt.all() as Array<Record<string, unknown>>;
+  const hash = createHash('sha256');
+  let maxScoredAt: string | null = null;
+  for (const row of rows) {
+    const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
+    if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
+    hash.update(JSON.stringify(row));
+    hash.update('\n');
+  }
+  return {
+    count: rows.length,
+    max_scored_at: maxScoredAt,
+    digest: hash.digest('hex'),
+  };
 }
 
 const updateReleaseScoreAuditGateEvidenceStmt = db.prepare(`

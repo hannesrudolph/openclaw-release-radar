@@ -183,8 +183,14 @@ describe('static scoring/UI contracts', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /function publicCacheKey/);
+    assert.match(api, /releaseScoreAuditFreshness/);
+    assert.match(api, /freshness\.max_scored_at/);
+    assert.match(api, /freshness\.count/);
+    assert.match(api, /freshness\.digest/);
     assert.match(api, /classifyIssueRowWithLabels/);
     assert.match(api, /labelsForIssueAt/);
+    assert.match(api, /releaseLabelCutoff\(r,\s*audit\?\.scored_at/);
+    assert.match(api, /useSnapshotWhenNoEvents:\s*labelCutoff != null/);
     assert.match(api, /comparePublicIssueSignal/);
     assert.match(api, /sort\(comparePublicIssueSignal\)/);
     assert.match(api, /classification\.severity/);

@@ -16,6 +16,7 @@ import {
   latestComparisonSnapshot,
   labelsForIssueAt,
   listAdvisories,
+  releaseScoreAuditFreshness,
   type AdvisoryRow,
 } from '../lib/db';
 import { enrichGateEvidenceWithClosureProof } from '../lib/closureProofPayload';
@@ -349,8 +350,13 @@ const SENTIMENT_RANK: Record<string, number> = { negative: 0, positive: 1, neutr
 const SCOPE_RANK: Record<string, number> = { broad: 0, moderate: 1, niche: 2 };
 const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 3 };
 
-function publicCacheKey(updatedAt: string | null | undefined): string {
-  return `${PUBLIC_PAYLOAD_SCHEMA_VERSION}:${updatedAt ?? ''}`;
+function publicCacheKey(freshness = releaseScoreAuditFreshness()): string {
+  return [
+    PUBLIC_PAYLOAD_SCHEMA_VERSION,
+    freshness.max_scored_at ?? '',
+    freshness.count,
+    freshness.digest,
+  ].join(':');
 }
 
 function comparePublicIssueSignal(
@@ -379,10 +385,11 @@ function buildPublicPayload() {
   const releases = allReleases.map((r) => {
     const audit = getReleaseScoreAudit(r.tag);
     const auditSummary = scoreAuditSummary(audit);
-    const labelCutoff = releaseLabelCutoff(r);
+    const labelCutoff = releaseLabelCutoff(r, audit?.scored_at ?? null);
     const classifyPublicIssue = (i: ReturnType<typeof issuesForVersion>[number]) => {
       const labels = labelsForIssueAt(i.number, parseJson(i.labels, [] as string[]), labelCutoff, {
         useFallbackWhenNoEvents: labelCutoff == null,
+        useSnapshotWhenNoEvents: labelCutoff != null,
       });
       return { issue: i, classification: classifyIssueRowWithLabels(i, labels), labels };
     };
@@ -456,9 +463,10 @@ function buildPublicPayload() {
 }
 
 api.get('/public', (_req, res) => {
-  const hit = getCached(publicCacheKey(getLastScoredAt()));
+  const cacheKey = publicCacheKey();
+  const hit = getCached(cacheKey);
   if (hit) { res.json(hit); return; }
   const data = buildPublicPayload();
-  setCached(data, publicCacheKey(data.updatedAt ?? null));
+  setCached(data, publicCacheKey());
   res.json(data);
 });
