@@ -46,12 +46,14 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /structured\.limitDetails/);
     assert.match(html, /scoreDetailIssueRefsHtml/);
     assert.match(html, /scoreDetailMetricsHtml/);
+    assert.match(html, /\.slice\(0,\s*14\)/);
   });
 
   it('issue title truncation is word-boundary aware in the UI fallback', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /function truncateAtWordBoundary/);
     assert.doesNotMatch(html, /slice\(0,\s*85\)/);
+    assert.match(html, /untitled report/);
   });
 
   it('legacy public snapshot import requires explicit overwrite flag before loading app DB', () => {

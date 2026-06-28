@@ -70,11 +70,17 @@ describe('release score explanations', () => {
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
     assert.ok((closure.issueRefs?.length ?? 0) >= 3);
-    const closureExamples = ((run.scored[0].gateEvidence as any).fixProvenance?.closureProof?.examples ?? [])
+    const closureProof = (run.scored[0].gateEvidence as any).fixProvenance?.closureProof ?? {};
+    if ((closure.metrics?.neutralHighImpactCount ?? 0) > 0 || (closure.metrics?.neutralBugShapedCount ?? 0) > 0) {
+      assert.ok((closureProof.neutralAuditExamples?.length ?? 0) > 0);
+      assert.ok(closure.issueRefs?.some((issue) =>
+        closureProof.neutralAuditExamples.some((example: any) => example.number === issue.number)));
+    }
+    const closureExamples = (closureProof.examples ?? [])
       .filter((item: any) => item.status !== 'fixed_in_release');
     assert.deepEqual(
-      closure.issueRefs?.map((item) => item.number),
-      closureExamples.slice(0, closure.issueRefs?.length ?? 0).map((item: any) => item.number),
+      closure.issueRefs?.slice(0, 3).map((item) => item.number),
+      closureExamples.slice(0, Math.min(3, closure.issueRefs?.length ?? 0)).map((item: any) => item.number),
     );
     assert.ok(closureExamples.every((item: any, index: number) =>
       index === 0 || Number(closureExamples[index - 1].riskWeight ?? 0) >= Number(item.riskWeight ?? 0)));

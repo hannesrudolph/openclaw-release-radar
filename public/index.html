@@ -1677,7 +1677,8 @@ function scoreSignalSummary(local) {
 }
 
 function shortIssueTitle(issue) {
-  const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
+  const rawTitle = String(issue?.title ?? '').trim();
+  const title = rawTitle.replace(/^\[bug\]:?\s*/i, '').trim() || rawTitle || 'untitled report';
   return truncateAtWordBoundary(title, 110);
 }
 
@@ -1748,7 +1749,7 @@ function scoreDetailMetricsHtml(metrics) {
   if (!metrics || typeof metrics !== 'object') return '';
   const entries = Object.entries(metrics)
     .filter(([, value]) => value != null && value !== '')
-    .slice(0, 8);
+    .slice(0, 14);
   if (!entries.length) return '';
   return `<div class="score-explain__metrics">${entries.map(([key, value]) =>
     `<span class="score-explain__metric">${esc(metricLabel(key))}: ${esc(metricValue(value))}</span>`

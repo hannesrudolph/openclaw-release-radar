@@ -573,6 +573,13 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       'resolved_by_canonical_release_fix',
     ]);
     const riskSummary = closureProof.riskSummary ?? {};
+    const neutralAuditRefs = issueRefs(closureProof.neutralAuditExamples ?? [], 2);
+    const primaryIssueRefLimit = neutralAuditRefs.length > 0 ? 3 : 5;
+    const closureIssueRefs = mergeIssueRefs(
+      issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release'), primaryIssueRefLimit),
+      neutralAuditRefs,
+      5,
+    );
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
@@ -604,7 +611,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
         },
         buckets,
         riskBuckets,
-        issueRefs: issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release'), 5),
+        issueRefs: closureIssueRefs,
       },
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
@@ -698,6 +705,22 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function mergeIssueRefs(
+  primary: ScoreExplanationIssueRef[],
+  secondary: ScoreExplanationIssueRef[],
+  limit: number,
+): ScoreExplanationIssueRef[] {
+  const seen = new Set<number>();
+  const merged: ScoreExplanationIssueRef[] = [];
+  for (const issue of [...primary, ...secondary]) {
+    if (!Number.isInteger(issue.number) || seen.has(issue.number)) continue;
+    seen.add(issue.number);
+    merged.push(issue);
+    if (merged.length >= limit) break;
+  }
+  return merged;
 }
 
 function classificationDiff(
@@ -866,7 +889,8 @@ function issueRef(issue: any): string {
 }
 
 function shortIssueTitle(issue: any): string {
-  const title = String(issue?.title ?? '').replace(/^\[bug\]:?\s*/i, '').trim();
+  const rawTitle = String(issue?.title ?? '').trim();
+  const title = rawTitle.replace(/^\[bug\]:?\s*/i, '').trim() || rawTitle || 'untitled report';
   return truncateAtWordBoundary(title, SHORT_ISSUE_TITLE_LENGTH);
 }
 

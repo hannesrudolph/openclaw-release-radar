@@ -111,7 +111,7 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
   const creditedCount = byStatus.fixed_in_release ?? 0;
   const analyzedClosedCount = creditedCount + notCreditedCount;
   const exampleCandidateLimit = Math.max(30, analyzedClosedCount);
-  const examples = closureProofExamples(tag, exampleCandidateLimit).map((row) => {
+  const allExamples = closureProofExamples(tag, exampleCandidateLimit).map((row) => {
     const classification = effectiveClosureClassification(row, labelCutoff);
     const effectiveRiskRow = classification
       ? {
@@ -144,7 +144,12 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
       riskDisposition: closureRiskDisposition(row.status),
       evidence: parseJson(row.evidence_json, {}),
     };
-  }).sort(compareClosureProofExamples).slice(0, 30);
+  }).sort(compareClosureProofExamples);
+  const neutralAuditExamples = allExamples
+    .filter((example) => isNeutralAuditExample(example))
+    .sort(compareNeutralAuditExamples)
+    .slice(0, 10);
+  const examples = allExamples.slice(0, 30);
   const riskSummary = {
     creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
     resolvedByCanonicalReleaseFixCount: byRiskDisposition.resolved_by_canonical_release_fix ?? 0,
@@ -172,6 +177,7 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
       unresolvedWeightedRisk: roundMetric(weightedRisk.unresolvedWeightedRisk),
       weightedRiskByDisposition: roundRiskMap(weightedRisk.byDisposition),
     },
+    neutralAuditExamples,
     examples,
   };
 }
@@ -204,6 +210,28 @@ function closureStatusRank(status: string): number {
     duplicate_to_fixed_in_release: 15,
     fixed_in_release: 16,
   } as Record<string, number>)[status] ?? 99;
+}
+
+function isNeutralAuditExample(example: any): boolean {
+  return example.riskDisposition === 'neutral_or_non_actionable' &&
+    example.sentiment === 'neutral' &&
+    (
+      example.severity === 'high' ||
+      example.severity === 'critical' ||
+      BUG_SHAPED_TITLE_RE.test(example.title ?? '')
+    );
+}
+
+function compareNeutralAuditExamples(a: any, b: any): number {
+  const severityDiff = neutralAuditSeverityRank(b.severity) - neutralAuditSeverityRank(a.severity);
+  if (severityDiff !== 0) return severityDiff;
+  const bugDiff = Number(BUG_SHAPED_TITLE_RE.test(b.title ?? '')) - Number(BUG_SHAPED_TITLE_RE.test(a.title ?? ''));
+  if (bugDiff !== 0) return bugDiff;
+  return String(b.closedAt ?? '').localeCompare(String(a.closedAt ?? ''));
+}
+
+function neutralAuditSeverityRank(severity: unknown): number {
+  return ({ critical: 3, high: 2, medium: 1, low: 0 } as Record<string, number>)[String(severity ?? '')] ?? 0;
 }
 
 export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any, closureProof = closureProofPayload(tag)) {
