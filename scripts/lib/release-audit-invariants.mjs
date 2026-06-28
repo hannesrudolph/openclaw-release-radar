@@ -780,6 +780,12 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         `releases finalScore (${releaseApi.finalScore}) must match DB final_score (${release.final_score})`);
       expect(failures, release.tag, releaseApi.status === release.state,
         `releases status (${releaseApi.status}) must match DB state (${release.state})`);
+      expect(failures, release.tag, releaseApi.reason === release.score_reason,
+        `releases reason (${releaseApi.reason}) must match DB score_reason (${release.score_reason})`);
+      expect(failures, release.tag, releaseApi.negativeIssues === release.negative_issues,
+        `releases negativeIssues (${releaseApi.negativeIssues}) must match DB negative_issues (${release.negative_issues})`);
+      expect(failures, release.tag, releaseApi.positiveIssues === release.positive_issues,
+        `releases positiveIssues (${releaseApi.positiveIssues}) must match DB positive_issues (${release.positive_issues})`);
       expect(failures, release.tag, releaseApi.recommended === (release.recommended === 1),
         `releases recommended (${releaseApi.recommended}) must match DB recommended (${release.recommended === 1})`);
       expect(failures, release.tag, releaseApi.scoredAt === release.scored_at,
@@ -801,11 +807,19 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         `public score (${publicRelease.score}) must match DB final_score (${release.final_score})`);
       expect(failures, release.tag, publicRelease.status === release.state,
         `public status (${publicRelease.status}) must match DB state (${release.state})`);
+      expect(failures, release.tag, publicRelease.reason === release.score_reason,
+        `public reason (${publicRelease.reason}) must match DB score_reason (${release.score_reason})`);
+      expect(failures, release.tag, publicRelease.negativeIssues === Number(release.negative_issues ?? 0),
+        `public negativeIssues (${publicRelease.negativeIssues}) must match DB negative_issues (${release.negative_issues})`);
+      expect(failures, release.tag, publicRelease.positiveIssues === Number(release.positive_issues ?? 0),
+        `public positiveIssues (${publicRelease.positiveIssues}) must match DB positive_issues (${release.positive_issues})`);
       expect(failures, release.tag, publicRelease.recommended === (release.recommended === 1),
         `public recommended (${publicRelease.recommended}) must match DB recommended (${release.recommended === 1})`);
       expect(failures, release.tag, publicRelease.scoredAt === release.scored_at,
         `public scoredAt (${publicRelease.scoredAt}) must match DB scored_at (${release.scored_at})`);
       verifyScoreAuditSummary({ failures, tag: release.tag, summary: publicRelease.scoreAudit });
+      expect(failures, release.tag, publicRelease.totalAttributedIssues === publicRelease.scoreAudit?.rawIssueCount,
+        `public totalAttributedIssues (${publicRelease.totalAttributedIssues}) must match scoreAudit rawIssueCount (${publicRelease.scoreAudit?.rawIssueCount})`);
       const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
       if (publicRelease.totalAttributedIssues > 0) {
         expect(failures, release.tag, issueCount > 0,
@@ -831,8 +845,26 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
       `review score (${review.local?.score}) must match DB final_score (${release.final_score})`);
     expect(failures, release.tag, review.local?.status === release.state,
       `review status (${review.local?.status}) must match DB state (${release.state})`);
+    expect(failures, release.tag, review.local?.reason === release.score_reason,
+      `review reason (${review.local?.reason}) must match DB score_reason (${release.score_reason})`);
+    expect(failures, release.tag, review.local?.negativeIssues === release.negative_issues,
+      `review negativeIssues (${review.local?.negativeIssues}) must match DB negative_issues (${release.negative_issues})`);
+    expect(failures, release.tag, review.local?.positiveIssues === release.positive_issues,
+      `review positiveIssues (${review.local?.positiveIssues}) must match DB positive_issues (${release.positive_issues})`);
     expect(failures, release.tag, review.local?.recommended === (release.recommended === 1),
       `review recommended (${review.local?.recommended}) must match DB recommended (${release.recommended === 1})`);
+    expect(failures, release.tag, review.local?.scoredAt === release.scored_at,
+      `review scoredAt (${review.local?.scoredAt}) must match DB scored_at (${release.scored_at})`);
+    if (releaseApi) {
+      expect(failures, release.tag, releaseApi.band === review.local?.band,
+        `releases band (${releaseApi.band}) must match review band (${review.local?.band})`);
+    }
+    if (publicRelease) {
+      expect(failures, release.tag, publicRelease.band === review.local?.band,
+        `public band (${publicRelease.band}) must match review band (${review.local?.band})`);
+      expect(failures, release.tag, publicRelease.totalAttributedIssues === review.local?.input?.rawIssueCount,
+        `public totalAttributedIssues (${publicRelease.totalAttributedIssues}) must match review rawIssueCount (${review.local?.input?.rawIssueCount})`);
+    }
     verifyScoreExplanation({
       failures,
       tag: release.tag,
@@ -849,6 +881,19 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         publicRelease.explanation, review.local?.components?.explanation);
     }
     if (comparison?.local) {
+      for (const [field, expected] of Object.entries({
+        score: review.local?.score,
+        band: review.local?.band,
+        status: review.local?.status,
+        recommended: review.local?.recommended,
+        reason: review.local?.reason,
+        negativeIssues: review.local?.negativeIssues,
+        positiveIssues: review.local?.positiveIssues,
+        scoredAt: review.local?.scoredAt,
+      })) {
+        expect(failures, release.tag, comparison.local[field] === expected,
+          `comparison local ${field} (${comparison.local[field]}) must match review (${expected})`);
+      }
       expectJsonEqual(failures, release.tag, 'comparison local explanation must match review explanation',
         comparison.local.components?.explanation, review.local?.components?.explanation);
     }

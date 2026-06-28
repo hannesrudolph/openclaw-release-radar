@@ -48,7 +48,16 @@ function reader(overrides: Partial<{
   audit: any;
 }> = {}) {
   const data = {
-    releases: [{ tag: 'v1', final_score: 7.5, state: 'eligible', recommended: 1, scored_at: auditScoredAt }],
+    releases: [{
+      tag: 'v1',
+      final_score: 7.5,
+      state: 'eligible',
+      recommended: 1,
+      scored_at: auditScoredAt,
+      score_reason: 'test reason',
+      negative_issues: 1,
+      positive_issues: 0,
+    }],
     rawClosed: [{ number: 1 }],
     closed: [{ number: 1, prompt_version: 6 }],
     verified: [{ number: 1, sentiment: 'negative', prompt_version: 6 }],
@@ -149,8 +158,12 @@ describe('verifyReleaseAudit', () => {
           releases: [{
             tag: 'v1',
             score: 7.5,
+            band: 'ok',
             status: 'eligible',
             recommended: true,
+            reason: 'test reason',
+            negativeIssues: 1,
+            positiveIssues: 0,
             scoredAt: auditScoredAt,
             scoreAudit,
             explanation,
@@ -168,8 +181,12 @@ describe('verifyReleaseAudit', () => {
         return [{
           tag: 'v1',
           finalScore: 7.5,
+          band: 'ok',
           status: 'eligible',
           recommended: true,
+          reason: 'test reason',
+          negativeIssues: 1,
+          positiveIssues: 0,
           scoredAt: auditScoredAt,
           scoreAudit,
           explanation,
@@ -181,6 +198,14 @@ describe('verifyReleaseAudit', () => {
           releases: [{
             tag: 'v1',
             local: {
+              score: 7.5,
+              band: 'ok',
+              status: 'eligible',
+              recommended: true,
+              reason: 'test reason',
+              negativeIssues: 1,
+              positiveIssues: 0,
+              scoredAt: auditScoredAt,
               components: { explanation },
               gateEvidence: {
                 fixProvenance: {
@@ -199,8 +224,17 @@ describe('verifyReleaseAudit', () => {
           snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
           local: {
             score: 7.5,
+            band: 'ok',
             status: 'eligible',
             recommended: true,
+            reason: 'test reason',
+            negativeIssues: 1,
+            positiveIssues: 0,
+            scoredAt: auditScoredAt,
+            input: {
+              rawIssueCount: 1,
+              classifiedIssueCount: 1,
+            },
             gateEvidence: {
               fixProvenance: {
                 closureProof: closureProofFixture(),
