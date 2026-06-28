@@ -1720,7 +1720,7 @@ function metricLabel(key) {
     knownNotInReleaseCount: 'not in tag',
     missingClassificationCount: 'missing classes',
     missingEvidenceCount: 'missing proof',
-    neutralOrNonActionableCount: 'neutral',
+    neutralOrNonActionableCount: 'not scored',
     notCountedClosedCount: 'not direct fixes',
     openCanonicalRiskCount: 'open canonical',
     openedCount: 'opened',
@@ -1802,6 +1802,7 @@ function closureStatusLabel(status) {
     canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
+    admin_not_planned_unverified: 'unverified admin not-planned',
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
@@ -1810,7 +1811,7 @@ function closureStatusLabel(status) {
     no_code_proof: 'no linked release fix',
     no_timeline_event: 'close event not fetched',
     non_bug_neutral: 'not bug evidence',
-    not_planned: 'not planned',
+    not_planned: 'concrete non-actionable',
     unknown: 'not enough release evidence',
   })[status] ?? String(status ?? 'unknown');
 }
@@ -1833,7 +1834,7 @@ function closureRiskDispositionLabel(disposition) {
     known_not_in_release: 'known not in this tag',
     open_canonical_risk: 'still-open canonical risk',
     unsupported_closure_claim: 'unsupported closure/admin claim',
-    neutral_or_non_actionable: 'neutral/non-actionable closure',
+    neutral_or_non_actionable: 'not-scored/non-actionable closure',
     missing_evidence: 'missing proof evidence',
   })[disposition] ?? String(disposition ?? 'unknown closure risk');
 }
@@ -1846,9 +1847,9 @@ function closureRiskSummaryText(closureProof) {
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
     [risk.missingEvidenceCount, 'missing proof evidence'],
-    [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
-    [risk.neutralHighImpactCount, 'high-impact neutral audit flag'],
-    [risk.neutralBugShapedCount, 'bug-shaped neutral audit flag'],
+    [risk.neutralOrNonActionableCount, 'not-scored/non-actionable closure'],
+    [risk.neutralHighImpactCount, 'high-impact not-scored audit flag'],
+    [risk.neutralBugShapedCount, 'bug-shaped not-scored audit flag'],
   ];
   return parts
     .filter(([count]) => Number(count ?? 0) > 0)
@@ -2085,7 +2086,7 @@ function scoreReviewHtml(r) {
   );
   const closureRisk = closureProof?.riskSummary;
   const closureRiskLine = closureRisk
-    ? `${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved · ${esc(closureRisk.knownNotInReleaseCount ?? 0)} known not in tag · ${esc(closureRisk.neutralOrNonActionableCount ?? 0)} neutral`
+    ? `${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved · ${esc(closureRisk.knownNotInReleaseCount ?? 0)} known not in tag · ${esc(closureRisk.neutralOrNonActionableCount ?? 0)} not scored`
     : '';
   const signalSummary = scoreSignalSummary(local);
   const componentEntries = Object.entries(components);

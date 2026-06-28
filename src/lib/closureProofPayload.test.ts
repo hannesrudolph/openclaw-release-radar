@@ -46,6 +46,19 @@ describe('closure proof risk weighting', () => {
     assert.ok(weight > 0);
   });
 
+  it('counts bare admin not-planned closures as unresolved unsupported risk', () => {
+    const weight = closureRiskWeightForRow({
+      status: 'admin_not_planned_unverified',
+      sentiment: 'negative',
+      severity: 'critical',
+      functionality: 'core',
+      scope: 'moderate',
+      affected_users: 'some',
+    });
+    assert.equal(closureRiskDisposition('admin_not_planned_unverified'), 'unsupported_closure_claim');
+    assert.ok(weight > 0);
+  });
+
   it('excludes credited fixes and neutral closures from unresolved closure risk', () => {
     const base = {
       sentiment: 'negative',

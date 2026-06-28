@@ -621,11 +621,11 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
-      ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including neutral or non-actionable closures.` +
+      ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including not-scored or non-actionable closures.` +
       ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
       ((components.closureRiskCeiling ?? 0) > 0 ? ` Heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
       ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0)
-        ? ` Audit-only neutral flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact neutral closures and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped neutral closures were excluded from risk.`
+        ? ` Audit-only closure flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped not-scored closures were left out of the scored closure penalty; review them separately.`
         : '') +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
@@ -923,9 +923,9 @@ function closureRiskSummaryText(closureProof: any): string {
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
     [risk.missingEvidenceCount, 'missing proof evidence'],
-    [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
-    [risk.neutralHighImpactCount, 'high-impact neutral audit flag'],
-    [risk.neutralBugShapedCount, 'bug-shaped neutral audit flag'],
+    [risk.neutralOrNonActionableCount, 'not-scored/non-actionable closure'],
+    [risk.neutralHighImpactCount, 'high-impact not-scored audit flag'],
+    [risk.neutralBugShapedCount, 'bug-shaped not-scored audit flag'],
   ];
   return parts
     .filter(([count]) => Number(count ?? 0) > 0)
@@ -946,6 +946,7 @@ function closureStatusLabel(status: string): string {
     canonical_cycle_or_self_reference: 'bad canonical reference',
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
+    admin_not_planned_unverified: 'unverified admin not-planned',
     main_only_claim: 'main-only claim',
     reporter_replaced: 'reporter refiled/replaced',
     reporter_withdrawn: 'reporter withdrew',
@@ -954,7 +955,7 @@ function closureStatusLabel(status: string): string {
     no_code_proof: 'no linked release fix',
     no_timeline_event: 'close event not fetched',
     non_bug_neutral: 'not bug evidence',
-    not_planned: 'not planned',
+    not_planned: 'concrete non-actionable',
     unknown: 'not enough release evidence',
   } as Record<string, string>)[status] ?? String(status ?? 'unknown');
 }

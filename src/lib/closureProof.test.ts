@@ -231,7 +231,7 @@ describe('classifyClosureProof', () => {
     assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
-  it('still treats stale not-planned closures as administrative when no close-time rationale exists', () => {
+  it('keeps stale not-planned admin closures as unsupported risk when no close-time rationale exists', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],
       closedAt: '2026-06-27T21:45:31Z',
@@ -241,8 +241,22 @@ describe('classifyClosureProof', () => {
         body: 'Current main already contains related cache-size work.',
       }],
     }));
-    assert.equal(result.status, 'not_planned');
+    assert.equal(result.status, 'admin_not_planned_unverified');
     assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
+  it('keeps outside-repository not-planned closures neutral when close-time rationale is concrete', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-27T21:45:31Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-27T21:44:31Z',
+        body: 'Close: this lives outside the OpenClaw source repository and is plugin-owned, so it is not actionable as core work.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
   it('keeps duplicate/superseded closures distinct from already-present claims', () => {
@@ -295,6 +309,14 @@ describe('classifyClosureProof', () => {
   it('separates neutral closed items from bug evidence', () => {
     const result = classifyClosureProof(input({ sentiment: 'neutral' }));
     assert.equal(result.status, 'non_bug_neutral');
+  });
+
+  it('keeps missing closure timeline evidence visible even for neutral items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasClosureEvent: false,
+    }));
+    assert.equal(result.status, 'no_timeline_event');
   });
 
   it('identifies missing timeline evidence', () => {

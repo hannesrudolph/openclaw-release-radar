@@ -25,7 +25,7 @@ The normal score starts from a base value, then applies bounded components:
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
 - `carryoverDebt`: inherited source/static/current open risk. This is capped.
 - `staleDebt`: low-confidence, stale, needs-info, or weak evidence risk. This is heavily capped.
-- `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and excludes neutral/non-actionable closures.
+- `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and does not score non-bug, reporter-withdrawn, or concretely non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
 - `survival`: reward for standing as latest/current stable without hotfix replacement.
 - `shakeout`: small reward for beta/prerelease bake time.
@@ -122,6 +122,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `canonical_cycle_or_self_reference`: canonical reference loops back to the same issue or repeats.
 - `duplicate_or_superseded`: closure comments or state show the issue moved under another tracker.
 - `already_present_claim`: closure comment claims the behavior is already implemented, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
+- `admin_not_planned_unverified`: a negative report was closed with GitHub `NOT_PLANNED`, but no reachable release fix proof or concrete close-time non-actionable rationale was found.
 - `main_only_claim`: closure comment claims the fix exists on current main, but indicates the scored release may not contain it.
 - `reporter_replaced`: reporter refiled, reopened, or replaced the issue under another issue number.
 - `reporter_withdrawn`: reporter withdrew the report, asked maintainers to ignore it, or closed it for privacy/non-fix reasons.
@@ -129,7 +130,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_neutral`: closed item is not negative bug evidence.
-- `not_planned`: closure reason or comment says the issue was not planned/actionable.
+- `not_planned`: close-time rationale says the issue is expected, by design, outside the tracked source/repository boundary, or otherwise concretely non-actionable for this release.
 
 Only `fixed_in_release` receives direct fix credit. `duplicate_to_fixed_in_release` is treated as resolved release risk, but it remains separate so duplicate reports do not inflate direct fix counts. Other buckets preserve the closure context in the audit, but they do not reduce release risk for this tag.
 
@@ -139,11 +140,11 @@ The closure proof payload also rolls status buckets into risk dispositions:
 - `resolved_by_canonical_release_fix`: duplicate/superseded report whose canonical fix is proven reachable from the release tag.
 - `known_not_in_release`: a PR/commit or closure note indicates the fix is on main or after this tag, so it is not proof for this release.
 - `open_canonical_risk`: the report was moved to an open canonical issue/trusted PR, or it has related open PR context that proves the work is not resolved in the scored release.
-- `unsupported_closure_claim`: an already-present, duplicate, superseded, or closed-canonical claim that lacks reachable release code proof.
-- `neutral_or_non_actionable`: not bug evidence, not planned/actionable, reporter replacement, withdrawal, or self-closure.
+- `unsupported_closure_claim`: an already-present, duplicate, superseded, admin-not-planned, or closed-canonical claim that lacks reachable release code proof.
+- `neutral_or_non_actionable`: not-scored closure evidence such as non-bug reports, concrete non-actionable rationale, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.
 
-`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, and neutral/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. The scorer converts that unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, then disposition weight times severity, functionality, scope, and affected-user reach. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty.
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, then disposition weight times severity, functionality, scope, and affected-user reach. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty.
 
 The API exposes a coherent `releaseFixCredit` object:
 

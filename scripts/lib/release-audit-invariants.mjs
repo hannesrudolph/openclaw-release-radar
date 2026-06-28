@@ -16,6 +16,7 @@ export const knownProofStatuses = new Set([
   'canonical_cycle_or_self_reference',
   'duplicate_or_superseded',
   'not_planned',
+  'admin_not_planned_unverified',
   'already_present_claim',
   'main_only_claim',
   'reporter_replaced',
@@ -51,6 +52,7 @@ const riskDispositionByProofStatus = new Map([
   ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
   ['duplicate_or_superseded', 'unsupported_closure_claim'],
   ['already_present_claim', 'unsupported_closure_claim'],
+  ['admin_not_planned_unverified', 'unsupported_closure_claim'],
   ['repro_requested', 'unsupported_closure_claim'],
   ['no_code_proof', 'unsupported_closure_claim'],
   ['non_bug_neutral', 'neutral_or_non_actionable'],
@@ -300,6 +302,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_closed_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+      }
+      if (row.status === 'admin_not_planned_unverified') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `admin_not_planned_unverified issue #${row.issue_number} must have NOT_PLANNED state reason`);
+      }
+      if (isNegativeBareNotPlannedNeutral(row, evidence)) {
+        expect(failures, tag, false,
+          `negative NOT_PLANNED issue #${row.issue_number} cannot be neutral/non-actionable without concrete close-time rationale`);
       }
       if (row.status === 'canonical_cycle_or_self_reference') {
         expect(failures, tag, evidence.canonicalResolution?.cycle === true || evidence.canonicalResolution?.selfReference === true,
@@ -881,6 +891,26 @@ function uniqueSorted(values) {
 function intersection(left, right) {
   const rightSet = new Set(right);
   return left.filter((item) => rightSet.has(item));
+}
+
+const concreteNonActionableRationaleRe =
+  /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|plugin-owned|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported)\b/i;
+
+function isNegativeBareNotPlannedNeutral(row, evidence) {
+  if (riskDispositionForStatus(row.status) !== 'neutral_or_non_actionable') return false;
+  if (row.status !== 'not_planned') return false;
+  const classification = effectiveClassificationForProofRow(row);
+  if (classification.sentiment !== 'negative') return false;
+  if (!Array.isArray(evidence.stateReasons) || !evidence.stateReasons.includes('NOT_PLANNED')) return false;
+  return !hasConcreteNonActionableRationale(evidence);
+}
+
+function hasConcreteNonActionableRationale(evidence) {
+  if (Array.isArray(evidence.nonActionableRationaleComments) && evidence.nonActionableRationaleComments.length > 0) {
+    return true;
+  }
+  const comments = Array.isArray(evidence.matchingComments) ? evidence.matchingComments : [];
+  return comments.some((comment) => concreteNonActionableRationaleRe.test(String(comment?.snippet ?? '')));
 }
 
 async function verifyApi({ apiBase, fetchJson, releases, failures }) {

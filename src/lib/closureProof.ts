@@ -10,6 +10,7 @@ export type ClosureProofStatus =
   | 'canonical_cycle_or_self_reference'
   | 'duplicate_or_superseded'
   | 'not_planned'
+  | 'admin_not_planned_unverified'
   | 'already_present_claim'
   | 'main_only_claim'
   | 'reporter_replaced'
@@ -52,6 +53,7 @@ const NOT_DUPLICATE_RE = /\b(?:not|isn't|is not|wasn't|was not|no longer)\s+(?:a
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|tagged releases? already|already contains|already covered|implemented in current|current `?main`?.{0,80}\b(?:already|now)\s+(?:has|contains|includes|implements|fix(?:e[sd])?))\b/i;
 const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
+const NON_ACTIONABLE_RATIONALE_RE = /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|plugin-owned|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported)\b/i;
 const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|under|to)\b.{0,80}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#\d+\b/i;
 const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
 const REPRO_REQUESTED_RE = /\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b|\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b.{0,80}\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b/i;
@@ -95,21 +97,22 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     reachableFixCommits: input.reachableFixCommits ?? [],
     notReachableFixCommits: input.notReachableFixCommits ?? [],
     matchingComments: matchingCommentSnippets(closureContextComments),
+    nonActionableRationaleComments: nonActionableRationaleSnippets(closureContextComments),
     canonicalIssues: canonicalIssueNumbers(combinedComments),
   };
-
-  if (input.sentiment && input.sentiment !== 'negative') {
-    return {
-      status: 'non_bug_neutral',
-      summary: 'Closed item is not negative bug evidence.',
-      evidence,
-    };
-  }
 
   if (!input.hasClosureEvent) {
     return {
       status: 'no_timeline_event',
       summary: 'Closed issue has no fetched GitHub closure timeline event.',
+      evidence,
+    };
+  }
+
+  if (input.sentiment && input.sentiment !== 'negative') {
+    return {
+      status: 'non_bug_neutral',
+      summary: 'Closed item is not negative bug evidence.',
       evidence,
     };
   }
@@ -185,10 +188,18 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (reasons.has('NOT_PLANNED') && !NON_ACTIONABLE_RATIONALE_RE.test(combinedComments)) {
+    return {
+      status: 'admin_not_planned_unverified',
+      summary: 'Closed as not planned without trusted release-fix proof or a concrete non-actionable rationale.',
+      evidence,
+    };
+  }
+
   if (reasons.has('NOT_PLANNED') || NO_PLAN_RE.test(combinedComments)) {
     return {
       status: 'not_planned',
-      summary: 'Closed as not planned or not actionable as a direct fix.',
+      summary: 'Closed with close-time rationale that the report is not actionable as a direct release fix.',
       evidence,
     };
   }
@@ -272,6 +283,21 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
       return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || MAIN_ONLY_RE.test(body) || NO_PLAN_RE.test(body) ||
         REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body) || REPRO_REQUESTED_RE.test(body);
     })
+    .slice(-3)
+    .map((comment) => ({
+      author: comment.author ?? null,
+      createdAt: comment.createdAt ?? null,
+      snippet: (comment.body ?? '').replace(/\s+/g, ' ').slice(0, 500),
+    }));
+}
+
+function nonActionableRationaleSnippets(comments: ClosureProofInput['comments']): Array<{
+  author: string | null;
+  createdAt: string | null;
+  snippet: string;
+}> {
+  return comments
+    .filter((comment) => NON_ACTIONABLE_RATIONALE_RE.test(comment.body ?? ''))
     .slice(-3)
     .map((comment) => ({
       author: comment.author ?? null,

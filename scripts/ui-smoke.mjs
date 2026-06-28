@@ -27,7 +27,7 @@ for (const release of releases) {
     fixCreditTag = release.tag;
     fixCreditText = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
     closureRiskText = risk
-      ? `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} neutral`
+      ? `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} not scored`
       : null;
     explanationText = (review.local?.components?.explanation?.limits ?? [])
       .find((line) => /closed issues .* not counted as release fixes/i.test(line))
@@ -137,7 +137,7 @@ try {
       await panel.locator('.score-review__item').filter({ hasText: 'Release fix credit' }).getByText(expectedCredit).waitFor();
       const risk = review.local?.gateEvidence?.fixProvenance?.closureProof?.riskSummary;
       if (!risk) throw new Error(`Missing closure risk summary for ${release.tag}`);
-      const expectedRisk = `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} neutral`;
+      const expectedRisk = `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} not scored`;
       await panel.locator('.score-review__item').filter({ hasText: 'Closure risk' }).getByText(expectedRisk).waitFor();
     }
   }

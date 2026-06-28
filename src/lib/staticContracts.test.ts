@@ -64,6 +64,7 @@ describe('static scoring/UI contracts', () => {
       'canonical_cycle_or_self_reference',
       'duplicate_or_superseded',
       'already_present_claim',
+      'admin_not_planned_unverified',
       'main_only_claim',
       'reporter_replaced',
       'reporter_withdrawn',

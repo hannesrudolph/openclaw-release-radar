@@ -881,6 +881,121 @@ describe('verifyReleaseAudit', () => {
     assert.match(result.failures[0], /open terminal/);
   });
 
+  it('fails when negative NOT_PLANNED is neutral without concrete rationale', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'not_planned',
+          evidence_json: JSON.stringify({
+            stateReasons: ['NOT_PLANNED'],
+            matchingComments: [],
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { not_planned: 1 },
+                byRiskDisposition: { neutral_or_non_actionable: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 1,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 0,
+                  unresolvedWeightedRisk: 0,
+                  weightedRiskByDisposition: {},
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) =>
+      /negative NOT_PLANNED issue #1 cannot be neutral\/non-actionable without concrete close-time rationale/.test(failure)));
+  });
+
+  it('allows negative NOT_PLANNED neutralization with concrete outside-repo rationale', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'not_planned',
+          evidence_json: JSON.stringify({
+            stateReasons: ['NOT_PLANNED'],
+            nonActionableRationaleComments: [{
+              snippet: 'Close: this lives outside the OpenClaw source repository and is plugin-owned.',
+            }],
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { not_planned: 1 },
+                byRiskDisposition: { neutral_or_non_actionable: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 1,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 0,
+                  unresolvedWeightedRisk: 0,
+                  weightedRiskByDisposition: {},
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.deepEqual(result.failures, []);
+  });
+
   it('fails when commit proof uses short hashes or mismatched flags', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
