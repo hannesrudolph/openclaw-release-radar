@@ -156,6 +156,22 @@ describe('parseReleaseNotes', () => {
     assert.equal(r.fixesCount, 3);
   });
 
+  it('keeps h4 topic bullets under a counted h3 parent bucket', () => {
+    const body = [
+      '### Highlights',
+      '',
+      '#### Automatic fast mode',
+      '- highlight one',
+      '- highlight two',
+      '',
+      '#### Provider routing',
+      '- highlight three',
+    ].join('\n');
+    const r = parseReleaseNotes(body);
+    assert.equal(r.highlightsCount, 3);
+    assert.equal(r.fixesCount, 0);
+  });
+
   it('treats h3 and h4 buckets with the same name as one bucket (totals merge)', () => {
     // Hypothetical: ### Fixes (early bullets) + #### Fixes deeper.
     // We count all fix-bullets — easier to explain than counting only the

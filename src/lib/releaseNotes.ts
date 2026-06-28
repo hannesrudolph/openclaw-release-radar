@@ -60,6 +60,7 @@ const BULLET_LINE = /^- /;
 // levels feed the same bucket — there's no useful semantic difference between
 // "### Fixes" and "#### Fixes" for counting bullets.
 const SECTION_LINE = /^#{3,4}\s+(.+?)\s*$/;
+const COUNTED_SECTIONS = new Set(['breaking', 'changes', 'fixes', 'highlights']);
 // `#1` is too common as a false positive (e.g. "#1 priority"). Require at
 // least 2 digits — openclaw PR numbers are ≥5 digits anyway.
 const PR_REF = /#(\d{2,})\b/g;
@@ -71,12 +72,20 @@ export function parseReleaseNotes(body: string | null | undefined): ReleaseNotes
   const lines = body.split(/\r?\n/);
   const counts: Record<string, number> = {};
   let currentSection: string | null = null;
+  let parentSection: string | null = null;
 
   for (const line of lines) {
     const sectionMatch = line.match(SECTION_LINE);
     if (sectionMatch) {
-      currentSection = sectionMatch[1].trim().toLowerCase();
-      counts[currentSection] = counts[currentSection] ?? 0;
+      const level = line.startsWith('####') ? 4 : 3;
+      const section = sectionMatch[1].trim().toLowerCase();
+      if (level === 3) {
+        parentSection = COUNTED_SECTIONS.has(section) ? section : null;
+        currentSection = parentSection;
+      } else {
+        currentSection = COUNTED_SECTIONS.has(section) ? section : parentSection;
+      }
+      if (currentSection) counts[currentSection] = counts[currentSection] ?? 0;
       continue;
     }
     if (currentSection && BULLET_LINE.test(line)) {
