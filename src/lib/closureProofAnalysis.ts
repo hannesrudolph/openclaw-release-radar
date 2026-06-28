@@ -4,7 +4,7 @@ import { classifyClosureProof, closureRationaleComments, type ClosureProofResult
 import { creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, pullRequestKey, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
-import { checkReleaseCommitReachability, type CommitReachability } from './releaseReachability';
+import { checkReleaseCommitReachability, checkReleasePrReachability, type CommitReachability } from './releaseReachability';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -210,38 +210,59 @@ ORDER BY r.published_at IS NULL, r.published_at DESC, p.release_tag DESC
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
-  const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
-  const aggregateRows = issueNumbers.length
+  const sourceIssueNumbers = new Set(issueNumbers);
+  const sourceAggregateRows = issueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
-  const aggregateByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row]));
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
   const allCommentsByIssue = new Map(commentsByIssue);
   const canonicalIssueNumbers = new Set<number>();
   const canonicalGraph = new Map<number, number[]>();
-  const closedAtByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
-  const closureContextCommentsByIssue = new Map<number, GhComment[]>();
+  const sourceClosedAtByIssue = new Map(sourceAggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
   for (const issueNumber of issueNumbers) {
-    const closureContextComments = closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber));
-    closureContextCommentsByIssue.set(issueNumber, closureContextComments);
+    const closureContextComments = closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], sourceClosedAtByIssue.get(issueNumber));
     const numbers = canonicalIssueNumbersFromComments(closureContextComments, issueNumber);
     canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
   await expandCanonicalGraph(canonicalGraph, allCommentsByIssue, [...canonicalIssueNumbers]);
+  const terminalCanonicalIssuesToBackfill = terminalCanonicalIssuesNeedingEvidence(releaseTag, issueNumbers, canonicalGraph);
+  if (terminalCanonicalIssuesToBackfill.length) {
+    await refreshRawClosureEvidence(terminalCanonicalIssuesToBackfill);
+    await checkReleasePrReachability(releaseTag);
+    const missingComments = terminalCanonicalIssuesToBackfill.filter((number) => !allCommentsByIssue.has(number));
+    if (missingComments.length) {
+      const fetched = await listIssueCommentsBatch(missingComments);
+      for (const number of missingComments) allCommentsByIssue.set(number, fetched.get(number) ?? []);
+    }
+  }
+  const analysisIssueNumbers = uniqueNumbers([...issueNumbers, ...terminalCanonicalIssuesToBackfill]);
+  const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
+  const aggregateRows = analysisIssueNumbers.length
+    ? aggregateRowsStmt.all(JSON.stringify(analysisIssueNumbers), releaseTag) as Array<any>
+    : [];
+  const aggregateByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row]));
+  const closedAtByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
+  const closureContextCommentsByIssue = new Map<number, GhComment[]>();
+  for (const issueNumber of analysisIssueNumbers) {
+    closureContextCommentsByIssue.set(
+      issueNumber,
+      closureRationaleComments(allCommentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber)),
+    );
+  }
   const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
   const canonicalCommitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
-  const referencedCommitMentionsByIssue = commitReferenceMentionsByIssue(issueNumbers);
+  const referencedCommitMentionsByIssue = commitReferenceMentionsByIssue(analysisIssueNumbers);
   const useReferencedCommitProofIssues = new Set<number>();
   const allCommitOids = new Set<string>();
-  for (const issueNumber of issueNumbers) {
+  for (const issueNumber of analysisIssueNumbers) {
     const directMentions = closureCommentCommitMentions(issueNumber, closureContextCommentsByIssue.get(issueNumber) ?? []);
     const canonicalMentions = canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
-        closureCommentCommitMentions(
-          issueNumber,
-          allCommentsByIssue.get(canonicalIssueNumber) ?? [],
-          canonicalIssueNumber,
-        ),
+      closureCommentCommitMentions(
+        issueNumber,
+        allCommentsByIssue.get(canonicalIssueNumber) ?? [],
+        canonicalIssueNumber,
+      ),
     );
     const mentions = [...directMentions, ...canonicalMentions];
     commitMentionsByIssue.set(issueNumber, mentions);
@@ -270,7 +291,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }> = [];
 
   for (const row of aggregateRows) {
-    const comments = (commentsByIssue.get(row.number) ?? []).map((comment) => ({
+    const comments = (allCommentsByIssue.get(row.number) ?? []).map((comment) => ({
       author: comment.user?.login ?? null,
       body: comment.body,
       createdAt: comment.created_at,
@@ -340,7 +361,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }
   const resultByIssue = new Map(preparedRows.map((item) => [item.issueNumber, item.result]));
 
-  for (const item of preparedRows) {
+  for (const item of preparedRows.filter((item) => sourceIssueNumbers.has(item.issueNumber))) {
     const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph, resultByIssue, releaseTag);
     upsertIssueClosureProof({
       release_tag: releaseTag,
@@ -355,7 +376,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
 
   return {
     releaseTag,
-    analyzed: aggregateRows.length,
+    analyzed: preparedRows.filter((item) => sourceIssueNumbers.has(item.issueNumber)).length,
     buckets: Object.fromEntries([...counts.entries()].sort((a, b) => b[1] - a[1])),
     rawEvidence,
   };
@@ -522,6 +543,27 @@ async function expandCanonicalGraph(
 function canonicalIssueNumbersReachableFrom(sourceIssueNumber: number, graph: Map<number, number[]>): number[] {
   const path = canonicalResolution(sourceIssueNumber, graph).path;
   return path.slice(1);
+}
+
+function terminalCanonicalIssuesNeedingEvidence(
+  releaseTag: string,
+  sourceIssueNumbers: number[],
+  canonicalGraph: Map<number, number[]>,
+  issueDetailsLookup = issueDetails,
+  terminalProofLookup = crossReleaseTerminalProofForIssue,
+): number[] {
+  const sourceSet = new Set(sourceIssueNumbers);
+  const terminals = new Set<number>();
+  for (const issueNumber of sourceIssueNumbers) {
+    const resolution = canonicalResolution(issueNumber, canonicalGraph);
+    const terminalNumber = resolution.terminalIssue?.number;
+    if (!terminalNumber || sourceSet.has(terminalNumber)) continue;
+    const terminalIssue = issueDetailsLookup(terminalNumber);
+    if (terminalIssue?.state !== 'closed') continue;
+    if (terminalProofLookup(releaseTag, terminalNumber)) continue;
+    terminals.add(terminalNumber);
+  }
+  return [...terminals].sort((a, b) => a - b);
 }
 
 function adjustCanonicalDuplicateStatus(
@@ -821,6 +863,7 @@ export const __closureProofAnalysisTest = {
   commitReferenceMentionsFromRows,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
+  terminalCanonicalIssuesNeedingEvidence,
 };
 
 function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {
@@ -925,13 +968,13 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         reopenEvents++;
       }
-        for (const link of item.prLinks) {
-          upsertIssuePrLink({
-            issue_number: link.issueNumber,
-            pr_repository_owner: link.prRepositoryOwner,
-            pr_repository_name: link.prRepositoryName,
-            pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
-            pr_number: link.prNumber,
+      for (const link of item.prLinks) {
+        upsertIssuePrLink({
+          issue_number: link.issueNumber,
+          pr_repository_owner: link.prRepositoryOwner,
+          pr_repository_name: link.prRepositoryName,
+          pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
+          pr_number: link.prNumber,
           source: link.source,
           will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
           referenced_at: link.referencedAt,
@@ -955,12 +998,12 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         commitReferences++;
       }
-        for (const pr of item.pullRequests) {
-          upsertPullRequestFix({
-            pr_repository_owner: pr.repositoryOwner,
-            pr_repository_name: pr.repositoryName,
-            pr_repository_name_with_owner: pr.repositoryNameWithOwner,
-            pr_number: pr.number,
+      for (const pr of item.pullRequests) {
+        upsertPullRequestFix({
+          pr_repository_owner: pr.repositoryOwner,
+          pr_repository_name: pr.repositoryName,
+          pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+          pr_number: pr.number,
           title: pr.title,
           url: pr.url,
           state: pr.state,
@@ -975,31 +1018,31 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
     const commentMentions = chunk.flatMap((issueNumber) =>
       closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
     );
-      const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
-        prNumber: mention.prNumber,
-        prRepositoryOwner: mention.prRepositoryOwner,
-        prRepositoryName: mention.prRepositoryName,
-        prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
-      })));
-      for (const mention of commentMentions) {
-        const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
-        if (!pr) continue;
-        upsertIssuePrLink({
-          issue_number: mention.issueNumber,
-          pr_repository_owner: mention.prRepositoryOwner,
-          pr_repository_name: mention.prRepositoryName,
-          pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
-          pr_number: mention.prNumber,
+    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
+      prNumber: mention.prNumber,
+      prRepositoryOwner: mention.prRepositoryOwner,
+      prRepositoryName: mention.prRepositoryName,
+      prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+    })));
+    for (const mention of commentMentions) {
+      const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
+      if (!pr) continue;
+      upsertIssuePrLink({
+        issue_number: mention.issueNumber,
+        pr_repository_owner: mention.prRepositoryOwner,
+        pr_repository_name: mention.prRepositoryName,
+        pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
+        pr_number: mention.prNumber,
         source: mention.source,
         will_close_target: null,
         referenced_at: mention.referencedAt,
       });
       prLinks++;
-        upsertPullRequestFix({
-          pr_repository_owner: pr.repositoryOwner,
-          pr_repository_name: pr.repositoryName,
-          pr_repository_name_with_owner: pr.repositoryNameWithOwner,
-          pr_number: pr.number,
+      upsertPullRequestFix({
+        pr_repository_owner: pr.repositoryOwner,
+        pr_repository_name: pr.repositoryName,
+        pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+        pr_number: pr.number,
         title: pr.title,
         url: pr.url,
         state: pr.state,

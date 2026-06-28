@@ -146,6 +146,36 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((adjusted.evidence.canonicalResolution as any).terminalProof.status, 'not_planned');
   });
 
+  it('selects closed terminal canonical issues without existing cross-release proof for evidence backfill', () => {
+    const graph = new Map([
+      [10, [20]],
+      [11, [30]],
+      [12, [40]],
+    ]);
+    const selected = __closureProofAnalysisTest.terminalCanonicalIssuesNeedingEvidence(
+      'v1',
+      [10, 11, 12],
+      graph,
+      (number: number) => {
+        if (number === 20) return { number, title: 'closed missing', state: 'closed', url: null };
+        if (number === 30) return { number, title: 'open canonical', state: 'open', url: null };
+        return { number, title: 'closed with proof', state: 'closed', url: null };
+      },
+      (_releaseTag: string, number: number) => number === 40
+        ? {
+          status: 'fixed_after_release',
+          summary: 'Already proved elsewhere.',
+          evidence: {},
+          releaseTag: 'v2',
+          timing: 'after',
+          crossRelease: true,
+        }
+        : null,
+    );
+
+    assert.deepEqual(selected, [20]);
+  });
+
   it('classifies duplicate closures with open PR context as open canonical risk', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       97322,
