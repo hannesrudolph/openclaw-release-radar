@@ -232,6 +232,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, !evidence.laterFixProof,
           `fixed_not_in_scored_releases issue #${row.issue_number} must not include laterFixProof metadata`);
       }
+      if (row.status === 'fixed_after_latest_release') {
+        expect(failures, tag, evidence.unscoredFixProof?.timing === 'after_latest_release',
+          `fixed_after_latest_release issue #${row.issue_number} must include after-latest unscoredFixProof metadata`);
+      }
+      if (row.status === 'fixed_skipped_by_later_releases') {
+        expect(failures, tag, evidence.unscoredFixProof?.timing === 'skipped_by_later_releases',
+          `fixed_skipped_by_later_releases issue #${row.issue_number} must include skipped-by-later unscoredFixProof metadata`);
+      }
       if (row.status === 'duplicate_to_fixed_after_release') {
         expect(failures, tag, canonicalFixedAfterRelease(evidence),
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
@@ -381,6 +389,16 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not be negative`);
         expect(failures, tag, !evidence.laterFixProof,
           `non_bug_fixed_not_in_scored_releases issue #${row.issue_number} must not include laterFixProof metadata`);
+      }
+      if (row.status === 'non_bug_fixed_after_latest_release') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.unscoredFixProof?.timing === 'after_latest_release',
+          `non_bug_fixed_after_latest_release issue #${row.issue_number} must include after-latest unscoredFixProof metadata`);
+      }
+      if (row.status === 'non_bug_fixed_skipped_by_later_releases') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.unscoredFixProof?.timing === 'skipped_by_later_releases',
+          `non_bug_fixed_skipped_by_later_releases issue #${row.issue_number} must include skipped-by-later unscoredFixProof metadata`);
       }
       if (row.status === 'non_bug_linked_without_merge') {
         expect(failures, tag, row.sentiment !== 'negative',

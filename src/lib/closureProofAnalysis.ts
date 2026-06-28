@@ -219,6 +219,14 @@ WHERE source.tag=?
 ORDER BY later.published_at ASC
 `);
 
+const latestStableReleaseStmt = db.prepare(`
+SELECT tag, published_at
+FROM releases
+WHERE prerelease=0
+ORDER BY published_at DESC
+LIMIT 1
+`);
+
 const laterPrReachabilityStmt = db.prepare(`
 SELECT rpr.tag, r.published_at
 FROM releases source
@@ -854,12 +862,13 @@ function adjustClosureProofStatus(
   evidence: Record<string, unknown>,
   releaseTag: string,
   laterCommitReachability: Map<string, LaterFixRelease>,
+  latestStableReleaseLookup = latestStableRelease,
 ): ClosureProofResult {
   const adjusted = adjustNotPlannedEvidenceStatus(
     adjustNoReleaseFixProofStatus(result, evidence),
     evidence,
   );
-  return adjustFixedAfterReleaseStatus(adjusted, evidence, releaseTag, laterCommitReachability);
+  return adjustFixedAfterReleaseStatus(adjusted, evidence, releaseTag, laterCommitReachability, latestStableReleaseLookup);
 }
 
 type LaterFixRelease = {
@@ -871,11 +880,23 @@ type LaterFixRelease = {
   commitOid?: string;
 };
 
+type UnscoredFixProof = {
+  timing: 'after_latest_release' | 'skipped_by_later_releases' | 'unknown';
+  proofTime: string | null;
+  latestScoredReleaseTag: string | null;
+  latestScoredReleasePublishedAt: string | null;
+  proofType: 'pr' | 'commit' | 'unknown';
+  prNumber?: number;
+  prRepositoryNameWithOwner?: string;
+  commitOid?: string;
+};
+
 function adjustFixedAfterReleaseStatus(
   result: ClosureProofResult,
   evidence: Record<string, unknown>,
   releaseTag: string,
   laterCommitReachability: Map<string, LaterFixRelease>,
+  latestStableReleaseLookup = latestStableRelease,
 ): ClosureProofResult {
   const fixedAfter = result.status === 'fixed_after_release';
   const nonBugFixedAfter = result.status === 'non_bug_fixed_after_release';
@@ -894,6 +915,26 @@ function adjustFixedAfterReleaseStatus(
         : `Non-negative item has fix proof reachable from later stable ${later.releaseTag}; not scored as bug fix credit.`,
     };
   }
+  const unscored = unscoredFixProof(evidence, latestStableReleaseLookup);
+  if (unscored.timing !== 'unknown') evidence.unscoredFixProof = unscored;
+  if (unscored.timing === 'after_latest_release') {
+    return {
+      ...result,
+      status: fixedAfter ? 'fixed_after_latest_release' : 'non_bug_fixed_after_latest_release',
+      summary: fixedAfter
+        ? 'Fix proof exists after the latest scored stable release; no scored stable contains it yet.'
+        : 'Non-negative item has fix proof after the latest scored stable release.',
+    };
+  }
+  if (unscored.timing === 'skipped_by_later_releases') {
+    return {
+      ...result,
+      status: fixedAfter ? 'fixed_skipped_by_later_releases' : 'non_bug_fixed_skipped_by_later_releases',
+      summary: fixedAfter
+        ? 'Fix proof predates a later scored stable release, but no scored stable contains it.'
+        : 'Non-negative item has fix proof skipped by later scored stable releases.',
+    };
+  }
   return {
     ...result,
     status: fixedAfter ? 'fixed_not_in_scored_releases' : 'non_bug_fixed_not_in_scored_releases',
@@ -901,6 +942,93 @@ function adjustFixedAfterReleaseStatus(
       ? 'Fix proof exists, but no scored stable release currently contains it.'
       : 'Non-negative item has fix proof that is not reachable from any scored stable release.',
   };
+}
+
+function latestStableRelease(): { tag: string; published_at: string | null } | undefined {
+  return latestStableReleaseStmt.get() as { tag: string; published_at: string | null } | undefined;
+}
+
+function unscoredFixProof(
+  evidence: Record<string, unknown>,
+  latestStableReleaseLookup = latestStableRelease,
+): UnscoredFixProof {
+  const latest = latestStableReleaseLookup();
+  const latestMs = latest?.published_at ? Date.parse(latest.published_at) : NaN;
+  const proof = earliestProofTime([
+    ...notReachablePrProofTimes(evidence),
+    ...notReachableCommitProofTimes(evidence),
+  ]);
+  const proofTime = proof?.proofTime ?? null;
+  if (!proof || !proofTime || !Number.isFinite(latestMs)) {
+    return {
+      timing: 'unknown',
+      proofTime,
+      latestScoredReleaseTag: latest?.tag ?? null,
+      latestScoredReleasePublishedAt: latest?.published_at ?? null,
+      proofType: proof?.proofType ?? 'unknown',
+      prRepositoryNameWithOwner: proof?.prRepositoryNameWithOwner,
+      prNumber: proof?.prNumber,
+      commitOid: proof?.commitOid,
+    };
+  }
+  return {
+    timing: Date.parse(proofTime) > latestMs ? 'after_latest_release' : 'skipped_by_later_releases',
+    proofTime,
+    latestScoredReleaseTag: latest?.tag ?? null,
+    latestScoredReleasePublishedAt: latest?.published_at ?? null,
+    proofType: proof.proofType,
+    prRepositoryNameWithOwner: proof.prRepositoryNameWithOwner,
+    prNumber: proof.prNumber,
+    commitOid: proof.commitOid,
+  };
+}
+
+function notReachablePrProofTimes(evidence: Record<string, unknown>): UnscoredFixProof[] {
+  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  const proofTimes: UnscoredFixProof[] = [];
+  const seen = new Set<string>();
+  for (const pr of linkedPrs) {
+    const repo = String(pr.repositoryNameWithOwner ?? '');
+    const prNumber = Number(pr.number ?? 0);
+    const mergedAt = typeof pr.mergedAt === 'string' ? pr.mergedAt : null;
+    if (repo !== trackedPrRepositoryNameWithOwner || !Number.isInteger(prNumber) || prNumber <= 0 || !mergedAt) continue;
+    if (Number(pr.merged ?? 0) !== 1) continue;
+    const source = String(pr.source ?? '');
+    if (!['closedByPullRequestsReferences', 'ClosedEvent.closer', 'ClosureComment.fixProof'].includes(source)) continue;
+    const key = `${repo}#${prNumber}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    proofTimes.push({
+      timing: 'unknown',
+      proofTime: mergedAt,
+      latestScoredReleaseTag: null,
+      latestScoredReleasePublishedAt: null,
+      proofType: 'pr',
+      prRepositoryNameWithOwner: repo,
+      prNumber,
+    });
+  }
+  return proofTimes;
+}
+
+function notReachableCommitProofTimes(evidence: Record<string, unknown>): UnscoredFixProof[] {
+  const proofs = Array.isArray(evidence.fixCommitProof) ? evidence.fixCommitProof as Array<Record<string, unknown>> : [];
+  return proofs
+    .filter((proof) => proof.status === 'not_reachable' && typeof proof.referencedAt === 'string')
+    .map((proof) => ({
+      timing: 'unknown' as const,
+      proofTime: String(proof.referencedAt),
+      latestScoredReleaseTag: null,
+      latestScoredReleasePublishedAt: null,
+      proofType: 'commit' as const,
+      commitOid: String(proof.commitOid ?? ''),
+    }));
+}
+
+function earliestProofTime(proofs: UnscoredFixProof[]): UnscoredFixProof | null {
+  return proofs
+    .filter((proof) => proof.proofTime && Number.isFinite(Date.parse(proof.proofTime)))
+    .sort((a, b) => String(a.proofTime).localeCompare(String(b.proofTime)))[0] ?? null;
 }
 
 function laterPrFixReleases(releaseTag: string, evidence: Record<string, unknown>): LaterFixRelease[] {

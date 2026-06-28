@@ -324,18 +324,49 @@ describe('closure proof canonical roll-up', () => {
     });
   });
 
-  it('marks fixed-after proof absent from scored stables separately', () => {
+  it('marks fixed-after proof after latest scored stable separately', () => {
+    const evidence = {
+      linkedPrs: [{
+        number: 99,
+        repositoryNameWithOwner: 'openclaw/openclaw',
+        merged: 1,
+        mergedAt: '2026-06-03T00:00:00Z',
+        source: 'ClosedEvent.closer',
+      }],
+      hasNotReachableClosingPr: true,
+    };
     const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
       result('fixed_after_release', 'Fix exists after this tag.'),
-      {
-        notReachableFixCommits: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
-        hasNotReachableFixCommit: true,
-      },
+      evidence,
       'v1',
       new Map(),
+      () => ({ tag: 'v2', published_at: '2026-06-02T00:00:00Z' }),
     );
 
-    assert.equal(adjusted.status, 'fixed_not_in_scored_releases');
+    assert.equal(adjusted.status, 'fixed_after_latest_release');
+    assert.equal((evidence as any).unscoredFixProof.timing, 'after_latest_release');
+  });
+
+  it('marks fixed-after proof skipped by later scored stables separately', () => {
+    const evidence = {
+      notReachableFixCommits: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],
+      fixCommitProof: [{
+        commitOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+        referencedAt: '2026-06-01T12:00:00Z',
+        status: 'not_reachable',
+      }],
+      hasNotReachableFixCommit: true,
+    };
+    const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('fixed_after_release', 'Fix exists after this tag.'),
+      evidence,
+      'v1',
+      new Map(),
+      () => ({ tag: 'v2', published_at: '2026-06-02T00:00:00Z' }),
+    );
+
+    assert.equal(adjusted.status, 'fixed_skipped_by_later_releases');
+    assert.equal((evidence as any).unscoredFixProof.timing, 'skipped_by_later_releases');
   });
 
   it('classifies not-planned closures with reachable proof separately from bare admin closures', () => {

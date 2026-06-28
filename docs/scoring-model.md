@@ -115,6 +115,8 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `fixed_after_release`: merged closing PR or named fix/source commit exists, but is not reachable from this release tag.
 - `fixed_in_later_release`: merged closing PR or named fix/source commit is not reachable from this release tag, but is reachable from a later scored stable release.
 - `fixed_not_in_scored_releases`: merged closing PR or named fix/source commit exists, but no scored stable release currently contains it.
+- `fixed_after_latest_release`: merged closing PR or named fix/source commit exists after the latest scored stable release, so no scored stable can contain it yet.
+- `fixed_skipped_by_later_releases`: merged closing PR or named fix/source commit predates at least one later scored stable release, but no scored stable contains it.
 - `duplicate_to_fixed_in_release`: closure moved the report to a canonical issue or canonical fix/source commit that is reachable from this release tag.
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
@@ -149,6 +151,8 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `non_bug_fixed_after_release`: non-negative item has fix proof that is not reachable from this release tag.
 - `non_bug_fixed_in_later_release`: non-negative item has fix proof reachable from a later scored stable release.
 - `non_bug_fixed_not_in_scored_releases`: non-negative item has fix proof that is not reachable from any scored stable release.
+- `non_bug_fixed_after_latest_release`: non-negative item has fix proof after the latest scored stable release.
+- `non_bug_fixed_skipped_by_later_releases`: non-negative item has fix proof that predates later scored stable releases but is not reachable from them.
 - `non_bug_linked_without_merge`: non-negative item has a linked closing PR, but it is not merged or merge state is unknown.
 - `non_bug_duplicate_to_fixed_in_release`: non-negative duplicate/superseded item points to canonical release-fix proof.
 - `non_bug_duplicate_to_open_canonical`: non-negative duplicate/superseded item points to an open canonical issue.
