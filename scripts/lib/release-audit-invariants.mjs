@@ -725,6 +725,18 @@ function verifyProofFreshness({ failures, tag, proofRows, audit }) {
 }
 
 function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence }) {
+  for (const linkedPr of Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : []) {
+    const repo = String(linkedPr?.repositoryNameWithOwner ?? '');
+    const number = Number(linkedPr?.number ?? 0);
+    const merged = Number(linkedPr?.merged ?? 0) === 1;
+    if (repo !== 'openclaw/openclaw' || !merged || !Number.isInteger(number) || number <= 0) continue;
+    expect(failures, tag, ['reachable', 'not_reachable', 'unknown'].includes(linkedPr.reachabilityStatus),
+      `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityStatus`);
+    expect(failures, tag, typeof linkedPr.reachabilityMethod === 'string' || linkedPr.reachabilityMethod == null,
+      `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityMethod`);
+    expect(failures, tag, typeof linkedPr.reachabilityEvidence === 'string' && linkedPr.reachabilityEvidence.length > 0,
+      `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityEvidence`);
+  }
   for (const pr of prEvidence) {
     const prLabel = `${pr.pr_repository_name_with_owner ?? 'unknown-repo'}#${pr.pr_number}`;
     expect(failures, tag, typeof pr.pr_repository_name_with_owner === 'string' && pr.pr_repository_name_with_owner.includes('/'),

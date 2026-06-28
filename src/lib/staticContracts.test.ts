@@ -210,6 +210,9 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(reachability, /creditedFixLinkSql/);
     assert.match(analysis, /refreshClosureCommentPrMentionEvidence/);
     assert.match(analysis, /await checkReleasePrReachability\(releaseTag\);/);
+    assert.match(analysis, /enrichLinkedPrReachability/);
+    assert.match(analysis, /reachabilityStatus/);
+    assert.match(analysis, /reachabilityEvidence/);
   });
 
   it('refresh fetches label timelines for all monitored-window issues', () => {

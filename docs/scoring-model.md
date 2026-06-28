@@ -109,6 +109,8 @@ Broad PR/commit mentions in comments are stored for audit context, but they do n
 
 GitHub `ReferencedEvent` commit references are stored separately from closure events. Fork/cross-repository references are audit context only. Same-repo direct references are used only as fallback commit proof, and only when the commit headline is fix-shaped and the reference happened no later than the final close timestamp tolerance.
 
+Every same-repo merged PR stored in closure proof `linkedPrs` carries release-tag reachability metadata: `reachabilityStatus`, `reachabilityMethod`, `tagCommitOid`, `mergeCommitOid`, and `reachabilityEvidence`. This makes each proof row self-auditing instead of requiring reviewers to cross-reference `release_pr_reachability` manually. Open, closed-unmerged, and external-repository PR references remain visible as context but are not release inclusion proof.
+
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
 - `fixed_in_release`: merged closing PR or named fix/source commit is reachable from this release tag.

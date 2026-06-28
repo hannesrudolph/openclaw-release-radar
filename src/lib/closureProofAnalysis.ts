@@ -257,7 +257,7 @@ LIMIT 1
 `);
 
 const releasePrReachabilityStatusStmt = db.prepare(`
-SELECT status, tag_commit_oid, merge_commit_oid, method
+SELECT status, tag_commit_oid, merge_commit_oid, method, evidence_json
 FROM release_pr_reachability
 WHERE tag=?
   AND pr_repository_name_with_owner=?
@@ -397,6 +397,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       notReachableFixCommits,
       comments,
     });
+    const linkedPrs = enrichLinkedPrReachability(releaseTag, parseJsonArray(row.linked_prs_json));
     const evidence: Record<string, unknown> = {
       ...result.evidence,
       title: row.title,
@@ -404,7 +405,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       closureClassification,
       closureEventClosedAt: splitCsv(row.closure_event_closed_at),
       closingPrs: splitCsv(row.closing_prs),
-      linkedPrs: parseJsonArray(row.linked_prs_json),
+      linkedPrs,
       fixCommitProof: commitProof,
       canonicalFixCommitProof: canonicalCommitProof,
       directFixCommitProof: directCommitProof,
@@ -467,6 +468,49 @@ function commitProofEvidence(
       evidence: result?.evidence ?? 'reachability_not_checked',
     };
   });
+}
+
+function enrichLinkedPrReachability(releaseTag: string, rawLinkedPrs: unknown[]): unknown[] {
+  return rawLinkedPrs.map((item) => {
+    if (!item || typeof item !== 'object') return item;
+    const pr = item as Record<string, unknown>;
+    const repo = String(pr.repositoryNameWithOwner ?? '');
+    const prNumber = Number(pr.number ?? 0);
+    const merged = Number(pr.merged ?? 0) === 1;
+    if (repo !== trackedPrRepositoryNameWithOwner || !merged || !Number.isInteger(prNumber) || prNumber <= 0) {
+      return pr;
+    }
+    const reachability = releasePrReachabilityStatusStmt.get(releaseTag, repo, prNumber) as {
+      status: string;
+      tag_commit_oid: string | null;
+      merge_commit_oid: string | null;
+      method: string | null;
+      evidence_json?: string | null;
+    } | undefined;
+    const reachabilityEvidence = parseObjectJson(reachability?.evidence_json ?? null);
+    return {
+      ...pr,
+      reachabilityStatus: reachability?.status ?? 'unknown',
+      reachabilityMethod: reachability?.method ?? null,
+      tagCommitOid: reachability?.tag_commit_oid ?? null,
+      mergeCommitOid: reachability?.merge_commit_oid ?? null,
+      reachabilityEvidence: typeof reachabilityEvidence.evidence === 'string'
+        ? reachabilityEvidence.evidence
+        : reachability ? 'reachability_checked' : 'reachability_not_checked',
+    };
+  });
+}
+
+function parseObjectJson(value: unknown): Record<string, unknown> {
+  if (!value) return {};
+  try {
+    const parsed = JSON.parse(String(value));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function effectiveClosureProofClassification(row: any): {
@@ -1588,6 +1632,7 @@ export const __closureProofAnalysisTest = {
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
   effectiveClosureProofClassification,
+  enrichLinkedPrReachability,
   commitReferenceMentionsFromRows,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
