@@ -289,6 +289,32 @@ describe('classifyClosureProof', () => {
     assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
+  it('treats stale closures requesting fresh current-build reports as repro requests', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-05-31T17:25:38Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-05-31T17:25:37Z',
+        body: 'Closing as stale after provider unification. Please file a fresh issue if canonical OpenAI OAuth still reports OK but fails runtime validation on a current build.',
+      }],
+    }));
+    assert.equal(result.status, 'repro_requested');
+  });
+
+  it('keeps non-reproducible current-main rechecks neutral', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-13T21:35:15Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-13T15:46:55Z',
+        body: 'Close as non-reproducible: current main and the published package do not contain the reported helper.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+  });
+
   it('captures plugin-scope non-actionable rationale', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],

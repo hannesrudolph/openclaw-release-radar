@@ -298,6 +298,17 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'related_pr_without_release_fix');
   });
 
+  it('classifies title-only author deletion requests as reporter withdrawal', () => {
+    const adjusted = __closureProofAnalysisTest.adjustClosureProofStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      { title: '[deleted by author request]', linkedPrs: [] },
+      'v1',
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'reporter_withdrawn');
+  });
+
   it('splits fixed-after release proof by later stable reachability', () => {
     const evidence = {
       notReachableFixCommits: ['aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'],

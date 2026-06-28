@@ -865,10 +865,26 @@ function adjustClosureProofStatus(
   latestStableReleaseLookup = latestStableRelease,
 ): ClosureProofResult {
   const adjusted = adjustNotPlannedEvidenceStatus(
-    adjustNoReleaseFixProofStatus(result, evidence),
+    adjustAdminTitleOnlyStatus(adjustNoReleaseFixProofStatus(result, evidence), evidence),
     evidence,
   );
   return adjustFixedAfterReleaseStatus(adjusted, evidence, releaseTag, laterCommitReachability, latestStableReleaseLookup);
+}
+
+function adjustAdminTitleOnlyStatus(
+  result: ClosureProofResult,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  if (result.status !== 'admin_not_planned_unverified') return result;
+  const title = String(evidence.title ?? '');
+  if (/\b(?:deleted|withdrawn)\s+by\s+author\s+request\b/i.test(title)) {
+    return {
+      ...result,
+      status: 'reporter_withdrawn',
+      summary: 'Title indicates the reporter withdrew or requested deletion; closure is not release fix proof.',
+    };
+  }
+  return result;
 }
 
 type LaterFixRelease = {
