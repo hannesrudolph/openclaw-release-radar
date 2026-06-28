@@ -592,4 +592,66 @@ describe('verifyReleaseAudit', () => {
     });
     assert.ok(result.failures.some((failure) => /reachableFixCommits must equal/.test(failure)));
   });
+
+  it('accepts referenced event commit proof as a known source', async () => {
+    const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'fixed_in_release',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: true,
+            hasNotReachableFixCommit: false,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [commit],
+            notReachableFixCommits: [],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: commit,
+              source: 'ReferencedEvent.commit',
+              status: 'reachable',
+              tagCommitOid: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+              evidence: 'fix_commit_in_release_history',
+              snippet: 'GitHub ReferencedEvent same-repo commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a: fix(test): prove path',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(!result.failures.some((failure) => /unknown source|closure-comment commit proof/.test(failure)));
+  });
+
+  it('fails when commit proof source is unknown', async () => {
+    const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'fixed_in_release',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: true,
+            hasNotReachableFixCommit: false,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [commit],
+            notReachableFixCommits: [],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: commit,
+              source: 'AdHocCommit',
+              status: 'reachable',
+              tagCommitOid: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+              evidence: 'fix_commit_in_release_history',
+              snippet: 'Ad hoc commit proof',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /unknown source AdHocCommit/.test(failure)));
+  });
 });

@@ -88,6 +88,7 @@ const affectedUserRiskWeights = new Map([
   ['unknown', 0.65],
 ]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
+const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -546,6 +547,8 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
       `proof issue #${row.issue_number} fixCommitProof sourceIssueNumber must be a positive integer`);
     expect(failures, tag, typeof proof.commitOid === 'string' && fullCommitOidRe.test(proof.commitOid),
       `proof issue #${row.issue_number} fixCommitProof commitOid must be a full lowercase 40-hex SHA`);
+    expect(failures, tag, knownCommitProofSources.has(proof.source),
+      `proof issue #${row.issue_number} fixCommitProof has unknown source ${proof.source}`);
     expect(failures, tag, knownCommitProofStatuses.has(proof.status),
       `proof issue #${row.issue_number} fixCommitProof has unknown status ${proof.status}`);
     expect(failures, tag, proof.tagCommitOid == null || (typeof proof.tagCommitOid === 'string' && fullCommitOidRe.test(proof.tagCommitOid)),

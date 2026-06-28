@@ -336,6 +336,19 @@ function commitReferenceMentionsByIssue(issueNumbers: number[]): Map<number, Clo
     event_id: string;
     closed_at: string | null;
   }>;
+  return commitReferenceMentionsFromRows(rows);
+}
+
+function commitReferenceMentionsFromRows(rows: Array<{
+  issue_number: number;
+  commit_oid: string;
+  commit_message_headline: string | null;
+  referenced_at: string | null;
+  actor_login: string | null;
+  event_id: string;
+  closed_at: string | null;
+}>): Map<number, ClosureCommentCommitMention[]> {
+  const byIssue = new Map<number, ClosureCommentCommitMention[]>();
   for (const row of rows) {
     const commitOid = String(row.commit_oid ?? '').toLowerCase();
     if (!fullCommitOidRe.test(commitOid)) continue;
@@ -552,6 +565,7 @@ export const __closureProofAnalysisTest = {
   adjustCanonicalDuplicateStatus,
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
+  commitReferenceMentionsFromRows,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
 };

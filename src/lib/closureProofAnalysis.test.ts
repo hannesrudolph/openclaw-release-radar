@@ -107,4 +107,62 @@ describe('closure proof canonical roll-up', () => {
       [96857],
     );
   });
+
+  it('builds fallback commit proof from eligible referenced commits only', () => {
+    const rows = [
+      {
+        issue_number: 10,
+        commit_oid: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        commit_message_headline: 'fix(cli): preserve channel routing',
+        referenced_at: '2026-06-28T10:00:01Z',
+        actor_login: 'maintainer',
+        event_id: 'ref-ok',
+        closed_at: '2026-06-28T10:00:00Z',
+      },
+      {
+        issue_number: 10,
+        commit_oid: 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        commit_message_headline: 'docs: mention related issue',
+        referenced_at: '2026-06-28T10:00:01Z',
+        actor_login: 'maintainer',
+        event_id: 'ref-docs',
+        closed_at: '2026-06-28T10:00:00Z',
+      },
+      {
+        issue_number: 10,
+        commit_oid: 'cccccccccccccccccccccccccccccccccccccccc',
+        commit_message_headline: 'fix(cli): too late to prove final closure',
+        referenced_at: '2026-06-28T10:00:03Z',
+        actor_login: 'maintainer',
+        event_id: 'ref-late',
+        closed_at: '2026-06-28T10:00:00Z',
+      },
+      {
+        issue_number: 10,
+        commit_oid: 'short',
+        commit_message_headline: 'fix(cli): short hash',
+        referenced_at: '2026-06-28T10:00:01Z',
+        actor_login: 'maintainer',
+        event_id: 'ref-short',
+        closed_at: '2026-06-28T10:00:00Z',
+      },
+    ];
+
+    const mentions = __closureProofAnalysisTest.commitReferenceMentionsFromRows(rows).get(10) ?? [];
+    assert.deepEqual(mentions.map((item: any) => ({
+      commitOid: item.commitOid,
+      source: item.source,
+      referencedAt: item.referencedAt,
+      snippet: item.snippet,
+      author: item.author,
+      trustedSource: item.trustedSource,
+    })), [{
+      commitOid: 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+      source: 'ReferencedEvent.commit',
+      referencedAt: '2026-06-28T10:00:01Z',
+      snippet: 'GitHub ReferencedEvent same-repo commit aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa: fix(cli): preserve channel routing',
+      author: 'maintainer',
+      trustedSource: true,
+    }]);
+  });
 });
