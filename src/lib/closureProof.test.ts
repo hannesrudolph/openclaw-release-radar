@@ -217,12 +217,34 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'reporter_self_closed');
   });
 
+  it('classifies reporter self-closed not-planned reports as reporter self-closed', () => {
+    const result = classifyClosureProof(input({
+      issueAuthor: 'reporter',
+      closureActors: ['reporter'],
+      stateReasons: ['NOT_PLANNED'],
+      comments: [],
+    }));
+    assert.equal(result.status, 'reporter_self_closed');
+  });
+
   it('recognizes already-present claims without treating them as release proof', () => {
     const result = classifyClosureProof(input({
       comments: [{ author: 'bot', body: 'Current main and tagged releases already implement this behavior.' }],
     }));
     assert.equal(result.status, 'already_present_claim');
     assert.deepEqual(result.evidence.canonicalIssues, []);
+  });
+
+  it('prefers concrete out-of-repository rationale over proof-like already-present wording', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close: current main already has the config surface, but this behavior is outside the OpenClaw source repository and belongs to an external client.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
   });
 
   it('does not use stale review comments as the closure rationale', () => {
@@ -278,6 +300,23 @@ describe('classifyClosureProof', () => {
     }));
     assert.equal(result.status, 'already_present_claim');
     assert.equal(result.evidence.closureContextCommentCount, 1);
+  });
+
+  it('uses edited close-time comments by updated time without losing created time', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-06-19T16:03:19Z',
+      comments: [{
+        author: 'bot',
+        createdAt: '2026-06-07T15:44:06Z',
+        updatedAt: '2026-06-19T15:29:09Z',
+        body: 'Close: current main and v2026.6.8 implement the required behavior.',
+      }],
+    }));
+    const matching = result.evidence.matchingComments as Array<{ createdAt: string | null; updatedAt: string | null }>;
+    assert.equal(result.status, 'already_present_claim');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal(matching[0].createdAt, '2026-06-07T15:44:06Z');
+    assert.equal(matching[0].updatedAt, '2026-06-19T15:29:09Z');
   });
 
   it('keeps stale not-planned admin closures as unsupported risk when no close-time rationale exists', () => {

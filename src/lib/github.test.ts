@@ -66,6 +66,27 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /comments\(first: \$first, after: \$after0, orderBy: \{field: UPDATED_AT, direction: ASC\}\)/);
     assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
     assert.match(query, /authorAssociation/);
+    assert.match(query, /updatedAt/);
+  });
+
+  it('maps issue comments with edit timestamps', () => {
+    const comment = __githubTest.mapComment({
+      databaseId: 42,
+      author: { login: 'clawsweeper' },
+      authorAssociation: 'CONTRIBUTOR',
+      body: 'Close: current main and v2026.6.8 implement this behavior.',
+      createdAt: '2026-06-07T15:44:06Z',
+      updatedAt: '2026-06-19T15:29:09Z',
+    });
+
+    assert.deepEqual(comment, {
+      id: 42,
+      user: { login: 'clawsweeper' },
+      author_association: 'CONTRIBUTOR',
+      body: 'Close: current main and v2026.6.8 implement this behavior.',
+      created_at: '2026-06-07T15:44:06Z',
+      updated_at: '2026-06-19T15:29:09Z',
+    });
   });
 
   it('builds one GraphQL query with aliased issue lookups by number', () => {
@@ -135,9 +156,45 @@ describe('GitHub GraphQL mapping', () => {
         user: { login: 'obviyus' },
         author_association: 'MEMBER',
       },
+      {
+        body: 'Fixed on current main, primarily by #88630 (`b4cdd9211957875df0d301ccc40e2935ba26829f`, merged June 10, 2026).',
+        created_at: '2026-06-25T15:06:01Z',
+        user: { login: 'steipete' },
+        author_association: 'MEMBER',
+      },
+      {
+        body: 'Marking this fixed by the linked upstream patch. Canonical PR: #85475.',
+        created_at: '2026-06-25T15:07:01Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
+      },
     ]);
 
     assert.deepEqual(mentions, [
+      {
+        issueNumber: 9000,
+        prNumber: 85475,
+        prRepositoryOwner: 'openclaw',
+        prRepositoryName: 'openclaw',
+        prRepositoryNameWithOwner: 'openclaw/openclaw',
+        source: 'ClosureComment.fixProof',
+        referencedAt: '2026-06-25T15:07:01Z',
+        author: 'clawsweeper',
+        authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
+      },
+      {
+        issueNumber: 9000,
+        prNumber: 88630,
+        prRepositoryOwner: 'openclaw',
+        prRepositoryName: 'openclaw',
+        prRepositoryNameWithOwner: 'openclaw/openclaw',
+        source: 'ClosureComment.fixProof',
+        referencedAt: '2026-06-25T15:06:01Z',
+        author: 'steipete',
+        authorAssociation: 'MEMBER',
+        trustedSource: true,
+      },
       {
         issueNumber: 9000,
         prNumber: 95532,
@@ -249,9 +306,32 @@ describe('GitHub GraphQL mapping', () => {
         user: { login: 'reporter' },
         author_association: 'NONE',
       },
+      {
+        body: 'Fixed on main in https://github.com/openclaw/openclaw/commit/dfb44912ed285a0163c576c727632d00cfdf39f3.',
+        created_at: '2026-06-27T09:07:25Z',
+        user: { login: 'maintainer' },
+        author_association: 'MEMBER',
+      },
+      {
+        body: 'This traces the root cause to https://github.com/openclaw/openclaw/commit/ab0a633ab98b4676370eec31eee57d2fbe163647.',
+        created_at: '2026-06-27T09:08:25Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
+      },
     ]);
 
     assert.deepEqual(mentions, [
+      {
+        issueNumber: 97222,
+        commitOid: 'ab0a633ab98b4676370eec31eee57d2fbe163647',
+        referencedAt: '2026-06-27T09:08:25Z',
+        sourceIssueNumber: 97222,
+        snippet: 'This traces the root cause to https://github.com/openclaw/openclaw/commit/ab0a633ab98b4676370eec31eee57d2fbe163647.',
+        source: 'ClosureComment.fixProof',
+        author: 'clawsweeper',
+        authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
+      },
       {
         issueNumber: 97222,
         commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
@@ -261,6 +341,17 @@ describe('GitHub GraphQL mapping', () => {
         source: 'ClosureComment.fixProof',
         author: 'clawsweeper',
         authorAssociation: 'CONTRIBUTOR',
+        trustedSource: true,
+      },
+      {
+        issueNumber: 97222,
+        commitOid: 'dfb44912ed285a0163c576c727632d00cfdf39f3',
+        referencedAt: '2026-06-27T09:07:25Z',
+        sourceIssueNumber: 97222,
+        snippet: 'Fixed on main in https://github.com/openclaw/openclaw/commit/dfb44912ed285a0163c576c727632d00cfdf39f3.',
+        source: 'ClosureComment.fixProof',
+        author: 'maintainer',
+        authorAssociation: 'MEMBER',
         trustedSource: true,
       },
     ]);

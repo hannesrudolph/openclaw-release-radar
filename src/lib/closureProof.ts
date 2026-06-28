@@ -17,7 +17,7 @@ export interface ClosureProofInput {
   hasNotReachableFixCommit?: boolean;
   reachableFixCommits?: string[];
   notReachableFixCommits?: string[];
-  comments: Array<{ author?: string | null; body?: string | null; createdAt?: string | null }>;
+  comments: Array<{ author?: string | null; body?: string | null; createdAt?: string | null; updatedAt?: string | null }>;
 }
 
 export interface ClosureProofResult {
@@ -29,7 +29,7 @@ export interface ClosureProofResult {
 const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|broader .*tracker|belongs under)\b/i;
 const DUPLICATE_RATIONALE_RE = /\b(?:close[sd]?|closing|closed)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:duplicate|dupe|superseded|already tracked|covered by|belongs under)\b|\b(?:as\s+(?:a\s+)?)?(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:the\s+)?(?:open\s+|closed\s+)?(?:canonical\s+)?(?:(?:issue|tracker|report)\s+)?(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b|\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b/i;
 const NOT_DUPLICATE_RE = /\b(?:not|isn't|is not|wasn't|was not|no longer)\s+(?:a\s+)?(?:duplicate|dupe|superseded)\b/i;
-const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|tagged releases? already|already contains|already covered|implemented in current|current `?main`?.{0,80}\b(?:already|now)\s+(?:has|contains|includes|implements|fix(?:e[sd])?))\b/i;
+const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|tagged releases? already|already contains|already covered|implemented in current|current `?main`?.{0,80}\b(?:already|now)\s+(?:has|contains|includes|implements?|fix(?:e[sd])?)|current `?main`?.{0,80}\bv20\d{2}\.\d+\.\d+\s+(?:already\s+)?(?:has|contains|includes|implements?|fix(?:e[sd])?))\b/i;
 const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
 const NON_ACTIONABLE_RATIONALE_RE = /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|plugin-owned|plugin\s+scope|ClawHub|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported|no longer reproduc(?:e|es|ible)|not reproducible|non-reproducible|could not reproduce|does not reproduce|contract (?:was )?clarified|supported alternative|decision:)\b/i;
@@ -37,7 +37,7 @@ const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|und
 const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
 const REPRO_REQUESTED_RE = /\b(?:(?:please\s+)?(?:file|open)\s+(?:a\s+)?fresh\s+issue|please\s+(?:file|open)\s+(?:a\s+)?new\s+issue)\b.{0,160}\bif\b.{0,160}\b(?:still|continues?|fails?|repro(?:s|duces?)?)\b|\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b|\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b.{0,80}\b(?:please\s+)?(?:file|open)\s+(?:a\s+)?new\s+issue\b/i;
 const KEEP_OPEN_RE = /\b(?:keep(?:ing)?|stay|remain)\s+(?:this\s+)?open\b|\bbefore closing this issue\b/i;
-const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:here\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\bfixed\s+on\s+`?main`?\s+by\s+#\d+\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b|\b(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b/i;
+const CLOSURE_RATIONALE_RE = /\b(?:close[sd]?|closing)\s*:|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:here\s+)?(?:as|because|since|for|out|in favor of|fixed|not planned)\b|\b(?:close[sd]?|closing)\s+(?:this\s+)?(?:issue|report)\b|\bfixed\s+on\s+(?:current\s+)?`?main`?\b|\bcanonical\s+(?:PR|pull request)\s*:\s*#\d+\b|\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b|\busers?\s+on\s+v?20\d{2}\.\d+\.\d+\s+will\s+pick\s+this\s+up\s+with\s+the\s+next\s+release\b|\bnot planned\b|\bwon't fix\b|\bwont fix\b|\bexpected behavior\b|\bworking as intended\b|\bby design\b|\boutside\s+(?:the\s+)?OpenClaw\s+source\b|\b(?:file|open)\s+(?:a\s+)?new\s+issue\b.{0,80}\bif\s+(?:this|it)\s+still\s+(?:repo(?:s)?|repro(?:s|duces?)?)\b.{0,80}\b(?:latest|current|newer)\b/i;
 const CANONICAL_REFERENCE_RES = [
   /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
   /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker|root-cause cluster|root cause cluster)(?:\*\*)?\s*:\s*.{0,240}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)/gim,
@@ -193,6 +193,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (evidence.nonActionableRationaleComments.length > 0) {
+    return {
+      status: 'not_planned',
+      summary: 'Closed with concrete non-actionable, not-reproducible, or out-of-repository rationale.',
+      evidence,
+    };
+  }
+
   if (MAIN_ONLY_RE.test(combinedComments)) {
     return {
       status: 'main_only_claim',
@@ -209,6 +217,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  if (reporterSelfClosed) {
+    return {
+      status: 'reporter_self_closed',
+      summary: 'Reporter self-closed the issue without linked release fix proof or ongoing failure context.',
+      evidence,
+    };
+  }
+
   if (reasons.has('NOT_PLANNED') && !NON_ACTIONABLE_RATIONALE_RE.test(combinedComments)) {
     return {
       status: 'admin_not_planned_unverified',
@@ -221,14 +237,6 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     return {
       status: 'not_planned',
       summary: 'Closed with close-time rationale that the report is not actionable as a direct release fix.',
-      evidence,
-    };
-  }
-
-  if (reporterSelfClosed && hasCompletedClosure) {
-    return {
-      status: 'reporter_self_closed',
-      summary: 'Reporter self-closed the issue without linked release fix proof or ongoing failure context.',
       evidence,
     };
   }
@@ -260,7 +268,7 @@ function normalizeLogin(login: string | null | undefined): string {
   return String(login ?? '').trim().toLowerCase();
 }
 
-export function closureRationaleComments<T extends { createdAt?: string | null; created_at?: string | null }>(
+export function closureRationaleComments<T extends { createdAt?: string | null; created_at?: string | null; updatedAt?: string | null; updated_at?: string | null }>(
   comments: T[],
   closedAt: string | null | undefined,
 ): T[] {
@@ -269,11 +277,15 @@ export function closureRationaleComments<T extends { createdAt?: string | null; 
   if (!Number.isFinite(closedMs)) return comments;
   return comments.filter((comment) => {
     const createdAt = comment.createdAt ?? comment.created_at ?? null;
-    if (!createdAt) return false;
-    const createdMs = Date.parse(createdAt);
-    if (Number.isFinite(createdMs) &&
-      createdMs >= closedMs - CLOSURE_CONTEXT_BEFORE_MS &&
-      createdMs <= closedMs + CLOSURE_CONTEXT_AFTER_MS) {
+    const updatedAt = comment.updatedAt ?? comment.updated_at ?? null;
+    const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN;
+    const updatedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+    const effectiveMs = Number.isFinite(updatedMs) && (!Number.isFinite(createdMs) || updatedMs > createdMs)
+      ? updatedMs
+      : createdMs;
+    if (Number.isFinite(effectiveMs) &&
+      effectiveMs >= closedMs - CLOSURE_CONTEXT_BEFORE_MS &&
+      effectiveMs <= closedMs + CLOSURE_CONTEXT_AFTER_MS) {
       const body = 'body' in comment ? String(comment.body ?? '').replace(/\s+/g, ' ') : '';
       return CLOSURE_RATIONALE_RE.test(body) && !KEEP_OPEN_RE.test(body);
     }
@@ -304,6 +316,7 @@ function hasDuplicateOrSupersededSignal(text: string, reasons: Set<string>): boo
 function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array<{
   author: string | null;
   createdAt: string | null;
+  updatedAt: string | null;
   snippet: string;
 }> {
   return comments
@@ -316,6 +329,7 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
     .map((comment) => ({
       author: comment.author ?? null,
       createdAt: comment.createdAt ?? null,
+      updatedAt: comment.updatedAt ?? null,
       snippet: (comment.body ?? '').replace(/\s+/g, ' ').slice(0, 500),
     }));
 }
@@ -323,6 +337,7 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
 function nonActionableRationaleSnippets(comments: ClosureProofInput['comments']): Array<{
   author: string | null;
   createdAt: string | null;
+  updatedAt: string | null;
   snippet: string;
 }> {
   return comments
@@ -331,6 +346,7 @@ function nonActionableRationaleSnippets(comments: ClosureProofInput['comments'])
     .map((comment) => ({
       author: comment.author ?? null,
       createdAt: comment.createdAt ?? null,
+      updatedAt: comment.updatedAt ?? null,
       snippet: (comment.body ?? '').replace(/\s+/g, ' ').slice(0, 500),
     }));
 }

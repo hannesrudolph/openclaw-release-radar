@@ -340,6 +340,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       author: comment.user?.login ?? null,
       body: comment.body,
       createdAt: comment.created_at,
+      updatedAt: comment.updated_at ?? null,
     }));
     const canonicalMentionKeys = new Set(
       (canonicalCommitMentionsByIssue.get(row.number) ?? [])

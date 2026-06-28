@@ -45,6 +45,7 @@ export interface GhComment {
   author_association?: string | null;
   body: string;
   created_at: string;
+  updated_at?: string | null;
 }
 
 interface GraphqlResponse<T> {
@@ -93,6 +94,7 @@ interface CommentNode {
   authorAssociation: string | null;
   body: string;
   createdAt: string;
+  updatedAt: string;
 }
 
 interface ReactionGroupNode {
@@ -469,6 +471,7 @@ function mapComment(node: CommentNode): GhComment {
     author_association: node.authorAssociation,
     body: node.body,
     created_at: node.createdAt,
+    updated_at: node.updatedAt,
   };
 }
 
@@ -804,6 +807,7 @@ function buildIssueCommentsBatchQuery(size: number): string {
           authorAssociation
           body
           createdAt
+          updatedAt
         }
         pageInfo { hasNextPage endCursor }
       }
@@ -1226,6 +1230,8 @@ export function closureCommentPrMentions(
     body?: string | null;
     created_at?: string | null;
     createdAt?: string | null;
+    updated_at?: string | null;
+    updatedAt?: string | null;
     user?: { login?: string | null } | null;
     author?: string | null;
     author_association?: string | null;
@@ -1244,7 +1250,7 @@ export function closureCommentPrMentions(
       if (ref.prNumber === issueNumber && ref.prRepositoryNameWithOwner === `${config.github.owner}/${config.github.repo}`) continue;
       const key = pullRequestKey(ref.prRepositoryNameWithOwner, ref.prNumber);
       const existing = byPr.get(key);
-      const referencedAt = comment.created_at ?? comment.createdAt ?? null;
+      const referencedAt = commentEffectiveAt(comment);
       if (shouldReplacePrMention(existing, source, referencedAt)) {
         byPr.set(key, {
           issueNumber,
@@ -1270,6 +1276,8 @@ export function closureCommentCommitMentions(
     body?: string | null;
     created_at?: string | null;
     createdAt?: string | null;
+    updated_at?: string | null;
+    updatedAt?: string | null;
     user?: { login?: string | null } | null;
     author?: string | null;
     author_association?: string | null;
@@ -1284,7 +1292,7 @@ export function closureCommentCommitMentions(
     const trust = closureProofCommentTrust(comment);
     if (!trust.trustedSource) continue;
     if (!isClosureCommitFixProofComment(text)) continue;
-    const referencedAt = comment.created_at ?? comment.createdAt ?? null;
+    const referencedAt = commentEffectiveAt(comment);
     for (const commitOid of extractCommitOids(text)) {
       const existing = byCommit.get(commitOid);
       if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
@@ -1351,6 +1359,16 @@ function extractClosureCommentPrRefs(body: string): Array<{
     addPrRef(refs, { number: match[1] });
   }
 
+  const qualifiedFixedByPrRefRe = /\b(?:fix(?:e[sd])?|implemented|addressed|resolved|marking\s+this\s+fixed)\b.{0,120}\b(?:primarily|partly|partially|notably|via|by)\s+(?:PR\s*)?#(\d+)\b/gi;
+  for (const match of text.matchAll(qualifiedFixedByPrRefRe)) {
+    addPrRef(refs, { number: match[1] });
+  }
+
+  const canonicalPrRefRe = /\bcanonical\s+(?:PR|pull request)\s*:\s*#(\d+)\b/gi;
+  for (const match of text.matchAll(canonicalPrRefRe)) {
+    addPrRef(refs, { number: match[1] });
+  }
+
   return [...refs.values()].sort((a, b) =>
     a.prRepositoryNameWithOwner.localeCompare(b.prRepositoryNameWithOwner) || a.prNumber - b.prNumber);
 }
@@ -1378,6 +1396,8 @@ function shouldReplacePrMention(
 function isClosureFixProofComment(text: string): boolean {
   return (
     /\b(?:fix(?:e[sd])?|implemented|addressed)\s+(?:on\s+`?main`?\s+)?by\s+#\d+\b/i.test(text) ||
+    /\b(?:fix(?:e[sd])?|implemented|addressed|resolved|marking\s+this\s+fixed)\b.{0,120}\b(?:primarily|partly|partially|notably|via|by)\s+(?:PR\s*)?#\d+\b/i.test(text) ||
+    /\bcanonical\s+(?:PR|pull request)\s*:\s*#\d+\b/i.test(text) ||
     /\bfound\s+the\s+merged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
     /\bmerged\s+(?:pr|pull request)\b.{0,160}\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b/i.test(text) ||
     /\b(?:closed|fix(?:e[sd])?|implemented|addresses?)\b.{0,160}\bmerged\s+(?:pr|pull request)\b/i.test(text) ||
@@ -1397,7 +1417,11 @@ function isClosureCommitFixProofComment(text: string): boolean {
   if (isKeepOpenReviewComment(text)) return false;
   return (
     /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{40}`?/i.test(text) ||
+    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b/i.test(text) ||
+    /\bfixed\s+on\s+(?:current\s+)?(?:source|main)\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
     /\bfixed\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
+    /\broot\s+cause\s+to\s+https?:\/\/github\.com\/openclaw\/openclaw\/commit\/[0-9a-f]{40}\b/i.test(text) ||
+    /\bproof:\b.{0,1000}\b[0-9a-f]{40}\b/i.test(text) ||
     /\bfix\s+provenance\b.{0,220}\bcommit\b/i.test(text) ||
     /\bcanonical\s+fix\b.{0,220}\bcommit\b/i.test(text) ||
     /\bfix\s+evidence\b.{0,220}\bcommit\b/i.test(text) ||
@@ -1407,6 +1431,20 @@ function isClosureCommitFixProofComment(text: string): boolean {
 
 function isKeepOpenReviewComment(text: string): boolean {
   return /\bkeep(?:ing)?\s+(?:this\s+)?open\b|\b(?:stay|remain)\s+(?:open|unresolved)\b|\bbefore closing this issue\b/i.test(text);
+}
+
+function commentEffectiveAt(comment: {
+  created_at?: string | null;
+  createdAt?: string | null;
+  updated_at?: string | null;
+  updatedAt?: string | null;
+}): string | null {
+  const createdAt = comment.created_at ?? comment.createdAt ?? null;
+  const updatedAt = comment.updated_at ?? comment.updatedAt ?? null;
+  const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN;
+  const updatedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  if (Number.isFinite(updatedMs) && (!Number.isFinite(createdMs) || updatedMs > createdMs)) return updatedAt;
+  return createdAt;
 }
 
 function extractCommitOids(text: string): string[] {
