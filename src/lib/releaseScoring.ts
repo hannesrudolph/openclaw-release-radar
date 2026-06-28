@@ -698,10 +698,7 @@ function proofBucketsExceptFixed(buckets: unknown, fixedKey = 'fixed_in_release'
 
 function closureRiskWeight(riskSummary: any): number {
   if (!riskSummary || typeof riskSummary !== 'object') return 0;
-  return numberOrZero(riskSummary.knownNotInReleaseCount) +
-    numberOrZero(riskSummary.openCanonicalRiskCount) * 1.2 +
-    numberOrZero(riskSummary.unsupportedClosureClaimCount) * 0.8 +
-    numberOrZero(riskSummary.missingEvidenceCount) * 1.5;
+  return numberOrZero(riskSummary.unresolvedWeightedRisk);
 }
 
 function numberOrZero(value: unknown): number {

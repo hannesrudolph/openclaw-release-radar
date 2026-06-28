@@ -1,6 +1,8 @@
 import {
   closureProofExamples,
+  closureProofRiskRows,
   closureProofSummary,
+  type ClosureProofRiskRow,
   getReleaseScoreAudit,
   updateReleaseScoreAuditGateEvidence,
 } from './db';
@@ -39,11 +41,48 @@ export function closureRiskDisposition(status: string): ClosureRiskDisposition {
   return CLOSURE_RISK_DISPOSITION_BY_STATUS[status] ?? 'missing_evidence';
 }
 
+const DISPOSITION_RISK_WEIGHT: Record<ClosureRiskDisposition, number> = {
+  credited_release_fix: 0,
+  known_not_in_release: 1,
+  open_canonical_risk: 1.2,
+  unsupported_closure_claim: 0.8,
+  neutral_or_non_actionable: 0,
+  missing_evidence: 1.5,
+};
+
+const SEVERITY_RISK_WEIGHT: Record<string, number> = {
+  critical: 4,
+  high: 2.5,
+  medium: 0.8,
+  low: 0,
+};
+
+const FUNCTIONALITY_RISK_WEIGHT: Record<string, number> = {
+  core: 1.25,
+  integration: 1,
+  provider: 0.8,
+  docs: 0,
+};
+
+const SCOPE_RISK_WEIGHT: Record<string, number> = {
+  broad: 1.5,
+  moderate: 1,
+  niche: 0.4,
+};
+
+const USERS_RISK_WEIGHT: Record<string, number> = {
+  many: 1.3,
+  some: 0.85,
+  few: 0.35,
+  unknown: 0.65,
+};
+
 export function closureProofPayload(tag: string) {
   const summaryRows = closureProofSummary(tag);
   if (!summaryRows.length) return null;
   const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
   const byRiskDisposition = countByRiskDisposition(summaryRows);
+  const weightedRisk = weightedRiskForRows(closureProofRiskRows(tag));
   const notCreditedCount = summaryRows
     .filter((row) => row.status !== 'fixed_in_release')
     .reduce((sum, row) => sum + row.count, 0);
@@ -57,7 +96,9 @@ export function closureProofPayload(tag: string) {
     summary: row.summary,
     sentiment: row.sentiment,
     severity: row.severity,
+    scope: row.scope,
     functionality: row.functionality,
+    affectedUsers: row.affected_users,
     checkedAt: row.checked_at,
     riskDisposition: closureRiskDisposition(row.status),
     evidence: parseJson(row.evidence_json, {}),
@@ -83,6 +124,8 @@ export function closureProofPayload(tag: string) {
     riskSummary: {
       ...riskSummary,
       unresolvedForReleaseCount,
+      unresolvedWeightedRisk: roundMetric(weightedRisk.unresolvedWeightedRisk),
+      weightedRiskByDisposition: roundRiskMap(weightedRisk.byDisposition),
     },
     examples,
   };
@@ -129,4 +172,51 @@ function countByRiskDisposition(
     counts[disposition] = (counts[disposition] ?? 0) + row.count;
   }
   return counts;
+}
+
+export function closureRiskWeightForRow(row: Pick<ClosureProofRiskRow,
+  'status' | 'sentiment' | 'severity' | 'scope' | 'functionality' | 'affected_users'
+>): number {
+  const disposition = closureRiskDisposition(row.status);
+  const dispositionWeight = DISPOSITION_RISK_WEIGHT[disposition] ?? 0;
+  if (dispositionWeight <= 0) return 0;
+  if (row.sentiment !== 'negative') return 0;
+  const severity = SEVERITY_RISK_WEIGHT[row.severity ?? ''] ?? 0;
+  const functionality = FUNCTIONALITY_RISK_WEIGHT[row.functionality ?? ''] ?? 0;
+  if (severity <= 0 || functionality <= 0) return 0;
+  return dispositionWeight *
+    severity *
+    functionality *
+    (SCOPE_RISK_WEIGHT[row.scope ?? ''] ?? 1) *
+    (USERS_RISK_WEIGHT[row.affected_users ?? 'unknown'] ?? USERS_RISK_WEIGHT.unknown);
+}
+
+function weightedRiskForRows(rows: ClosureProofRiskRow[]): {
+  unresolvedWeightedRisk: number;
+  byDisposition: Partial<Record<ClosureRiskDisposition, number>>;
+} {
+  const byDisposition: Partial<Record<ClosureRiskDisposition, number>> = {};
+  for (const row of rows) {
+    const disposition = closureRiskDisposition(row.status);
+    const weight = closureRiskWeightForRow(row) * Number(row.count ?? 0);
+    if (weight <= 0) continue;
+    byDisposition[disposition] = (byDisposition[disposition] ?? 0) + weight;
+  }
+  return {
+    unresolvedWeightedRisk: Object.values(byDisposition).reduce((sum, value) => sum + Number(value ?? 0), 0),
+    byDisposition,
+  };
+}
+
+function roundRiskMap(map: Partial<Record<ClosureRiskDisposition, number>>): Partial<Record<ClosureRiskDisposition, number>> {
+  const rounded: Partial<Record<ClosureRiskDisposition, number>> = {};
+  for (const [key, value] of Object.entries(map)) {
+    const roundedValue = roundMetric(Number(value ?? 0));
+    if (roundedValue > 0) rounded[key as ClosureRiskDisposition] = roundedValue;
+  }
+  return rounded;
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }

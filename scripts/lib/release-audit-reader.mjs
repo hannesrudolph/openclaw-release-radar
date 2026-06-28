@@ -228,10 +228,12 @@ export class ReleaseAuditReader {
 
   proofRowsFor(tag) {
     return this.db.prepare(`
-      SELECT release_tag, issue_number, status, summary, evidence_json, checked_at
-      FROM issue_closure_proofs
-      WHERE release_tag=?
-      ORDER BY issue_number
+      SELECT p.release_tag, p.issue_number, p.status, p.summary, p.evidence_json, p.checked_at,
+             c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
+      FROM issue_closure_proofs p
+      LEFT JOIN classifications c ON c.issue_number=p.issue_number
+      WHERE p.release_tag=?
+      ORDER BY p.issue_number
     `).all(tag);
   }
 

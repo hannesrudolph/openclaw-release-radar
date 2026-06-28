@@ -7,7 +7,7 @@
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v11-closure-risk';
+export const SCORE_MODEL_VERSION = 'evidence-v12-weighted-closure-risk';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;

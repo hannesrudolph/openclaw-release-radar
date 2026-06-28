@@ -801,8 +801,37 @@ export function closureProofSummary(releaseTag: string): Array<{ status: string;
   return closureProofSummaryStmt.all(releaseTag) as Array<{ status: string; count: number }>;
 }
 
+const closureProofRiskRowsStmt = db.prepare(`
+SELECT p.status,
+       c.sentiment,
+       c.severity,
+       c.scope,
+       c.functionality,
+       c.affected_users,
+       COUNT(*) AS count
+FROM issue_closure_proofs p
+LEFT JOIN classifications c ON c.issue_number=p.issue_number
+WHERE p.release_tag=?
+GROUP BY p.status, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
+ORDER BY count DESC
+`);
+
+export interface ClosureProofRiskRow {
+  status: string;
+  sentiment: string | null;
+  severity: string | null;
+  scope: string | null;
+  functionality: string | null;
+  affected_users: string | null;
+  count: number;
+}
+
+export function closureProofRiskRows(releaseTag: string): ClosureProofRiskRow[] {
+  return closureProofRiskRowsStmt.all(releaseTag) as unknown as ClosureProofRiskRow[];
+}
+
 const closureProofExamplesStmt = db.prepare(`
-SELECT p.*, i.title, i.html_url, i.closed_at, c.sentiment, c.severity, c.functionality
+SELECT p.*, i.title, i.html_url, i.closed_at, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users
 FROM issue_closure_proofs p
 JOIN issues i ON i.number=p.issue_number
 LEFT JOIN classifications c ON c.issue_number=p.issue_number
@@ -831,7 +860,9 @@ export function closureProofExamples(releaseTag: string, limit = 25): Array<Issu
   closed_at: string | null;
   sentiment: string | null;
   severity: string | null;
+  scope: string | null;
   functionality: string | null;
+  affected_users: string | null;
 }> {
   return closureProofExamplesStmt.all(releaseTag, limit) as unknown as Array<IssueClosureProofRow & {
     title: string;
@@ -839,7 +870,9 @@ export function closureProofExamples(releaseTag: string, limit = 25): Array<Issu
     closed_at: string | null;
     sentiment: string | null;
     severity: string | null;
+    scope: string | null;
     functionality: string | null;
+    affected_users: string | null;
   }>;
 }
 

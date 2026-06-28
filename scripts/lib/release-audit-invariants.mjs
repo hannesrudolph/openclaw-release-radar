@@ -44,6 +44,37 @@ const riskDispositionByProofStatus = new Map([
   ['no_timeline_event', 'missing_evidence'],
   ['unknown', 'missing_evidence'],
 ]);
+const riskDispositionWeights = new Map([
+  ['credited_release_fix', 0],
+  ['known_not_in_release', 1],
+  ['open_canonical_risk', 1.2],
+  ['unsupported_closure_claim', 0.8],
+  ['neutral_or_non_actionable', 0],
+  ['missing_evidence', 1.5],
+]);
+const severityRiskWeights = new Map([
+  ['critical', 4],
+  ['high', 2.5],
+  ['medium', 0.8],
+  ['low', 0],
+]);
+const functionalityRiskWeights = new Map([
+  ['core', 1.25],
+  ['integration', 1],
+  ['provider', 0.8],
+  ['docs', 0],
+]);
+const scopeRiskWeights = new Map([
+  ['broad', 1.5],
+  ['moderate', 1],
+  ['niche', 0.4],
+]);
+const affectedUserRiskWeights = new Map([
+  ['many', 1.3],
+  ['some', 0.85],
+  ['few', 0.35],
+  ['unknown', 0.65],
+]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const scoreExplanationSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -204,8 +235,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       expect(failures, tag, !!fix.closureProof && !!fix.releaseFixCredit,
         'persisted audit gateEvidence must include closureProof and releaseFixCredit when proof rows exist');
       if (fix.closureProof && fix.releaseFixCredit) {
-        const expectedRiskDispositionCounts = riskDispositionCountsForProofRows(proofRows);
-        const expectedRiskSummary = riskSummaryFromCounts(expectedRiskDispositionCounts);
+        const expectedRisk = riskSummaryForProofRows(proofRows);
         expect(failures, tag, fix.releaseFixCredit.countedClosedCount === fixedProof.length,
           `persisted countedClosedCount (${fix.releaseFixCredit.countedClosedCount}) must match fixed_in_release proof rows (${fixedProof.length})`);
         expect(failures, tag, fix.releaseFixCredit.notCountedClosedCount === notCountedProof.length,
@@ -217,9 +247,9 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, fix.closureProof.notCreditedCount === notCountedProof.length,
           `persisted closureProof notCreditedCount (${fix.closureProof.notCreditedCount}) must match non-fixed proof rows (${notCountedProof.length})`);
         expectJsonEqual(failures, tag, 'persisted closureProof byRiskDisposition must match proof row dispositions',
-          fix.closureProof.byRiskDisposition, expectedRiskDispositionCounts);
+          fix.closureProof.byRiskDisposition, expectedRisk.counts);
         expectJsonEqual(failures, tag, 'persisted closureProof riskSummary must match proof row dispositions',
-          fix.closureProof.riskSummary, expectedRiskSummary);
+          fix.closureProof.riskSummary, expectedRisk.summary);
         for (const [disposition] of Object.entries(fix.closureProof.byRiskDisposition ?? {})) {
           expect(failures, tag, knownRiskDispositions.has(disposition),
             `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
@@ -442,7 +472,57 @@ function riskSummaryFromCounts(counts) {
       summary.openCanonicalRiskCount +
       summary.unsupportedClosureClaimCount +
       summary.missingEvidenceCount,
+    unresolvedWeightedRisk: 0,
+    weightedRiskByDisposition: {},
   };
+}
+
+function riskSummaryForProofRows(proofRows) {
+  const counts = riskDispositionCountsForProofRows(proofRows);
+  const summary = riskSummaryFromCounts(counts);
+  const byDisposition = {};
+  for (const row of proofRows) {
+    const disposition = riskDispositionForStatus(row.status);
+    const weight = closureRiskWeightForProofRow(row);
+    if (weight <= 0) continue;
+    byDisposition[disposition] = (byDisposition[disposition] ?? 0) + weight;
+  }
+  return {
+    counts,
+    summary: {
+      ...summary,
+      unresolvedWeightedRisk: roundMetric(Object.values(byDisposition).reduce((sum, value) => sum + Number(value ?? 0), 0)),
+      weightedRiskByDisposition: roundRiskMap(byDisposition),
+    },
+  };
+}
+
+function closureRiskWeightForProofRow(row) {
+  const disposition = riskDispositionForStatus(row.status);
+  const dispositionWeight = riskDispositionWeights.get(disposition) ?? 0;
+  if (dispositionWeight <= 0) return 0;
+  if (row.sentiment !== 'negative') return 0;
+  const severity = severityRiskWeights.get(row.severity) ?? 0;
+  const functionality = functionalityRiskWeights.get(row.functionality) ?? 0;
+  if (severity <= 0 || functionality <= 0) return 0;
+  return dispositionWeight *
+    severity *
+    functionality *
+    (scopeRiskWeights.get(row.scope) ?? 1) *
+    (affectedUserRiskWeights.get(row.affected_users ?? 'unknown') ?? affectedUserRiskWeights.get('unknown'));
+}
+
+function roundRiskMap(map) {
+  const rounded = {};
+  for (const [key, value] of Object.entries(map)) {
+    const roundedValue = roundMetric(Number(value ?? 0));
+    if (roundedValue > 0) rounded[key] = roundedValue;
+  }
+  return rounded;
+}
+
+function roundMetric(value) {
+  return Math.round(Number(value ?? 0) * 1000) / 1000;
 }
 
 function expect(failures, tag, condition, message) {
