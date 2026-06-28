@@ -248,6 +248,31 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, !!evidence.canonicalResolution?.terminalProof,
           `duplicate_to_closed_canonical issue #${row.issue_number} must include terminal proof; missing terminal proof should use duplicate_to_closed_canonical_missing_proof`);
       }
+      if (row.status === 'duplicate_to_non_actionable_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_non_actionable_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'neutral_or_non_actionable',
+          `duplicate_to_non_actionable_canonical issue #${row.issue_number} must resolve to neutral/non-actionable terminal proof`);
+      }
+      if (row.status === 'duplicate_to_known_not_in_release_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_known_not_in_release_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'known_not_in_release',
+          `duplicate_to_known_not_in_release_canonical issue #${row.issue_number} must resolve to known-not-in-release terminal proof`);
+      }
+      if (row.status === 'duplicate_to_open_pr_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_open_pr_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'open_canonical_risk',
+          `duplicate_to_open_pr_canonical issue #${row.issue_number} must resolve to open-risk terminal proof`);
+      }
+      if (row.status === 'duplicate_to_unverified_closed_canonical') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
+          `duplicate_to_unverified_closed_canonical issue #${row.issue_number} must resolve to a closed terminal`);
+        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'unsupported_closure_claim' ||
+          riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'missing_evidence',
+          `duplicate_to_unverified_closed_canonical issue #${row.issue_number} must resolve to unsupported/missing terminal proof`);
+      }
       if (row.status === 'duplicate_to_closed_canonical_missing_proof') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_closed_canonical_missing_proof issue #${row.issue_number} must resolve to a closed terminal`);

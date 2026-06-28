@@ -1,6 +1,7 @@
 import { config } from '../config';
 import { db, deleteIssueClosureProofsForRelease, deleteIssuePrLinksForIssues, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
+import { closureRiskDisposition } from './closureProofTaxonomy';
 import { creditedFixLinkSql } from './fixProvenance';
 import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, pullRequestKey, type ClosureCommentCommitMention, type GhComment } from './github';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
@@ -664,13 +665,50 @@ function adjustCanonicalDuplicateStatus(
         evidence: nextEvidence,
       };
     }
-    return {
-      status: nonBugDuplicate ? 'non_bug_duplicate_to_closed_canonical' : 'duplicate_to_closed_canonical',
-      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is also closed without reachable release-fix proof.`,
-      evidence: nextEvidence,
-    };
+    return closedCanonicalRollup(nonBugDuplicate, terminalProof, nextEvidence);
   }
   return { ...result, evidence: nextEvidence };
+}
+
+function closedCanonicalRollup(
+  nonBugDuplicate: boolean,
+  terminalProof: TerminalProofForCanonical,
+  evidence: Record<string, unknown>,
+): ClosureProofResult {
+  if (nonBugDuplicate) {
+    return {
+      status: 'non_bug_duplicate_to_closed_canonical',
+      summary: 'Non-negative item closed as duplicate/superseded; canonical issue is also closed without reachable release-fix proof.',
+      evidence,
+    };
+  }
+  const terminalDisposition = closureRiskDisposition(terminalProof.status);
+  if (terminalDisposition === 'neutral_or_non_actionable') {
+    return {
+      status: 'duplicate_to_non_actionable_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue closed with non-actionable or non-bug terminal proof.',
+      evidence,
+    };
+  }
+  if (terminalDisposition === 'known_not_in_release') {
+    return {
+      status: 'duplicate_to_known_not_in_release_canonical',
+      summary: 'Closed as duplicate/superseded; canonical terminal proof is known not to be in this release tag.',
+      evidence,
+    };
+  }
+  if (terminalDisposition === 'open_canonical_risk') {
+    return {
+      status: 'duplicate_to_open_pr_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue is closed but terminal proof still points to open PR or canonical risk.',
+      evidence,
+    };
+  }
+  return {
+    status: 'duplicate_to_unverified_closed_canonical',
+    summary: 'Closed as duplicate/superseded; canonical issue is closed but terminal proof does not establish release resolution.',
+    evidence,
+  };
 }
 
 type TerminalProofForCanonical = ClosureProofResult & {

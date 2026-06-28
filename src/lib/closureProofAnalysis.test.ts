@@ -142,8 +142,34 @@ describe('closure proof canonical roll-up', () => {
       }),
     );
 
-    assert.equal(adjusted.status, 'duplicate_to_closed_canonical');
+    assert.equal(adjusted.status, 'duplicate_to_non_actionable_canonical');
     assert.equal((adjusted.evidence.canonicalResolution as any).terminalProof.status, 'not_planned');
+  });
+
+  it('classifies closed canonical terminal risk by terminal disposition', () => {
+    const baseArgs = [
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [20] },
+      new Map([[10, [20]]]),
+      new Map(),
+      'v1',
+    ] as const;
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'not_planned_with_open_pr_context', summary: 'Open PR remains.', evidence: {} }),
+    ).status, 'duplicate_to_open_pr_canonical');
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'not_planned_fixed_after_release', summary: 'Fixed after.', evidence: {} }),
+    ).status, 'duplicate_to_known_not_in_release_canonical');
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'linked_closing_pr_not_merged', summary: 'Unmerged PR.', evidence: {} }),
+    ).status, 'duplicate_to_unverified_closed_canonical');
   });
 
   it('selects closed terminal canonical issues without existing cross-release proof for evidence backfill', () => {
