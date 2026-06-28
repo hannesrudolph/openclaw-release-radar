@@ -62,17 +62,12 @@ const aggregateRowsStmt = db.prepare(`
 WITH selected(issue_number) AS (
   SELECT value FROM json_each(?)
 ),
-latest_closure AS (
-  SELECT issue_number, MAX(closed_at) AS closed_at
-  FROM issue_closure_events
-  GROUP BY issue_number
-),
-final_closure AS (
+window_closure AS (
   SELECT e.*
   FROM issue_closure_events e
-  JOIN latest_closure latest
-    ON latest.issue_number=e.issue_number
-   AND latest.closed_at=e.closed_at
+  JOIN issues wi
+    ON wi.number=e.issue_number
+   AND wi.closed_at=e.closed_at
 )
 SELECT
   i.number,
@@ -82,6 +77,7 @@ SELECT
   c.sentiment,
   GROUP_CONCAT(DISTINCT e.state_reason) AS state_reasons,
   GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
+  GROUP_CONCAT(DISTINCT e.closed_at) AS closure_event_closed_at,
   COUNT(DISTINCT e.event_id) AS closure_events,
   COUNT(DISTINCT CASE
     WHEN e.state_reason='COMPLETED'
@@ -124,7 +120,7 @@ SELECT
 FROM selected
 JOIN issues i ON i.number=selected.issue_number
 LEFT JOIN classifications c ON c.issue_number=i.number
-LEFT JOIN final_closure e ON e.issue_number=i.number
+LEFT JOIN window_closure e ON e.issue_number=i.number
 LEFT JOIN issue_pr_links l ON l.issue_number=i.number
 LEFT JOIN pull_request_fixes p ON p.pr_number=l.pr_number
 LEFT JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_number=l.pr_number
@@ -224,6 +220,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       ...result.evidence,
       title: row.title,
       closedAt: row.closed_at,
+      closureEventClosedAt: splitCsv(row.closure_event_closed_at),
       closingPrs: splitCsv(row.closing_prs),
       fixCommitProof: commitProof,
       canonicalFixCommitProof: canonicalCommitProof,

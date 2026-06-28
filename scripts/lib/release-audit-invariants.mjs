@@ -241,7 +241,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `fixed_after_release issue #${row.issue_number} must have COMPLETED state reason`);
       }
       if (row.status === 'duplicate_to_fixed_after_release') {
-        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release',
+        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release' ||
+          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'not_reachable'),
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
       }
       if (row.status === 'duplicate_to_fixed_in_release') {
@@ -469,6 +470,16 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
   if ('stateReasons' in evidence) {
     expect(failures, tag, isStringArray(evidence.stateReasons),
       `proof issue #${row.issue_number} stateReasons must be a string array`);
+  }
+  if ('closureEventClosedAt' in evidence) {
+    expect(failures, tag, isStringArray(evidence.closureEventClosedAt),
+      `proof issue #${row.issue_number} closureEventClosedAt must be a string array when present`);
+    if (isStringArray(evidence.closureEventClosedAt) && evidence.closedAt) {
+      for (const closedAt of evidence.closureEventClosedAt) {
+        expect(failures, tag, closedAt === evidence.closedAt,
+          `proof issue #${row.issue_number} closure event timestamp ${closedAt} must match issue closedAt ${evidence.closedAt}`);
+      }
+    }
   }
   for (const flag of ['hasReachableFixCommit', 'hasNotReachableFixCommit']) {
     expect(failures, tag, typeof evidence[flag] === 'boolean',

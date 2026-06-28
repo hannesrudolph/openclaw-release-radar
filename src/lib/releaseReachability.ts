@@ -25,22 +25,10 @@ const remote = process.env.OPENCLAW_REPO_URL ?? 'https://github.com/openclaw/ope
 const repoDir = resolve('.cache/openclaw.git');
 
 const candidateStmt = db.prepare(`
-WITH latest_closure AS (
-  SELECT issue_number, MAX(closed_at) AS closed_at
-  FROM issue_closure_events
-  GROUP BY issue_number
-),
-final_closure AS (
-  SELECT e.*
-  FROM issue_closure_events e
-  JOIN latest_closure latest
-    ON latest.issue_number=e.issue_number
-   AND latest.closed_at=e.closed_at
-)
 SELECT DISTINCT p.pr_number, p.merge_commit_oid, p.base_ref_name
 FROM pull_request_fixes p
 JOIN issue_pr_links l ON l.pr_number = p.pr_number
-JOIN final_closure e ON e.issue_number = l.issue_number
+JOIN issue_closure_events e ON e.issue_number = l.issue_number
 WHERE e.state_reason='COMPLETED'
   AND p.merged = 1
   AND ${creditedFixLinkSql('l')}

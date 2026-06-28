@@ -1348,17 +1348,12 @@ const verifiedFixedForReleaseStmt = db.prepare(`
 WITH target AS (
   SELECT * FROM releases WHERE tag=?
 ),
-latest_closure AS (
-  SELECT issue_number, MAX(closed_at) AS closed_at
-  FROM issue_closure_events
-  GROUP BY issue_number
-),
-final_closure AS (
+window_closure AS (
   SELECT e.*
   FROM issue_closure_events e
-  JOIN latest_closure latest
-    ON latest.issue_number=e.issue_number
-   AND latest.closed_at=e.closed_at
+  JOIN issues wi
+    ON wi.number=e.issue_number
+   AND wi.closed_at=e.closed_at
 )
 SELECT DISTINCT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
@@ -1379,7 +1374,7 @@ WHERE
   AND c.sentiment = 'negative'
   AND EXISTS (
     SELECT 1
-    FROM final_closure e
+    FROM window_closure e
     WHERE e.issue_number = i.number
       AND e.state_reason = 'COMPLETED'
   )
@@ -1400,7 +1395,7 @@ WHERE
       )
       AND EXISTS (
         SELECT 1
-        FROM final_closure e
+        FROM window_closure e
         JOIN issue_pr_links l ON l.issue_number = e.issue_number
         JOIN pull_request_fixes p ON p.pr_number = l.pr_number
         JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number
@@ -1437,17 +1432,12 @@ WHERE
         '9999-12-31T23:59:59Z'
       )
   AND NOT EXISTS (
-    WITH latest_closure AS (
-      SELECT issue_number, MAX(closed_at) AS closed_at
-      FROM issue_closure_events
-      GROUP BY issue_number
-    ),
-    final_closure AS (
+    WITH window_closure AS (
       SELECT e.*
       FROM issue_closure_events e
-      JOIN latest_closure latest
-        ON latest.issue_number=e.issue_number
-       AND latest.closed_at=e.closed_at
+      JOIN issues wi
+        ON wi.number=e.issue_number
+       AND wi.closed_at=e.closed_at
     )
     SELECT 1
     FROM issue_closure_proofs proof
@@ -1456,7 +1446,7 @@ WHERE
       AND proof.status = 'fixed_in_release'
     UNION ALL
     SELECT 1
-    FROM final_closure e
+    FROM window_closure e
     JOIN issue_pr_links l ON l.issue_number = e.issue_number
     JOIN pull_request_fixes p ON p.pr_number = l.pr_number
     JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_number = p.pr_number

@@ -543,6 +543,55 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.unverifiedClosedForRelease('v-final').map((row: any) => row.number), [31]);
   });
 
+  it('uses the release-window closure event when later closure events exist', async () => {
+    const db = await freshDb('window-closure-event');
+    seedRelease(db, 'v-window-old', '2028-09-01T00:00:00Z');
+    seedRelease(db, 'v-window-new', '2028-09-10T00:00:00Z');
+    seedIssue(db, 32, '2028-09-02T00:00:00Z', '2028-09-01T12:00:00Z');
+    seedPr(db, 232, true);
+    db.upsertIssueClosureEvent({
+      issue_number: 32,
+      event_id: 'closed-32-window',
+      closed_at: '2028-09-02T00:00:00Z',
+      actor_login: 'maintainer',
+      state_reason: 'COMPLETED',
+      closer_type: null,
+      closer_number: null,
+      closer_oid: null,
+      raw_json: '{}',
+    });
+    db.upsertIssueClosureEvent({
+      issue_number: 32,
+      event_id: 'closed-32-later',
+      closed_at: '2028-09-12T00:00:00Z',
+      actor_login: 'maintainer',
+      state_reason: 'NOT_PLANNED',
+      closer_type: null,
+      closer_number: null,
+      closer_oid: null,
+      raw_json: '{}',
+    });
+    db.upsertIssuePrLink({
+      issue_number: 32,
+      pr_number: 232,
+      source: 'ClosureComment.fixProof',
+      will_close_target: null,
+      referenced_at: '2028-09-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-window-old',
+      pr_number: 232,
+      tag_commit_oid: 'v-window-old-commit',
+      merge_commit_oid: 'merge-232',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-window-old').map((row: any) => row.number), [32]);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-window-old').map((row: any) => row.number), []);
+  });
+
   it('keeps unverified closures visible but excludes verified fixes', async () => {
     const db = await freshDb('unverified-closed');
     seedRelease(db, 'v3', '2026-07-01T00:00:00Z');
