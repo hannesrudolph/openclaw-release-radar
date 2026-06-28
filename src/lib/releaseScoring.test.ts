@@ -88,6 +88,8 @@ describe('release score explanations', () => {
     const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
     assert.ok(carryover);
     assert.ok((carryover.metrics?.count ?? 0) > 0);
+    assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);
+    assert.ok((carryover.metrics?.storedExampleWeight ?? 0) <= (carryover.metrics?.rawWeight ?? 0));
     assert.ok((carryover.issueRefs?.length ?? 0) >= 3);
     assert.ok(carryover.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
     assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactClass === 'string'));
@@ -97,6 +99,8 @@ describe('release score explanations', () => {
     const stale = explanation.limitDetails.find((detail) => detail.code === 'stale_low_confidence_evidence');
     assert.ok(stale);
     assert.ok((stale.metrics?.count ?? 0) > 0);
+    assert.equal(stale.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).staleDebt.length);
+    assert.ok((stale.metrics?.storedExampleWeight ?? 0) <= (stale.metrics?.rawWeight ?? 0));
     assert.ok((stale.issueRefs?.length ?? 0) > 0);
     assert.ok(stale.issueRefs?.every((issue) => Number.isInteger(issue.number) && issue.title));
     assert.ok(stale.issueRefs?.some((issue) => typeof issue.weight === 'number'));

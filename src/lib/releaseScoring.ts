@@ -367,6 +367,11 @@ function scoreRelease(args: {
   };
 
   const debtEvidence = {
+    debtSummary: {
+      verified: debtTierSummary(activeDebt.evidence, 'verified'),
+      carryover: debtTierSummary(activeDebt.evidence, 'carryover'),
+      stale: debtTierSummary(activeDebt.evidence, 'stale'),
+    },
     verifiedDebt: activeDebt.evidence
       .filter((item) => item.tier === 'verified')
       .slice(0, 25)
@@ -486,6 +491,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     .filter(Boolean);
   const stale = Array.isArray(evidence.staleDebt) ? evidence.staleDebt : [];
   const verified = Array.isArray(evidence.verifiedDebt) ? evidence.verifiedDebt : [];
+  const debtSummary = evidence.debtSummary ?? {};
   const limits: string[] = [];
   const limitDetails: ScoreExplanationDetail[] = [];
   const addLimit = (
@@ -519,8 +525,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       sentenceSuffix('Top examples', example),
       {
         metrics: {
-          count: carryoverDebt.length,
+          count: Number(debtSummary.carryover?.count ?? carryoverDebt.length),
+          storedExampleCount: carryoverDebt.length,
           rawWeight: roundMetric(input.carryoverDebtWeight),
+          storedExampleWeight: roundMetric(debtSummary.carryover?.storedWeight ?? carryoverDebt.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
           cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
         },
         issueRefs: issueRefs(carryoverDebt, 5),
@@ -536,8 +544,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       sentenceSuffix('Top examples', example),
       {
         metrics: {
-          count: stale.length,
+          count: Number(debtSummary.stale?.count ?? stale.length),
+          storedExampleCount: stale.length,
           rawWeight: roundMetric(input.staleDebtWeight),
+          storedExampleWeight: roundMetric(debtSummary.stale?.storedWeight ?? stale.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
           cappedPenalty: Math.abs(numberOrZero(components.staleDebt)),
         },
         issueRefs: issueRefs(stale, 5),
@@ -719,6 +729,26 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function debtTierSummary(items: any[], tier: 'verified' | 'carryover' | 'stale'): {
+  count: number;
+  weight: number;
+  storedWeight: number;
+  byInstallImpactClass: Record<string, number>;
+} {
+  const tierItems = items.filter((item) => item.tier === tier);
+  const byInstallImpactClass: Record<string, number> = {};
+  for (const item of tierItems) {
+    const key = String(item.installImpactClass ?? 'unknown');
+    byInstallImpactClass[key] = (byInstallImpactClass[key] ?? 0) + 1;
+  }
+  return {
+    count: tierItems.length,
+    weight: roundMetric(tierItems.reduce((sum, item) => sum + Number(item.weight ?? 0), 0)),
+    storedWeight: roundMetric(tierItems.slice(0, 25).reduce((sum, item) => sum + Number(item.weight ?? 0), 0)),
+    byInstallImpactClass,
+  };
 }
 
 function mergeIssueRefs(
