@@ -88,16 +88,41 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
+  const hasCompletedClosure = reasons.has('COMPLETED');
+  const reporterContext = issueAuthorComments || (reporterSelfClosed ? combinedComments : '');
+
   if (input.sentiment && input.sentiment !== 'negative') {
+    if (hasCompletedClosure && (input.hasReachableClosingPr || input.hasReachableFixCommit)) {
+      return {
+        status: 'non_bug_fixed_in_release',
+        summary: input.hasReachableClosingPr
+          ? 'Non-negative item closed by a merged PR reachable from this release tag; not scored as bug fix credit.'
+          : 'Non-negative item closed by a fix/source commit reachable from this release tag; not scored as bug fix credit.',
+        evidence,
+      };
+    }
+    if (hasCompletedClosure && ((input.hasMergedClosingPr && input.hasNotReachableClosingPr) || input.hasNotReachableFixCommit)) {
+      return {
+        status: 'non_bug_fixed_after_release',
+        summary: input.hasNotReachableFixCommit
+          ? 'Non-negative item has fix/source commit proof, but that commit is not reachable from this release tag.'
+          : 'Non-negative item has merged PR proof, but that PR is not reachable from this release tag.',
+        evidence,
+      };
+    }
+    if (hasCompletedClosure && input.hasClosingLink && !input.hasMergedClosingPr) {
+      return {
+        status: 'non_bug_linked_without_merge',
+        summary: 'Non-negative item has a linked closing PR, but it is not merged or its merge state is unknown.',
+        evidence,
+      };
+    }
     return {
       status: 'non_bug_neutral',
       summary: 'Closed item is not negative bug evidence.',
       evidence,
     };
   }
-
-  const hasCompletedClosure = reasons.has('COMPLETED');
-  const reporterContext = issueAuthorComments || (reporterSelfClosed ? combinedComments : '');
 
   if (hasCompletedClosure && (input.hasReachableClosingPr || input.hasReachableFixCommit)) {
     return {

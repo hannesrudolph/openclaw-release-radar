@@ -191,10 +191,13 @@ function closureStatusRank(status: string): number {
     reporter_replaced: 15,
     reporter_withdrawn: 16,
     reporter_self_closed: 17,
-    not_planned: 18,
-    non_bug_neutral: 19,
-    duplicate_to_fixed_in_release: 20,
-    fixed_in_release: 21,
+    non_bug_fixed_after_release: 18,
+    non_bug_linked_without_merge: 19,
+    not_planned: 20,
+    non_bug_neutral: 21,
+    non_bug_fixed_in_release: 22,
+    duplicate_to_fixed_in_release: 23,
+    fixed_in_release: 24,
   } as Record<string, number>)[status] ?? 99;
 }
 

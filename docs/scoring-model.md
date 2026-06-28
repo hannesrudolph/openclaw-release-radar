@@ -130,6 +130,9 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `reporter_self_closed`: reporter self-closed the issue without linked release fix proof or ongoing failure context.
 - `no_code_proof`: closure exists, but no linked merged PR or named fix/source commit is reachable from the scored release tag.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
+- `non_bug_fixed_in_release`: non-negative item has release-reachable fix proof; it remains audit-visible but is not scored as bug fix credit.
+- `non_bug_fixed_after_release`: non-negative item has fix proof that is not reachable from this release tag.
+- `non_bug_linked_without_merge`: non-negative item has a linked closing PR, but it is not merged or merge state is unknown.
 - `non_bug_neutral`: closed item is not negative bug evidence.
 - `not_planned`: close-time rationale says the issue is expected, by design, outside the tracked source/repository boundary, or otherwise concretely non-actionable for this release.
 

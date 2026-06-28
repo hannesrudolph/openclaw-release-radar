@@ -20,6 +20,9 @@ export const CLOSURE_PROOF_STATUSES = [
   'repro_requested',
   'no_code_proof',
   'no_timeline_event',
+  'non_bug_fixed_in_release',
+  'non_bug_fixed_after_release',
+  'non_bug_linked_without_merge',
   'non_bug_neutral',
   'unknown',
 ] as const;
@@ -60,6 +63,9 @@ export const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<ClosureProofStatus, Clos
   reporter_replaced: 'neutral_or_non_actionable',
   reporter_withdrawn: 'neutral_or_non_actionable',
   reporter_self_closed: 'neutral_or_non_actionable',
+  non_bug_fixed_in_release: 'neutral_or_non_actionable',
+  non_bug_fixed_after_release: 'neutral_or_non_actionable',
+  non_bug_linked_without_merge: 'neutral_or_non_actionable',
   no_timeline_event: 'missing_evidence',
   unknown: 'missing_evidence',
 };

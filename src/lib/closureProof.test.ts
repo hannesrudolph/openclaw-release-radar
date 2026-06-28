@@ -311,6 +311,35 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'non_bug_neutral');
   });
 
+  it('preserves reachable proof shape for neutral closed items without fix credit', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: true,
+    }));
+    assert.equal(result.status, 'non_bug_fixed_in_release');
+  });
+
+  it('preserves not-reachable proof shape for neutral closed items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasNotReachableClosingPr: true,
+    }));
+    assert.equal(result.status, 'non_bug_fixed_after_release');
+  });
+
+  it('preserves unmerged linked PR shape for neutral closed items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasClosingLink: true,
+      hasMergedClosingPr: false,
+    }));
+    assert.equal(result.status, 'non_bug_linked_without_merge');
+  });
+
   it('keeps missing closure timeline evidence visible even for neutral items', () => {
     const result = classifyClosureProof(input({
       sentiment: 'neutral',

@@ -260,6 +260,24 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `admin_not_planned_unverified issue #${row.issue_number} must have NOT_PLANNED state reason`);
       }
+      if (row.status === 'non_bug_fixed_in_release') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `non_bug_fixed_in_release issue #${row.issue_number} must not be negative`);
+        expect(failures, tag, evidence.hasReachableClosingPr === true || evidence.hasReachableFixCommit === true,
+          `non_bug_fixed_in_release issue #${row.issue_number} must have reachable PR or commit evidence`);
+      }
+      if (row.status === 'non_bug_fixed_after_release') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `non_bug_fixed_after_release issue #${row.issue_number} must not be negative`);
+        expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
+          `non_bug_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+      }
+      if (row.status === 'non_bug_linked_without_merge') {
+        expect(failures, tag, row.sentiment !== 'negative',
+          `non_bug_linked_without_merge issue #${row.issue_number} must not be negative`);
+        expect(failures, tag, evidence.hasClosingLink === true && evidence.hasMergedClosingPr !== true,
+          `non_bug_linked_without_merge issue #${row.issue_number} must have an unmerged/unknown linked PR`);
+      }
       if (isNegativeBareNotPlannedNeutral(row, evidence)) {
         expect(failures, tag, false,
           `negative NOT_PLANNED issue #${row.issue_number} cannot be neutral/non-actionable without concrete close-time rationale`);
