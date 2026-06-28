@@ -313,7 +313,7 @@ function communityMultiplier(item: IssueSignalFields): number {
 function installImpactClass(item: DebtClassification): string {
   const title = `${item.title ?? ''} ${item.duplicateCluster ?? ''} ${item.issueNumber ?? ''}`.toLowerCase();
   const labels = item.labels ?? [];
-  if (labels.includes('security') || labels.includes('impact:security')) return 'security';
+  if (labels.includes('security')) return 'security';
   if (labels.includes('impact:auth-provider') || item.functionality === 'provider') return 'provider';
   if (/\b(pricing|catalog|model list|models cannot|unknown model|vertex|doubao|byteplus|openrouter|oauth|provider)\b/i.test(title)) {
     return 'provider';

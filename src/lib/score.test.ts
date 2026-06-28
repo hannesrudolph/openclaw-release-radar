@@ -592,6 +592,30 @@ describe('openDebtLoad — current issue debt', () => {
     assert.ok(security < dataLoss);
   });
 
+  it('does not dampen install impact from impact:security alone', () => {
+    const keywordOnly = openDebtLoad([
+      dc({
+        title: 'Installer executes downloaded scripts without validation',
+        labels: ['impact:security', 'clawsweeper:source-repro'],
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]).carryover;
+    const explicitSecurity = openDebtLoad([
+      dc({
+        title: 'Installer executes downloaded scripts without validation',
+        labels: ['security', 'impact:security', 'clawsweeper:source-repro'],
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]).carryover;
+    assert.ok(keywordOnly > explicitSecurity);
+  });
+
   it('dampens provider catalog issues compared with core state loss', () => {
     const core = openDebtLoad([
       dc({

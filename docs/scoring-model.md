@@ -44,6 +44,7 @@ Issue evidence is cluster-aware:
 - Reactions only provide a small weight lift; they never make a source-only issue verified.
 - Bot-only activity does not establish field evidence.
 - Raw comment volume alone does not establish field evidence.
+- `impact:security` alone is treated as a noisy keyword-stamped label; security/design dampening requires the explicit `security` label or other direct evidence.
 
 The model deliberately separates:
 
