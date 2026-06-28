@@ -34,6 +34,8 @@ The normal score starts from a base value, then applies bounded components:
 - `releaseVerification`: capped confidence from release commit checks.
 - `artifactVerification`: capped confidence from npm package integrity plus release evidence report verification.
 
+Still-open release-local reports are not counted again in the opened-vs-fixed regression balance; they already score as active open debt. The regression component uses field-visible reports opened during the release window that are no longer open, plus verified fixes, so a single unresolved report does not lower the score twice.
+
 ## Issue Evidence Rules
 
 Issue evidence is cluster-aware:

@@ -24,6 +24,18 @@ describe('release score explanations', () => {
     );
   });
 
+  it('excludes still-open reports from regression opened load', () => {
+    const rows = [
+      { number: 1, state: 'open' },
+      { number: 2, state: 'closed' },
+      { number: 3, state: 'closed-unverified' },
+    ];
+    assert.deepEqual(
+      __releaseScoringTest.releaseRegressionOpenedRows(rows).map((row) => row.number),
+      [2, 3],
+    );
+  });
+
   it('includes machine-readable detail entries beside prose', () => {
     const run = buildReleaseScoreRun({
       releaseLimit: 1,

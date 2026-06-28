@@ -281,7 +281,8 @@ function scoreRelease(args: {
   const openedFeltInputs = openedReign.map(feltInput);
   const openedFeltMask = feltSignalMask(openedFeltInputs);
   const openedFeltRows = openedReign.filter((_, rowIndex) => openedFeltMask[rowIndex]);
-  const feltOpenedWeight = feltLoad(openedFeltInputs);
+  const openedRegressionRows = releaseRegressionOpenedRows(openedReign);
+  const feltOpenedWeight = feltLoad(openedRegressionRows.map(feltInput));
   const feltClosedWeight = feltLoad(verifiedFixed.map(feltInput));
   const brokenSurfaces = JSON.stringify(topBrokenSurfaces(openedFeltRows.map((row) => row.title)));
   const cve = args.cveFor(rel.tag);
@@ -858,9 +859,14 @@ function truncateAtWordBoundary(text: string, maxLength: number): string {
 
 export const __releaseScoringTest = {
   buildScoreExplanation,
+  releaseRegressionOpenedRows,
   shortIssueTitle,
   truncateAtWordBoundary,
 };
+
+function releaseRegressionOpenedRows<T extends { state?: string | null }>(rows: T[]): T[] {
+  return rows.filter((row) => row.state !== 'open');
+}
 
 function isCoreSerious(classification: IssueClassification): boolean {
   return classification.sentiment === 'negative' &&
