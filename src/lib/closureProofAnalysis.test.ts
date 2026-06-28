@@ -227,6 +227,37 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       ...baseArgs,
       () => ({ status: 'linked_closing_pr_not_merged', summary: 'Unmerged PR.', evidence: {} }),
+    ).status, 'duplicate_to_closed_canonical');
+  });
+
+  it('classifies closed canonical targets with concrete non-resolution proof separately', () => {
+    const baseArgs = [
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [20] },
+      new Map([[10, [20]]]),
+      new Map(),
+      'v1',
+    ] as const;
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'linked_closing_pr_closed_unmerged', summary: 'Closed unmerged.', evidence: {} }),
+    ).status, 'duplicate_to_closed_canonical');
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'closed_without_release_fix_proof', summary: 'No release proof.', evidence: {} }),
+    ).status, 'duplicate_to_closed_canonical');
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'related_open_pr_context', summary: 'Open related PR.', evidence: {} }),
+    ).status, 'duplicate_to_open_pr_canonical');
+
+    assert.equal(__closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      ...baseArgs,
+      () => ({ status: 'duplicate_or_superseded', summary: 'Still points elsewhere.', evidence: {} }),
     ).status, 'duplicate_to_unverified_closed_canonical');
   });
 

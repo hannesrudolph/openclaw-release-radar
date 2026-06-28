@@ -285,7 +285,9 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_open_pr_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_open_pr_canonical issue #${row.issue_number} must resolve to a closed terminal`);
-        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'open_canonical_risk',
+        expect(failures, tag,
+          riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'open_canonical_risk' ||
+          evidence.canonicalResolution?.terminalProof?.status === 'related_open_pr_context',
           `duplicate_to_open_pr_canonical issue #${row.issue_number} must resolve to open-risk terminal proof`);
       }
       if (row.status === 'duplicate_to_unverified_closed_canonical') {

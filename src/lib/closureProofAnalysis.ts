@@ -796,6 +796,20 @@ function closedCanonicalRollup(
       evidence,
     };
   }
+  if (terminalProof.status === 'related_open_pr_context') {
+    return {
+      status: 'duplicate_to_open_pr_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue is closed but terminal proof still points to open PR context.',
+      evidence,
+    };
+  }
+  if (terminalDisposition === 'unsupported_closure_claim' && terminalProof.status !== 'duplicate_or_superseded') {
+    return {
+      status: 'duplicate_to_closed_canonical',
+      summary: 'Closed as duplicate/superseded; canonical issue is also closed with terminal proof that is not release-fix credit.',
+      evidence,
+    };
+  }
   return {
     status: 'duplicate_to_unverified_closed_canonical',
     summary: 'Closed as duplicate/superseded; canonical issue is closed but terminal proof does not establish release resolution.',
