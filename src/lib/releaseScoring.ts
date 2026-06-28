@@ -512,31 +512,35 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   }
 
   if ((input.carryoverDebtWeight ?? 0) > 0) {
-    const example = issueListText(carryover);
+    const example = issueListText(carryover, 3);
     addLimit(
       'source_carryover_risk',
       `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This bucket is capped at ${penaltyText(components.carryoverDebt)}.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
+          count: carryoverDebt.length,
           rawWeight: roundMetric(input.carryoverDebtWeight),
           cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
         },
-        issueRefs: issueRefs(carryoverDebt),
+        issueRefs: issueRefs(carryoverDebt, 5),
       },
     );
   }
 
   if ((input.staleDebtWeight ?? 0) > 0) {
+    const example = issueListText(stale.map((row: any) => row.issue).filter(Boolean), 3);
     addLimit(
       'stale_low_confidence_evidence',
-      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.`,
+      `${stale.length} low-confidence/stale evidence items are still tracked, capped at ${penaltyText(components.staleDebt)}.` +
+      sentenceSuffix('Top examples', example),
       {
         metrics: {
           count: stale.length,
           rawWeight: roundMetric(input.staleDebtWeight),
           cappedPenalty: Math.abs(numberOrZero(components.staleDebt)),
         },
+        issueRefs: issueRefs(stale, 5),
       },
     );
   }
