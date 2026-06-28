@@ -511,15 +511,22 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
 
   const fix = gate.fixProvenance ?? {};
   const closureProof = fix.closureProof;
-  if (closureProof?.notCreditedCount > 0) {
+  const closureRiskSummary = closureProof?.riskSummary ?? {};
+  const unresolvedClosureCount = Number(closureRiskSummary.unresolvedForReleaseCount ?? 0);
+  const unresolvedClosureWeight = Number(closureRiskSummary.unresolvedWeightedRisk ?? 0);
+  if (closureProof?.notCreditedCount > 0 && (unresolvedClosureCount > 0 || unresolvedClosureWeight > 0)) {
     const bucketText = closureProofSummaryText(closureProof);
     const riskText = closureRiskSummaryText(closureProof);
     const buckets = proofBucketsExceptFixed(closureProof.byStatus);
-    const riskBuckets = proofBucketsExceptFixed(closureProof.byRiskDisposition, 'credited_release_fix');
+    const riskBuckets = proofBucketsExceptFixed(closureProof.byRiskDisposition, [
+      'credited_release_fix',
+      'resolved_by_canonical_release_fix',
+    ]);
     const riskSummary = closureProof.riskSummary ?? {};
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
-      `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.` +
+      `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
+      ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including neutral or non-actionable closures.` +
       ` This contributes ${penaltyText(components.closureRisk)} after the closure-risk cap.` +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
@@ -531,6 +538,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
           unresolvedClosureRiskWeight: roundMetric(input.unresolvedClosureRiskWeight),
           cappedPenalty: Math.abs(numberOrZero(components.closureRisk)),
+          resolvedByCanonicalReleaseFixCount: Number(riskSummary.resolvedByCanonicalReleaseFixCount ?? 0),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
           openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
           unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
@@ -689,10 +697,11 @@ function labelTimelineCoverage(
   };
 }
 
-function proofBucketsExceptFixed(buckets: unknown, fixedKey = 'fixed_in_release'): Record<string, number> {
+function proofBucketsExceptFixed(buckets: unknown, fixedKey: string | string[] = 'fixed_in_release'): Record<string, number> {
   if (!buckets || typeof buckets !== 'object' || Array.isArray(buckets)) return {};
+  const fixedKeys = new Set(Array.isArray(fixedKey) ? fixedKey : [fixedKey]);
   const entries = Object.entries(buckets as Record<string, unknown>)
-    .filter(([status]) => status !== fixedKey)
+    .filter(([status]) => !fixedKeys.has(status))
     .map(([status, count]) => [status, Number(count)] as const)
     .filter(([, count]) => Number.isFinite(count) && count > 0);
   return Object.fromEntries(entries);
@@ -736,6 +745,7 @@ function closureProofSummaryText(closureProof: any): string {
 function closureRiskSummaryText(closureProof: any): string {
   const risk = closureProof?.riskSummary ?? {};
   const parts = [
+    [risk.resolvedByCanonicalReleaseFixCount, 'resolved by canonical release fix'],
     [risk.knownNotInReleaseCount, 'known not in this tag'],
     [risk.openCanonicalRiskCount, 'still-open canonical risk'],
     [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
@@ -752,6 +762,7 @@ function closureStatusLabel(status: string): string {
   return ({
     fixed_in_release: 'fixed in this release',
     fixed_after_release: 'fixed after this release',
+    duplicate_to_fixed_in_release: 'canonical fixed in this release',
     duplicate_to_open_canonical: 'moved to open canonical',
     duplicate_to_closed_canonical: 'moved to closed canonical',
     duplicate_to_fixed_after_release: 'canonical fixed after this release',

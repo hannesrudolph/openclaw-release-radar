@@ -186,8 +186,17 @@ A healthy completed refresh has:
 | `/api/releases` | Dashboard release data |
 | `/api/releases/history` | Score history |
 | `/api/public` | Main install recommendation payload |
+| `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default |
+| `/api/comparison` | Internal temporary upstream-comparison payload |
 
-`/api/releases`, `/api/public`, `/api/comparison`, and `/api/releases/:tag/review` expose the same structured `explanation` object for each scored release. It contains:
+The structured score explanation appears at these paths:
+
+- `/api/releases`: `release.explanation`
+- `/api/public`: `release.explanation`
+- `/api/releases/:tag/review`: `local.components.explanation`
+- `/api/comparison`: `release.local.components.explanation`
+
+That structured `explanation` object contains:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.
 - `positives` / `limits`: human-readable evidence lines for the UI.

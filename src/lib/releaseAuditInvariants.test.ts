@@ -22,6 +22,7 @@ function closureProofFixture(overrides: any = {}) {
     byRiskDisposition: { credited_release_fix: 1 },
     riskSummary: {
       creditedReleaseFixCount: 1,
+      resolvedByCanonicalReleaseFixCount: 0,
       knownNotInReleaseCount: 0,
       openCanonicalRiskCount: 0,
       unsupportedClosureClaimCount: 0,
@@ -248,6 +249,36 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /raw closed release-window issues/.test(failure)));
   });
 
+  it('fails when non-recommended scored releases hide raw closed issues without proof rows', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        releases: [{ tag: 'v1', final_score: 5.8, state: 'eligible', recommended: 0, scored_at: auditScoredAt }],
+        rawClosed: [{ number: 1 }],
+        closed: [],
+        verified: [],
+        unverified: [],
+        proofRows: [],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: {
+              ...labelTimelineFixture,
+              issueCount: 0,
+              currentLabelCount: 0,
+            },
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 0,
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /raw closed release-window issues/.test(failure)));
+    assert.ok(result.failures.some((failure) => /closure proofs .* raw closed release-window issues/.test(failure)));
+  });
+
   it('fails when closed-window classifications are stale', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
@@ -323,6 +354,7 @@ describe('verifyReleaseAudit', () => {
                 byRiskDisposition: { open_canonical_risk: 1 },
                 riskSummary: {
                   creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
                   knownNotInReleaseCount: 0,
                   openCanonicalRiskCount: 1,
                   unsupportedClosureClaimCount: 0,

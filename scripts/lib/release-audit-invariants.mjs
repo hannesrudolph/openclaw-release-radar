@@ -7,6 +7,7 @@ import {
 export const knownProofStatuses = new Set([
   'fixed_in_release',
   'fixed_after_release',
+  'duplicate_to_fixed_in_release',
   'duplicate_to_open_canonical',
   'duplicate_to_closed_canonical',
   'duplicate_to_fixed_after_release',
@@ -27,6 +28,7 @@ export const knownProofStatuses = new Set([
 const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
 const knownRiskDispositions = new Set([
   'credited_release_fix',
+  'resolved_by_canonical_release_fix',
   'known_not_in_release',
   'open_canonical_risk',
   'unsupported_closure_claim',
@@ -35,6 +37,7 @@ const knownRiskDispositions = new Set([
 ]);
 const riskDispositionByProofStatus = new Map([
   ['fixed_in_release', 'credited_release_fix'],
+  ['duplicate_to_fixed_in_release', 'resolved_by_canonical_release_fix'],
   ['fixed_after_release', 'known_not_in_release'],
   ['main_only_claim', 'known_not_in_release'],
   ['duplicate_to_fixed_after_release', 'known_not_in_release'],
@@ -54,6 +57,7 @@ const riskDispositionByProofStatus = new Map([
 ]);
 const riskDispositionWeights = new Map([
   ['credited_release_fix', 0],
+  ['resolved_by_canonical_release_fix', 0],
   ['known_not_in_release', 1],
   ['open_canonical_risk', 1.2],
   ['unsupported_closure_claim', 0.8],
@@ -165,7 +169,9 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
     const proofRows = reader.proofRowsFor(tag);
     const fixedProof = proofRows.filter((row) => row.status === 'fixed_in_release');
     const notCountedProof = proofRows.filter((row) => row.status !== 'fixed_in_release');
-    const enforceRawClosedCoverage = release.recommended === 1 || proofRows.length > 0;
+    const releaseIsScored = release.final_score != null || release.score != null ||
+      release.scored_at != null || release.scoredAt != null;
+    const enforceRawClosedCoverage = releaseIsScored || proofRows.length > 0;
 
     rows.push({
       tag,
@@ -237,6 +243,11 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_fixed_after_release') {
         expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_after_release',
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
+      }
+      if (row.status === 'duplicate_to_fixed_in_release') {
+        expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_in_release' ||
+          canonicalFixCommitProof(evidence).some((proof) => proof.status === 'reachable'),
+        `duplicate_to_fixed_in_release issue #${row.issue_number} must resolve to fixed-in-release canonical proof`);
       }
       if (row.status === 'duplicate_to_open_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'open',
@@ -460,6 +471,7 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
   const reachableFixCommits = normalizeStringArray(evidence.reachableFixCommits);
   const notReachableFixCommits = normalizeStringArray(evidence.notReachableFixCommits);
   const fixCommitProof = Array.isArray(evidence.fixCommitProof) ? evidence.fixCommitProof : [];
+  const canonicalCommitProof = canonicalFixCommitProof(evidence);
 
   expect(failures, tag, Array.isArray(evidence.reachableFixCommits),
     `proof issue #${row.issue_number} reachableFixCommits must be an array`);
@@ -467,6 +479,10 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     `proof issue #${row.issue_number} notReachableFixCommits must be an array`);
   expect(failures, tag, Array.isArray(evidence.fixCommitProof),
     `proof issue #${row.issue_number} fixCommitProof must be an array`);
+  if ('canonicalFixCommitProof' in evidence) {
+    expect(failures, tag, Array.isArray(evidence.canonicalFixCommitProof),
+      `proof issue #${row.issue_number} canonicalFixCommitProof must be an array when present`);
+  }
 
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'reachableFixCommits', commits: reachableFixCommits });
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'notReachableFixCommits', commits: notReachableFixCommits });
@@ -502,6 +518,19 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     if (proof.status === 'reachable' && typeof proof.commitOid === 'string') proofReachable.push(proof.commitOid);
     if (proof.status === 'not_reachable' && typeof proof.commitOid === 'string') proofNotReachable.push(proof.commitOid);
   }
+  for (const proof of canonicalCommitProof) {
+    expect(failures, tag, isObject(proof),
+      `proof issue #${row.issue_number} canonicalFixCommitProof entries must be objects`);
+    if (!isObject(proof)) continue;
+    expect(failures, tag, proof.issueNumber === row.issue_number,
+      `proof issue #${row.issue_number} canonicalFixCommitProof issueNumber (${proof.issueNumber}) must match proof row`);
+    expect(failures, tag, Number.isInteger(proof.sourceIssueNumber) && proof.sourceIssueNumber > 0 && proof.sourceIssueNumber !== row.issue_number,
+      `proof issue #${row.issue_number} canonicalFixCommitProof sourceIssueNumber must be a different positive integer`);
+    expect(failures, tag, typeof proof.commitOid === 'string' && fullCommitOidRe.test(proof.commitOid),
+      `proof issue #${row.issue_number} canonicalFixCommitProof commitOid must be a full lowercase 40-hex SHA`);
+    expect(failures, tag, knownCommitProofStatuses.has(proof.status),
+      `proof issue #${row.issue_number} canonicalFixCommitProof has unknown status ${proof.status}`);
+  }
 
   expectArrayEqual(failures, tag, `proof issue #${row.issue_number} reachableFixCommits`, reachableFixCommits, uniqueSorted(proofReachable));
   expectArrayEqual(failures, tag, `proof issue #${row.issue_number} notReachableFixCommits`, notReachableFixCommits, uniqueSorted(proofNotReachable));
@@ -509,6 +538,10 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     `proof issue #${row.issue_number} hasReachableFixCommit must match reachableFixCommits`);
   expect(failures, tag, evidence.hasNotReachableFixCommit === (notReachableFixCommits.length > 0),
     `proof issue #${row.issue_number} hasNotReachableFixCommit must match notReachableFixCommits`);
+}
+
+function canonicalFixCommitProof(evidence) {
+  return Array.isArray(evidence?.canonicalFixCommitProof) ? evidence.canonicalFixCommitProof : [];
 }
 
 function verifyCommitArray({ failures, tag, issueNumber, name, commits }) {
@@ -543,6 +576,7 @@ function riskDispositionCountsForProofRows(proofRows) {
 function riskSummaryFromCounts(counts) {
   const summary = {
     creditedReleaseFixCount: counts.credited_release_fix ?? 0,
+    resolvedByCanonicalReleaseFixCount: counts.resolved_by_canonical_release_fix ?? 0,
     knownNotInReleaseCount: counts.known_not_in_release ?? 0,
     openCanonicalRiskCount: counts.open_canonical_risk ?? 0,
     unsupportedClosureClaimCount: counts.unsupported_closure_claim ?? 0,

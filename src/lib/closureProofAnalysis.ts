@@ -150,19 +150,20 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }
   await expandCanonicalGraph(canonicalGraph, allCommentsByIssue, [...canonicalIssueNumbers]);
   const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
+  const canonicalCommitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
   const allCommitOids = new Set<string>();
   for (const issueNumber of issueNumbers) {
-    const mentions = [
-      ...closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
-      ...canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
+    const directMentions = closureCommentCommitMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []);
+    const canonicalMentions = canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
         closureCommentCommitMentions(
           issueNumber,
           allCommentsByIssue.get(canonicalIssueNumber) ?? [],
           canonicalIssueNumber,
         ),
-      ),
-    ];
+    );
+    const mentions = [...directMentions, ...canonicalMentions];
     commitMentionsByIssue.set(issueNumber, mentions);
+    canonicalCommitMentionsByIssue.set(issueNumber, canonicalMentions);
     for (const mention of mentions) allCommitOids.add(mention.commitOid);
   }
   for (const row of aggregateRows) {
@@ -185,10 +186,21 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       body: comment.body,
       createdAt: comment.created_at,
     }));
-    const commitProof = commitProofEvidence([
-      ...(commitMentionsByIssue.get(row.number) ?? []),
+    const canonicalMentionKeys = new Set(
+      (canonicalCommitMentionsByIssue.get(row.number) ?? [])
+        .map((mention) => `${mention.sourceIssueNumber}:${mention.commitOid}`),
+    );
+    const directMentions = (commitMentionsByIssue.get(row.number) ?? [])
+      .filter((mention) => !canonicalMentionKeys.has(`${mention.sourceIssueNumber}:${mention.commitOid}`));
+    const directCommitProof = commitProofEvidence([
+      ...directMentions,
       ...directClosureCommitMentions(row.number, row.direct_closer_commits, row.closed_at),
     ], commitReachability);
+    const canonicalCommitProof = commitProofEvidence(
+      canonicalCommitMentionsByIssue.get(row.number) ?? [],
+      commitReachability,
+    );
+    const commitProof = directCommitProof;
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
     const result = classifyClosureProof({
@@ -214,6 +226,9 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
       closedAt: row.closed_at,
       closingPrs: splitCsv(row.closing_prs),
       fixCommitProof: commitProof,
+      canonicalFixCommitProof: canonicalCommitProof,
+      directFixCommitProof: directCommitProof,
+      canonicalFixCommitProofCount: canonicalCommitMentionsByIssue.get(row.number)?.length ?? 0,
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
     preparedRows.push({ issueNumber: row.number, result, evidence });
@@ -301,10 +316,17 @@ function canonicalIssueNumbersFromComments(comments: GhComment[], sourceIssueNum
 
 function canonicalIssueNumbersFromText(text: string): number[] {
   const numbers = new Set<number>();
-  const canonicalLineRe = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
-  for (const match of text.matchAll(canonicalLineRe)) {
-    const number = Number(match[1]);
-    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  const canonicalReferenceRes = [
+    /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
+    /\b(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+    /\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+  ];
+  for (const re of canonicalReferenceRes) {
+    re.lastIndex = 0;
+    for (const match of text.matchAll(re)) {
+      const number = Number(match[1]);
+      if (Number.isInteger(number) && number > 0) numbers.add(number);
+    }
   }
   return [...numbers].sort((a, b) => a - b);
 }
@@ -354,6 +376,11 @@ function adjustCanonicalDuplicateStatus(
   const terminalProof = resolution.terminalIssue?.number == null
     ? null
     : resultByIssue.get(resolution.terminalIssue.number) ?? null;
+  const canonicalFixCommitProof = Array.isArray(evidence.canonicalFixCommitProof)
+    ? evidence.canonicalFixCommitProof
+    : [];
+  const hasReachableCanonicalFixCommit = canonicalFixCommitProof.some((item: any) => item?.status === 'reachable');
+  const hasNotReachableCanonicalFixCommit = canonicalFixCommitProof.some((item: any) => item?.status === 'not_reachable');
   const nextEvidence = {
     ...evidence,
     canonicalResolution: terminalProof
@@ -367,10 +394,21 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
-  if (terminalProof?.status === 'fixed_after_release') {
+  if (terminalProof?.status === 'fixed_in_release' || hasReachableCanonicalFixCommit) {
+    return {
+      status: 'duplicate_to_fixed_in_release',
+      summary: hasReachableCanonicalFixCommit
+        ? 'Closed as duplicate/superseded; canonical fix/source commit is reachable from this release tag.'
+        : 'Closed as duplicate/superseded; canonical issue was fixed in this release tag.',
+      evidence: nextEvidence,
+    };
+  }
+  if (terminalProof?.status === 'fixed_after_release' || hasNotReachableCanonicalFixCommit) {
     return {
       status: 'duplicate_to_fixed_after_release',
-      summary: 'Closed as duplicate/superseded; canonical issue was fixed after this release tag.',
+      summary: hasNotReachableCanonicalFixCommit
+        ? 'Closed as duplicate/superseded; canonical fix/source commit is not reachable from this release tag.'
+        : 'Closed as duplicate/superseded; canonical issue was fixed after this release tag.',
       evidence: nextEvidence,
     };
   }
@@ -429,6 +467,7 @@ function canonicalResolution(
 
 export const __closureProofAnalysisTest = {
   adjustCanonicalDuplicateStatus,
+  canonicalIssueNumbersFromText,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
 };

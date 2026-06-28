@@ -698,16 +698,32 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
     const done = new Set<number>();
     while (done.size < chunk.length) {
       const active = chunk.filter((issueNumber) => !done.has(issueNumber));
-      const data: IssueCommentsQueryData = await gh<IssueCommentsQueryData>(
-        buildIssueCommentsBatchQuery(active.length),
-        repoVars({
-          first: COMMENT_PAGE_SIZE,
-          ...Object.fromEntries(active.flatMap((issueNumber, idx) => [
-            [`number${idx}`, issueNumber],
-            [`after${idx}`, cursors.get(issueNumber) ?? null],
-          ])),
-        }),
-      );
+      let data: IssueCommentsQueryData;
+      try {
+        data = await gh<IssueCommentsQueryData>(
+          buildIssueCommentsBatchQuery(active.length),
+          repoVars({
+            first: COMMENT_PAGE_SIZE,
+            ...Object.fromEntries(active.flatMap((issueNumber, idx) => [
+              [`number${idx}`, issueNumber],
+              [`after${idx}`, cursors.get(issueNumber) ?? null],
+            ])),
+          }),
+        );
+      } catch (error) {
+        const missingIndexes = missingIssueIndexesFromGraphqlError(error);
+        if (!missingIndexes.length) throw error;
+        let skipped = 0;
+        for (const idx of missingIndexes) {
+          const missingIssueNumber = active[idx];
+          if (missingIssueNumber != null) {
+            done.add(missingIssueNumber);
+            skipped++;
+          }
+        }
+        if (skipped === 0) throw error;
+        continue;
+      }
 
       const repo = assertRepo(data.repository);
       for (let idx = 0; idx < active.length; idx++) {
@@ -728,6 +744,16 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
   }
 
   return all;
+}
+
+function missingIssueIndexesFromGraphqlError(error: unknown): number[] {
+  const message = error instanceof Error ? error.message : String(error ?? '');
+  const indexes = new Set<number>();
+  for (const match of message.matchAll(/\brepository\.issue(\d+)\b(?=[^;]*Could not resolve to an Issue)/g)) {
+    const idx = Number(match[1]);
+    if (Number.isInteger(idx) && idx >= 0) indexes.add(idx);
+  }
+  return [...indexes].sort((a, b) => a - b);
 }
 
 function buildIssueCommentsBatchQuery(size: number): string {
@@ -1192,8 +1218,8 @@ function isClosureFixProofComment(text: string): boolean {
 
 function isClosureCommitFixProofComment(text: string): boolean {
   return (
-    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{12,40}`?/i.test(text) ||
-    /\bfixed\s+by\s+commit\s+`?[0-9a-f]{12,40}`?/i.test(text) ||
+    /\bfix(?:ed)?\s+(?:on\s+`?main`?\s+)?in\s+`?[0-9a-f]{40}`?/i.test(text) ||
+    /\bfixed\s+by\s+commit\s+`?[0-9a-f]{40}`?/i.test(text) ||
     /\bfix\s+provenance\b.{0,220}\bcommit\b/i.test(text) ||
     /\bcanonical\s+fix\b.{0,220}\bcommit\b/i.test(text) ||
     /\bfix\s+evidence\b.{0,220}\bcommit\b/i.test(text) ||
@@ -1417,6 +1443,7 @@ export const __githubTest = {
   closureCommentCommitMentions,
   closureCommentPrMentions,
   buildIssueCommentsBatchQuery,
+  missingIssueIndexesFromGraphqlError,
   buildIssueLabelEventsBatchQuery,
   mapComment,
   mapIssue,

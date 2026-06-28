@@ -188,6 +188,27 @@ describe('GitHub GraphQL mapping', () => {
     ]);
   });
 
+  it('does not accept abbreviated commit hashes as closure proof without resolution', () => {
+    const mentions = __githubTest.closureCommentCommitMentions(97222, [
+      {
+        body: 'Fixed by commit cfeaf6897fd8.',
+        created_at: '2026-06-27T09:04:25Z',
+        user: { login: 'clawsweeper' },
+        author_association: 'CONTRIBUTOR',
+      },
+    ]);
+
+    assert.deepEqual(mentions, []);
+  });
+
+  it('identifies missing issue aliases in GraphQL partial-error messages', () => {
+    const indexes = __githubTest.missingIssueIndexesFromGraphqlError(
+      new Error('GitHub GraphQL error: NOT_FOUND repository.issue21 Could not resolve to an Issue with the number of 95854.'),
+    );
+
+    assert.deepEqual(indexes, [21]);
+  });
+
   it('builds one GraphQL query with aliased pull request fix lookups', () => {
     const query = __githubTest.buildPullRequestFixesBatchQuery(2);
 

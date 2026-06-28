@@ -1,6 +1,7 @@
 export type ClosureProofStatus =
   | 'fixed_in_release'
   | 'fixed_after_release'
+  | 'duplicate_to_fixed_in_release'
   | 'duplicate_to_open_canonical'
   | 'duplicate_to_closed_canonical'
   | 'duplicate_to_fixed_after_release'
@@ -42,12 +43,18 @@ export interface ClosureProofResult {
 }
 
 const DUPLICATE_RE = /\b(duplicate|dupe|superseded|canonical|already tracked|broader .*tracker|belongs under)\b/i;
+const DUPLICATE_RATIONALE_RE = /\b(?:close[sd]?|closing|closed)\s+(?:this\s+)?(?:as\s+)?(?:a\s+)?(?:duplicate|dupe|superseded|already tracked|covered by|belongs under)\b|\b(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b|\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?\d+\b/i;
+const NOT_DUPLICATE_RE = /\b(?:not|isn't|is not|wasn't|was not|no longer)\s+(?:a\s+)?(?:duplicate|dupe|superseded)\b/i;
 const ALREADY_PRESENT_RE = /\b(already implemented|already fixed|current main|tagged releases? already|already contains|already covered|implemented in current)\b/i;
 const MAIN_ONLY_RE = /\b(current-main-only|main-only|v20\d{2}\.\d+\.\d+\s+(?:still\s+)?(?:predates|does not contain|doesn't contain)|latest release(?: tag)?(?: inspected here)? does not contain|stable v20\d{2}\.\d+\.\d+\s+predates|not yet in (?:the )?(?:latest )?release)\b/i;
 const NO_PLAN_RE = /\b(not planned|won't fix|wont fix|expected behavior|working as intended|by design)\b/i;
 const REPORTER_REPLACED_RE = /\b(?:reopened|refiled|opened|moved)\s+(?:as|in|under|to)\b.{0,80}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#\d+\b/i;
 const REPORTER_WITHDRAWN_RE = /\b(?:please ignore|ignore this|closed by reporter|privacy concerns?|pii|personally identifiable|withdrawn|false alarm|opened by mistake|my mistake|resolved on my side|no longer reproduc(?:e|ible)|not reproducible anymore)\b/i;
-const CANONICAL_LINE_RE = /^\s*(?:\*\*)?(?:canonical|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim;
+const CANONICAL_REFERENCE_RES = [
+  /^\s*(?:\*\*)?(?:canonical|canonical path|root-cause tracker|root cause tracker)(?:\*\*)?\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)/gim,
+  /\b(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+  /\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+];
 
 export function classifyClosureProof(input: ClosureProofInput): ClosureProofResult {
   const combinedComments = input.comments.map((comment) => comment.body ?? '').join('\n');
@@ -55,10 +62,10 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   const issueAuthor = normalizeLogin(input.issueAuthor);
   const closureActors = input.closureActors.map(normalizeLogin).filter(Boolean);
   const reporterSelfClosed = !!issueAuthor && closureActors.includes(issueAuthor);
-  const reporterComments = input.comments
+  const issueAuthorComments = input.comments
     .filter((comment) => {
       const author = normalizeLogin(comment.author);
-      return !!author && (author === issueAuthor || closureActors.includes(author));
+      return !!author && author === issueAuthor;
     })
     .map((comment) => comment.body ?? '')
     .join('\n');
@@ -96,15 +103,7 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
   }
 
   const hasCompletedClosure = reasons.has('COMPLETED');
-  const reporterContext = reporterComments || (reporterSelfClosed ? combinedComments : '');
-
-  if (MAIN_ONLY_RE.test(combinedComments)) {
-    return {
-      status: 'main_only_claim',
-      summary: 'Closure says the fix is on current main, but not in this release tag.',
-      evidence,
-    };
-  }
+  const reporterContext = issueAuthorComments || (reporterSelfClosed ? combinedComments : '');
 
   if (hasCompletedClosure && (input.hasReachableClosingPr || input.hasReachableFixCommit)) {
     return {
@@ -142,10 +141,18 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     };
   }
 
-  if (reasons.has('DUPLICATE') || DUPLICATE_RE.test(combinedComments)) {
+  if (hasDuplicateOrSupersededSignal(combinedComments, reasons)) {
     return {
       status: 'duplicate_or_superseded',
       summary: 'Closed as duplicate, superseded, or moved under a broader tracker.',
+      evidence,
+    };
+  }
+
+  if (MAIN_ONLY_RE.test(combinedComments)) {
+    return {
+      status: 'main_only_claim',
+      summary: 'Closure says the fix is on current main, but not in this release tag.',
       evidence,
     };
   }
@@ -195,12 +202,22 @@ function normalizeLogin(login: string | null | undefined): string {
 
 function canonicalIssueNumbers(text: string): number[] {
   const numbers = new Set<number>();
-  CANONICAL_LINE_RE.lastIndex = 0;
-  for (const match of text.matchAll(CANONICAL_LINE_RE)) {
-    const number = Number(match[1]);
-    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  for (const re of CANONICAL_REFERENCE_RES) {
+    re.lastIndex = 0;
+    for (const match of text.matchAll(re)) {
+      const number = Number(match[1]);
+      if (Number.isInteger(number) && number > 0) numbers.add(number);
+    }
   }
   return [...numbers].sort((a, b) => a - b);
+}
+
+function hasDuplicateOrSupersededSignal(text: string, reasons: Set<string>): boolean {
+  if (reasons.has('DUPLICATE')) return true;
+  if (!DUPLICATE_RE.test(text)) return false;
+  if (canonicalIssueNumbers(text).length > 0) return true;
+  const lines = text.split(/\n+/).map((line) => line.trim()).filter(Boolean);
+  return lines.some((line) => DUPLICATE_RATIONALE_RE.test(line) && !NOT_DUPLICATE_RE.test(line));
 }
 
 function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array<{
@@ -211,7 +228,7 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
   return comments
     .filter((comment) => {
       const body = comment.body ?? '';
-      return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || NO_PLAN_RE.test(body) ||
+      return DUPLICATE_RE.test(body) || ALREADY_PRESENT_RE.test(body) || MAIN_ONLY_RE.test(body) || NO_PLAN_RE.test(body) ||
         REPORTER_REPLACED_RE.test(body) || REPORTER_WITHDRAWN_RE.test(body);
     })
     .slice(-3)

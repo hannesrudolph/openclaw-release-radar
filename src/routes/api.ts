@@ -290,11 +290,9 @@ api.get('/releases/:tag/review', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
-  const snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
-  const upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   const audit = getReleaseScoreAudit(tag);
   const gateEvidence = enrichGateEvidenceWithClosureProof(tag, parseJson(audit?.gate_evidence_json, null));
-  res.json({
+  const payload: Record<string, unknown> = {
     tag,
     local: {
       score: release.final_score,
@@ -312,9 +310,12 @@ api.get('/releases/:tag/review', (req, res) => {
       issueEvidence: parseJson(audit?.issue_evidence_json, null),
       gateEvidence,
     },
-    snapshot,
-    upstream,
-  });
+  };
+  if (req.query.includeComparison === '1') {
+    payload.snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
+    payload.upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
+  }
+  res.json(payload);
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────

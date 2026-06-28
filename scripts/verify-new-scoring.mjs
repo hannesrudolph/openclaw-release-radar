@@ -124,6 +124,8 @@ function comparePersisted({ failures, result, audit, recommended }) {
   expectJson(failures, tag, 'broken surfaces', parseJson(rel.broken_surfaces, []), parseJson(result.brokenSurfaces, []));
 
   expectJson(failures, tag, 'audit input_json', parseJson(audit.input_json, null), normalizeJson(input));
+  expectJson(failures, tag, 'audit issue_evidence_json', parseJson(audit.issue_evidence_json, null), normalizeJson(result.debtEvidence));
+  expectJson(failures, tag, 'audit gate_evidence_json', parseJson(audit.gate_evidence_json, null), normalizeJson(result.gateEvidence));
   const components = parseJson(audit.components_json, null);
   expectJson(failures, tag, 'audit components', components?.components ?? null, normalizeJson(conf.components));
   expectJson(failures, tag, 'audit explanation', components?.explanation ?? null, normalizeJson(result.explanation));

@@ -78,6 +78,23 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'duplicate_or_superseded');
   });
 
+  it('extracts common duplicate target comments as canonical issues', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{ author: 'bot', body: 'Closing as duplicate of https://github.com/openclaw/openclaw/issues/96857.' }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [96857]);
+  });
+
+  it('does not treat negated duplicate discussion as duplicate closure rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{ author: 'bot', body: 'This is not a duplicate; closing as expected behavior.' }],
+    }));
+    assert.equal(result.status, 'not_planned');
+  });
+
   it('recognizes reporter-refiled issues as replacement context, not missing fix proof', () => {
     const result = classifyClosureProof(input({
       issueAuthor: 'reporter',
@@ -95,6 +112,15 @@ describe('classifyClosureProof', () => {
       comments: [{ author: 'reporter', body: 'Apologies, please ignore.' }],
     }));
     assert.equal(result.status, 'reporter_withdrawn');
+  });
+
+  it('does not infer reporter withdrawal from maintainer-only closure wording', () => {
+    const result = classifyClosureProof(input({
+      issueAuthor: 'reporter',
+      closureActors: ['maintainer'],
+      comments: [{ author: 'maintainer', body: 'Could not reproduce anymore, closing as not planned.' }],
+    }));
+    assert.equal(result.status, 'not_planned');
   });
 
   it('separates unexplained reporter self-closures from missing maintainer fix proof', () => {
@@ -126,11 +152,33 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [96660]);
   });
 
-  it('separates current-main-only claims from release-present claims', () => {
+  it('keeps duplicate/superseded closures distinct from main-only claims', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'bot',
+        body: 'Close as superseded: current main already has part of this, and the remaining work is tracked by the canonical issue.\nCanonical: #94518',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [94518]);
+  });
+
+  it('lets reachable proof override stale current-main-only claims', () => {
     const result = classifyClosureProof(input({
       hasClosingLink: true,
       hasMergedClosingPr: true,
       hasReachableClosingPr: true,
+      comments: [{
+        author: 'bot',
+        body: 'Current main already fixes this path, but stable v2026.6.10 predates the fix.',
+      }],
+    }));
+    assert.equal(result.status, 'fixed_in_release');
+  });
+
+  it('separates current-main-only claims from missing release proof', () => {
+    const result = classifyClosureProof(input({
       comments: [{
         author: 'bot',
         body: 'Current main already fixes this path, but stable v2026.6.10 predates the fix.',

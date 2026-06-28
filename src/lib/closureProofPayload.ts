@@ -18,6 +18,7 @@ import type { IssueClassification } from './llm';
 
 export const CLOSURE_RISK_DISPOSITIONS = [
   'credited_release_fix',
+  'resolved_by_canonical_release_fix',
   'known_not_in_release',
   'open_canonical_risk',
   'unsupported_closure_claim',
@@ -29,6 +30,7 @@ export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
 
 const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<string, ClosureRiskDisposition> = {
   fixed_in_release: 'credited_release_fix',
+  duplicate_to_fixed_in_release: 'resolved_by_canonical_release_fix',
   fixed_after_release: 'known_not_in_release',
   main_only_claim: 'known_not_in_release',
   duplicate_to_fixed_after_release: 'known_not_in_release',
@@ -53,6 +55,7 @@ export function closureRiskDisposition(status: string): ClosureRiskDisposition {
 
 const DISPOSITION_RISK_WEIGHT: Record<ClosureRiskDisposition, number> = {
   credited_release_fix: 0,
+  resolved_by_canonical_release_fix: 0,
   known_not_in_release: 1,
   open_canonical_risk: 1.2,
   unsupported_closure_claim: 0.8,
@@ -137,6 +140,7 @@ export function closureProofPayload(tag: string) {
   }).sort(compareClosureProofExamples).slice(0, 30);
   const riskSummary = {
     creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
+    resolvedByCanonicalReleaseFixCount: byRiskDisposition.resolved_by_canonical_release_fix ?? 0,
     knownNotInReleaseCount: byRiskDisposition.known_not_in_release ?? 0,
     openCanonicalRiskCount: byRiskDisposition.open_canonical_risk ?? 0,
     unsupportedClosureClaimCount: byRiskDisposition.unsupported_closure_claim ?? 0,
@@ -188,7 +192,8 @@ function closureStatusRank(status: string): number {
     reporter_self_closed: 12,
     not_planned: 13,
     non_bug_neutral: 14,
-    fixed_in_release: 15,
+    duplicate_to_fixed_in_release: 15,
+    fixed_in_release: 16,
   } as Record<string, number>)[status] ?? 99;
 }
 

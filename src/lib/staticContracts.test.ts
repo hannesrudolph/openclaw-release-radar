@@ -81,6 +81,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /PROMPT_VERSION/);
     assert.match(verifier, /complete classification coverage/);
     assert.match(verifier, /release scored_at/);
+    assert.match(verifier, /audit issue_evidence_json/);
+    assert.match(verifier, /audit gate_evidence_json/);
     assert.match(verifier, /--all/);
     assert.doesNotMatch(verifier, /function scoreRelease\(/);
     assert.match(verifier, /scoredAtMillis/);

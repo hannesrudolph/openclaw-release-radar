@@ -17,6 +17,7 @@ let explanationText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
+  assertNoComparisonPayload(review, `/api/releases/${release.tag}/review`);
   reviewByTag.set(release.tag, review);
   const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
   const risk = review.local?.gateEvidence?.fixProvenance?.closureProof?.riskSummary;
@@ -132,6 +133,21 @@ try {
   console.log(`UI smoke passed: fix credit ${fixCreditTag}; eligible non-recommended ${eligibleNonRecommended.tag}`);
 } finally {
   await browser.close();
+}
+
+function assertNoComparisonPayload(value, path) {
+  const forbidden = new Set(['snapshot', 'upstream', 'delta', 'rawCardText', 'sourceUrl', 'pageText']);
+  if (Array.isArray(value)) {
+    value.forEach((item, idx) => assertNoComparisonPayload(item, `${path}[${idx}]`));
+    return;
+  }
+  if (!value || typeof value !== 'object') return;
+  for (const [key, child] of Object.entries(value)) {
+    if (forbidden.has(key)) {
+      throw new Error(`${path} leaked comparison field ${key}`);
+    }
+    assertNoComparisonPayload(child, `${path}.${key}`);
+  }
 }
 
 async function json(path) {
