@@ -1741,6 +1741,13 @@ function metricValue(value) {
     return String(Math.round(value * 1000) / 1000);
   }
   if (typeof value === 'boolean') return value ? 'yes' : 'no';
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    return Object.entries(value)
+      .sort((a, b) => Number(b[1] ?? 0) - Number(a[1] ?? 0))
+      .slice(0, 5)
+      .map(([key, count]) => `${String(key).replace(/_/g, ' ')} ${metricValue(count)}`)
+      .join(' · ');
+  }
   if (value == null || value === '') return '—';
   return String(value);
 }
