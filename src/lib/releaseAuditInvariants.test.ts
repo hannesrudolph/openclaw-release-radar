@@ -14,6 +14,25 @@ const labelTimelineFixture = {
 const proofCheckedAt = '2026-01-02T00:00:00Z';
 const auditScoredAt = '2026-01-02T00:00:01Z';
 
+function closureProofFixture(overrides: any = {}) {
+  return {
+    creditedCount: 1,
+    notCreditedCount: 0,
+    byStatus: { fixed_in_release: 1 },
+    byRiskDisposition: { credited_release_fix: 1 },
+    riskSummary: {
+      creditedReleaseFixCount: 1,
+      knownNotInReleaseCount: 0,
+      openCanonicalRiskCount: 0,
+      unsupportedClosureClaimCount: 0,
+      neutralOrNonActionableCount: 0,
+      missingEvidenceCount: 0,
+      unresolvedForReleaseCount: 0,
+    },
+    ...overrides,
+  };
+}
+
 function reader(overrides: Partial<{
   releases: any[];
   rawClosed: any[];
@@ -61,7 +80,7 @@ function reader(overrides: Partial<{
         fixProvenance: {
           verifiedFixedCount: 1,
           unverifiedClosedCount: 0,
-          closureProof: { creditedCount: 1, notCreditedCount: 0 },
+          closureProof: closureProofFixture(),
           releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
         },
       }),
@@ -147,7 +166,7 @@ describe('verifyReleaseAudit', () => {
               components: { explanation },
               gateEvidence: {
                 fixProvenance: {
-                  closureProof: { creditedCount: 1, notCreditedCount: 0 },
+                  closureProof: closureProofFixture(),
                   releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
                 },
               },
@@ -166,7 +185,7 @@ describe('verifyReleaseAudit', () => {
             recommended: true,
             gateEvidence: {
               fixProvenance: {
-                closureProof: { creditedCount: 1, notCreditedCount: 0, byStatus: { fixed_in_release: 1 } },
+                closureProof: closureProofFixture(),
                 releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
               },
             },
@@ -192,7 +211,7 @@ describe('verifyReleaseAudit', () => {
             fixProvenance: {
               verifiedFixedCount: 2,
               unverifiedClosedCount: 0,
-              closureProof: { creditedCount: 1, notCreditedCount: 0 },
+              closureProof: closureProofFixture(),
               releaseFixCredit: { countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
             },
           }),
@@ -281,7 +300,21 @@ describe('verifyReleaseAudit', () => {
             fixProvenance: {
               verifiedFixedCount: 0,
               unverifiedClosedCount: 1,
-              closureProof: { creditedCount: 0, notCreditedCount: 1 },
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { duplicate_to_open_canonical: 1 },
+                byRiskDisposition: { open_canonical_risk: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 1,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 1,
+                },
+              }),
               releaseFixCredit: { countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
             },
           }),

@@ -12,15 +12,20 @@ if (!eligibleNonRecommended) throw new Error('No eligible non-recommended releas
 
 let fixCreditTag = null;
 let fixCreditText = null;
+let closureRiskText = null;
 let explanationText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
   reviewByTag.set(release.tag, review);
   const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
+  const risk = review.local?.gateEvidence?.fixProvenance?.closureProof?.riskSummary;
   if (credit) {
     fixCreditTag = release.tag;
     fixCreditText = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
+    closureRiskText = risk
+      ? `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} neutral`
+      : null;
     explanationText = (review.local?.components?.explanation?.limits ?? [])
       .find((line) => /closed issues .* not counted as release fixes/i.test(line))
       ?? review.local?.components?.explanation?.limits?.[0]
@@ -30,6 +35,7 @@ for (const release of releases) {
 }
 if (!fixCreditTag) throw new Error('No release exposes releaseFixCredit for UI smoke');
 if (!explanationText) throw new Error(`No score explanation text available for ${fixCreditTag}`);
+if (!closureRiskText) throw new Error(`No closure risk summary available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -73,6 +79,8 @@ try {
   await fixPanel.getByText('Evidence coverage', { exact: true }).waitFor();
   await fixPanel.locator('.score-review__label').filter({ hasText: 'Release fix credit' }).first().waitFor();
   await fixPanel.getByText(fixCreditText).waitFor();
+  await fixPanel.locator('.score-review__label').filter({ hasText: 'Closure risk' }).first().waitFor();
+  await fixPanel.getByText(closureRiskText).waitFor();
   const fixPanelText = await fixPanel.innerText();
   if (!fixPanelText.includes(explanationText)) {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
@@ -111,6 +119,10 @@ try {
     if (credit) {
       const expectedCredit = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
       await panel.locator('.score-review__item').filter({ hasText: 'Release fix credit' }).getByText(expectedCredit).waitFor();
+      const risk = review.local?.gateEvidence?.fixProvenance?.closureProof?.riskSummary;
+      if (!risk) throw new Error(`Missing closure risk summary for ${release.tag}`);
+      const expectedRisk = `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} neutral`;
+      await panel.locator('.score-review__item').filter({ hasText: 'Closure risk' }).getByText(expectedRisk).waitFor();
     }
   }
 

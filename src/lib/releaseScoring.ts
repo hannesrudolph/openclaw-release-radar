@@ -78,6 +78,7 @@ export interface ScoreExplanationDetail {
   text: string;
   metrics?: Record<string, number | string | boolean | null>;
   buckets?: Record<string, number>;
+  riskBuckets?: Record<string, number>;
   issueRefs?: ScoreExplanationIssueRef[];
 }
 
@@ -509,18 +510,29 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const closureProof = fix.closureProof;
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
+    const riskText = closureRiskSummaryText(closureProof);
     const buckets = proofBucketsExceptFixed(closureProof.byStatus);
+    const riskBuckets = proofBucketsExceptFixed(closureProof.byRiskDisposition, 'credited_release_fix');
+    const riskSummary = closureProof.riskSummary ?? {};
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.` +
+      (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
       {
         metrics: {
           countedClosedCount: Number(closureProof.creditedCount ?? 0),
           notCountedClosedCount: Number(closureProof.notCreditedCount ?? 0),
           analyzedClosedCount: Number(closureProof.analyzedClosedCount ?? 0),
+          unresolvedForReleaseCount: Number(riskSummary.unresolvedForReleaseCount ?? 0),
+          knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
+          openCanonicalRiskCount: Number(riskSummary.openCanonicalRiskCount ?? 0),
+          unsupportedClosureClaimCount: Number(riskSummary.unsupportedClosureClaimCount ?? 0),
+          neutralOrNonActionableCount: Number(riskSummary.neutralOrNonActionableCount ?? 0),
+          missingEvidenceCount: Number(riskSummary.missingEvidenceCount ?? 0),
         },
         buckets,
+        riskBuckets,
         issueRefs: issueRefs((closureProof.examples ?? []).filter((item: any) => item.status !== 'fixed_in_release')),
       },
     );
@@ -671,10 +683,10 @@ function labelTimelineCoverage(
   };
 }
 
-function proofBucketsExceptFixed(byStatus: unknown): Record<string, number> {
-  if (!byStatus || typeof byStatus !== 'object' || Array.isArray(byStatus)) return {};
-  const entries = Object.entries(byStatus as Record<string, unknown>)
-    .filter(([status]) => status !== 'fixed_in_release')
+function proofBucketsExceptFixed(buckets: unknown, fixedKey = 'fixed_in_release'): Record<string, number> {
+  if (!buckets || typeof buckets !== 'object' || Array.isArray(buckets)) return {};
+  const entries = Object.entries(buckets as Record<string, unknown>)
+    .filter(([status]) => status !== fixedKey)
     .map(([status, count]) => [status, Number(count)] as const)
     .filter(([, count]) => Number.isFinite(count) && count > 0);
   return Object.fromEntries(entries);
@@ -707,6 +719,21 @@ function closureProofSummaryText(closureProof: any): string {
     .filter(([status]) => status !== 'fixed_in_release')
     .sort((a, b) => Number(b[1]) - Number(a[1]))
     .map(([status, count]) => `${count} ${closureStatusLabel(status)}`)
+    .join(' · ');
+}
+
+function closureRiskSummaryText(closureProof: any): string {
+  const risk = closureProof?.riskSummary ?? {};
+  const parts = [
+    [risk.knownNotInReleaseCount, 'known not in this tag'],
+    [risk.openCanonicalRiskCount, 'still-open canonical risk'],
+    [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
+    [risk.missingEvidenceCount, 'missing proof evidence'],
+    [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
+  ];
+  return parts
+    .filter(([count]) => Number(count ?? 0) > 0)
+    .map(([count, label]) => `${count} ${label}`)
     .join(' · ');
 }
 

@@ -1702,6 +1702,9 @@ function closureStatusLabel(status) {
     duplicate_or_superseded: 'duplicate/superseded',
     already_present_claim: 'already-present claim',
     main_only_claim: 'main-only claim',
+    reporter_replaced: 'reporter refiled/replaced',
+    reporter_withdrawn: 'reporter withdrew',
+    reporter_self_closed: 'reporter self-closed',
     no_code_proof: 'no linked release fix',
     no_timeline_event: 'close event not fetched',
     non_bug_neutral: 'not bug evidence',
@@ -1718,6 +1721,32 @@ function closureProofSummaryText(closureProof) {
   if (!entries.length) return '';
   return entries
     .map(([status, count]) => `${esc(count)} ${esc(closureStatusLabel(status))}`)
+    .join(' · ');
+}
+
+function closureRiskDispositionLabel(disposition) {
+  return ({
+    credited_release_fix: 'credited release fix',
+    known_not_in_release: 'known not in this tag',
+    open_canonical_risk: 'still-open canonical risk',
+    unsupported_closure_claim: 'unsupported closure/admin claim',
+    neutral_or_non_actionable: 'neutral/non-actionable closure',
+    missing_evidence: 'missing proof evidence',
+  })[disposition] ?? String(disposition ?? 'unknown closure risk');
+}
+
+function closureRiskSummaryText(closureProof) {
+  const risk = closureProof?.riskSummary ?? {};
+  const parts = [
+    [risk.knownNotInReleaseCount, 'known not in this tag'],
+    [risk.openCanonicalRiskCount, 'still-open canonical risk'],
+    [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
+    [risk.missingEvidenceCount, 'missing proof evidence'],
+    [risk.neutralOrNonActionableCount, 'neutral/non-actionable closure'],
+  ];
+  return parts
+    .filter(([count]) => Number(count ?? 0) > 0)
+    .map(([count, label]) => `${esc(count)} ${esc(label)}`)
     .join(' · ');
 }
 
@@ -1746,8 +1775,9 @@ function closureProofHtml(closureProof) {
           : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${Array.isArray(resolution.path) && resolution.path.length > 1 ? ` · path ${resolution.path.map((n) => `#${esc(n)}`).join(' → ')}` : ''}`
       : '';
     const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
+    const disposition = item.riskDisposition ? closureRiskDispositionLabel(item.riskDisposition) : null;
     return `<li class="evidence__item">${link}`
-      + `<span class="evidence__meta">${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
+      + `<span class="evidence__meta">${disposition ? `${esc(disposition)} · ` : ''}${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
@@ -1830,8 +1860,10 @@ function whyNotTenHtml(local) {
   const closureProof = fix.closureProof;
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
+    const riskText = closureRiskSummaryText(closureProof);
     reasons.push(
       `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.`
+      + (riskText ? ` Risk split: ${riskText}.` : '')
       + (bucketText ? ` Breakdown: ${bucketText}.` : '')
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
@@ -1884,6 +1916,10 @@ function scoreReviewHtml(r) {
   const analyzedClosed = releaseFixCredit?.analyzedClosedCount ?? (
     closureProof ? (closureProof.creditedCount ?? 0) + (closureProof.notCreditedCount ?? 0) : null
   );
+  const closureRisk = closureProof?.riskSummary;
+  const closureRiskLine = closureRisk
+    ? `${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved · ${esc(closureRisk.knownNotInReleaseCount ?? 0)} known not in tag · ${esc(closureRisk.neutralOrNonActionableCount ?? 0)} neutral`
+    : '';
   const signalSummary = scoreSignalSummary(local);
   const componentEntries = Object.entries(components);
   const compHtml = componentEntries.length
@@ -1902,6 +1938,7 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Source ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
+    + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closure risk</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
     + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}</span></div>` : '')

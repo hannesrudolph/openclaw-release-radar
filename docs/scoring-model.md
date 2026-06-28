@@ -102,6 +102,17 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 
 Only `fixed_in_release` receives fix credit. Other buckets preserve the closure context in the audit, but they do not reduce release risk for this tag.
 
+The closure proof payload also rolls status buckets into risk dispositions:
+
+- `credited_release_fix`: hard proof that the release tag contains the fix.
+- `known_not_in_release`: a PR/commit or closure note indicates the fix is on main or after this tag, so it is not proof for this release.
+- `open_canonical_risk`: the report was moved to a canonical issue that remains open.
+- `unsupported_closure_claim`: an already-present, duplicate, superseded, or closed-canonical claim that lacks reachable release code proof.
+- `neutral_or_non_actionable`: not bug evidence, not planned/actionable, reporter replacement, withdrawal, or self-closure.
+- `missing_evidence`: missing closure timeline/proof evidence.
+
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes neutral/non-actionable closures so the UI does not imply every non-credited closure is a broken user report.
+
 The API exposes a coherent `releaseFixCredit` object:
 
 - `countedClosedCount`: closed issues counted as release fixes.

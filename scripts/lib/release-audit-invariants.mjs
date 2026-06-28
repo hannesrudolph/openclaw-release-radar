@@ -18,6 +18,32 @@ export const knownProofStatuses = new Set([
 ]);
 
 const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
+const knownRiskDispositions = new Set([
+  'credited_release_fix',
+  'known_not_in_release',
+  'open_canonical_risk',
+  'unsupported_closure_claim',
+  'neutral_or_non_actionable',
+  'missing_evidence',
+]);
+const riskDispositionByProofStatus = new Map([
+  ['fixed_in_release', 'credited_release_fix'],
+  ['fixed_after_release', 'known_not_in_release'],
+  ['main_only_claim', 'known_not_in_release'],
+  ['duplicate_to_open_canonical', 'open_canonical_risk'],
+  ['duplicate_to_closed_canonical', 'unsupported_closure_claim'],
+  ['canonical_cycle_or_self_reference', 'unsupported_closure_claim'],
+  ['duplicate_or_superseded', 'unsupported_closure_claim'],
+  ['already_present_claim', 'unsupported_closure_claim'],
+  ['no_code_proof', 'unsupported_closure_claim'],
+  ['non_bug_neutral', 'neutral_or_non_actionable'],
+  ['not_planned', 'neutral_or_non_actionable'],
+  ['reporter_replaced', 'neutral_or_non_actionable'],
+  ['reporter_withdrawn', 'neutral_or_non_actionable'],
+  ['reporter_self_closed', 'neutral_or_non_actionable'],
+  ['no_timeline_event', 'missing_evidence'],
+  ['unknown', 'missing_evidence'],
+]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const scoreExplanationSchemaVersion = 1;
 const knownExplanationCodes = new Set([
@@ -178,6 +204,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       expect(failures, tag, !!fix.closureProof && !!fix.releaseFixCredit,
         'persisted audit gateEvidence must include closureProof and releaseFixCredit when proof rows exist');
       if (fix.closureProof && fix.releaseFixCredit) {
+        const expectedRiskDispositionCounts = riskDispositionCountsForProofRows(proofRows);
+        const expectedRiskSummary = riskSummaryFromCounts(expectedRiskDispositionCounts);
         expect(failures, tag, fix.releaseFixCredit.countedClosedCount === fixedProof.length,
           `persisted countedClosedCount (${fix.releaseFixCredit.countedClosedCount}) must match fixed_in_release proof rows (${fixedProof.length})`);
         expect(failures, tag, fix.releaseFixCredit.notCountedClosedCount === notCountedProof.length,
@@ -188,6 +216,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `persisted closureProof creditedCount (${fix.closureProof.creditedCount}) must match fixed proof rows (${fixedProof.length})`);
         expect(failures, tag, fix.closureProof.notCreditedCount === notCountedProof.length,
           `persisted closureProof notCreditedCount (${fix.closureProof.notCreditedCount}) must match non-fixed proof rows (${notCountedProof.length})`);
+        expectJsonEqual(failures, tag, 'persisted closureProof byRiskDisposition must match proof row dispositions',
+          fix.closureProof.byRiskDisposition, expectedRiskDispositionCounts);
+        expectJsonEqual(failures, tag, 'persisted closureProof riskSummary must match proof row dispositions',
+          fix.closureProof.riskSummary, expectedRiskSummary);
+        for (const [disposition] of Object.entries(fix.closureProof.byRiskDisposition ?? {})) {
+          expect(failures, tag, knownRiskDispositions.has(disposition),
+            `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
+        }
       }
     }
   } else {
@@ -378,6 +414,37 @@ function parseJson(raw, fallback) {
   }
 }
 
+function riskDispositionForStatus(status) {
+  return riskDispositionByProofStatus.get(status) ?? 'missing_evidence';
+}
+
+function riskDispositionCountsForProofRows(proofRows) {
+  const counts = {};
+  for (const row of proofRows) {
+    const disposition = riskDispositionForStatus(row.status);
+    counts[disposition] = (counts[disposition] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function riskSummaryFromCounts(counts) {
+  const summary = {
+    creditedReleaseFixCount: counts.credited_release_fix ?? 0,
+    knownNotInReleaseCount: counts.known_not_in_release ?? 0,
+    openCanonicalRiskCount: counts.open_canonical_risk ?? 0,
+    unsupportedClosureClaimCount: counts.unsupported_closure_claim ?? 0,
+    neutralOrNonActionableCount: counts.neutral_or_non_actionable ?? 0,
+    missingEvidenceCount: counts.missing_evidence ?? 0,
+  };
+  return {
+    ...summary,
+    unresolvedForReleaseCount: summary.knownNotInReleaseCount +
+      summary.openCanonicalRiskCount +
+      summary.unsupportedClosureClaimCount +
+      summary.missingEvidenceCount,
+  };
+}
+
 function expect(failures, tag, condition, message) {
   if (!condition) failures.push(`${tag}: ${message}`);
 }
@@ -543,6 +610,16 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         'releaseFixCredit analyzedClosedCount must equal credited + notCredited');
       expect(failures, release.tag, (proof.byStatus?.fixed_in_release ?? 0) === proof.creditedCount,
         'closureProof creditedCount must equal fixed_in_release bucket');
+      expect(failures, release.tag, isObject(proof.byRiskDisposition),
+        'closureProof must expose byRiskDisposition');
+      expect(failures, release.tag, isObject(proof.riskSummary),
+        'closureProof must expose riskSummary');
+      if (isObject(proof.byRiskDisposition)) {
+        for (const [disposition] of Object.entries(proof.byRiskDisposition)) {
+          expect(failures, release.tag, knownRiskDispositions.has(disposition),
+            `closureProof byRiskDisposition contains unknown disposition ${disposition}`);
+        }
+      }
 
       const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
       const comparisonProof = comparisonFix?.closureProof;
@@ -557,6 +634,10 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
         'comparison closureProof creditedCount must match review');
       expect(failures, release.tag, comparisonProof?.notCreditedCount === proof.notCreditedCount,
         'comparison closureProof notCreditedCount must match review');
+      expectJsonEqual(failures, release.tag, 'comparison closureProof byRiskDisposition must match review',
+        comparisonProof?.byRiskDisposition, proof.byRiskDisposition);
+      expectJsonEqual(failures, release.tag, 'comparison closureProof riskSummary must match review',
+        comparisonProof?.riskSummary, proof.riskSummary);
     }
   }
 }
