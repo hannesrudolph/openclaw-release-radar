@@ -86,6 +86,7 @@ For the latest release, the cutoff is the exact score timestamp. Refresh and `ba
 
 Audit rows include both effective labels and current labels where relevant, plus `labelSource` and `labelTimelineEventCount` for issue evidence. `gateEvidence.labelTimeline` separates `current`, `timeline`, `snapshot`, and `missing_timeline` sources.
 `gateEvidence.labelTimeline.schemaVersion` is the label-timeline coverage contract version. Current value: `1`.
+`gateEvidence.schemaVersion` is the top-level gate evidence contract version. Current value: `1`.
 
 ## Release Fix Credit
 

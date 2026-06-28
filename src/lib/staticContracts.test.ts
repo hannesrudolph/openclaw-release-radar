@@ -222,6 +222,7 @@ describe('static scoring/UI contracts', () => {
   it('explanation reason-code exports remain public', () => {
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     assert.match(scorer, /export const SCORE_EXPLANATION_SCHEMA_VERSION = 1/);
+    assert.match(scorer, /export const GATE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const LABEL_TIMELINE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const RELEASE_CHECKS_SCHEMA_VERSION = 1/);

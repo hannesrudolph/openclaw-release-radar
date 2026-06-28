@@ -3,6 +3,7 @@ import { strict as assert } from 'node:assert';
 import {
   ARTIFACT_VERIFICATION_SCHEMA_VERSION,
   buildReleaseScoreRun,
+  GATE_EVIDENCE_SCHEMA_VERSION,
   ISSUE_EVIDENCE_SCHEMA_VERSION,
   LABEL_TIMELINE_SCHEMA_VERSION,
   RELEASE_CHECKS_SCHEMA_VERSION,
@@ -53,6 +54,7 @@ describe('release score explanations', () => {
 
     assert.equal(explanation.schemaVersion, SCORE_EXPLANATION_SCHEMA_VERSION);
     assert.equal(evidence.schemaVersion, ISSUE_EVIDENCE_SCHEMA_VERSION);
+    assert.equal(run.scored[0].gateEvidence.schemaVersion, GATE_EVIDENCE_SCHEMA_VERSION);
     assert.equal(explanation.limits.length, explanation.limitDetails.length);
     assert.equal(explanation.positives.length, explanation.positiveDetails.length);
     assert.ok(explanation.limitDetails.every((detail, idx) => detail.text === explanation.limits[idx]));

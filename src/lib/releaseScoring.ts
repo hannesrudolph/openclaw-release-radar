@@ -100,6 +100,7 @@ export interface ScoreExplanationIssueRef {
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 const SHORT_ISSUE_TITLE_LENGTH = 110;
 export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
+export const GATE_EVIDENCE_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
 export const LABEL_TIMELINE_SCHEMA_VERSION = 1;
 export const RELEASE_CHECKS_SCHEMA_VERSION = 1;
@@ -417,6 +418,7 @@ function scoreRelease(args: {
     labelCutoff,
   );
   const gateEvidence = enrichGateEvidenceWithClosureProof(rel.tag, {
+    schemaVersion: GATE_EVIDENCE_SCHEMA_VERSION,
     cve,
     stableTagsNewestFirst: args.stableTagsNewestFirst,
     betaCount: rel.beta_count,

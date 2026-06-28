@@ -117,6 +117,7 @@ function reader(overrides: Partial<{
       scored_at: auditScoredAt,
       issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
       gate_evidence_json: JSON.stringify({
+        schemaVersion: 1,
         labelTimeline: labelTimelineFixture,
         releaseChecks: releaseChecksFixture,
         artifactVerification: artifactVerificationFixture,
@@ -135,6 +136,7 @@ function reader(overrides: Partial<{
   }
   if (data.audit?.gate_evidence_json) {
     const gate = JSON.parse(data.audit.gate_evidence_json);
+    gate.schemaVersion ??= 1;
     gate.releaseChecks ??= releaseChecksFixture;
     gate.artifactVerification ??= artifactVerificationFixture;
     data.audit = { ...data.audit, gate_evidence_json: JSON.stringify(gate) };
@@ -248,6 +250,7 @@ describe('verifyReleaseAudit', () => {
               scoredAt: auditScoredAt,
               components: { explanation },
               gateEvidence: {
+                schemaVersion: 1,
                 releaseChecks: releaseChecksFixture,
                 artifactVerification: artifactVerificationFixture,
                 fixProvenance: {
@@ -279,6 +282,7 @@ describe('verifyReleaseAudit', () => {
             },
             issueEvidence: { schemaVersion: 1 },
             gateEvidence: {
+              schemaVersion: 1,
               releaseChecks: releaseChecksFixture,
               artifactVerification: artifactVerificationFixture,
               fixProvenance: {
@@ -666,6 +670,31 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /labelTimeline schemaVersion/.test(failure)));
+  });
+
+  it('fails when gate evidence schema version is missing', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
+          gate_evidence_json: JSON.stringify({
+            schemaVersion: 0,
+            labelTimeline: labelTimelineFixture,
+            releaseChecks: releaseChecksFixture,
+            artifactVerification: artifactVerificationFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /persisted gateEvidence schemaVersion/.test(failure)));
   });
 
   it('fails when release checks schema version is missing', async () => {
