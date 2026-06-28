@@ -42,7 +42,7 @@ describe('GitHub GraphQL mapping', () => {
         { content: 'THUMBS_UP', reactors: { totalCount: 4 } },
         { content: 'CONFUSED', reactors: { totalCount: 1 } },
       ],
-      labels: { nodes: [{ name: 'bug' }, null, { name: 'impact:discord' }] },
+      labels: { nodes: [{ name: 'bug' }, null, { name: 'impact:discord' }], pageInfo: { hasNextPage: false, endCursor: null } },
     });
 
     assert.equal(issue.state, 'closed');
@@ -78,6 +78,15 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /body/);
     assert.match(query, /authorAssociation/);
     assert.match(query, /labels\(first: 100\)/);
+    assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
+  });
+
+  it('paginates current issue labels', () => {
+    const query = __githubTest.buildIssueLabelsQuery();
+
+    assert.match(query, /\$after: String/);
+    assert.match(query, /labels\(first: 100, after: \$after\)/);
+    assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
   });
 
   it('builds one GraphQL query with aliased issue label timeline lookups', () => {

@@ -83,7 +83,7 @@ interface IssueNode {
   url: string;
   comments: { totalCount: number };
   reactionGroups: Array<ReactionGroupNode | null> | null;
-  labels: { nodes: Array<{ name: string } | null> | null } | null;
+  labels: { nodes: Array<{ name: string } | null> | null; pageInfo?: PageInfo | null } | null;
 }
 
 interface CommentNode {
@@ -400,8 +400,13 @@ function mapRelease(node: ReleaseNode): GhRelease {
   };
 }
 
-function mapIssue(node: IssueNode): GhIssue {
+function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string } | null> = []): GhIssue {
   const reactions = summarizeReactions(node.reactionGroups ?? []);
+  const labelNames = new Set(
+    [...(node.labels?.nodes ?? []), ...extraLabelNodes]
+      .filter((label): label is { name: string } => !!label)
+      .map((label) => label.name),
+  );
   return {
     number: node.number,
     title: node.title,
@@ -416,9 +421,7 @@ function mapIssue(node: IssueNode): GhIssue {
     comments: node.comments.totalCount,
     reaction_total: reactions.total,
     positive_reactions: reactions.positive,
-    labels: (node.labels?.nodes ?? [])
-      .filter((label): label is { name: string } => !!label)
-      .map((label) => ({ name: label.name })),
+    labels: [...labelNames].sort().map((name) => ({ name })),
   };
 }
 
@@ -562,7 +565,10 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
               url
               comments { totalCount }
               reactionGroups { content reactors { totalCount } }
-              labels(first: 100) { nodes { name } }
+              labels(first: 100) {
+                nodes { name }
+                pageInfo { hasNextPage endCursor }
+              }
             }
             pageInfo { hasNextPage endCursor }
           }
@@ -572,9 +578,9 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
     );
 
     const connection = assertRepo(data.repository).issues;
-    const page = (connection.nodes ?? [])
-      .filter((node): node is IssueNode => !!node)
-      .map(mapIssue);
+    const issueNodes = (connection.nodes ?? []).filter((node): node is IssueNode => !!node);
+    const extraLabels = await remainingIssueLabelsForNodes(issueNodes);
+    const page = issueNodes.map((node) => mapIssue(node, extraLabels.get(node.number) ?? []));
     if (page.length === 0) return;
     yield page;
 
@@ -596,7 +602,9 @@ export async function listIssuesBatch(issueNumbers: number[]): Promise<Map<numbe
     const repo = assertRepo(data.repository);
     for (let idx = 0; idx < chunk.length; idx++) {
       const node = repo[`issue${idx}`];
-      if (node?.number) all.set(node.number, mapIssue(node));
+      if (!node?.number) continue;
+      const extraLabels = await remainingIssueLabelNodes(node.number, node.labels?.pageInfo ?? null);
+      all.set(node.number, mapIssue(node, extraLabels));
     }
   }
   return all;
@@ -621,11 +629,54 @@ function buildIssuesBatchQuery(size: number): string {
         content
         reactors { totalCount }
       }
-      labels(first: 100) { nodes { name } }
+      labels(first: 100) {
+        nodes { name }
+        pageInfo { hasNextPage endCursor }
+      }
     }`).join('\n');
   return `query IssuesByNumber($owner: String!, $repo: String!, ${vars}) {
     repository(owner: $owner, name: $repo) {
       ${fields}
+    }
+  }`;
+}
+
+async function remainingIssueLabelsForNodes(nodes: IssueNode[]): Promise<Map<number, Array<{ name: string } | null>>> {
+  const out = new Map<number, Array<{ name: string } | null>>();
+  await Promise.all(nodes.map(async (node) => {
+    const labels = await remainingIssueLabelNodes(node.number, node.labels?.pageInfo ?? null);
+    if (labels.length) out.set(node.number, labels);
+  }));
+  return out;
+}
+
+async function remainingIssueLabelNodes(
+  issueNumber: number,
+  pageInfo: PageInfo | null,
+): Promise<Array<{ name: string } | null>> {
+  const labels: Array<{ name: string } | null> = [];
+  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  while (after) {
+    const data = await gh<{ repository: { issue: { labels: { nodes: Array<{ name: string } | null> | null; pageInfo: PageInfo } | null } | null } | null }>(
+      buildIssueLabelsQuery(),
+      repoVars({ number: issueNumber, after }),
+    );
+    const connection = assertRepo(data.repository).issue?.labels;
+    labels.push(...(connection?.nodes ?? []));
+    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+  }
+  return labels;
+}
+
+function buildIssueLabelsQuery(): string {
+  return `query IssueLabels($owner: String!, $repo: String!, $number: Int!, $after: String) {
+    repository(owner: $owner, name: $repo) {
+      issue(number: $number) {
+        labels(first: 100, after: $after) {
+          nodes { name }
+          pageInfo { hasNextPage endCursor }
+        }
+      }
     }
   }`;
 }
@@ -1358,6 +1409,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
 export const __githubTest = {
   buildReleaseCommitQuery,
   buildIssuesBatchQuery,
+  buildIssueLabelsQuery,
   buildIssueFixEvidenceBatchQuery,
   buildIssueClosedByPrRefsQuery,
   buildIssueFixTimelineQuery,
