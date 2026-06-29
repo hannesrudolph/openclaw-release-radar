@@ -75,6 +75,29 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((adjusted.evidence.canonicalResolution as any).cycle, true);
   });
 
+  it('uses trusted reachable closure-comment fix proof before open duplicate canonical risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      {
+        canonicalIssues: [20],
+        relatedPrContext: {
+          reachable: [{
+            number: 95328,
+            repositoryNameWithOwner: 'openclaw/openclaw',
+            source: 'ClosureComment.fixProof',
+            title: 'fix(sessions): reset stale origin fields',
+          }],
+        },
+      },
+      new Map([[10, [20]]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_with_release_fix_proof');
+    assert.equal((adjusted.evidence.reachableTrustedFixProofPrs as any[])[0].number, 95328);
+  });
+
   it('keeps self-only canonical references as cycle risk when no terminal exists', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,
@@ -605,6 +628,27 @@ describe('closure proof canonical roll-up', () => {
     );
 
     assert.equal(adjusted.status, 'not_planned_with_release_fix_proof');
+  });
+
+  it('classifies not-planned closures with trusted reachable closure-comment fix proof as release proof', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        linkedPrs: [{ number: 88764, state: 'MERGED', merged: 1 }],
+        relatedPrContext: {
+          reachable: [{
+            number: 88764,
+            repositoryNameWithOwner: 'openclaw/openclaw',
+            source: 'ClosureComment.fixProof',
+            title: 'fix(update): recognize manual-update launchd jobs',
+          }],
+        },
+      },
+    );
+
+    assert.equal(adjusted.status, 'not_planned_with_release_fix_proof');
+    assert.equal((adjusted.evidence.reachableTrustedFixProofPrs as any[])[0].number, 88764);
   });
 
   it('classifies not-planned closures with open PR context separately', () => {

@@ -249,6 +249,10 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, canonicalFixedAfterRelease(evidence),
           `duplicate_to_fixed_after_release issue #${row.issue_number} must resolve to fixed-after canonical proof`);
       }
+      if (row.status === 'duplicate_with_release_fix_proof') {
+        expect(failures, tag, trustedReachableFixProofPrs(evidence).length > 0,
+          `duplicate_with_release_fix_proof issue #${row.issue_number} must include trusted reachable closure-comment fix proof PR evidence`);
+      }
       if (row.status === 'duplicate_to_fixed_in_release') {
         expect(failures, tag, evidence.canonicalResolution?.terminalProof?.status === 'fixed_in_release' ||
           canonicalFixCommitProof(evidence).some((proof) => proof.status === 'reachable'),
@@ -360,7 +364,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'not_planned_with_release_fix_proof') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
           `not_planned_with_release_fix_proof issue #${row.issue_number} must have NOT_PLANNED state reason`);
-        expect(failures, tag, evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true,
+        expect(failures, tag, evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true ||
+          trustedReachableFixProofPrs(evidence).length > 0,
           `not_planned_with_release_fix_proof issue #${row.issue_number} must have reachable PR or commit evidence`);
       }
       if (row.status === 'not_planned_fixed_after_release') {
@@ -1071,6 +1076,12 @@ function relatedPrContext(evidence) {
     reachable: Array.isArray(context.reachable) ? context.reachable : [],
     unknownReachability: Array.isArray(context.unknownReachability) ? context.unknownReachability : [],
   };
+}
+
+function trustedReachableFixProofPrs(evidence) {
+  return relatedPrContext(evidence).reachable.filter((pr) =>
+    String(pr?.source ?? '') === 'ClosureComment.fixProof' &&
+    String(pr?.repositoryNameWithOwner ?? '').toLowerCase() === 'openclaw/openclaw');
 }
 
 function canonicalFixedAfterRelease(evidence) {

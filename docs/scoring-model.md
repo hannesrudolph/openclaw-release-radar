@@ -128,6 +128,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_to_unverified_closed_canonical`: closure moved the report to a canonical issue that is closed, but terminal proof does not establish release resolution.
 - `duplicate_to_closed_canonical_missing_proof`: closure moved the report to a canonical issue that is closed, but the audit has no terminal closure proof for the canonical issue.
 - `duplicate_to_fixed_after_release`: closure moved the report to a canonical issue whose fix proof is not reachable from this release tag, including terminal canonical proof found in a later release audit.
+- `duplicate_with_release_fix_proof`: the issue is closed as duplicate/superseded, but trusted closure-comment fix proof is reachable from this release tag. It resolves closure risk without direct GitHub fix-credit.
 - `superseded_to_open_pr`: trusted close-time closure context moved the report to a referenced PR that remains open and unmerged.
 - `duplicate_with_open_pr_context`: the issue is closed as duplicate/superseded and related open PR references exist, but no trusted close-time closure note marks those PRs as canonical.
 - `duplicate_related_closed_unmerged_pr_context`: the issue is closed as duplicate/superseded and related PR context exists, but the referenced PRs closed without merging.

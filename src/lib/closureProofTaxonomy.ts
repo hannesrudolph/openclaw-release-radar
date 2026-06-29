@@ -14,6 +14,7 @@ export const CLOSURE_PROOF_STATUSES = [
   'duplicate_to_unverified_closed_canonical',
   'duplicate_to_closed_canonical_missing_proof',
   'duplicate_to_fixed_after_release',
+  'duplicate_with_release_fix_proof',
   'superseded_to_open_pr',
   'duplicate_with_open_pr_context',
   'duplicate_related_closed_unmerged_pr_context',
@@ -101,6 +102,7 @@ export type ClosureRiskDisposition = (typeof CLOSURE_RISK_DISPOSITIONS)[number];
 export const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<ClosureProofStatus, ClosureRiskDisposition> = {
   fixed_in_release: 'credited_release_fix',
   duplicate_to_fixed_in_release: 'resolved_by_canonical_release_fix',
+  duplicate_with_release_fix_proof: 'resolved_by_release_fix_proof',
   not_planned_with_release_fix_proof: 'resolved_by_release_fix_proof',
   fixed_after_release: 'known_not_in_release',
   fixed_in_later_release: 'known_not_in_release',

@@ -181,6 +181,7 @@ function closureStatusRank(status: string): number {
     not_planned_with_open_pr_context: 3,
     linked_closing_pr_open: 4,
     related_open_pr_context: 5,
+    duplicate_with_release_fix_proof: 6,
     fixed_not_in_scored_releases: 6,
     fixed_in_later_release: 7,
     fixed_after_release: 8,

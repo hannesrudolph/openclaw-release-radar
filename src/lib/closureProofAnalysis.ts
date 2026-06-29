@@ -845,6 +845,14 @@ function adjustCanonicalDuplicateStatus(
       evidence: nextEvidence,
     };
   }
+  const reachableTrustedFixProofPrs = trustedReachableFixProofPrs(nextEvidence);
+  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0) {
+    return {
+      status: 'duplicate_with_release_fix_proof',
+      summary: 'Closed as duplicate/superseded, but trusted closure-comment fix proof is reachable from this release tag; this resolves closure risk without direct GitHub fix-credit.',
+      evidence: { ...nextEvidence, reachableTrustedFixProofPrs },
+    };
+  }
   if (
     currentWindowTerminalProof?.status === 'fixed_after_release' ||
     hasNotReachableCanonicalFixCommit ||
@@ -920,6 +928,14 @@ function duplicateRelatedPrContextStatus(
   evidence: Record<string, unknown>,
 ): ClosureProofResult | null {
   const prefix = nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded';
+  const reachableTrustedFixProofPrs = trustedReachableFixProofPrs(evidence);
+  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0) {
+    return {
+      status: 'duplicate_with_release_fix_proof',
+      summary: `${prefix}; trusted closure-comment fix proof is reachable from this release tag, resolving closure risk without direct GitHub fix-credit.`,
+      evidence: { ...evidence, reachableTrustedFixProofPrs },
+    };
+  }
   if (context.reachable.length > 0) {
     return {
       status: nonBugDuplicate
@@ -1501,6 +1517,15 @@ function adjustNotPlannedEvidenceStatus(
       summary: 'Closed as not planned, but trusted release-reachable fix proof exists; this resolves closure risk without direct GitHub fix-credit.',
     };
   }
+  const reachableTrustedFixProofPrs = trustedReachableFixProofPrs(evidence);
+  if (reachableTrustedFixProofPrs.length > 0) {
+    return {
+      ...result,
+      status: 'not_planned_with_release_fix_proof',
+      summary: 'Closed as not planned, but trusted closure-comment fix proof is reachable from this release tag; this resolves closure risk without direct GitHub fix-credit.',
+      evidence: { ...result.evidence, ...evidence, reachableTrustedFixProofPrs },
+    };
+  }
   if (evidence.hasNotReachableFixCommit === true || evidence.hasNotReachableClosingPr === true) {
     return {
       ...result,
@@ -1601,6 +1626,12 @@ function relatedPrContextFromPayload(evidence: Record<string, unknown>): Related
     reachable: Array.isArray(context.reachable) ? context.reachable as Array<Record<string, unknown>> : [],
     unknownReachability: Array.isArray(context.unknownReachability) ? context.unknownReachability as Array<Record<string, unknown>> : [],
   };
+}
+
+function trustedReachableFixProofPrs(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  return relatedPrContextFromPayload(evidence).reachable.filter((pr) =>
+    String(pr.source ?? '') === 'ClosureComment.fixProof' &&
+    String(pr.repositoryNameWithOwner ?? '').toLowerCase() === trackedPrRepositoryNameWithOwner.toLowerCase());
 }
 
 function relatedPrContextEvidence(

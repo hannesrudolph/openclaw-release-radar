@@ -1463,17 +1463,18 @@ WHERE p.release_tag=?
 ORDER BY
   CASE p.status
     WHEN 'duplicate_to_open_canonical' THEN 0
-    WHEN 'fixed_after_release' THEN 1
-    WHEN 'already_present_claim' THEN 2
-    WHEN 'duplicate_to_closed_canonical' THEN 3
-    WHEN 'canonical_cycle_or_self_reference' THEN 4
-    WHEN 'duplicate_or_superseded' THEN 5
-    WHEN 'repro_requested' THEN 6
-    WHEN 'reporter_replaced' THEN 7
-    WHEN 'reporter_withdrawn' THEN 8
-    WHEN 'reporter_self_closed' THEN 9
-    WHEN 'no_code_proof' THEN 10
-    ELSE 11
+    WHEN 'duplicate_with_release_fix_proof' THEN 1
+    WHEN 'fixed_after_release' THEN 2
+    WHEN 'already_present_claim' THEN 3
+    WHEN 'duplicate_to_closed_canonical' THEN 4
+    WHEN 'canonical_cycle_or_self_reference' THEN 5
+    WHEN 'duplicate_or_superseded' THEN 6
+    WHEN 'repro_requested' THEN 7
+    WHEN 'reporter_replaced' THEN 8
+    WHEN 'reporter_withdrawn' THEN 9
+    WHEN 'reporter_self_closed' THEN 10
+    WHEN 'no_code_proof' THEN 11
+    ELSE 12
   END,
   i.closed_at DESC
 LIMIT ?

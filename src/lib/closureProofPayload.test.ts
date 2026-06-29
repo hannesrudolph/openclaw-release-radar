@@ -93,6 +93,8 @@ describe('closure proof risk weighting', () => {
     };
     assert.equal(closureRiskDisposition('not_planned_with_release_fix_proof'), 'resolved_by_release_fix_proof');
     assert.equal(closureRiskWeightForRow({ ...base, status: 'not_planned_with_release_fix_proof' }), 0);
+    assert.equal(closureRiskDisposition('duplicate_with_release_fix_proof'), 'resolved_by_release_fix_proof');
+    assert.equal(closureRiskWeightForRow({ ...base, status: 'duplicate_with_release_fix_proof' }), 0);
     assert.equal(closureRiskDisposition('not_planned_fixed_after_release'), 'known_not_in_release');
     assert.ok(closureRiskWeightForRow({ ...base, status: 'not_planned_fixed_after_release' }) > 0);
     assert.equal(closureRiskDisposition('not_planned_with_open_pr_context'), 'open_canonical_risk');

@@ -1163,6 +1163,10 @@ const CLOSURE_EXPLANATION_STATUS_PREFERENCE: Record<string, string[]> = {
     'linked_closing_pr_reachability_unknown',
     'duplicate_to_closed_canonical_missing_proof',
   ],
+  resolved_by_release_fix_proof: [
+    'duplicate_with_release_fix_proof',
+    'not_planned_with_release_fix_proof',
+  ],
 };
 
 function closureProofExamplesForExplanation(closureProof: any, limit: number): any[] {
@@ -1406,6 +1410,7 @@ function closureStatusLabel(status: string): string {
     duplicate_to_unverified_closed_canonical: 'canonical unresolved closure',
     duplicate_to_closed_canonical_missing_proof: 'closed canonical proof missing',
     duplicate_to_fixed_after_release: 'canonical fixed after this release',
+    duplicate_with_release_fix_proof: 'duplicate with release proof',
     superseded_to_open_pr: 'moved to open PR',
     duplicate_with_open_pr_context: 'related open PR context',
     duplicate_related_closed_unmerged_pr_context: 'duplicate related PR closed unmerged',
