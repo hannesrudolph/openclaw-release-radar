@@ -134,7 +134,7 @@ async function main() {
   });
   if (args['api-base']) {
     report.api = await apiSummary(String(args['api-base']).replace(/\/$/, ''));
-    if (report.api.error) report.warnings.push(`api check failed: ${report.api.error}`);
+    verifyApiAgainstDb(report);
   }
   report.ok = report.failures.length === 0;
   console.log(JSON.stringify(report, null, 2));
@@ -436,6 +436,34 @@ async function apiSummary(apiBase) {
     };
   } catch (error) {
     return { apiBase, error: error.message };
+  }
+}
+
+function verifyApiAgainstDb(report) {
+  if (!report.api) return;
+  if (report.api.error) {
+    report.failures.push(`api check failed: ${report.api.error}`);
+    return;
+  }
+  const expectedRecommendedTag = report.recommendation?.recommended?.[0]?.tag ?? null;
+  const expectedScoredAt = report.tables?.releases?.maxAt ?? null;
+  const apiRecommendedCount = Number(report.api.public?.recommendedCount ?? 0);
+  const apiRecommendedTag = report.api.public?.recommendedTag ?? null;
+  const apiLastScoredAt = report.api.status?.lastScoredAt ?? null;
+  if (report.api.status?.refreshing === true) {
+    report.failures.push('api status reports refresh in progress');
+  }
+  if (report.api.status?.lastError) {
+    report.failures.push(`api status reports lastError: ${report.api.status.lastError}`);
+  }
+  if (apiRecommendedCount !== 1) {
+    report.failures.push(`api public recommended count (${apiRecommendedCount}) must be 1`);
+  }
+  if (apiRecommendedTag !== expectedRecommendedTag) {
+    report.failures.push(`api public recommended tag (${apiRecommendedTag}) must match DB recommended tag (${expectedRecommendedTag})`);
+  }
+  if (apiLastScoredAt !== expectedScoredAt) {
+    report.failures.push(`api status lastScoredAt (${apiLastScoredAt}) must match DB max scored_at (${expectedScoredAt})`);
   }
 }
 

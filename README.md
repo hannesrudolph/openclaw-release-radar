@@ -180,7 +180,7 @@ npm run ui:smoke
 
 `npm run doctor` is a read-only SQLite health report. It prints DB path/size, table counts, latest scored stable, recommendation count, classification coverage, source freshness, closure-proof coverage, PR reachability counts, comparison snapshot state, warnings, and failures. Use `--api-base http://127.0.0.1:8787` to also check the running local server.
 
-`verify:local` and `verify:live` use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit.
+`verify:local` and `verify:live` start with `npm run doctor` and use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit.
 
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
@@ -255,11 +255,11 @@ npm start
 
 `npm run verify:scripts` syntax-checks every `.mjs` maintenance script.
 
-`npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency for every scored stable release.
+`npm run verify:local` requires the local SQLite DB, runs the health doctor, and checks persisted score/audit consistency for every scored stable release.
 
-`npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts for every scored stable release.
+`npm run verify:live` also requires the local server at `http://127.0.0.1:8787`, runs the health doctor against that server, and checks API/UI contracts for every scored stable release.
 
-`npm run doctor` requires the local SQLite DB and emits a read-only JSON health report. Add `-- --api-base http://127.0.0.1:8787` when you want it to also verify the running server.
+`npm run doctor` requires the local SQLite DB and emits a read-only JSON health report. Add `-- --api-base http://127.0.0.1:8787` when you want it to also verify the running server's recommendation and score timestamp match the DB.
 
 `npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence.
 
