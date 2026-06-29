@@ -157,7 +157,7 @@ try {
     const freshness = review.local?.dataFreshness;
     if (!freshness?.issueUpdatedAtMax || !freshness?.scoredAt) throw new Error(`Missing data freshness for ${release.tag}`);
     await panel.locator('.score-review__item').filter({ hasText: 'Source freshness' }).getByText('issue lag').waitFor();
-    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Source ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
+    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Inherited/source ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
     await panel.locator('.score-review__item').filter({ hasText: 'Risk weights' }).getByText(expectedRiskWeights).waitFor();
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (credit) {

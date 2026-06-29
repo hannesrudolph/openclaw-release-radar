@@ -594,7 +594,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const example = issueListText(carryover, 3);
     addLimit(
       'source_carryover_risk',
-      `There is unresolved source/carryover risk, weighted by install impact. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
+      `There is open inherited/source risk: open negative issues attributed to this release that are not proven release-local field blockers. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -822,11 +822,11 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'carryoverDebt',
-      label: 'Source/carryover risk',
+      label: 'Open inherited/source risk',
       points: roundMetric(components.carryoverDebt),
       kind: scoreLedgerKind(components.carryoverDebt),
       metric: roundMetric(input.carryoverDebtWeight),
-      note: 'Open source-derived or carryover risk, capped.',
+      note: 'Open negative issue debt attributed to this release, but not proven release-local field-blocker evidence.',
     },
     {
       key: 'staleDebt',

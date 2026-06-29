@@ -263,7 +263,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       rows: [
         { key: 'base', label: 'Base', points: 7.5, kind: 'base' },
         { key: 'verifiedDebt', label: 'Field blocker debt', points: 0, kind: 'neutral' },
-        { key: 'carryoverDebt', label: 'Source/carryover risk', points: 0, kind: 'neutral' },
+        { key: 'carryoverDebt', label: 'Open inherited/source risk', points: 0, kind: 'neutral' },
         { key: 'staleDebt', label: 'Stale/low-confidence risk', points: 0, kind: 'neutral' },
         { key: 'closureRisk', label: 'Closed-release risk', points: 0, kind: 'neutral' },
         { key: 'coverage', label: 'Classification coverage', points: 0, kind: 'neutral' },

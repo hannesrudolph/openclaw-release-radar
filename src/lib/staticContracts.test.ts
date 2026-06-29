@@ -58,6 +58,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /tier=carryoverDebt/);
     assert.match(html, /tier=staleDebt/);
     assert.match(html, /tier=openedFeltSerious/);
+    assert.match(html, /Inherited\/source/);
+    assert.match(html, /Inherited\/source risk means open negative issues/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated issue-evidence rows/);
     assert.match(html, /Source freshness/);
