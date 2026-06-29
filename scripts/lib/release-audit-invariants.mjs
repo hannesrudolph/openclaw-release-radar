@@ -1509,8 +1509,19 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       verifyDataFreshness({ failures, tag: release.tag, dataFreshness: publicRelease.dataFreshness, releaseTag: release.tag, scoredAt: release.scored_at });
       expect(failures, release.tag, publicRelease.totalAttributedIssues === publicRelease.scoreAudit?.rawIssueCount,
         `public totalAttributedIssues (${publicRelease.totalAttributedIssues}) must match scoreAudit rawIssueCount (${publicRelease.scoreAudit?.rawIssueCount})`);
-      const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
-      if (publicRelease.totalAttributedIssues > 0) {
+      if (typeof reader.issueNumbersForVersion === 'function') {
+        const issueUniverse = reader.issueNumbersForVersion(release.tag);
+        const issueNumbers = new Set(issueUniverse);
+        const expectedIssueCount = Math.min(25, issueUniverse.length);
+        const actualIssueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
+        expect(failures, release.tag, actualIssueCount === expectedIssueCount,
+          `public issues length (${actualIssueCount}) must equal capped issue universe count (${expectedIssueCount})`);
+        for (const issue of publicRelease.issues ?? []) {
+          expect(failures, release.tag, issueNumbers.has(issue.number),
+            `public issue #${issue.number} must belong to release issue universe`);
+        }
+      } else if (publicRelease.totalAttributedIssues > 0) {
+        const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
         expect(failures, release.tag, issueCount > 0,
           'public release with attributed issues must expose capped issue summaries');
       }

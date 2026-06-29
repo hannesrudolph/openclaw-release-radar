@@ -74,6 +74,7 @@ function reader(overrides: Partial<{
   proofRows: any[];
   prEvidence: any[];
   proofDependencyFreshness: any[];
+  issueNumbers: number[];
   audit: any;
 }> = {}) {
   const data = {
@@ -128,6 +129,7 @@ function reader(overrides: Partial<{
       merge_commit_oid: 'merge-1',
     }],
     proofDependencyFreshness: [],
+    issueNumbers: [1],
     audit: {
       prompt_version: 6,
       scored_at: auditScoredAt,
@@ -168,6 +170,7 @@ function reader(overrides: Partial<{
   return {
     listReleases: () => data.releases,
     rawClosedDuringReign: () => data.rawClosed,
+    issueNumbersForVersion: () => data.issueNumbers,
     closedDuringReign: () => data.closed,
     verifiedFixedForRelease: () => data.verified,
     unverifiedClosedForRelease: () => data.unverified,
@@ -205,7 +208,7 @@ function reader(overrides: Partial<{
   };
 }
 
-function apiFixtureFetchJson(mutator?: (dataFreshness: any) => void) {
+function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) => void) {
   const scoreAudit = {
     schemaVersion: 1,
     modelVersion: 'test-model',
@@ -270,7 +273,29 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any) => void) {
       { source: 'release_metadata', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
     ],
   };
-  mutator?.(dataFreshness);
+  const publicRelease = {
+    schemaVersion: 1,
+    tag: 'v1',
+    score: 7.5,
+    band: 'ok',
+    status: 'eligible',
+    recommended: true,
+    reason: 'test reason',
+    negativeIssues: 1,
+    positiveIssues: 0,
+    scoredAt: auditScoredAt,
+    scoreAudit,
+    explanation,
+    dataFreshness,
+    totalAttributedIssues: 1,
+    issues: [{
+      number: 1,
+      title: 'issue 1',
+      url: 'https://github.com/x/y/issues/1',
+      affectedUsers: 'some',
+    }],
+  };
+  mutator?.(dataFreshness, publicRelease);
   const closurePage = (url: string) => {
     const parsed = new URL(url);
     const row = {
@@ -364,28 +389,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any) => void) {
         schemaVersion: 1,
         repo: 'x/y',
         updatedAt: auditScoredAt,
-        releases: [{
-          schemaVersion: 1,
-          tag: 'v1',
-          score: 7.5,
-          band: 'ok',
-          status: 'eligible',
-          recommended: true,
-          reason: 'test reason',
-          negativeIssues: 1,
-          positiveIssues: 0,
-          scoredAt: auditScoredAt,
-          scoreAudit,
-          explanation,
-          dataFreshness,
-          totalAttributedIssues: 1,
-          issues: [{
-            number: 1,
-            title: 'issue 1',
-            url: 'https://github.com/x/y/issues/1',
-            affectedUsers: 'some',
-          }],
-        }],
+        releases: [publicRelease],
       };
     }
     if (url.endsWith('/api/releases')) {
@@ -539,6 +543,36 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /review closureProof must match persisted audit closureProof/.test(failure)));
+  });
+
+  it('fails when public issue summaries omit capped release-universe rows', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({ issueNumbers: [1, 2] }),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson((_, publicRelease) => {
+        publicRelease.totalAttributedIssues = 2;
+        publicRelease.scoreAudit.rawIssueCount = 2;
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /public issues length/.test(failure)));
+  });
+
+  it('fails when public issue summaries include issues outside the release universe', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({ issueNumbers: [1] }),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson((_, publicRelease) => {
+        publicRelease.issues = [{
+          number: 999,
+          title: 'outside issue',
+          url: 'https://github.com/x/y/issues/999',
+          affectedUsers: 'some',
+        }];
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /public issue #999 must belong/.test(failure)));
   });
 
   it('fails when audit fix counts drift from verified queries', async () => {
