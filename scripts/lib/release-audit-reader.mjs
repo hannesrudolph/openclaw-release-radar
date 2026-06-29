@@ -351,6 +351,25 @@ export class ReleaseAuditReader {
     `).all(tag, issueNumber);
   }
 
+  prReachabilityRowsForRelease(tag) {
+    return this.db.prepare(`
+      SELECT r.*,
+             p.title,
+             p.url,
+             p.state,
+             p.merged,
+             p.merged_at,
+             p.merge_commit_oid AS pr_merge_commit_oid,
+             p.base_ref_name AS pr_base_ref_name
+      FROM release_pr_reachability r
+      LEFT JOIN pull_request_fixes p
+        ON p.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+       AND p.pr_number=r.pr_number
+      WHERE r.tag=?
+      ORDER BY r.pr_repository_name_with_owner, r.pr_number
+    `).all(tag);
+  }
+
   getReleaseScoreAudit(tag) {
     return this.db.prepare(`
       SELECT *

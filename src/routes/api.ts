@@ -20,6 +20,7 @@ import {
   listAdvisories,
   releaseDataFreshness,
   publicReleaseRowsFreshness,
+  releasePrReachabilityRows,
   releaseScoreAuditFreshness,
   type AdvisoryRow,
 } from '../lib/db';
@@ -48,6 +49,9 @@ const CVE_BADGE_WINDOW = 0;
 const CLOSURE_PROOF_AUDIT_SCHEMA_VERSION = 1;
 const CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT = 50;
 const CLOSURE_PROOF_AUDIT_MAX_LIMIT = 100;
+const PR_REACHABILITY_AUDIT_SCHEMA_VERSION = 1;
+const PR_REACHABILITY_AUDIT_DEFAULT_LIMIT = 100;
+const PR_REACHABILITY_AUDIT_MAX_LIMIT = 250;
 
 // Cross-reference each release tag against cached advisories. `affected` = CVEs in
 // this version's own window (see CVE_BADGE_WINDOW); `patched` = CVEs whose fix first
@@ -261,6 +265,37 @@ function compactCommitProof(value: unknown) {
     source: typeof raw.source === 'string' ? raw.source : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     snippet: typeof raw.snippet === 'string' ? raw.snippet : null,
+  };
+}
+
+function parsePrFilter(raw: unknown): { repo: string | null; number: number } | null {
+  if (typeof raw !== 'string' || raw.trim() === '') return null;
+  const value = raw.trim();
+  const match = /^(?:(?<repo>[^#]+)#)?(?<number>\d+)$/.exec(value);
+  if (!match?.groups) return null;
+  const number = Number(match.groups.number);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  const repo = match.groups.repo?.trim() || null;
+  return { repo, number };
+}
+
+function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
+  return {
+    repositoryNameWithOwner: row.pr_repository_name_with_owner,
+    number: row.pr_number,
+    title: row.title,
+    url: row.url,
+    state: row.state,
+    merged: row.merged === 1,
+    mergedAt: row.merged_at,
+    status: row.status,
+    method: row.method,
+    checkedAt: row.checked_at,
+    tagCommitOid: row.tag_commit_oid,
+    mergeCommitOid: row.merge_commit_oid,
+    prMergeCommitOid: row.pr_merge_commit_oid,
+    baseRefName: row.base_ref_name ?? row.pr_base_ref_name,
+    evidence: parseJson(row.evidence_json, {}),
   };
 }
 
@@ -557,6 +592,55 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
       riskDisposition: riskDispositionFilter,
     },
     total: allRows.length,
+    limit,
+    cursor,
+    nextCursor,
+    rows: pageRows,
+  });
+});
+
+api.get('/releases/:tag/review/reachability', (req, res) => {
+  const tag = req.params.tag;
+  const release = getRelease(tag);
+  if (!release) {
+    res.status(404).json({ error: 'release not found', tag });
+    return;
+  }
+  const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
+    ? req.query.status.trim()
+    : null;
+  if (statusFilter && !['reachable', 'not_reachable', 'unknown'].includes(statusFilter)) {
+    res.status(400).json({ error: 'invalid status', status: statusFilter });
+    return;
+  }
+  const prFilter = parsePrFilter(req.query.pr);
+  if (typeof req.query.pr === 'string' && req.query.pr.trim() && !prFilter) {
+    res.status(400).json({ error: 'invalid pr filter', pr: req.query.pr });
+    return;
+  }
+  const limit = boundedInteger(req.query.limit, PR_REACHABILITY_AUDIT_DEFAULT_LIMIT, 1, PR_REACHABILITY_AUDIT_MAX_LIMIT);
+  const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  const allRows = releasePrReachabilityRows(tag)
+    .filter((row) => !statusFilter || row.status === statusFilter)
+    .filter((row) => !prFilter || (
+      row.pr_number === prFilter.number &&
+      (!prFilter.repo || row.pr_repository_name_with_owner.toLowerCase() === prFilter.repo.toLowerCase())
+    ));
+  const countsByStatus = allRows.reduce((acc, row) => {
+    acc[row.status] = (acc[row.status] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+  const pageRows = allRows.slice(cursor, cursor + limit).map(reachabilityAuditResponseRow);
+  const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
+  res.json({
+    schemaVersion: PR_REACHABILITY_AUDIT_SCHEMA_VERSION,
+    tag,
+    filters: {
+      status: statusFilter,
+      pr: prFilter ? { repositoryNameWithOwner: prFilter.repo, number: prFilter.number } : null,
+    },
+    total: allRows.length,
+    countsByStatus,
     limit,
     cursor,
     nextCursor,

@@ -1669,6 +1669,13 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         proof,
         tag: release.tag,
       });
+      await verifyPrReachabilityAuditEndpoint({
+        apiBase,
+        fetchJson,
+        failures,
+        reader,
+        tag: release.tag,
+      });
 
       const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
       const comparisonProof = comparisonFix?.closureProof;
@@ -1767,6 +1774,83 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     expect(failures, tag, (page.rows ?? []).every((row) => row.riskDisposition === disposition),
       `closure proof audit riskDisposition filter must return only ${disposition} rows`);
   }
+}
+
+async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures, reader, tag }) {
+  if (typeof reader.prReachabilityRowsForRelease !== 'function') return;
+  const rows = reader.prReachabilityRowsForRelease(tag);
+  const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/reachability`;
+  const firstPage = await fetchJson(`${base}?limit=7`);
+  expect(failures, tag, firstPage.schemaVersion === 1,
+    `PR reachability audit schemaVersion must be 1, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  expect(failures, tag, firstPage.tag === tag,
+    `PR reachability audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.total === rows.length,
+    `PR reachability audit total (${firstPage.total}) must match DB rows (${rows.length})`);
+  expect(failures, tag, firstPage.limit === 7,
+    `PR reachability audit limit must be 7, got ${firstPage.limit}`);
+  expect(failures, tag, firstPage.cursor === 0,
+    `PR reachability audit cursor must be 0, got ${firstPage.cursor}`);
+  expect(failures, tag, Array.isArray(firstPage.rows), 'PR reachability audit rows must be an array');
+  expect(failures, tag, firstPage.rows.length <= 7,
+    `PR reachability audit rows length must respect limit, got ${firstPage.rows.length}`);
+  const expectedCounts = countBy(rows, (row) => row.status);
+  expectJsonEqual(failures, tag, 'PR reachability audit countsByStatus must match DB rows',
+    firstPage.countsByStatus ?? {}, expectedCounts);
+  for (const row of firstPage.rows ?? []) {
+    expect(failures, tag, Number.isInteger(row.number) && row.number > 0,
+      `PR reachability audit row number must be positive integer, got ${row.number}`);
+    expect(failures, tag, typeof row.repositoryNameWithOwner === 'string' && row.repositoryNameWithOwner.includes('/'),
+      `PR reachability audit row repositoryNameWithOwner must be present, got ${row.repositoryNameWithOwner}`);
+    expect(failures, tag, ['reachable', 'not_reachable', 'unknown'].includes(row.status),
+      `PR reachability audit row status must be known, got ${row.status}`);
+    expect(failures, tag, typeof row.method === 'string' && row.method.length > 0,
+      `PR reachability audit row method must be present for ${row.repositoryNameWithOwner}#${row.number}`);
+    expect(failures, tag, typeof row.checkedAt === 'string' && Number.isFinite(Date.parse(row.checkedAt)),
+      `PR reachability audit row checkedAt must be a timestamp for ${row.repositoryNameWithOwner}#${row.number}`);
+    expect(failures, tag, isObject(row.evidence),
+      `PR reachability audit row evidence must be an object for ${row.repositoryNameWithOwner}#${row.number}`);
+  }
+  if (firstPage.total > firstPage.rows.length) {
+    expect(failures, tag, Number.isInteger(firstPage.nextCursor) && firstPage.nextCursor === firstPage.rows.length,
+      `PR reachability audit nextCursor (${firstPage.nextCursor}) must advance by returned rows (${firstPage.rows.length})`);
+    const nextPage = await fetchJson(`${base}?limit=7&cursor=${firstPage.nextCursor}`);
+    expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
+      `PR reachability audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
+  } else {
+    expect(failures, tag, firstPage.nextCursor == null,
+      `PR reachability audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
+  }
+  const [status, statusCount] = Object.entries(expectedCounts).find(([, count]) => Number(count ?? 0) > 0) ?? [];
+  if (status) {
+    const page = await fetchJson(`${base}?limit=5&status=${encodeURIComponent(status)}`);
+    expect(failures, tag, page.total === statusCount,
+      `PR reachability audit status filter total (${page.total}) must match ${status} count (${statusCount})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.status === status),
+      `PR reachability audit status filter must return only ${status} rows`);
+  }
+  const first = rows[0];
+  if (first) {
+    const pr = `${first.pr_repository_name_with_owner}#${first.pr_number}`;
+    const page = await fetchJson(`${base}?limit=5&pr=${encodeURIComponent(pr)}`);
+    expect(failures, tag, page.total === rows.filter((row) =>
+      row.pr_repository_name_with_owner === first.pr_repository_name_with_owner &&
+      Number(row.pr_number) === Number(first.pr_number)).length,
+    `PR reachability audit pr filter total (${page.total}) must match DB rows for ${pr}`);
+    expect(failures, tag, (page.rows ?? []).every((row) =>
+      row.repositoryNameWithOwner === first.pr_repository_name_with_owner &&
+      Number(row.number) === Number(first.pr_number)),
+    `PR reachability audit pr filter must return only ${pr}`);
+  }
+}
+
+function countBy(rows, keyFn) {
+  const out = {};
+  for (const row of rows) {
+    const key = keyFn(row);
+    out[key] = (out[key] ?? 0) + 1;
+  }
+  return out;
 }
 
 function verifyComparisonSnapshot({ failures, label, snapshot }) {

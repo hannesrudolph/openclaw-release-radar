@@ -1789,6 +1789,57 @@ export function deleteReleasePrReachabilityForRelease(tag: string): void {
   deleteReleasePrReachabilityForReleaseStmt.run(tag);
 }
 
+export interface ReleasePrReachabilityRow {
+  tag: string;
+  pr_repository_owner: string;
+  pr_repository_name: string;
+  pr_repository_name_with_owner: string;
+  pr_number: number;
+  tag_commit_oid: string | null;
+  merge_commit_oid: string | null;
+  base_ref_name: string | null;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+  method: string;
+  evidence_json: string;
+  checked_at: string;
+  title: string | null;
+  url: string | null;
+  state: string | null;
+  merged: number | null;
+  merged_at: string | null;
+  pr_merge_commit_oid: string | null;
+  pr_base_ref_name: string | null;
+}
+
+const releasePrReachabilityRowsStmt = db.prepare(`
+SELECT r.*,
+       p.title,
+       p.url,
+       p.state,
+       p.merged,
+       p.merged_at,
+       p.merge_commit_oid AS pr_merge_commit_oid,
+       p.base_ref_name AS pr_base_ref_name
+FROM release_pr_reachability r
+LEFT JOIN pull_request_fixes p
+  ON p.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+ AND p.pr_number=r.pr_number
+WHERE r.tag=?
+ORDER BY
+  CASE r.status
+    WHEN 'not_reachable' THEN 0
+    WHEN 'unknown' THEN 1
+    WHEN 'reachable' THEN 2
+    ELSE 3
+  END,
+  r.pr_repository_name_with_owner,
+  r.pr_number
+`);
+
+export function releasePrReachabilityRows(tag: string): ReleasePrReachabilityRow[] {
+  return releasePrReachabilityRowsStmt.all(tag) as unknown as ReleasePrReachabilityRow[];
+}
+
 // Stable-only view. Prereleases live in the DB for derived-stat computation
 // (beta_count, hours_to_next_release) but are not surfaced to scoring or the
 // API — the UI is "should I install this stable release?", betas don't get

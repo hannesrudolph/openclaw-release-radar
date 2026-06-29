@@ -199,6 +199,7 @@ A healthy completed refresh has:
 | `/api/public` | Main install recommendation payload |
 | `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default |
 | `/api/releases/:tag/review/closure-proofs` | Paginated closure-proof rows for one release; supports `status`, `riskDisposition`, `limit`, and `cursor` |
+| `/api/releases/:tag/review/reachability` | Paginated PR reachability rows for one release; supports `status`, `pr`, `limit`, and `cursor` |
 | `/api/comparison` | Internal temporary upstream-comparison payload |
 
 The structured score explanation appears at these paths:

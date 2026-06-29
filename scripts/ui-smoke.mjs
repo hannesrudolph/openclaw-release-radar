@@ -110,6 +110,7 @@ try {
     .waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open review JSON' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open closure proof rows' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'Open PR reachability rows' }).first().waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
   await fixPanel.getByText(/Scored as .* risk /).first().waitFor();
