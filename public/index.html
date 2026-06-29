@@ -1695,6 +1695,21 @@ function scoreSignalSummary(local) {
   return parts.join(' · ');
 }
 
+function issueEvidenceApiLinksHtml(tag) {
+  const base = `/api/releases/${encodeURIComponent(tag)}/review/issues`;
+  const links = [
+    ['Open issue evidence rows', base],
+    ['source debt', `${base}?tier=carryoverDebt`],
+    ['stale evidence', `${base}?tier=staleDebt`],
+    ['opened reports', `${base}?tier=openedFeltSerious`],
+    ['verified fixes', `${base}?tier=verifiedFixed`],
+    ['unverified closures', `${base}?tier=unverifiedClosed`],
+  ];
+  return links
+    .map(([label, href]) => `<a href="${href}" target="_blank" rel="noopener">${esc(label)}</a>`)
+    .join(' · ');
+}
+
 function shortIssueTitle(issue) {
   const rawTitle = String(issue?.title ?? '').trim();
   const title = rawTitle.replace(/^\[bug\]:?\s*/i, '').trim() || rawTitle || 'untitled report';
@@ -2331,7 +2346,7 @@ function scoreReviewHtml(r) {
     + scoreEvidenceLinksHtml(releaseChecks, artifact)
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
-    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/reachability" target="_blank" rel="noopener">Open PR reachability rows</a></div>`
+    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · ${issueEvidenceApiLinksHtml(r.tag)} · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/reachability" target="_blank" rel="noopener">Open PR reachability rows</a></div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';

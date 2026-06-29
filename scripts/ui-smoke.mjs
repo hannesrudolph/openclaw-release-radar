@@ -120,6 +120,10 @@ try {
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open review JSON' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'Open issue evidence rows' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'source debt' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'stale evidence' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'opened reports' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open closure proof rows' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open PR reachability rows' }).first().waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();

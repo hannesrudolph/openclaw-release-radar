@@ -52,6 +52,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /scoreLedgerHtml/);
     assert.match(html, /score-ledger/);
     assert.match(html, /score-explain__proof/);
+    assert.match(html, /issueEvidenceApiLinksHtml/);
+    assert.match(html, /\/review\/issues/);
+    assert.match(html, /tier=carryoverDebt/);
+    assert.match(html, /tier=staleDebt/);
+    assert.match(html, /tier=openedFeltSerious/);
     assert.match(html, /Source freshness/);
     assert.match(html, /dataFreshnessText/);
     assert.match(html, /Object\.entries\(value\)/);
