@@ -287,13 +287,19 @@ export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise
     const done = new Set<number>();
     while (done.size < chunk.length) {
       const active = chunk.filter((issueNumber) => !done.has(issueNumber));
-      const data = await gh<{ repository: Record<string, any> | null }>(
-        buildIssueLabelEventsBatchQuery(active.length),
-        repoVars(Object.fromEntries(active.flatMap((issueNumber, idx) => [
-          [`number${idx}`, issueNumber],
-          [`after${idx}`, cursors.get(issueNumber) ?? null],
-        ]))),
-      );
+      let data: { repository: Record<string, any> | null };
+      try {
+        data = await gh<{ repository: Record<string, any> | null }>(
+          buildIssueLabelEventsBatchQuery(active.length),
+          repoVars(Object.fromEntries(active.flatMap((issueNumber, idx) => [
+            [`number${idx}`, issueNumber],
+            [`after${idx}`, cursors.get(issueNumber) ?? null],
+          ]))),
+        );
+      } catch (error) {
+        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
+        continue;
+      }
       const repo = assertRepo(data.repository);
       for (let idx = 0; idx < active.length; idx++) {
         const issueNumber = active[idx];
@@ -753,17 +759,7 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
           }),
         );
       } catch (error) {
-        const missingIndexes = missingIssueIndexesFromGraphqlError(error);
-        if (!missingIndexes.length) throw error;
-        let skipped = 0;
-        for (const idx of missingIndexes) {
-          const missingIssueNumber = active[idx];
-          if (missingIssueNumber != null) {
-            done.add(missingIssueNumber);
-            skipped++;
-          }
-        }
-        if (skipped === 0) throw error;
+        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
         continue;
       }
 
@@ -796,6 +792,19 @@ function missingIssueIndexesFromGraphqlError(error: unknown): number[] {
     if (Number.isInteger(idx) && idx >= 0) indexes.add(idx);
   }
   return [...indexes].sort((a, b) => a - b);
+}
+
+function skipMissingIssueAliases(error: unknown, active: number[], done: Set<number>): number {
+  const missingIndexes = missingIssueIndexesFromGraphqlError(error);
+  let skipped = 0;
+  for (const idx of missingIndexes) {
+    const missingIssueNumber = active[idx];
+    if (missingIssueNumber != null) {
+      done.add(missingIssueNumber);
+      skipped++;
+    }
+  }
+  return skipped;
 }
 
 function buildIssueCommentsBatchQuery(size: number): string {
@@ -987,13 +996,26 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
   const batchSize = 10;
   for (let offset = 0; offset < uniqueIssueNumbers.length; offset += batchSize) {
     const chunk = uniqueIssueNumbers.slice(offset, offset + batchSize);
-    const data = await gh<{ repository: Record<string, any> | null }>(
-      buildIssueFixEvidenceBatchQuery(chunk.length),
-      repoVars(Object.fromEntries(chunk.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
-    );
+    const done = new Set<number>();
+    let active = chunk;
+    let data: { repository: Record<string, any> | null } | null = null;
+    for (;;) {
+      active = chunk.filter((issueNumber) => !done.has(issueNumber));
+      if (active.length === 0) break;
+      try {
+        data = await gh<{ repository: Record<string, any> | null }>(
+          buildIssueFixEvidenceBatchQuery(active.length),
+          repoVars(Object.fromEntries(active.map((issueNumber, idx) => [`number${idx}`, issueNumber]))),
+        );
+        break;
+      } catch (error) {
+        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
+      }
+    }
+    if (!data || active.length === 0) continue;
     const repo = assertRepo(data.repository);
-    for (let idx = 0; idx < chunk.length; idx++) {
-      const issueNumber = chunk[idx];
+    for (let idx = 0; idx < active.length; idx++) {
+      const issueNumber = active[idx];
       const issue = repo[`issue${idx}`];
       const evidence = all.get(issueNumber);
       if (!issue || !evidence) continue;
@@ -1770,6 +1792,7 @@ export const __githubTest = {
   closureCommentPrMentions,
   buildIssueCommentsBatchQuery,
   missingIssueIndexesFromGraphqlError,
+  skipMissingIssueAliases,
   buildIssueLabelEventsBatchQuery,
   mapComment,
   mapIssue,

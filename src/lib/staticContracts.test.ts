@@ -217,6 +217,14 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /external_repository_not_checked_against_openclaw_release_tag/);
   });
 
+  it('GraphQL issue evidence batches recover from missing issue aliases', () => {
+    const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
+    assert.match(github, /function skipMissingIssueAliases/);
+    assert.match(github, /listIssueCommentsBatch[\s\S]*skipMissingIssueAliases/);
+    assert.match(github, /listIssueLabelEventsBatch[\s\S]*skipMissingIssueAliases/);
+    assert.match(github, /listIssueFixEvidenceBatch[\s\S]*skipMissingIssueAliases/);
+  });
+
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
