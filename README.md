@@ -169,12 +169,16 @@ curl http://127.0.0.1:8787/api/releases/v2026.6.10/review
 Release audit invariant check:
 
 ```bash
+npm run doctor
+npm run doctor -- --api-base http://127.0.0.1:8787
 npm run verify:local
 npm run verify:release-audit
 npm run verify:release-audit -- --api-base http://127.0.0.1:8787
 npm run verify:live
 npm run ui:smoke
 ```
+
+`npm run doctor` is a read-only SQLite health report. It prints DB path/size, table counts, latest scored stable, recommendation count, classification coverage, source freshness, closure-proof coverage, PR reachability counts, comparison snapshot state, warnings, and failures. Use `--api-base http://127.0.0.1:8787` to also check the running local server.
 
 `verify:local` and `verify:live` use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit.
 
@@ -199,6 +203,7 @@ A healthy completed refresh has:
 | `/api/releases/history` | Score history |
 | `/api/public` | Main install recommendation payload |
 | `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default |
+| `/api/releases/:tag/review/issues` | Paginated issue-evidence rows for one release; supports `tier`, `limit`, and `cursor` |
 | `/api/releases/:tag/review/closure-proofs` | Paginated closure-proof rows for one release; supports `status`, `riskDisposition`, `limit`, and `cursor` |
 | `/api/releases/:tag/review/reachability` | Paginated PR reachability rows for one release; supports `status`, `pr`, `limit`, and `cursor` |
 | `/api/comparison` | Internal temporary upstream-comparison payload |
@@ -233,6 +238,7 @@ npm run verify:ci
 npm run verify:scripts
 npm run verify:local
 npm run verify:live
+npm run doctor
 npm run typecheck
 npm test
 npm run build
@@ -252,6 +258,8 @@ npm start
 `npm run verify:local` requires the local SQLite DB and checks persisted score/audit consistency for every scored stable release.
 
 `npm run verify:live` also requires the local server at `http://127.0.0.1:8787` and checks API/UI contracts for every scored stable release.
+
+`npm run doctor` requires the local SQLite DB and emits a read-only JSON health report. Add `-- --api-base http://127.0.0.1:8787` when you want it to also verify the running server.
 
 `npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence.
 

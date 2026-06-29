@@ -42,6 +42,7 @@ describe('static scoring/UI contracts', () => {
 
   it('score explanation prefers backend audit text', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.match(html, /local\?\.components\?\.explanation/);
     assert.match(html, /structured\.limits/);
     assert.match(html, /structured\.limitDetails/);
@@ -57,6 +58,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /tier=carryoverDebt/);
     assert.match(html, /tier=staleDebt/);
     assert.match(html, /tier=openedFeltSerious/);
+    assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
+    assert.match(readme, /Paginated issue-evidence rows/);
     assert.match(html, /Source freshness/);
     assert.match(html, /dataFreshnessText/);
     assert.match(html, /Object\.entries\(value\)/);
@@ -116,6 +119,13 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run verify:scripts && npm run build');
     assert.equal(pkg.scripts['verify:local'], 'npm run verify:score -- --all && npm run verify:release-audit -- --all');
     assert.equal(pkg.scripts['verify:live'], 'npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
+    assert.equal(pkg.scripts.doctor, 'tsx scripts/doctor.mjs');
+    const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
+    assert.match(doctor, /readOnly: true/);
+    assert.match(doctor, /PRAGMA query_only = ON/);
+    assert.match(doctor, /closure proof rows/);
+    assert.match(doctor, /expected exactly one recommended scored stable release/);
+    assert.match(doctor, /api-base/);
     assert.match(verifier, /buildReleaseScoreRun/);
     assert.match(verifier, /RADAR_DB_READ_ONLY = '1'/);
     assert.match(verifier, /verifyScoredReleaseCoverage/);
@@ -136,6 +146,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:scripts/);
     assert.match(readme, /npm run verify:local/);
     assert.match(readme, /npm run verify:live/);
+    assert.match(readme, /npm run doctor/);
+    assert.match(readme, /read-only SQLite health report/);
   });
 
   it('deploy workflow runs the CI verification gate', () => {
