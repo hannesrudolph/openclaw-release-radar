@@ -267,9 +267,41 @@ describe('release fix provenance', () => {
     });
     const second = db.releaseScoreAuditFreshness();
 
-    assert.equal(first.count, 1);
+    assert.ok(first.count >= 1);
+    assert.equal(second.count, first.count);
     assert.equal(first.max_scored_at, audit.scored_at);
     assert.equal(second.max_scored_at, audit.scored_at);
+    assert.notEqual(first.digest, second.digest);
+  });
+
+  it('public release row freshness digest changes when emitted score fields change', async () => {
+    const db = await freshDb('public-release-row-freshness');
+    seedRelease(db, 'v1');
+    const score = {
+      tag: 'v1',
+      final_score: 7.5,
+      negative_issues: 1,
+      positive_issues: 0,
+      state: 'eligible',
+      recommended: 1,
+      score_reason: 'first reason',
+      broken_surfaces: '[]',
+      closed_serious_fixed: 0,
+      opened_serious_during_reign: 1,
+      scored_at: '2026-06-02T00:00:00Z',
+    };
+    db.updateReleaseScore(score);
+    const first = db.publicReleaseRowsFreshness(10);
+    db.updateReleaseScore({
+      ...score,
+      score_reason: 'second reason',
+    });
+    const second = db.publicReleaseRowsFreshness(10);
+
+    assert.ok(first.count >= 1);
+    assert.equal(second.count, first.count);
+    assert.equal(first.max_scored_at, score.scored_at);
+    assert.equal(second.max_scored_at, score.scored_at);
     assert.notEqual(first.digest, second.digest);
   });
 

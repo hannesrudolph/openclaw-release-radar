@@ -924,6 +924,42 @@ export function releaseScoreAuditFreshness(): { count: number; max_scored_at: st
   };
 }
 
+const publicReleaseRowsFreshnessStmt = db.prepare(`
+SELECT
+  tag,
+  published_at,
+  html_url,
+  final_score,
+  state,
+  recommended,
+  score_reason,
+  negative_issues,
+  positive_issues,
+  scored_at,
+  broken_surfaces,
+  closed_serious_fixed,
+  opened_serious_during_reign
+FROM releases
+ORDER BY published_at DESC
+LIMIT ?
+`);
+export function publicReleaseRowsFreshness(limit: number): { count: number; max_scored_at: string | null; digest: string } {
+  const rows = publicReleaseRowsFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown>>;
+  const hash = createHash('sha256');
+  let maxScoredAt: string | null = null;
+  for (const row of rows) {
+    const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
+    if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
+    hash.update(JSON.stringify(row));
+    hash.update('\n');
+  }
+  return {
+    count: rows.length,
+    max_scored_at: maxScoredAt,
+    digest: hash.digest('hex'),
+  };
+}
+
 export interface ReleaseDataFreshnessSource {
   source: string;
   maxAt: string | null;

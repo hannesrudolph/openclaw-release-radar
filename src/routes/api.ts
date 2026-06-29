@@ -19,6 +19,7 @@ import {
   labelsForIssueAt,
   listAdvisories,
   releaseDataFreshness,
+  publicReleaseRowsFreshness,
   releaseScoreAuditFreshness,
   type AdvisoryRow,
 } from '../lib/db';
@@ -598,9 +599,13 @@ const USERS_RANK: Record<string, number> = { many: 0, some: 1, few: 2, unknown: 
 function publicCacheKey(
   freshness = releaseScoreAuditFreshness(),
   sourceFreshness = dataFreshnessCacheDigest(),
+  releaseFreshness = publicReleaseRowsFreshness(config.limits.releases),
 ): string {
   return [
     PUBLIC_PAYLOAD_SCHEMA_VERSION,
+    releaseFreshness.max_scored_at ?? '',
+    releaseFreshness.count,
+    releaseFreshness.digest,
     freshness.max_scored_at ?? '',
     freshness.count,
     freshness.digest,

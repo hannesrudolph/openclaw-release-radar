@@ -274,6 +274,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /dataFreshnessCacheDigest/);
+    assert.match(api, /publicReleaseRowsFreshness\(config\.limits\.releases\)/);
+    assert.match(api, /releaseFreshness\.digest/);
     assert.match(api, /freshness\.max_scored_at/);
     assert.match(api, /freshness\.count/);
     assert.match(api, /freshness\.digest/);
