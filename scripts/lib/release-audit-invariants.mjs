@@ -863,6 +863,9 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
     'dataFreshness issueUpdatedAtMax must match issue_rows source');
   expect(failures, tag, dataFreshness.closureProofCheckedAtMax === (sources.get('closure_proofs')?.maxAt ?? null),
     'dataFreshness closureProofCheckedAtMax must match closure_proofs source');
+  const sourceFetchedAtMax = maxFreshnessTimestamp((dataFreshness.sources ?? []).map((source) => source?.maxAt ?? null));
+  expect(failures, tag, dataFreshness.sourceFetchedAtMax === sourceFetchedAtMax,
+    `dataFreshness sourceFetchedAtMax (${dataFreshness.sourceFetchedAtMax}) must equal max source timestamp (${sourceFetchedAtMax})`);
   for (const source of dataFreshness.sources ?? []) {
     expect(failures, tag, typeof source?.source === 'string' && source.source.length > 0,
       'dataFreshness source name must be present');
@@ -873,8 +876,14 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
     if (source?.ageHoursAtScore != null) {
       expect(failures, tag, typeof source.ageHoursAtScore === 'number' && Number.isFinite(source.ageHoursAtScore),
         `dataFreshness ${source.source} ageHoursAtScore must be numeric`);
+      expect(failures, tag, source.ageHoursAtScore === ageHoursAtScore(source.maxAt, dataFreshness.scoredAt),
+        `dataFreshness ${source.source} ageHoursAtScore (${source.ageHoursAtScore}) must equal scoredAt - maxAt (${ageHoursAtScore(source.maxAt, dataFreshness.scoredAt)})`);
     }
   }
+  expect(failures, tag, dataFreshness.issueUpdatedAgeHoursAtScore === ageHoursAtScore(dataFreshness.issueUpdatedAtMax, dataFreshness.scoredAt),
+    `dataFreshness issueUpdatedAgeHoursAtScore (${dataFreshness.issueUpdatedAgeHoursAtScore}) must equal scoredAt - issueUpdatedAtMax (${ageHoursAtScore(dataFreshness.issueUpdatedAtMax, dataFreshness.scoredAt)})`);
+  expect(failures, tag, dataFreshness.sourceFetchedAgeHoursAtScore === ageHoursAtScore(dataFreshness.sourceFetchedAtMax, dataFreshness.scoredAt),
+    `dataFreshness sourceFetchedAgeHoursAtScore (${dataFreshness.sourceFetchedAgeHoursAtScore}) must equal scoredAt - sourceFetchedAtMax (${ageHoursAtScore(dataFreshness.sourceFetchedAtMax, dataFreshness.scoredAt)})`);
   for (const key of ['issueUpdatedAgeHoursAtScore', 'sourceFetchedAgeHoursAtScore']) {
     const value = dataFreshness[key];
     if (value != null) {
@@ -882,6 +891,20 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
         `dataFreshness ${key} must be numeric`);
     }
   }
+}
+
+function ageHoursAtScore(sourceAt, scoredAt) {
+  if (!sourceAt || !scoredAt) return null;
+  const sourceMs = Date.parse(sourceAt);
+  const scoredMs = Date.parse(scoredAt);
+  if (!Number.isFinite(sourceMs) || !Number.isFinite(scoredMs)) return null;
+  return Math.round(((scoredMs - sourceMs) / 3_600_000) * 100) / 100;
+}
+
+function maxFreshnessTimestamp(values) {
+  return values
+    .filter((value) => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
 function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public release' }) {

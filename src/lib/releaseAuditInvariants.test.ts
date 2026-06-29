@@ -172,6 +172,231 @@ function reader(overrides: Partial<{
   };
 }
 
+function apiFixtureFetchJson(mutator?: (dataFreshness: any) => void) {
+  const scoreAudit = {
+    schemaVersion: 1,
+    modelVersion: 'test-model',
+    promptVersion: 6,
+    evidenceCoverage: 1,
+    rawIssueCount: 1,
+    classifiedIssueCount: 1,
+  };
+  const explanation = {
+    schemaVersion: 1,
+    title: 'Why not 10?',
+    scoreLedger: {
+      schemaVersion: 1,
+      finalScore: 7.5,
+      status: 'eligible',
+      band: 'ok',
+      subtotalBeforeCaps: 7.5,
+      scoreAfterCaps: 7.5,
+      rows: [
+        { key: 'base', label: 'Base', points: 7.5, kind: 'base' },
+        { key: 'verifiedDebt', label: 'Field blocker debt', points: 0, kind: 'neutral' },
+        { key: 'carryoverDebt', label: 'Source/carryover risk', points: 0, kind: 'neutral' },
+        { key: 'staleDebt', label: 'Stale/low-confidence risk', points: 0, kind: 'neutral' },
+        { key: 'closureRisk', label: 'Closed-release risk', points: 0, kind: 'neutral' },
+        { key: 'coverage', label: 'Classification coverage', points: 0, kind: 'neutral' },
+        { key: 'survival', label: 'Stable survival', points: 0, kind: 'neutral' },
+        { key: 'shakeout', label: 'Beta shakeout', points: 0, kind: 'neutral' },
+        { key: 'regression', label: 'Opened vs fixed balance', points: 0, kind: 'neutral' },
+        { key: 'breaking', label: 'Breaking changes', points: 0, kind: 'neutral' },
+        { key: 'releaseVerification', label: 'Release checks', points: 0, kind: 'neutral' },
+        { key: 'artifactVerification', label: 'Artifact verification', points: 0, kind: 'neutral' },
+      ],
+      caps: [],
+    },
+    positives: ['The release is eligible and recommended.'],
+    positiveDetails: [{
+      code: 'release_recommended',
+      text: 'The release is eligible and recommended.',
+    }],
+    limits: ['One closed issue still needs release proof.'],
+    limitDetails: [{
+      code: 'closed_issues_not_counted_as_release_fixes',
+      text: 'One closed issue still needs release proof.',
+      metrics: { notCountedClosedCount: 1 },
+      issueRefs: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
+    }],
+    verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
+  };
+  const dataFreshness = {
+    schemaVersion: 1,
+    tag: 'v1',
+    scoredAt: auditScoredAt,
+    issueUpdatedAtMax: '2026-01-01T23:00:00Z',
+    issueUpdatedAgeHoursAtScore: 1,
+    closureProofCheckedAtMax: proofCheckedAt,
+    sourceFetchedAtMax: proofCheckedAt,
+    sourceFetchedAgeHoursAtScore: 0,
+    sources: [
+      { source: 'issue_rows', maxAt: '2026-01-01T23:00:00Z', ageHoursAtScore: 1 },
+      { source: 'classification_rows', maxAt: '2026-01-01T23:10:00Z', ageHoursAtScore: 0.83 },
+      { source: 'closure_proofs', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+      { source: 'release_metadata', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+    ],
+  };
+  mutator?.(dataFreshness);
+  const closurePage = (url: string) => {
+    const parsed = new URL(url);
+    const row = {
+      issueNumber: 1,
+      title: 'issue 1',
+      url: 'https://github.com/x/y/issues/1',
+      closedAt: '2026-01-01T12:00:00Z',
+      status: 'fixed_in_release',
+      summary: 'Fixed in release.',
+      riskDisposition: 'credited_release_fix',
+      riskWeight: 0,
+      checkedAt: proofCheckedAt,
+      labels: [],
+      classification: {},
+      classificationDiff: {},
+      evidence: {},
+    };
+    const rows = (!parsed.searchParams.get('status') || parsed.searchParams.get('status') === row.status) &&
+      (!parsed.searchParams.get('riskDisposition') || parsed.searchParams.get('riskDisposition') === row.riskDisposition)
+      ? [row]
+      : [];
+    const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
+    const limit = Number(parsed.searchParams.get('limit') ?? 50);
+    const pageRows = rows.slice(cursor, cursor + limit);
+    return {
+      schemaVersion: 1,
+      tag: 'v1',
+      filters: {
+        status: parsed.searchParams.get('status'),
+        riskDisposition: parsed.searchParams.get('riskDisposition'),
+      },
+      total: rows.length,
+      limit,
+      cursor,
+      nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
+      rows: pageRows,
+    };
+  };
+  return async (url: string) => {
+    if (url.endsWith('/api/status')) {
+      return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: null, processLastRefreshAt: null, lastScoredAt: auditScoredAt, dataFreshness };
+    }
+    if (url.endsWith('/api/config')) return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
+    if (url.endsWith('/api/public')) {
+      return {
+        schemaVersion: 1,
+        repo: 'x/y',
+        updatedAt: auditScoredAt,
+        releases: [{
+          schemaVersion: 1,
+          tag: 'v1',
+          score: 7.5,
+          band: 'ok',
+          status: 'eligible',
+          recommended: true,
+          reason: 'test reason',
+          negativeIssues: 1,
+          positiveIssues: 0,
+          scoredAt: auditScoredAt,
+          scoreAudit,
+          explanation,
+          dataFreshness,
+          totalAttributedIssues: 1,
+          issues: [{
+            number: 1,
+            title: 'issue 1',
+            url: 'https://github.com/x/y/issues/1',
+            affectedUsers: 'some',
+          }],
+        }],
+      };
+    }
+    if (url.endsWith('/api/releases')) {
+      return [{
+        schemaVersion: 1,
+        tag: 'v1',
+        finalScore: 7.5,
+        band: 'ok',
+        status: 'eligible',
+        recommended: true,
+        reason: 'test reason',
+        negativeIssues: 1,
+        positiveIssues: 0,
+        scoredAt: auditScoredAt,
+        scoreAudit,
+        explanation,
+        dataFreshness,
+      }];
+    }
+    if (url.endsWith('/api/releases/history')) {
+      return [{ schemaVersion: 1, tag: 'v1', publishedAt: '2026-01-01T00:00:00Z', finalScore: 7.5 }];
+    }
+    if (url.endsWith('/api/comparison')) {
+      return {
+        schemaVersion: 1,
+        snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
+        releases: [{
+          tag: 'v1',
+          local: {
+            schemaVersion: 1,
+            score: 7.5,
+            band: 'ok',
+            status: 'eligible',
+            recommended: true,
+            reason: 'test reason',
+            negativeIssues: 1,
+            positiveIssues: 0,
+            scoredAt: auditScoredAt,
+            dataFreshness,
+            components: { explanation },
+            gateEvidence: {
+              schemaVersion: 1,
+              releaseChecks: releaseChecksFixture,
+              artifactVerification: artifactVerificationFixture,
+              fixProvenance: {
+                closureProof: closureProofFixture(),
+                releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+              },
+            },
+          },
+          upstream: null,
+          delta: { schemaVersion: 1, score: null, negativeIssues: null },
+        }],
+      };
+    }
+    if (url.includes('/api/releases/v1/review/closure-proofs')) return closurePage(url);
+    if (url.endsWith('/api/releases/v1/review')) {
+      return {
+        snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
+        local: {
+          schemaVersion: 1,
+          score: 7.5,
+          band: 'ok',
+          status: 'eligible',
+          recommended: true,
+          reason: 'test reason',
+          negativeIssues: 1,
+          positiveIssues: 0,
+          scoredAt: auditScoredAt,
+          dataFreshness,
+          input: { schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 },
+          issueEvidence: { schemaVersion: 1 },
+          gateEvidence: {
+            schemaVersion: 1,
+            releaseChecks: releaseChecksFixture,
+            artifactVerification: artifactVerificationFixture,
+            fixProvenance: {
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          },
+          components: { schemaVersion: 1, explanation },
+        },
+      };
+    }
+    throw new Error(`unexpected URL ${url}`);
+  };
+}
+
 describe('verifyReleaseAudit', () => {
   it('passes coherent DB and API invariants', async () => {
     const fetchJson = async (url: string) => {
@@ -408,6 +633,30 @@ describe('verifyReleaseAudit', () => {
     const result = await verifyReleaseAudit({ reader: reader(), apiBase: 'http://example.test', fetchJson });
     assert.deepEqual(result.failures, []);
     assert.deepEqual(result.rows, [{ tag: 'v1', closed: 1, verified: 1, unverified: 0, proof: 1, counted: 1, notCounted: 0 }]);
+  });
+
+  it('fails when data freshness sourceFetchedAtMax is not the max source timestamp', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson((freshness) => {
+        freshness.sourceFetchedAtMax = '2026-01-01T23:10:00Z';
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /sourceFetchedAtMax/.test(failure)));
+  });
+
+  it('fails when data freshness age arithmetic drifts', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson((freshness) => {
+        freshness.sources[0].ageHoursAtScore = 99;
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /issue_rows ageHoursAtScore/.test(failure)));
   });
 
   it('fails when audit fix counts drift from verified queries', async () => {
