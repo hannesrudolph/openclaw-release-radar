@@ -476,6 +476,25 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'repro_requested');
   });
 
+  it('uses inactivity bot close comments as stale repro-request evidence', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-06-25T04:44:21Z',
+      comments: [{
+        author: 'openclaw-barnacle',
+        createdAt: '2026-06-25T04:44:20Z',
+        body: [
+          'Closing due to inactivity.',
+          'If this is still an issue, please retry on the latest OpenClaw release and share updated details.',
+          'If you are absolutely sure it still happens on the latest release, open a new issue with fresh steps to reproduce.',
+        ].join('\n'),
+      }],
+    }));
+    assert.equal(result.status, 'repro_requested');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.matchingComments as any[]).length, 1);
+  });
+
   it('keeps non-reproducible current-main rechecks neutral', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],

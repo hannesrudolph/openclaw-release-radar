@@ -242,6 +242,10 @@ export class ReleaseAuditReader {
   }
 
   issueNumbersForVersion(tag) {
+    return this.issuesForVersion(tag).map((row) => Number(row.number));
+  }
+
+  issuesForVersion(tag) {
     return this.db.prepare(`
       WITH target AS (
         SELECT
@@ -284,7 +288,10 @@ export class ReleaseAuditReader {
         JOIN issues i ON i.number=r.issue_number
         WHERE r.reopened_at IS NOT NULL
       )
-      SELECT i.number
+      SELECT i.*,
+             c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+             c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+             c.confidence, c.rationale, c.classified_at, c.classified_updated_at
       FROM issues i
       JOIN classifications c ON c.issue_number = i.number
       JOIN target
@@ -298,7 +305,32 @@ export class ReleaseAuditReader {
             AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
         )
       ORDER BY i.updated_at DESC
-    `).all(tag).map((row) => Number(row.number));
+    `).all(tag);
+  }
+
+  openedDuringReign(tag) {
+    return this.db.prepare(`
+      SELECT i.*,
+             c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+             c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+             c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+      FROM issues i
+      JOIN classifications c ON c.issue_number = i.number
+      JOIN releases target ON target.tag = ?
+      WHERE
+        target.published_at IS NOT NULL
+        AND i.created_at >= target.published_at
+        AND i.created_at < COALESCE(
+              (SELECT MIN(next.published_at) FROM releases next
+               WHERE next.published_at > target.published_at AND next.prerelease = 0),
+              '9999-12-31T23:59:59Z'
+            )
+      ORDER BY i.created_at DESC
+    `).all(tag);
+  }
+
+  labelsForIssueAt(issueNumber, fallbackLabels, cutoff, options = {}) {
+    return labelsForIssueAt(this.db, issueNumber, fallbackLabels, cutoff, options);
   }
 
   tableExists(name) {

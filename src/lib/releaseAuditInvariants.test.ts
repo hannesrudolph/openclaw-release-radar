@@ -69,6 +69,7 @@ function reader(overrides: Partial<{
   releases: any[];
   rawClosed: any[];
   closed: any[];
+  opened: any[];
   verified: any[];
   unverified: any[];
   proofRows: any[];
@@ -89,6 +90,7 @@ function reader(overrides: Partial<{
       positive_issues: 0,
     }],
     rawClosed: [{ number: 1 }],
+    opened: [],
     closed: [{ number: 1, prompt_version: 6 }],
     verified: [{ number: 1, sentiment: 'negative', prompt_version: 6 }],
     unverified: [],
@@ -171,6 +173,37 @@ function reader(overrides: Partial<{
     listReleases: () => data.releases,
     rawClosedDuringReign: () => data.rawClosed,
     issueNumbersForVersion: () => data.issueNumbers,
+    issuesForVersion: () => data.issueNumbers.map((number: number) => ({
+      number,
+      state: number === 1 ? 'closed' : 'open',
+      title: `issue ${number}`,
+      html_url: `https://github.com/x/y/issues/${number}`,
+      closed_at: number === 1 ? '2026-01-01T12:00:00Z' : null,
+      labels: '[]',
+      comments: 0,
+      has_workaround: 0,
+      reaction_total: 0,
+      positive_reactions: 0,
+      is_bot: 0,
+      author: 'tester',
+      author_association: 'MEMBER',
+      unique_human_commenters: 0,
+      maintainer_commenters: 0,
+      contributor_commenters: 0,
+      commenter_scan_truncated: 0,
+      sentiment: 'negative',
+      severity: 'high',
+      scope: 'moderate',
+      functionality: 'core',
+      affected_users: 'some',
+      workaround_status: 'unknown',
+      duplicate_cluster: null,
+      affects_version: null,
+      confidence: 0.9,
+      rationale: '',
+    })),
+    labelsForIssueAt: (_issueNumber: number, fallbackLabels: string[]) => fallbackLabels,
+    openedDuringReign: () => data.opened,
     closedDuringReign: () => data.closed,
     verifiedFixedForRelease: () => data.verified,
     unverifiedClosedForRelease: () => data.unverified,

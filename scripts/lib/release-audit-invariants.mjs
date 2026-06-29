@@ -4,6 +4,7 @@ import {
   applyTitleFunctionalityHint,
   applyTitleIssueShapeHint,
 } from '../../src/lib/labelOverrides.ts';
+import { publicIssueSummariesForRelease } from '../../src/lib/publicIssueSummary.ts';
 import {
   CLOSURE_PROOF_STATUSES,
   CLOSURE_RISK_DISPOSITIONS,
@@ -1521,6 +1522,31 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         for (const issue of publicRelease.issues ?? []) {
           expect(failures, release.tag, issueNumbers.has(issue.number),
             `public issue #${issue.number} must belong to release issue universe`);
+        }
+        if (typeof reader.issuesForVersion === 'function') {
+          const releaseIssues = reader.issuesForVersion(release.tag);
+          const labelCutoff = publicRelease.dataFreshness?.labelCutoffAt ?? null;
+          const expectedIssues = publicIssueSummariesForRelease({
+            issues: releaseIssues,
+            openedIssues: reader.openedDuringReign?.(release.tag) ?? [],
+            labelCutoff,
+            labelsForIssue: (issueNumber, fallbackLabels, cutoff, options) =>
+              reader.labelsForIssueAt(issueNumber, fallbackLabels, cutoff, options),
+          });
+          expectArrayEqual(
+            failures,
+            release.tag,
+            'public issues',
+            (publicRelease.issues ?? []).map((issue) => issue.number),
+            expectedIssues.topIssues.map((issue) => issue.number),
+          );
+          expectArrayEqual(
+            failures,
+            release.tag,
+            'public watchIssues',
+            (publicRelease.watchIssues ?? []).map((issue) => issue.number),
+            expectedIssues.watchIssues.map((issue) => issue.number),
+          );
         }
       } else if (publicRelease.totalAttributedIssues > 0) {
         const issueCount = Array.isArray(publicRelease.issues) ? publicRelease.issues.length : 0;
