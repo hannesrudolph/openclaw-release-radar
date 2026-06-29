@@ -430,7 +430,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       },
     };
     const tierFilter = parsed.searchParams.get('tier');
-    const rows = !tierFilter || tierFilter === row.tier ? [row] : [];
+    const tiers = tierFilter ? tierFilter.split(',').map((tier) => tier.trim()).filter(Boolean) : [];
+    const rows = !tiers.length || tiers.includes(row.tier) ? [row] : [];
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 50);
     const pageRows = rows.slice(cursor, cursor + limit);
@@ -438,7 +439,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       schemaVersion: 1,
       tag: 'v1',
       labelCutoffAt: null,
-      filters: { tier: tierFilter },
+      filters: {
+        tier: tiers.length === 1 ? tiers[0] : null,
+        tiers: tiers.length ? tiers : null,
+      },
       countsByTier: {
         verifiedDebt: 0,
         carryoverDebt: 0,
@@ -447,6 +451,15 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         verifiedFixed: 1,
         unverifiedClosed: 0,
         unclassifiedIssues: 0,
+      },
+      summaryByTier: {
+        verifiedDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        carryoverDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        staleDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        openedFeltSerious: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        verifiedFixed: { count: 1, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        unverifiedClosed: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        unclassifiedIssues: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
       },
       tierInfo: {
         verifiedDebt: {
@@ -482,6 +495,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       limit,
       cursor,
       nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
+      filteredSummary: { count: rows.length, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
       rows: pageRows,
     };
   };

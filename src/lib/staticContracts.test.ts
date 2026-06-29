@@ -62,10 +62,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /Inherited\/source risk means open negative issues/);
     const issueEvidence = readFileSync(join(root, 'src/lib/releaseIssueEvidence.ts'), 'utf8');
     assert.match(issueEvidence, /RELEASE_ISSUE_EVIDENCE_TIER_INFO/);
+    assert.match(issueEvidence, /summaryByTier/);
+    assert.match(issueEvidence, /summarizeIssueEvidenceRows/);
     assert.match(issueEvidence, /Open inherited\/source risk/);
     assert.match(issueEvidence, /not proven release-local field blockers/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated issue-evidence rows/);
+    assert.match(readme, /comma-separated `tier`/);
+    assert.match(readme, /summaryByTier/);
+    assert.match(readme, /filteredSummary/);
     assert.match(html, /Source freshness/);
     assert.match(html, /dataFreshnessText/);
     assert.match(html, /Object\.entries\(value\)/);

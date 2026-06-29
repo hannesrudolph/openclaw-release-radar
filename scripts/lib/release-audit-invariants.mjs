@@ -1797,6 +1797,10 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     `issue evidence audit cursor must be 0, got ${firstPage.cursor}`);
   expect(failures, tag, isObject(firstPage.countsByTier),
     'issue evidence audit countsByTier must be an object');
+  expect(failures, tag, isObject(firstPage.summaryByTier),
+    'issue evidence audit summaryByTier must be an object');
+  expect(failures, tag, isObject(firstPage.filteredSummary),
+    'issue evidence audit filteredSummary must be an object');
   expectJsonEqual(failures, tag, 'issue evidence audit tierInfo must match shared tier metadata',
     firstPage.tierInfo, RELEASE_ISSUE_EVIDENCE_TIER_INFO);
   for (const [tier, count] of Object.entries(firstPage.countsByTier ?? {})) {
@@ -1804,10 +1808,19 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
       `issue evidence audit countsByTier contains unknown tier ${tier}`);
     expect(failures, tag, Number.isInteger(count) && count >= 0,
       `issue evidence audit count for ${tier} must be a non-negative integer`);
+    const summary = firstPage.summaryByTier?.[tier];
+    expect(failures, tag, isObject(summary),
+      `issue evidence audit summaryByTier.${tier} must be an object`);
+    expect(failures, tag, summary?.count === count,
+      `issue evidence audit summaryByTier.${tier}.count (${summary?.count}) must match countsByTier (${count})`);
+    expect(failures, tag, typeof summary?.weight === 'number',
+      `issue evidence audit summaryByTier.${tier}.weight must be numeric`);
   }
   const countSum = Object.values(firstPage.countsByTier ?? {}).reduce((sum, count) => sum + Number(count ?? 0), 0);
   expect(failures, tag, firstPage.total === countSum,
     `issue evidence audit total (${firstPage.total}) must equal countsByTier sum (${countSum})`);
+  expect(failures, tag, firstPage.filteredSummary?.count === firstPage.total,
+    `issue evidence audit filteredSummary count (${firstPage.filteredSummary?.count}) must match total (${firstPage.total})`);
   expect(failures, tag, Array.isArray(firstPage.rows),
     'issue evidence audit rows must be an array');
   expect(failures, tag, firstPage.rows.length <= 11,
@@ -1892,8 +1905,31 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     const page = await fetchJson(`${base}?limit=5&tier=${encodeURIComponent(tier)}`);
     expect(failures, tag, page.total === Number(count),
       `issue evidence audit tier filter total (${page.total}) must match ${tier} count (${count})`);
+    expect(failures, tag, page.filters?.tier === tier,
+      `issue evidence audit tier filter echo (${page.filters?.tier}) must equal ${tier}`);
+    expect(failures, tag, Array.isArray(page.filters?.tiers) && page.filters.tiers.length === 1 && page.filters.tiers[0] === tier,
+      `issue evidence audit tiers filter echo must contain only ${tier}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit filteredSummary count (${page.filteredSummary?.count}) must match filtered total (${page.total})`);
     expect(failures, tag, (page.rows ?? []).every((row) => row.tier === tier),
       `issue evidence audit tier filter must return only ${tier} rows`);
+  }
+  if (tiersToProbe.length >= 2) {
+    const selected = tiersToProbe.slice(0, 2);
+    const tierParam = selected.map(([tier]) => tier).join(',');
+    const expectedTotal = selected.reduce((sum, [, count]) => sum + Number(count), 0);
+    const page = await fetchJson(`${base}?limit=5&tier=${encodeURIComponent(tierParam)}`);
+    expect(failures, tag, page.total === expectedTotal,
+      `issue evidence audit multi-tier filter total (${page.total}) must match selected tier counts (${expectedTotal})`);
+    expect(failures, tag, page.filters?.tier == null,
+      'issue evidence audit multi-tier filter must not echo singular tier');
+    expectJsonEqual(failures, tag, 'issue evidence audit multi-tier filter echo',
+      page.filters?.tiers, selected.map(([tier]) => tier));
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit multi-tier filteredSummary count (${page.filteredSummary?.count}) must match filtered total (${page.total})`);
+    const selectedSet = new Set(selected.map(([tier]) => tier));
+    expect(failures, tag, (page.rows ?? []).every((row) => selectedSet.has(row.tier)),
+      `issue evidence audit multi-tier filter must return only ${tierParam} rows`);
   }
 }
 

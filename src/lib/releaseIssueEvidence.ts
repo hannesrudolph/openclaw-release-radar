@@ -145,11 +145,24 @@ export interface ReleaseIssueEvidenceRow {
   clusterReleaseLocal?: boolean | null;
 }
 
+export interface ReleaseIssueEvidenceTierSummary {
+  count: number;
+  weight: number;
+  fieldConfirmedCount: number;
+  openCount: number;
+  closedCount: number;
+  otherStateCount: number;
+  missingIssueCount: number;
+  byInstallImpactClass: Record<string, number>;
+  weightByInstallImpactClass: Record<string, number>;
+}
+
 export interface ReleaseIssueEvidenceResult {
   schemaVersion: typeof RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION;
   tag: string;
   labelCutoffAt: string | null;
   countsByTier: Record<ReleaseIssueEvidenceTier, number>;
+  summaryByTier: Record<ReleaseIssueEvidenceTier, ReleaseIssueEvidenceTierSummary>;
   tierInfo: typeof RELEASE_ISSUE_EVIDENCE_TIER_INFO;
   rows: ReleaseIssueEvidenceRow[];
 }
@@ -243,6 +256,7 @@ export function releaseIssueEvidenceRows(tag: string): ReleaseIssueEvidenceResul
     tag,
     labelCutoffAt: labelCutoff,
     countsByTier: countByTier(rows),
+    summaryByTier: summarizeByTier(rows),
     tierInfo: RELEASE_ISSUE_EVIDENCE_TIER_INFO,
     rows,
   };
@@ -419,4 +433,65 @@ function countByTier(rows: ReleaseIssueEvidenceRow[]): Record<ReleaseIssueEviden
   const counts = Object.fromEntries(RELEASE_ISSUE_EVIDENCE_TIERS.map((tier) => [tier, 0])) as Record<ReleaseIssueEvidenceTier, number>;
   for (const row of rows) counts[row.tier] += 1;
   return counts;
+}
+
+export function summarizeIssueEvidenceRows(rows: ReleaseIssueEvidenceRow[]): ReleaseIssueEvidenceTierSummary {
+  const summary = emptyTierSummary();
+  for (const row of rows) {
+    summary.count += 1;
+    const weight = typeof row.weight === 'number' && Number.isFinite(row.weight) ? row.weight : 0;
+    summary.weight += weight;
+    if (row.fieldConfirmed === true) summary.fieldConfirmedCount += 1;
+    if (isMissingIssue(row.issue)) summary.missingIssueCount += 1;
+    const state = row.issue?.state;
+    if (state === 'open') summary.openCount += 1;
+    else if (state === 'closed') summary.closedCount += 1;
+    else summary.otherStateCount += 1;
+    const impact = typeof row.installImpactClass === 'string' && row.installImpactClass
+      ? row.installImpactClass
+      : null;
+    if (impact) {
+      summary.byInstallImpactClass[impact] = (summary.byInstallImpactClass[impact] ?? 0) + 1;
+      summary.weightByInstallImpactClass[impact] = (summary.weightByInstallImpactClass[impact] ?? 0) + weight;
+    }
+  }
+  return roundTierSummary(summary);
+}
+
+function isMissingIssue(issue: ReleaseIssueEvidenceRow['issue']): issue is MissingIssueSummary {
+  return 'missing' in issue && issue.missing === true;
+}
+
+function summarizeByTier(rows: ReleaseIssueEvidenceRow[]): Record<ReleaseIssueEvidenceTier, ReleaseIssueEvidenceTierSummary> {
+  return Object.fromEntries(RELEASE_ISSUE_EVIDENCE_TIERS.map((tier) => [
+    tier,
+    summarizeIssueEvidenceRows(rows.filter((row) => row.tier === tier)),
+  ])) as Record<ReleaseIssueEvidenceTier, ReleaseIssueEvidenceTierSummary>;
+}
+
+function emptyTierSummary(): ReleaseIssueEvidenceTierSummary {
+  return {
+    count: 0,
+    weight: 0,
+    fieldConfirmedCount: 0,
+    openCount: 0,
+    closedCount: 0,
+    otherStateCount: 0,
+    missingIssueCount: 0,
+    byInstallImpactClass: {},
+    weightByInstallImpactClass: {},
+  };
+}
+
+function roundTierSummary(summary: ReleaseIssueEvidenceTierSummary): ReleaseIssueEvidenceTierSummary {
+  return {
+    ...summary,
+    weight: roundMetric(summary.weight),
+    weightByInstallImpactClass: Object.fromEntries(Object.entries(summary.weightByInstallImpactClass)
+      .map(([key, value]) => [key, roundMetric(value)])),
+  };
+}
+
+function roundMetric(value: number): number {
+  return Math.round(value * 1000) / 1000;
 }

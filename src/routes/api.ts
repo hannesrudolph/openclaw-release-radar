@@ -36,6 +36,7 @@ import {
   RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
   RELEASE_ISSUE_EVIDENCE_TIERS,
   releaseIssueEvidenceRows,
+  summarizeIssueEvidenceRows,
   type ReleaseIssueEvidenceTier,
 } from '../lib/releaseIssueEvidence';
 
@@ -283,6 +284,17 @@ function parsePrFilter(raw: unknown): { repo: string | null; number: number } | 
   if (!Number.isInteger(number) || number <= 0) return null;
   const repo = match.groups.repo?.trim() || null;
   return { repo, number };
+}
+
+function parseIssueEvidenceTierFilter(raw: unknown): ReleaseIssueEvidenceTier[] | null {
+  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  const tiers = [...new Set(values
+    .flatMap((value) => String(value).split(','))
+    .map((value) => value.trim())
+    .filter(Boolean))];
+  if (!tiers.length) return null;
+  if (tiers.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) return [];
+  return tiers as ReleaseIssueEvidenceTier[];
 }
 
 function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
@@ -581,11 +593,9 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
-  const tierFilter = typeof req.query.tier === 'string' && req.query.tier.trim()
-    ? req.query.tier.trim()
-    : null;
-  if (tierFilter && !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tierFilter)) {
-    res.status(400).json({ error: 'invalid tier', tier: tierFilter });
+  const tierFilter = parseIssueEvidenceTierFilter(req.query.tier);
+  if (tierFilter && tierFilter.length === 0) {
+    res.status(400).json({ error: 'invalid tier', tier: req.query.tier });
     return;
   }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
@@ -595,15 +605,21 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(404).json({ error: 'release evidence not found', tag });
     return;
   }
-  const allRows = evidence.rows.filter((row) => !tierFilter || row.tier === tierFilter);
+  const tierSet = tierFilter ? new Set(tierFilter) : null;
+  const allRows = evidence.rows.filter((row) => !tierSet || tierSet.has(row.tier));
   const pageRows = allRows.slice(cursor, cursor + limit);
   const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
     schemaVersion: RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
     tag,
     labelCutoffAt: evidence.labelCutoffAt,
-    filters: { tier: tierFilter as ReleaseIssueEvidenceTier | null },
+    filters: {
+      tier: tierFilter?.length === 1 ? tierFilter[0] : null,
+      tiers: tierFilter ?? null,
+    },
     countsByTier: evidence.countsByTier,
+    summaryByTier: evidence.summaryByTier,
+    filteredSummary: summarizeIssueEvidenceRows(allRows),
     tierInfo: evidence.tierInfo,
     total: allRows.length,
     limit,
