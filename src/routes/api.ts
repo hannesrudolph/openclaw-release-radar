@@ -309,6 +309,22 @@ function parseIssueEvidenceStateFilter(raw: unknown): Array<'open' | 'closed' | 
   return states as Array<'open' | 'closed' | 'other'>;
 }
 
+function parseBooleanFilter(raw: unknown): boolean | null | undefined {
+  if (raw == null) return null;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const text = String(value).trim().toLowerCase();
+  if (['1', 'true', 'yes'].includes(text)) return true;
+  if (['0', 'false', 'no'].includes(text)) return false;
+  return undefined;
+}
+
+function parseNumberFilter(raw: unknown): number | null | undefined {
+  if (raw == null || raw === '') return null;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : undefined;
+}
+
 function parseCommaList(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
   return [...new Set(values
@@ -633,6 +649,25 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(400).json({ error: 'invalid state', state: req.query.state });
     return;
   }
+  const fieldConfirmedFilter = parseBooleanFilter(req.query.fieldConfirmed);
+  if (fieldConfirmedFilter === undefined) {
+    res.status(400).json({ error: 'invalid fieldConfirmed', fieldConfirmed: req.query.fieldConfirmed });
+    return;
+  }
+  const minWeight = parseNumberFilter(req.query.minWeight);
+  if (minWeight === undefined) {
+    res.status(400).json({ error: 'invalid minWeight', minWeight: req.query.minWeight });
+    return;
+  }
+  const maxWeight = parseNumberFilter(req.query.maxWeight);
+  if (maxWeight === undefined) {
+    res.status(400).json({ error: 'invalid maxWeight', maxWeight: req.query.maxWeight });
+    return;
+  }
+  if (minWeight != null && maxWeight != null && minWeight > maxWeight) {
+    res.status(400).json({ error: 'invalid weight range', minWeight, maxWeight });
+    return;
+  }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
   const evidence = releaseIssueEvidenceRows(tag);
@@ -646,7 +681,10 @@ api.get('/releases/:tag/review/issues', (req, res) => {
   const allRows = evidence.rows
     .filter((row) => !tierSet || tierSet.has(row.tier))
     .filter((row) => !impactSet || impactSet.has(row.installImpactClass as ReleaseIssueEvidenceImpactClass))
-    .filter((row) => !stateSet || stateSet.has(issueEvidenceState(row)));
+    .filter((row) => !stateSet || stateSet.has(issueEvidenceState(row)))
+    .filter((row) => fieldConfirmedFilter == null || row.fieldConfirmed === fieldConfirmedFilter)
+    .filter((row) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
+    .filter((row) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
   const pageRows = allRows.slice(cursor, cursor + limit);
   const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
@@ -660,6 +698,9 @@ api.get('/releases/:tag/review/issues', (req, res) => {
       impacts: impactFilter ?? null,
       state: stateFilter?.length === 1 ? stateFilter[0] : null,
       states: stateFilter ?? null,
+      fieldConfirmed: fieldConfirmedFilter,
+      minWeight,
+      maxWeight,
     },
     countsByTier: evidence.countsByTier,
     summaryByTier: evidence.summaryByTier,

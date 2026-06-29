@@ -420,6 +420,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       tierDescription: 'Closed issues credited as fixed by code proof reachable from this release tag.',
       installImpactClass: 'state_data',
       weight: 1,
+      fieldConfirmed: true,
       issue: {
         number: 1,
         title: 'issue 1',
@@ -437,9 +438,16 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const impacts = impactFilter ? impactFilter.split(',').map((impact) => impact.trim()).filter(Boolean) : [];
     const stateFilter = parsed.searchParams.get('state');
     const states = stateFilter ? stateFilter.split(',').map((state) => state.trim()).filter(Boolean) : [];
+    const fieldConfirmedFilter = parsed.searchParams.get('fieldConfirmed');
+    const fieldConfirmed = fieldConfirmedFilter == null ? null : ['1', 'true', 'yes'].includes(fieldConfirmedFilter.toLowerCase());
+    const minWeight = parsed.searchParams.get('minWeight') == null ? null : Number(parsed.searchParams.get('minWeight'));
+    const maxWeight = parsed.searchParams.get('maxWeight') == null ? null : Number(parsed.searchParams.get('maxWeight'));
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&
-      (!states.length || states.includes(row.issue.state))
+      (!states.length || states.includes(row.issue.state)) &&
+      (fieldConfirmed == null || row.fieldConfirmed === fieldConfirmed) &&
+      (minWeight == null || row.weight >= minWeight) &&
+      (maxWeight == null || row.weight <= maxWeight)
       ? [row]
       : [];
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
@@ -456,6 +464,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         impacts: impacts.length ? impacts : null,
         state: states.length === 1 ? states[0] : null,
         states: states.length ? states : null,
+        fieldConfirmed,
+        minWeight,
+        maxWeight,
       },
       countsByTier: {
         verifiedDebt: 0,
@@ -471,7 +482,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         carryoverDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         staleDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         openedFeltSerious: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        verifiedFixed: { count: 1, weight: 1, fieldConfirmedCount: 0, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: { state_data: 1 }, weightByInstallImpactClass: { state_data: 1 } },
+        verifiedFixed: { count: 1, weight: 1, fieldConfirmedCount: 1, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: { state_data: 1 }, weightByInstallImpactClass: { state_data: 1 } },
         unverifiedClosed: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         unclassifiedIssues: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
       },
@@ -509,7 +520,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       limit,
       cursor,
       nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
-      filteredSummary: { count: rows.length, weight: rows.length ? 1 : 0, fieldConfirmedCount: 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: rows.length ? { state_data: 1 } : {}, weightByInstallImpactClass: rows.length ? { state_data: 1 } : {} },
+      filteredSummary: { count: rows.length, weight: rows.length ? 1 : 0, fieldConfirmedCount: rows.length ? 1 : 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: rows.length ? { state_data: 1 } : {}, weightByInstallImpactClass: rows.length ? { state_data: 1 } : {} },
       rows: pageRows,
     };
   };

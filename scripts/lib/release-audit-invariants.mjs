@@ -1957,6 +1957,32 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     expect(failures, tag, (page.rows ?? []).every((row) => row.issue?.state === stateToProbe),
       `issue evidence audit state filter must return only ${stateToProbe} rows`);
   }
+  const fieldConfirmedProbe = (firstPage.rows ?? []).find((row) => row.fieldConfirmed === true || row.fieldConfirmed === false);
+  if (fieldConfirmedProbe) {
+    const value = fieldConfirmedProbe.fieldConfirmed === true ? 'true' : 'false';
+    const page = await fetchJson(`${base}?limit=5&fieldConfirmed=${value}`);
+    expect(failures, tag, page.filters?.fieldConfirmed === fieldConfirmedProbe.fieldConfirmed,
+      `issue evidence audit fieldConfirmed filter echo (${page.filters?.fieldConfirmed}) must equal ${fieldConfirmedProbe.fieldConfirmed}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit fieldConfirmed filteredSummary count (${page.filteredSummary?.count}) must match total (${page.total})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.fieldConfirmed === fieldConfirmedProbe.fieldConfirmed),
+      `issue evidence audit fieldConfirmed filter must return only ${value} rows`);
+  }
+  const weightedProbe = (firstPage.rows ?? []).find((row) => typeof row.weight === 'number' && Number.isFinite(row.weight));
+  if (weightedProbe) {
+    const minWeight = Math.max(0, Math.floor(Number(weightedProbe.weight)));
+    const maxWeight = Math.ceil(Number(weightedProbe.weight));
+    const page = await fetchJson(`${base}?limit=5&minWeight=${minWeight}&maxWeight=${maxWeight}`);
+    expect(failures, tag, page.filters?.minWeight === minWeight,
+      `issue evidence audit minWeight filter echo (${page.filters?.minWeight}) must equal ${minWeight}`);
+    expect(failures, tag, page.filters?.maxWeight === maxWeight,
+      `issue evidence audit maxWeight filter echo (${page.filters?.maxWeight}) must equal ${maxWeight}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit weight filteredSummary count (${page.filteredSummary?.count}) must match total (${page.total})`);
+    expect(failures, tag, (page.rows ?? []).every((row) =>
+      Number(row.weight ?? 0) >= minWeight && Number(row.weight ?? 0) <= maxWeight),
+    `issue evidence audit weight filter must return only rows between ${minWeight} and ${maxWeight}`);
+  }
 }
 
 async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {
