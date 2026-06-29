@@ -416,6 +416,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const parsed = new URL(url);
     const row = {
       tier: 'verifiedFixed',
+      tierLabel: 'Verified release fixes',
+      tierDescription: 'Closed issues credited as fixed by code proof reachable from this release tag.',
       issue: {
         number: 1,
         title: 'issue 1',
@@ -445,6 +447,36 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         verifiedFixed: 1,
         unverifiedClosed: 0,
         unclassifiedIssues: 0,
+      },
+      tierInfo: {
+        verifiedDebt: {
+          label: 'Field blocker debt',
+          description: 'Release-local field/community-confirmed blocker evidence that counts as hard open debt.',
+        },
+        carryoverDebt: {
+          label: 'Open inherited/source risk',
+          description: 'Open negative issues attributed to this release, but not proven release-local field blockers.',
+        },
+        staleDebt: {
+          label: 'Stale or weak evidence',
+          description: 'Open negative issues with stale, needs-info, low-confidence, low-severity, docs, or otherwise weak evidence.',
+        },
+        openedFeltSerious: {
+          label: 'Opened field-visible reports',
+          description: 'Field-visible high/critical reports opened during this release window.',
+        },
+        verifiedFixed: {
+          label: 'Verified release fixes',
+          description: 'Closed issues credited as fixed by code proof reachable from this release tag.',
+        },
+        unverifiedClosed: {
+          label: 'Unverified closed issues',
+          description: 'Closed release-window issues that do not receive direct release-fix credit.',
+        },
+        unclassifiedIssues: {
+          label: 'Unclassified attributed issues',
+          description: 'Attributed issues missing current classification rows.',
+        },
       },
       total: rows.length,
       limit,

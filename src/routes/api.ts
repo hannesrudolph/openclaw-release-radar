@@ -604,6 +604,7 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     labelCutoffAt: evidence.labelCutoffAt,
     filters: { tier: tierFilter as ReleaseIssueEvidenceTier | null },
     countsByTier: evidence.countsByTier,
+    tierInfo: evidence.tierInfo,
     total: allRows.length,
     limit,
     cursor,

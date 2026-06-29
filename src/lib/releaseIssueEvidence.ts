@@ -38,6 +38,40 @@ export const RELEASE_ISSUE_EVIDENCE_TIERS = [
 
 export type ReleaseIssueEvidenceTier = (typeof RELEASE_ISSUE_EVIDENCE_TIERS)[number];
 
+export const RELEASE_ISSUE_EVIDENCE_TIER_INFO: Record<ReleaseIssueEvidenceTier, {
+  label: string;
+  description: string;
+}> = {
+  verifiedDebt: {
+    label: 'Field blocker debt',
+    description: 'Release-local field/community-confirmed blocker evidence that counts as hard open debt.',
+  },
+  carryoverDebt: {
+    label: 'Open inherited/source risk',
+    description: 'Open negative issues attributed to this release, but not proven release-local field blockers.',
+  },
+  staleDebt: {
+    label: 'Stale or weak evidence',
+    description: 'Open negative issues with stale, needs-info, low-confidence, low-severity, docs, or otherwise weak evidence.',
+  },
+  openedFeltSerious: {
+    label: 'Opened field-visible reports',
+    description: 'Field-visible high/critical reports opened during this release window.',
+  },
+  verifiedFixed: {
+    label: 'Verified release fixes',
+    description: 'Closed issues credited as fixed by code proof reachable from this release tag.',
+  },
+  unverifiedClosed: {
+    label: 'Unverified closed issues',
+    description: 'Closed release-window issues that do not receive direct release-fix credit.',
+  },
+  unclassifiedIssues: {
+    label: 'Unclassified attributed issues',
+    description: 'Attributed issues missing current classification rows.',
+  },
+};
+
 type LabelSource = 'current' | 'timeline' | 'snapshot' | 'missing_timeline';
 
 interface LabelInfo {
@@ -92,6 +126,8 @@ interface MissingIssueSummary {
 
 export interface ReleaseIssueEvidenceRow {
   tier: ReleaseIssueEvidenceTier;
+  tierLabel: string;
+  tierDescription: string;
   issue: ClassifiedIssueSummary | ReturnType<typeof unclassifiedIssueSummary> | MissingIssueSummary;
   weight?: number | null;
   duplicateCluster?: string | null;
@@ -114,6 +150,7 @@ export interface ReleaseIssueEvidenceResult {
   tag: string;
   labelCutoffAt: string | null;
   countsByTier: Record<ReleaseIssueEvidenceTier, number>;
+  tierInfo: typeof RELEASE_ISSUE_EVIDENCE_TIER_INFO;
   rows: ReleaseIssueEvidenceRow[];
 }
 
@@ -193,10 +230,10 @@ export function releaseIssueEvidenceRows(tag: string): ReleaseIssueEvidenceResul
 
   const rows: ReleaseIssueEvidenceRow[] = [
     ...debt.evidence.map((item) => debtEvidenceRow(item, issueByNumber, labelInfo, labelCutoff)),
-    ...openedFeltRows.map((issue) => ({ tier: 'openedFeltSerious' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
-    ...verifiedFixed.map((issue) => ({ tier: 'verifiedFixed' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
-    ...unverifiedClosed.map((issue) => ({ tier: 'unverifiedClosed' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
-    ...unclassifiedIssuesForVersion(tag, UNCLASSIFIED_ISSUE_AUDIT_LIMIT).map((issue) => ({
+    ...openedFeltRows.map((issue) => withTierInfo({ tier: 'openedFeltSerious' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
+    ...verifiedFixed.map((issue) => withTierInfo({ tier: 'verifiedFixed' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
+    ...unverifiedClosed.map((issue) => withTierInfo({ tier: 'unverifiedClosed' as const, issue: classifiedIssueSummary(issue, labelInfo, labelCutoff) })),
+    ...unclassifiedIssuesForVersion(tag, UNCLASSIFIED_ISSUE_AUDIT_LIMIT).map((issue) => withTierInfo({
       tier: 'unclassifiedIssues' as const,
       issue: unclassifiedIssueSummary(issue),
     })),
@@ -206,7 +243,20 @@ export function releaseIssueEvidenceRows(tag: string): ReleaseIssueEvidenceResul
     tag,
     labelCutoffAt: labelCutoff,
     countsByTier: countByTier(rows),
+    tierInfo: RELEASE_ISSUE_EVIDENCE_TIER_INFO,
     rows,
+  };
+}
+
+function withTierInfo<T extends { tier: ReleaseIssueEvidenceTier }>(row: T): T & {
+  tierLabel: string;
+  tierDescription: string;
+} {
+  const info = RELEASE_ISSUE_EVIDENCE_TIER_INFO[row.tier];
+  return {
+    ...row,
+    tierLabel: info.label,
+    tierDescription: info.description,
   };
 }
 
@@ -224,6 +274,8 @@ function debtEvidenceRow(
   } as const)[item.tier];
   return {
     tier,
+    tierLabel: RELEASE_ISSUE_EVIDENCE_TIER_INFO[tier].label,
+    tierDescription: RELEASE_ISSUE_EVIDENCE_TIER_INFO[tier].description,
     issue: issue ? classifiedIssueSummary(issue, labelInfo, labelCutoff) : missingIssueSummary(item.issueNumber),
     weight: item.weight,
     duplicateCluster: item.duplicateCluster ?? null,

@@ -8,6 +8,7 @@ import { publicIssueSummariesForRelease } from '../../src/lib/publicIssueSummary
 import {
   RELEASE_ISSUE_EVIDENCE_TIERS,
   RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
+  RELEASE_ISSUE_EVIDENCE_TIER_INFO,
 } from '../../src/lib/releaseIssueEvidence.ts';
 import {
   CLOSURE_PROOF_STATUSES,
@@ -1796,6 +1797,8 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     `issue evidence audit cursor must be 0, got ${firstPage.cursor}`);
   expect(failures, tag, isObject(firstPage.countsByTier),
     'issue evidence audit countsByTier must be an object');
+  expectJsonEqual(failures, tag, 'issue evidence audit tierInfo must match shared tier metadata',
+    firstPage.tierInfo, RELEASE_ISSUE_EVIDENCE_TIER_INFO);
   for (const [tier, count] of Object.entries(firstPage.countsByTier ?? {})) {
     expect(failures, tag, knownIssueEvidenceTiers.has(tier),
       `issue evidence audit countsByTier contains unknown tier ${tier}`);
@@ -1829,6 +1832,11 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   for (const row of firstPage.rows ?? []) {
     expect(failures, tag, knownIssueEvidenceTiers.has(row.tier),
       `issue evidence audit row tier must be known, got ${row.tier}`);
+    const tierInfo = RELEASE_ISSUE_EVIDENCE_TIER_INFO[row.tier];
+    expect(failures, tag, row.tierLabel === tierInfo?.label,
+      `issue evidence audit row ${row.tier} tierLabel (${row.tierLabel}) must match ${tierInfo?.label}`);
+    expect(failures, tag, row.tierDescription === tierInfo?.description,
+      `issue evidence audit row ${row.tier} tierDescription must match shared metadata`);
     expect(failures, tag, isObject(row.issue),
       `issue evidence audit row ${row.tier} must expose issue object`);
     expect(failures, tag,
