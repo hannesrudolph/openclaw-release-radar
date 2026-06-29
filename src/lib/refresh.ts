@@ -157,6 +157,7 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
 }
 
 const BACKFILL_FLAG = 'backfill_completed_at';
+type IssuePaginationStopReason = 'exhausted' | 'early_stop' | 'page_cap';
 
 let refreshing = false;
 let processLastRefreshAt: string | null = null;
@@ -378,6 +379,7 @@ export async function refresh(): Promise<{
     let pagesFetched = 0;
     let classifiedCount = 0;
     let crossedOldestEver = false;
+    let issuePaginationStopReason: IssuePaginationStopReason = 'exhausted';
 
     paginate: for await (const page of paginateIssues(100)) {
       pagesFetched++;
@@ -481,14 +483,27 @@ export async function refresh(): Promise<{
       // older still-open issues are part of the release's current debt.
       const canEarlyStop = !fullIssueBackfill && backfillDone && !promptSweep && allUnchanged;
       const canCrossedOldestStop = !fullIssueBackfill && !promptSweep && crossedOldest;
-      if (canEarlyStop || canCrossedOldestStop) break paginate;
-      if (pagesFetched >= MAX_PAGES) break paginate;
+      if (canEarlyStop || canCrossedOldestStop) {
+        issuePaginationStopReason = 'early_stop';
+        break paginate;
+      }
+      if (pagesFetched >= MAX_PAGES) {
+        issuePaginationStopReason = 'page_cap';
+        break paginate;
+      }
     }
 
-    // Mark a full backfill complete after walking the connection (or hitting its
-    // explicit safety cap). Normal mode marks it after crossing the release cutoff.
-    if (!backfillDone && (fullIssueBackfill || crossedOldestEver || pagesFetched >= MAX_PAGES)) {
+    // Mark backfill complete only when the monitored history boundary is reached
+    // or the GitHub issue connection is exhausted. Hitting MAX_ISSUE_PAGES is a
+    // safety stop, not proof that older issue history was fetched.
+    if (!backfillDone && shouldMarkBackfillComplete({
+      fullIssueBackfill,
+      crossedOldestEver,
+      issuePaginationStopReason,
+    })) {
       setMeta(BACKFILL_FLAG, new Date().toISOString());
+    } else if (!backfillDone && issuePaginationStopReason === 'page_cap') {
+      console.warn(`[refresh] issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; backfill remains incomplete`);
     }
 
     // After a prompt-sweep that walked the full pagination: if any rows are
@@ -497,12 +512,14 @@ export async function refresh(): Promise<{
     // forcing the (expensive) sweep on every refresh forever. Drop them. If
     // GitHub ever surfaces those issues again (new comment), refresh will
     // re-classify them fresh on the next pass.
-    if (promptSweep) {
+    if (promptSweep && shouldDropStaleClassificationsAfterPromptSweep(issuePaginationStopReason)) {
       const leftover = countStaleClassifications(PROMPT_VERSION);
       if (leftover > 0) {
         const dropped = deleteStaleClassifications(PROMPT_VERSION);
         console.log(`[refresh] dropped ${dropped} unreachable stale rows after sweep`);
       }
+    } else if (promptSweep && issuePaginationStopReason === 'page_cap') {
+      console.warn('[refresh] prompt-sweep reached page cap; stale classifications were not dropped');
     }
 
     const allReleases = listReleasesDb(monitoredReleaseCount);
@@ -557,6 +574,29 @@ export async function refresh(): Promise<{
     refreshing = false;
   }
 }
+
+function shouldMarkBackfillComplete({
+  fullIssueBackfill,
+  crossedOldestEver,
+  issuePaginationStopReason,
+}: {
+  fullIssueBackfill: boolean;
+  crossedOldestEver: boolean;
+  issuePaginationStopReason: IssuePaginationStopReason;
+}): boolean {
+  if (issuePaginationStopReason === 'page_cap') return false;
+  if (fullIssueBackfill) return issuePaginationStopReason === 'exhausted';
+  return crossedOldestEver || issuePaginationStopReason === 'exhausted';
+}
+
+function shouldDropStaleClassificationsAfterPromptSweep(issuePaginationStopReason: IssuePaginationStopReason): boolean {
+  return issuePaginationStopReason === 'exhausted';
+}
+
+export const __refreshTest = {
+  shouldDropStaleClassificationsAfterPromptSweep,
+  shouldMarkBackfillComplete,
+};
 
 export {
   classifyIssueRow,

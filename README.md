@@ -85,7 +85,7 @@ REFRESH_MINUTES=0 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=50 npx tsx -e "import {
 
 The first refresh can take a few minutes because it backfills GitHub data and classifies issues. Later refreshes only process changed issues.
 
-`REFRESH_ON_STARTUP=false` keeps the web server from writing to the DB when you only want to inspect the UI. `REFRESH_MINUTES=0` disables periodic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive.
+`REFRESH_ON_STARTUP=false` keeps the web server from writing to the DB when you only want to inspect the UI. `REFRESH_MINUTES=0` disables periodic refreshes. Set `FULL_ISSUE_BACKFILL=true` when you need a complete issue-history pass; this is intentionally expensive. If the crawl reaches `MAX_ISSUE_PAGES` before exhausting GitHub pagination, the backfill remains incomplete and the next refresh can continue it.
 
 For a reproducible rebuild from an empty local database, wipe every ignored SQLite file, run a full issue-history refresh, then verify the persisted audits:
 
