@@ -418,6 +418,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       tier: 'verifiedFixed',
       tierLabel: 'Verified release fixes',
       tierDescription: 'Closed issues credited as fixed by code proof reachable from this release tag.',
+      installImpactClass: 'state_data',
+      weight: 1,
       issue: {
         number: 1,
         title: 'issue 1',
@@ -431,7 +433,15 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     };
     const tierFilter = parsed.searchParams.get('tier');
     const tiers = tierFilter ? tierFilter.split(',').map((tier) => tier.trim()).filter(Boolean) : [];
-    const rows = !tiers.length || tiers.includes(row.tier) ? [row] : [];
+    const impactFilter = parsed.searchParams.get('impact');
+    const impacts = impactFilter ? impactFilter.split(',').map((impact) => impact.trim()).filter(Boolean) : [];
+    const stateFilter = parsed.searchParams.get('state');
+    const states = stateFilter ? stateFilter.split(',').map((state) => state.trim()).filter(Boolean) : [];
+    const rows = (!tiers.length || tiers.includes(row.tier)) &&
+      (!impacts.length || impacts.includes(row.installImpactClass)) &&
+      (!states.length || states.includes(row.issue.state))
+      ? [row]
+      : [];
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 50);
     const pageRows = rows.slice(cursor, cursor + limit);
@@ -442,6 +452,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       filters: {
         tier: tiers.length === 1 ? tiers[0] : null,
         tiers: tiers.length ? tiers : null,
+        impact: impacts.length === 1 ? impacts[0] : null,
+        impacts: impacts.length ? impacts : null,
+        state: states.length === 1 ? states[0] : null,
+        states: states.length ? states : null,
       },
       countsByTier: {
         verifiedDebt: 0,
@@ -457,7 +471,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         carryoverDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         staleDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         openedFeltSerious: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        verifiedFixed: { count: 1, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+        verifiedFixed: { count: 1, weight: 1, fieldConfirmedCount: 0, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: { state_data: 1 }, weightByInstallImpactClass: { state_data: 1 } },
         unverifiedClosed: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
         unclassifiedIssues: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
       },
@@ -495,7 +509,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       limit,
       cursor,
       nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
-      filteredSummary: { count: rows.length, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
+      filteredSummary: { count: rows.length, weight: rows.length ? 1 : 0, fieldConfirmedCount: 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: rows.length ? { state_data: 1 } : {}, weightByInstallImpactClass: rows.length ? { state_data: 1 } : {} },
       rows: pageRows,
     };
   };

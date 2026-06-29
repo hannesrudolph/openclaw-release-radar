@@ -1931,6 +1931,32 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     expect(failures, tag, (page.rows ?? []).every((row) => selectedSet.has(row.tier)),
       `issue evidence audit multi-tier filter must return only ${tierParam} rows`);
   }
+  const impactToProbe = Object.entries(firstPage.summaryByTier ?? {})
+    .flatMap(([, summary]) => Object.entries(summary?.byInstallImpactClass ?? {}))
+    .find(([, count]) => Number(count ?? 0) > 0)?.[0] ?? null;
+  if (impactToProbe) {
+    const page = await fetchJson(`${base}?limit=5&impact=${encodeURIComponent(impactToProbe)}`);
+    expect(failures, tag, page.filters?.impact === impactToProbe,
+      `issue evidence audit impact filter echo (${page.filters?.impact}) must equal ${impactToProbe}`);
+    expect(failures, tag, Array.isArray(page.filters?.impacts) && page.filters.impacts.length === 1 && page.filters.impacts[0] === impactToProbe,
+      `issue evidence audit impacts filter echo must contain only ${impactToProbe}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit impact filteredSummary count (${page.filteredSummary?.count}) must match total (${page.total})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.installImpactClass === impactToProbe),
+      `issue evidence audit impact filter must return only ${impactToProbe} rows`);
+  }
+  const stateToProbe = (firstPage.rows ?? []).find((row) => row.issue?.state === 'open' || row.issue?.state === 'closed')?.issue?.state ?? null;
+  if (stateToProbe) {
+    const page = await fetchJson(`${base}?limit=5&state=${encodeURIComponent(stateToProbe)}`);
+    expect(failures, tag, page.filters?.state === stateToProbe,
+      `issue evidence audit state filter echo (${page.filters?.state}) must equal ${stateToProbe}`);
+    expect(failures, tag, Array.isArray(page.filters?.states) && page.filters.states.length === 1 && page.filters.states[0] === stateToProbe,
+      `issue evidence audit states filter echo must contain only ${stateToProbe}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit state filteredSummary count (${page.filteredSummary?.count}) must match total (${page.total})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.issue?.state === stateToProbe),
+      `issue evidence audit state filter must return only ${stateToProbe} rows`);
+  }
 }
 
 async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {

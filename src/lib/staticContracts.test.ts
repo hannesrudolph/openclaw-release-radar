@@ -69,6 +69,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated issue-evidence rows/);
     assert.match(readme, /comma-separated `tier`/);
+    assert.match(readme, /`impact`/);
+    assert.match(readme, /`state`/);
     assert.match(readme, /summaryByTier/);
     assert.match(readme, /filteredSummary/);
     assert.match(html, /Source freshness/);

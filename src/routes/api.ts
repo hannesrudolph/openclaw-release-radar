@@ -33,10 +33,12 @@ import { bandFor, type InstallStatus } from '../lib/score';
 import { SCORE_HISTORY_CHART_LIMIT } from '../lib/historyWindow';
 import { PUBLIC_ISSUES_PER_RELEASE, publicIssueSummariesForRelease } from '../lib/publicIssueSummary';
 import {
+  RELEASE_ISSUE_EVIDENCE_IMPACT_CLASSES,
   RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
   RELEASE_ISSUE_EVIDENCE_TIERS,
   releaseIssueEvidenceRows,
   summarizeIssueEvidenceRows,
+  type ReleaseIssueEvidenceImpactClass,
   type ReleaseIssueEvidenceTier,
 } from '../lib/releaseIssueEvidence';
 
@@ -287,14 +289,37 @@ function parsePrFilter(raw: unknown): { repo: string | null; number: number } | 
 }
 
 function parseIssueEvidenceTierFilter(raw: unknown): ReleaseIssueEvidenceTier[] | null {
-  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
-  const tiers = [...new Set(values
-    .flatMap((value) => String(value).split(','))
-    .map((value) => value.trim())
-    .filter(Boolean))];
+  const tiers = parseCommaList(raw);
   if (!tiers.length) return null;
   if (tiers.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) return [];
   return tiers as ReleaseIssueEvidenceTier[];
+}
+
+function parseIssueEvidenceImpactFilter(raw: unknown): ReleaseIssueEvidenceImpactClass[] | null {
+  const impacts = parseCommaList(raw);
+  if (!impacts.length) return null;
+  if (impacts.some((impact) => !(RELEASE_ISSUE_EVIDENCE_IMPACT_CLASSES as readonly string[]).includes(impact))) return [];
+  return impacts as ReleaseIssueEvidenceImpactClass[];
+}
+
+function parseIssueEvidenceStateFilter(raw: unknown): Array<'open' | 'closed' | 'other'> | null {
+  const states = parseCommaList(raw);
+  if (!states.length) return null;
+  if (states.some((state) => !['open', 'closed', 'other'].includes(state))) return [];
+  return states as Array<'open' | 'closed' | 'other'>;
+}
+
+function parseCommaList(raw: unknown): string[] {
+  const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
+  return [...new Set(values
+    .flatMap((value) => String(value).split(','))
+    .map((value) => value.trim())
+    .filter(Boolean))];
+}
+
+function issueEvidenceState(row: { issue?: { state?: unknown; missing?: unknown } }): 'open' | 'closed' | 'other' {
+  const state = row.issue?.state;
+  return state === 'open' || state === 'closed' ? state : 'other';
 }
 
 function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
@@ -598,6 +623,16 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(400).json({ error: 'invalid tier', tier: req.query.tier });
     return;
   }
+  const impactFilter = parseIssueEvidenceImpactFilter(req.query.impact);
+  if (impactFilter && impactFilter.length === 0) {
+    res.status(400).json({ error: 'invalid impact', impact: req.query.impact });
+    return;
+  }
+  const stateFilter = parseIssueEvidenceStateFilter(req.query.state);
+  if (stateFilter && stateFilter.length === 0) {
+    res.status(400).json({ error: 'invalid state', state: req.query.state });
+    return;
+  }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
   const evidence = releaseIssueEvidenceRows(tag);
@@ -606,7 +641,12 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     return;
   }
   const tierSet = tierFilter ? new Set(tierFilter) : null;
-  const allRows = evidence.rows.filter((row) => !tierSet || tierSet.has(row.tier));
+  const impactSet = impactFilter ? new Set(impactFilter) : null;
+  const stateSet = stateFilter ? new Set(stateFilter) : null;
+  const allRows = evidence.rows
+    .filter((row) => !tierSet || tierSet.has(row.tier))
+    .filter((row) => !impactSet || impactSet.has(row.installImpactClass as ReleaseIssueEvidenceImpactClass))
+    .filter((row) => !stateSet || stateSet.has(issueEvidenceState(row)));
   const pageRows = allRows.slice(cursor, cursor + limit);
   const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
@@ -616,6 +656,10 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     filters: {
       tier: tierFilter?.length === 1 ? tierFilter[0] : null,
       tiers: tierFilter ?? null,
+      impact: impactFilter?.length === 1 ? impactFilter[0] : null,
+      impacts: impactFilter ?? null,
+      state: stateFilter?.length === 1 ? stateFilter[0] : null,
+      states: stateFilter ?? null,
     },
     countsByTier: evidence.countsByTier,
     summaryByTier: evidence.summaryByTier,

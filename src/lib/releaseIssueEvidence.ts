@@ -38,6 +38,16 @@ export const RELEASE_ISSUE_EVIDENCE_TIERS = [
 
 export type ReleaseIssueEvidenceTier = (typeof RELEASE_ISSUE_EVIDENCE_TIERS)[number];
 
+export const RELEASE_ISSUE_EVIDENCE_IMPACT_CLASSES = [
+  'security',
+  'provider',
+  'message_delivery',
+  'state_data',
+  'general',
+] as const;
+
+export type ReleaseIssueEvidenceImpactClass = (typeof RELEASE_ISSUE_EVIDENCE_IMPACT_CLASSES)[number];
+
 export const RELEASE_ISSUE_EVIDENCE_TIER_INFO: Record<ReleaseIssueEvidenceTier, {
   label: string;
   description: string;
