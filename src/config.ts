@@ -56,6 +56,9 @@ export const config = {
     classifyConcurrency: intInRange('CLASSIFY_CONCURRENCY', 5, 1, 50),
     githubPageDelayMs: intInRange('GITHUB_GRAPHQL_PAGE_DELAY_MS', 0, 0, 60_000),
   },
+  comparison: {
+    apiEnabled: bool('COMPARISON_API_ENABLED', false),
+  },
   limits: {
     releases: num('RELEASES_LIMIT', 10),
   },

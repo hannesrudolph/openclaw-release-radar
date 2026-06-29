@@ -488,6 +488,19 @@ describe('verifyReleaseAudit', () => {
     assert.deepEqual(result.rows, [{ tag: 'v1', closed: 1, verified: 1, unverified: 0, proof: 1, counted: 1, notCounted: 0 }]);
   });
 
+  it('allows the internal comparison endpoint to be disabled', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        if (url.endsWith('/api/comparison')) throw new Error(`${url} returned 404`);
+        return fetchJson(url);
+      },
+    });
+    assert.deepEqual(result.failures, []);
+  });
+
   it('fails when data freshness sourceFetchedAtMax is not the max source timestamp', async () => {
     const result = await verifyReleaseAudit({
       reader: reader(),

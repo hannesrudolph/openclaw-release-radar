@@ -54,6 +54,7 @@ REFRESH_MINUTES=0
 RELEASES_LIMIT=10
 FULL_ISSUE_BACKFILL=false
 MAX_ISSUE_PAGES=500
+COMPARISON_API_ENABLED=false
 ```
 
 Secrets can live in your shell/global environment instead of `.env`:
@@ -106,7 +107,7 @@ During model calibration, you can capture an external rendered UI snapshot as a 
 npm run scrape:upstream
 ```
 
-The snapshot is stored separately from local model data. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores.
+The snapshot is stored separately from local model data. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores. `/api/comparison` is disabled unless `COMPARISON_API_ENABLED=true`.
 
 The older public JSON snapshot importer is still available as a one-off utility:
 

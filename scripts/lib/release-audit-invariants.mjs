@@ -1451,11 +1451,13 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     expect(failures, release.tag ?? 'api/public', release.schemaVersion === publicReleaseSchemaVersion,
       `public release schemaVersion must be ${publicReleaseSchemaVersion}, got ${JSON.stringify(release.schemaVersion)}`);
   }
-  const comparisonPayload = await fetchJson(`${apiBase}/api/comparison`);
-  expect(failures, 'api/comparison', comparisonPayload.schemaVersion === comparisonPayloadSchemaVersion,
-    `comparison schemaVersion must be ${comparisonPayloadSchemaVersion}, got ${JSON.stringify(comparisonPayload.schemaVersion)}`);
-  verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
-  const comparisonByTag = new Map((comparisonPayload.releases ?? []).map((release) => [release.tag, release]));
+  const comparisonPayload = await fetchOptionalComparisonPayload({ apiBase, fetchJson, failures });
+  if (comparisonPayload) {
+    expect(failures, 'api/comparison', comparisonPayload.schemaVersion === comparisonPayloadSchemaVersion,
+      `comparison schemaVersion must be ${comparisonPayloadSchemaVersion}, got ${JSON.stringify(comparisonPayload.schemaVersion)}`);
+    verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
+  }
+  const comparisonByTag = new Map((comparisonPayload?.releases ?? []).map((release) => [release.tag, release]));
 
   for (const release of releases) {
     const releaseApi = releaseApiByTag.get(release.tag);
@@ -1536,15 +1538,17 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     }
 
     const comparison = comparisonByTag.get(release.tag);
-    expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
-      'comparison payload must include local, upstream, and delta objects');
-    if (comparison?.upstream) {
-      expect(failures, release.tag, comparison.upstream.schemaVersion === comparisonUpstreamSchemaVersion,
-        `comparison upstream schemaVersion (${comparison.upstream.schemaVersion}) must equal ${comparisonUpstreamSchemaVersion}`);
-    }
-    if (comparison?.delta) {
-      expect(failures, release.tag, comparison.delta.schemaVersion === comparisonDeltaSchemaVersion,
-        `comparison delta schemaVersion (${comparison.delta.schemaVersion}) must equal ${comparisonDeltaSchemaVersion}`);
+    if (comparisonPayload) {
+      expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
+        'comparison payload must include local, upstream, and delta objects');
+      if (comparison?.upstream) {
+        expect(failures, release.tag, comparison.upstream.schemaVersion === comparisonUpstreamSchemaVersion,
+          `comparison upstream schemaVersion (${comparison.upstream.schemaVersion}) must equal ${comparisonUpstreamSchemaVersion}`);
+      }
+      if (comparison?.delta) {
+        expect(failures, release.tag, comparison.delta.schemaVersion === comparisonDeltaSchemaVersion,
+          `comparison delta schemaVersion (${comparison.delta.schemaVersion}) must equal ${comparisonDeltaSchemaVersion}`);
+      }
     }
 
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -1699,25 +1703,27 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         tag: release.tag,
       });
 
-      const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
-      const comparisonProof = comparisonFix?.closureProof;
-      const comparisonCredit = comparisonFix?.releaseFixCredit;
-      expect(failures, release.tag, !!comparisonProof && !!comparisonCredit,
-        'comparison local gateEvidence must expose closureProof and releaseFixCredit when review does');
-      expect(failures, release.tag, comparisonCredit?.countedClosedCount === credit.countedClosedCount,
-        'comparison countedClosedCount must match review countedClosedCount');
-      expect(failures, release.tag, comparisonCredit?.notCountedClosedCount === credit.notCountedClosedCount,
-        'comparison notCountedClosedCount must match review notCountedClosedCount');
-      expect(failures, release.tag, comparisonProof?.creditedCount === proof.creditedCount,
-        'comparison closureProof creditedCount must match review');
-      expect(failures, release.tag, comparisonProof?.notCreditedCount === proof.notCreditedCount,
-        'comparison closureProof notCreditedCount must match review');
-      expectJsonEqual(failures, release.tag, 'comparison closureProof byRiskDisposition must match review',
-        comparisonProof?.byRiskDisposition, proof.byRiskDisposition);
-      expectJsonEqual(failures, release.tag, 'comparison closureProof riskSummary must match review',
-        comparisonProof?.riskSummary, proof.riskSummary);
-      expectJsonEqual(failures, release.tag, 'comparison closureProof examplesByStatus must match review',
-        comparisonProof?.examplesByStatus, proof.examplesByStatus);
+      if (comparison?.local) {
+        const comparisonFix = comparison.local.gateEvidence?.fixProvenance;
+        const comparisonProof = comparisonFix?.closureProof;
+        const comparisonCredit = comparisonFix?.releaseFixCredit;
+        expect(failures, release.tag, !!comparisonProof && !!comparisonCredit,
+          'comparison local gateEvidence must expose closureProof and releaseFixCredit when review does');
+        expect(failures, release.tag, comparisonCredit?.countedClosedCount === credit.countedClosedCount,
+          'comparison countedClosedCount must match review countedClosedCount');
+        expect(failures, release.tag, comparisonCredit?.notCountedClosedCount === credit.notCountedClosedCount,
+          'comparison notCountedClosedCount must match review notCountedClosedCount');
+        expect(failures, release.tag, comparisonProof?.creditedCount === proof.creditedCount,
+          'comparison closureProof creditedCount must match review');
+        expect(failures, release.tag, comparisonProof?.notCreditedCount === proof.notCreditedCount,
+          'comparison closureProof notCreditedCount must match review');
+        expectJsonEqual(failures, release.tag, 'comparison closureProof byRiskDisposition must match review',
+          comparisonProof?.byRiskDisposition, proof.byRiskDisposition);
+        expectJsonEqual(failures, release.tag, 'comparison closureProof riskSummary must match review',
+          comparisonProof?.riskSummary, proof.riskSummary);
+        expectJsonEqual(failures, release.tag, 'comparison closureProof examplesByStatus must match review',
+          comparisonProof?.examplesByStatus, proof.examplesByStatus);
+      }
     }
   }
 }
@@ -1892,6 +1898,17 @@ async function defaultFetchJson(url) {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`${url} returned ${res.status}`);
   return res.json();
+}
+
+async function fetchOptionalComparisonPayload({ apiBase, fetchJson, failures }) {
+  try {
+    return await fetchJson(`${apiBase}/api/comparison`);
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    if (/\/api\/comparison returned 404\b/.test(message)) return null;
+    failures.push(`api/comparison fetch failed: ${message}`);
+    return null;
+  }
 }
 
 function verifyScoreAuditSummary({ failures, tag, summary }) {

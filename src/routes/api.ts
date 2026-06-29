@@ -484,6 +484,10 @@ api.get('/releases/history', (_req, res) => {
 });
 
 api.get('/comparison', (_req, res) => {
+  if (!config.comparison.apiEnabled) {
+    res.status(404).json({ error: 'comparison api disabled' });
+    return;
+  }
   const snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
   const upstreamByTag = new Map(comparisonReleases().map((row) => [String(row.tag), row]));
   const releases = listReleasesDb(config.limits.releases).map((release) => {
@@ -554,6 +558,10 @@ api.get('/releases/:tag/review', (req, res) => {
     },
   };
   if (req.query.includeComparison === '1') {
+    if (!config.comparison.apiEnabled) {
+      res.status(404).json({ error: 'comparison api disabled', tag });
+      return;
+    }
     payload.snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
     payload.upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   }
