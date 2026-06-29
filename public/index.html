@@ -1821,6 +1821,39 @@ function scoreDetailIssueRefsHtml(issueRefs) {
   return links + (proofs ? `<div class="score-explain__proofs">${proofs}</div>` : '');
 }
 
+function evidenceLink(url, label) {
+  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return '';
+  return `<a class="score-explain__ref" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+}
+
+function scoreEvidenceLinksHtml(releaseChecks, artifact) {
+  const links = [];
+  const contexts = Array.isArray(releaseChecks?.contexts) ? releaseChecks.contexts : [];
+  for (const check of contexts) {
+    const label = check?.name
+      ? `${check.name}${check.conclusion ? ` ${String(check.conclusion).toLowerCase()}` : ''}`
+      : null;
+    const html = label ? evidenceLink(check.url, label) : '';
+    if (html) links.push(html);
+  }
+  if (artifact) {
+    const artifactLinks = [
+      ['npm package', artifact.npmPackageUrl],
+      ['release tarball', artifact.releaseTarballUrl],
+      ['registry tarball', artifact.registryTarballUrl],
+      ['evidence report', artifact.ciReportUrl],
+      ['validation run', artifact.fullReleaseValidationUrl],
+    ];
+    for (const [label, url] of artifactLinks) {
+      const html = evidenceLink(url, label);
+      if (html) links.push(html);
+    }
+  }
+  return links.length
+    ? `<div class="score-explain__refs">${links.join('')}</div>`
+    : '';
+}
+
 function scoreLedgerHtml(ledger) {
   if (!ledger || typeof ledger !== 'object' || !Array.isArray(ledger.rows)) return '';
   const rows = ledger.rows
@@ -2295,6 +2328,7 @@ function scoreReviewHtml(r) {
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.releaseValidationVerified ? ' · validation run verified' : ''}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}${artifact.releaseValidationMismatch ? ` · ${esc(artifact.releaseValidationMismatch)}` : ''}</span></div>` : '')
     + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
     + '</div>'
+    + scoreEvidenceLinksHtml(releaseChecks, artifact)
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
     + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/reachability" target="_blank" rel="noopener">Open PR reachability rows</a></div>`

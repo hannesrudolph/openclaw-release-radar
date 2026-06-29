@@ -17,6 +17,8 @@ let explanationText = null;
 let explanationIssueRef = null;
 let explanationMetricText = null;
 let explanationProofText = null;
+let expectedCheckLinkText = null;
+let expectedArtifactLinkText = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -40,6 +42,11 @@ for (const release of releases) {
     const metric = closureDetail?.metrics?.unresolvedForReleaseCount;
     explanationMetricText = Number.isFinite(metric) ? `unresolved: ${metric}` : null;
     explanationProofText = explanationIssueRef?.proof?.riskDispositionLabel ?? explanationIssueRef?.proof?.statusLabel ?? null;
+    const checkContext = (review.local?.gateEvidence?.releaseChecks?.contexts ?? [])
+      .find((context) => context?.url && context?.name);
+    expectedCheckLinkText = checkContext?.name ?? null;
+    const artifact = review.local?.gateEvidence?.artifactVerification;
+    expectedArtifactLinkText = artifact?.npmPackageUrl ? 'npm package' : artifact?.ciReportUrl ? 'evidence report' : null;
     break;
   }
 }
@@ -49,6 +56,8 @@ if (!closureRiskText) throw new Error(`No closure risk summary available for ${f
 if (!explanationIssueRef?.number || !explanationIssueRef?.url) throw new Error(`No explanation issue ref available for ${fixCreditTag}`);
 if (!explanationMetricText) throw new Error(`No explanation metric available for ${fixCreditTag}`);
 if (!explanationProofText) throw new Error(`No explanation proof context available for ${fixCreditTag}`);
+if (!expectedCheckLinkText) throw new Error(`No release check link available for ${fixCreditTag}`);
+if (!expectedArtifactLinkText) throw new Error(`No artifact link available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -94,6 +103,8 @@ try {
   await fixPanel.getByText(fixCreditText).waitFor();
   await fixPanel.locator('.score-review__label').filter({ hasText: 'Closure risk' }).first().waitFor();
   await fixPanel.getByText(closureRiskText).waitFor();
+  await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedCheckLinkText }).first().waitFor();
+  await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedArtifactLinkText }).first().waitFor();
   const fixPanelText = await fixPanel.innerText();
   if (!fixPanelText.includes(explanationText)) {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
