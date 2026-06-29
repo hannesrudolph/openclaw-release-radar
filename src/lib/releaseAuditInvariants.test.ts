@@ -332,6 +332,44 @@ describe('verifyReleaseAudit', () => {
           }],
         };
       }
+      if (url.includes('/api/releases/v1/review/closure-proofs')) {
+        const parsed = new URL(url);
+        const row = {
+          issueNumber: 1,
+          title: 'issue 1',
+          url: 'https://github.com/x/y/issues/1',
+          closedAt: '2026-01-01T12:00:00Z',
+          status: 'fixed_in_release',
+          summary: 'Fixed in release.',
+          riskDisposition: 'credited_release_fix',
+          riskWeight: 0,
+          checkedAt: proofCheckedAt,
+          labels: [],
+          classification: {},
+          classificationDiff: {},
+          evidence: {},
+        };
+        const rows = (!parsed.searchParams.get('status') || parsed.searchParams.get('status') === row.status) &&
+          (!parsed.searchParams.get('riskDisposition') || parsed.searchParams.get('riskDisposition') === row.riskDisposition)
+          ? [row]
+          : [];
+        const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
+        const limit = Number(parsed.searchParams.get('limit') ?? 50);
+        const pageRows = rows.slice(cursor, cursor + limit);
+        return {
+          schemaVersion: 1,
+          tag: 'v1',
+          filters: {
+            status: parsed.searchParams.get('status'),
+            riskDisposition: parsed.searchParams.get('riskDisposition'),
+          },
+          total: rows.length,
+          limit,
+          cursor,
+          nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
+          rows: pageRows,
+        };
+      }
       if (url.endsWith('/api/releases/v1/review')) {
         return {
           snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },

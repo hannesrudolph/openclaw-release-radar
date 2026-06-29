@@ -57,6 +57,7 @@ const releaseHistoryRowSchemaVersion = 1;
 const publicReleaseSchemaVersion = 1;
 const gateEvidenceSchemaVersion = 1;
 const closureProofSchemaVersion = 1;
+const closureProofAuditSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
 const issueEvidenceSchemaVersion = 1;
 const labelTimelineSchemaVersion = 1;
@@ -1599,6 +1600,13 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
           Number(proof.examples[i - 1].riskWeight ?? 0) >= Number(proof.examples[i].riskWeight ?? 0),
           'closure proof examples must be sorted by descending riskWeight');
       }
+      await verifyClosureProofAuditEndpoint({
+        apiBase,
+        fetchJson,
+        failures,
+        proof,
+        tag: release.tag,
+      });
 
       const comparisonFix = comparison?.local?.gateEvidence?.fixProvenance;
       const comparisonProof = comparisonFix?.closureProof;
@@ -1635,6 +1643,67 @@ function verifyClosureProofExamplesByStatus({ failures, tag, proof, label }) {
       expect(failures, tag, example.status === status,
         `${label} examplesByStatus ${status} contains example with status ${example.status}`);
     }
+  }
+}
+
+async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {
+  const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/closure-proofs`;
+  const firstPage = await fetchJson(`${base}?limit=5`);
+  expect(failures, tag, firstPage.schemaVersion === closureProofAuditSchemaVersion,
+    `closure proof audit schemaVersion must be ${closureProofAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  expect(failures, tag, firstPage.tag === tag,
+    `closure proof audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.total === proof.creditedCount + proof.notCreditedCount,
+    `closure proof audit total (${firstPage.total}) must match analyzed proof count (${proof.creditedCount + proof.notCreditedCount})`);
+  expect(failures, tag, firstPage.limit === 5, `closure proof audit limit must be 5, got ${firstPage.limit}`);
+  expect(failures, tag, firstPage.cursor === 0, `closure proof audit cursor must be 0, got ${firstPage.cursor}`);
+  expect(failures, tag, Array.isArray(firstPage.rows), 'closure proof audit rows must be an array');
+  expect(failures, tag, firstPage.rows.length <= 5, `closure proof audit rows length must respect limit, got ${firstPage.rows.length}`);
+  if (firstPage.total > firstPage.rows.length) {
+    expect(failures, tag, Number.isInteger(firstPage.nextCursor) && firstPage.nextCursor === firstPage.rows.length,
+      `closure proof audit nextCursor (${firstPage.nextCursor}) must advance by returned rows (${firstPage.rows.length})`);
+    const nextPage = await fetchJson(`${base}?limit=5&cursor=${firstPage.nextCursor}`);
+    expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
+      `closure proof audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
+    if (firstPage.rows.length > 0 && nextPage.rows.length > 0) {
+      expect(failures, tag, firstPage.rows[0].issueNumber !== nextPage.rows[0].issueNumber,
+        'closure proof audit pagination must not repeat first row on next page');
+    }
+  } else {
+    expect(failures, tag, firstPage.nextCursor == null,
+      `closure proof audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
+  }
+  for (const row of firstPage.rows ?? []) {
+    expect(failures, tag, Number.isInteger(row.issueNumber) && row.issueNumber > 0,
+      `closure proof audit row issueNumber must be positive integer, got ${row.issueNumber}`);
+    expect(failures, tag, typeof row.status === 'string' && knownProofStatuses.has(row.status),
+      `closure proof audit row status must be known, got ${row.status}`);
+    expect(failures, tag, typeof row.summary === 'string' && row.summary.length > 0,
+      `closure proof audit row #${row.issueNumber} summary must be present`);
+    expect(failures, tag, typeof row.riskDisposition === 'string' && knownRiskDispositions.has(row.riskDisposition),
+      `closure proof audit row #${row.issueNumber} riskDisposition must be known, got ${row.riskDisposition}`);
+    expect(failures, tag, typeof row.riskWeight === 'number',
+      `closure proof audit row #${row.issueNumber} riskWeight must be numeric`);
+    expect(failures, tag, isObject(row.evidence),
+      `closure proof audit row #${row.issueNumber} evidence must be present`);
+  }
+
+  const [status, statusCount] = Object.entries(proof.byStatus ?? {}).find(([, count]) => Number(count ?? 0) > 0) ?? [];
+  if (status) {
+    const page = await fetchJson(`${base}?limit=3&status=${encodeURIComponent(status)}`);
+    expect(failures, tag, page.total === Number(statusCount ?? 0),
+      `closure proof audit status filter total (${page.total}) must match ${status} count (${statusCount})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.status === status),
+      `closure proof audit status filter must return only ${status} rows`);
+  }
+
+  const [disposition, dispositionCount] = Object.entries(proof.byRiskDisposition ?? {}).find(([, count]) => Number(count ?? 0) > 0) ?? [];
+  if (disposition) {
+    const page = await fetchJson(`${base}?limit=3&riskDisposition=${encodeURIComponent(disposition)}`);
+    expect(failures, tag, page.total === Number(dispositionCount ?? 0),
+      `closure proof audit riskDisposition filter total (${page.total}) must match ${disposition} count (${dispositionCount})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.riskDisposition === disposition),
+      `closure proof audit riskDisposition filter must return only ${disposition} rows`);
   }
 }
 

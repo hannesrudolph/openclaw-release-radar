@@ -2297,7 +2297,7 @@ function scoreReviewHtml(r) {
     + '</div>'
     + compHtml
     + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-repro and static findings remain capped source risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
-    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a></div>`
+    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a></div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)
     + '</div>';

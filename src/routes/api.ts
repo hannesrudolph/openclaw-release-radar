@@ -22,7 +22,11 @@ import {
   releaseScoreAuditFreshness,
   type AdvisoryRow,
 } from '../lib/db';
-import { enrichGateEvidenceWithClosureProof } from '../lib/closureProofPayload';
+import {
+  closureProofAuditRows,
+  enrichGateEvidenceWithClosureProof,
+  CLOSURE_RISK_DISPOSITIONS,
+} from '../lib/closureProofPayload';
 import { releaseLabelCutoff } from '../lib/labelCutoff';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, isFeltSignal, type InstallStatus } from '../lib/score';
@@ -40,6 +44,9 @@ export const api = Router();
 // it is) and matches what the decayed score actually weighs. NOTE: this is display
 // only — the skip-cve STATUS still trips on ANY medium+ match (security ≠ decay).
 const CVE_BADGE_WINDOW = 0;
+const CLOSURE_PROOF_AUDIT_SCHEMA_VERSION = 1;
+const CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT = 50;
+const CLOSURE_PROOF_AUDIT_MAX_LIMIT = 100;
 
 // Cross-reference each release tag against cached advisories. `affected` = CVEs in
 // this version's own window (see CVE_BADGE_WINDOW); `patched` = CVEs whose fix first
@@ -97,6 +104,163 @@ function parseJson<T>(json: string | null | undefined, fallback: T): T {
   } catch {
     return fallback;
   }
+}
+
+function boundedInteger(
+  raw: unknown,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : fallback;
+  if (!Number.isFinite(value)) return fallback;
+  return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function closureProofAuditResponseRow(row: ReturnType<typeof closureProofAuditRows>[number]) {
+  return {
+    issueNumber: row.number,
+    title: row.title,
+    url: row.url,
+    closedAt: row.closedAt,
+    status: row.status,
+    summary: row.summary,
+    riskDisposition: row.riskDisposition,
+    riskWeight: row.riskWeight,
+    checkedAt: row.checkedAt,
+    labels: row.labels,
+    classification: row.classification,
+    classificationDiff: row.classificationDiff,
+    evidence: compactClosureProofEvidence(row.evidence),
+  };
+}
+
+function compactClosureProofEvidence(evidence: unknown) {
+  const raw = evidence && typeof evidence === 'object' ? evidence as Record<string, unknown> : {};
+  return {
+    stateReasons: arrayOf(raw.stateReasons, compactScalar),
+    closureActors: arrayOf(raw.closureActors, compactScalar),
+    closureContextCommentCount: raw.closureContextCommentCount ?? null,
+    hasClosingLink: raw.hasClosingLink === true,
+    hasMergedClosingPr: raw.hasMergedClosingPr === true,
+    hasReachableClosingPr: raw.hasReachableClosingPr === true,
+    hasNotReachableClosingPr: raw.hasNotReachableClosingPr === true,
+    hasReachableFixCommit: raw.hasReachableFixCommit === true,
+    hasNotReachableFixCommit: raw.hasNotReachableFixCommit === true,
+    canonicalIssues: arrayOf(raw.canonicalIssues, compactScalar),
+    canonicalIssueDetails: arrayOf(raw.canonicalIssueDetails, compactIssueRef),
+    canonicalResolution: compactCanonicalResolution(raw.canonicalResolution),
+    closingPrs: arrayOf(raw.closingPrs, compactScalar),
+    linkedPrs: arrayOf(raw.linkedPrs, compactPrRef),
+    relatedPrContext: compactRelatedPrContext(raw.relatedPrContext),
+    reachableTrustedFixProofPrs: arrayOf(raw.reachableTrustedFixProofPrs, compactPrRef),
+    matchingComments: arrayOf(raw.matchingComments, compactCommentRef, 5),
+    nonActionableRationaleComments: arrayOf(raw.nonActionableRationaleComments, compactCommentRef, 5),
+    fixCommitProof: arrayOf(raw.fixCommitProof, compactCommitProof),
+    canonicalFixCommitProof: arrayOf(raw.canonicalFixCommitProof, compactCommitProof),
+    reachableFixCommits: arrayOf(raw.reachableFixCommits, compactScalar),
+    notReachableFixCommits: arrayOf(raw.notReachableFixCommits, compactScalar),
+  };
+}
+
+function compactRelatedPrContext(value: unknown) {
+  const raw = value && typeof value === 'object' ? value as Record<string, unknown> : {};
+  return {
+    externalClosing: arrayOf(raw.externalClosing, compactPrRef),
+    open: arrayOf(raw.open, compactPrRef),
+    closedUnmerged: arrayOf(raw.closedUnmerged, compactPrRef),
+    notReachable: arrayOf(raw.notReachable, compactPrRef),
+    reachable: arrayOf(raw.reachable, compactPrRef),
+    unknownReachability: arrayOf(raw.unknownReachability, compactPrRef),
+  };
+}
+
+function compactCanonicalResolution(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    path: arrayOf(raw.path, compactScalar),
+    terminalIssue: compactIssueRef(raw.terminalIssue),
+    terminalProof: raw.terminalProof && typeof raw.terminalProof === 'object'
+      ? {
+        status: (raw.terminalProof as Record<string, unknown>).status ?? null,
+        summary: (raw.terminalProof as Record<string, unknown>).summary ?? null,
+        crossRelease: (raw.terminalProof as Record<string, unknown>).crossRelease === true,
+        releaseTag: (raw.terminalProof as Record<string, unknown>).releaseTag ?? null,
+        timing: (raw.terminalProof as Record<string, unknown>).timing ?? null,
+      }
+      : null,
+    cycle: raw.cycle === true,
+    selfReference: raw.selfReference === true,
+  };
+}
+
+function arrayOf<T>(value: unknown, mapper: (item: unknown) => T | null, limit = 50): T[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, limit).map(mapper).filter((item): item is T => item != null);
+}
+
+function compactScalar(value: unknown): string | number | boolean | null {
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return value;
+  return null;
+}
+
+function compactIssueRef(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const number = Number(raw.number ?? raw.issueNumber);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return {
+    number,
+    title: typeof raw.title === 'string' ? raw.title : null,
+    url: typeof raw.url === 'string' ? raw.url : typeof raw.html_url === 'string' ? raw.html_url : null,
+    state: typeof raw.state === 'string' ? raw.state : null,
+  };
+}
+
+function compactPrRef(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  const number = Number(raw.number ?? raw.prNumber);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return {
+    number,
+    repositoryNameWithOwner: typeof raw.repositoryNameWithOwner === 'string' ? raw.repositoryNameWithOwner : null,
+    source: typeof raw.source === 'string' ? raw.source : null,
+    title: typeof raw.title === 'string' ? raw.title : null,
+    url: typeof raw.url === 'string' ? raw.url : null,
+    state: typeof raw.state === 'string' ? raw.state : null,
+    merged: raw.merged === 1 || raw.merged === true || typeof raw.mergedAt === 'string',
+    mergedAt: typeof raw.mergedAt === 'string' ? raw.mergedAt : null,
+    reachabilityStatus: typeof raw.reachabilityStatus === 'string' ? raw.reachabilityStatus : null,
+    reachabilityMethod: typeof raw.reachabilityMethod === 'string' ? raw.reachabilityMethod : null,
+    reachabilityEvidence: typeof raw.reachabilityEvidence === 'string' ? raw.reachabilityEvidence : null,
+    mergeCommitOid: typeof raw.mergeCommitOid === 'string' ? raw.mergeCommitOid : null,
+  };
+}
+
+function compactCommentRef(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    author: typeof raw.author === 'string' ? raw.author : null,
+    createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
+    updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
+    snippet: typeof raw.snippet === 'string' ? raw.snippet : null,
+  };
+}
+
+function compactCommitProof(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    commitOid: typeof raw.commitOid === 'string' ? raw.commitOid : null,
+    shortOid: typeof raw.shortOid === 'string' ? raw.shortOid : null,
+    status: typeof raw.status === 'string' ? raw.status : null,
+    source: typeof raw.source === 'string' ? raw.source : null,
+    evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
+    snippet: typeof raw.snippet === 'string' ? raw.snippet : null,
+  };
 }
 
 function normalizeComparison(row: Record<string, unknown> | undefined) {
@@ -358,6 +522,45 @@ api.get('/releases/:tag/review', (req, res) => {
     payload.upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   }
   res.json(payload);
+});
+
+api.get('/releases/:tag/review/closure-proofs', (req, res) => {
+  const tag = req.params.tag;
+  const release = getRelease(tag);
+  if (!release) {
+    res.status(404).json({ error: 'release not found', tag });
+    return;
+  }
+  const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
+    ? req.query.status.trim()
+    : null;
+  const riskDispositionFilter = typeof req.query.riskDisposition === 'string' && req.query.riskDisposition.trim()
+    ? req.query.riskDisposition.trim()
+    : null;
+  if (riskDispositionFilter && !(CLOSURE_RISK_DISPOSITIONS as readonly string[]).includes(riskDispositionFilter)) {
+    res.status(400).json({ error: 'invalid riskDisposition', riskDisposition: riskDispositionFilter });
+    return;
+  }
+  const limit = boundedInteger(req.query.limit, CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT, 1, CLOSURE_PROOF_AUDIT_MAX_LIMIT);
+  const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  const allRows = closureProofAuditRows(tag)
+    .filter((row) => !statusFilter || row.status === statusFilter)
+    .filter((row) => !riskDispositionFilter || row.riskDisposition === riskDispositionFilter);
+  const pageRows = allRows.slice(cursor, cursor + limit).map(closureProofAuditResponseRow);
+  const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
+  res.json({
+    schemaVersion: CLOSURE_PROOF_AUDIT_SCHEMA_VERSION,
+    tag,
+    filters: {
+      status: statusFilter,
+      riskDisposition: riskDispositionFilter,
+    },
+    total: allRows.length,
+    limit,
+    cursor,
+    nextCursor,
+    rows: pageRows,
+  });
 });
 
 // ── Public API ────────────────────────────────────────────────────────────────

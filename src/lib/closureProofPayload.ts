@@ -1,8 +1,10 @@
 import {
   closureProofExamples,
   closureProofRiskRows,
+  closureProofRows,
   closureProofSummary,
   getRelease,
+  type ClosureProofJoinedRow,
   type ClosureProofRiskRow,
   getReleaseScoreAudit,
   issueLabelEventCount,
@@ -74,40 +76,9 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
   const creditedCount = byStatus.fixed_in_release ?? 0;
   const analyzedClosedCount = creditedCount + notCreditedCount;
   const exampleCandidateLimit = Math.max(30, analyzedClosedCount);
-  const allExamples = closureProofExamples(tag, exampleCandidateLimit).map((row) => {
-    const classification = effectiveClosureClassification(row, labelCutoff);
-    const effectiveRiskRow = classification
-      ? {
-        status: row.status,
-        sentiment: classification.classification.sentiment,
-        severity: classification.classification.severity,
-        scope: classification.classification.scope,
-        functionality: classification.classification.functionality,
-        affected_users: classification.classification.affectedUsers,
-      }
-      : row;
-    return {
-      number: row.issue_number,
-      title: row.title,
-      url: row.html_url,
-      closedAt: row.closed_at,
-      status: row.status,
-      summary: row.summary,
-      sentiment: classification?.classification.sentiment ?? row.sentiment,
-      severity: classification?.classification.severity ?? row.severity,
-      scope: classification?.classification.scope ?? row.scope,
-      functionality: classification?.classification.functionality ?? row.functionality,
-      affectedUsers: classification?.classification.affectedUsers ?? row.affected_users,
-      checkedAt: row.checked_at,
-      labels: classification?.labels ?? parseJson<string[]>(row.labels, []),
-      rawClassification: classification?.rawClassification ?? null,
-      classification: classification?.classification ?? null,
-      classificationDiff: classification?.classificationDiff ?? {},
-      riskWeight: roundMetric(closureRiskWeightForRow(effectiveRiskRow)),
-      riskDisposition: closureRiskDisposition(row.status),
-      evidence: parseJson(row.evidence_json, {}),
-    };
-  }).sort(compareClosureProofExamples);
+  const allExamples = closureProofExamples(tag, exampleCandidateLimit)
+    .map((row) => closureProofAuditItemFromRow(row, labelCutoff))
+    .sort(compareClosureProofExamples);
   const neutralAuditExamples = allExamples
     .filter((example) => isNeutralAuditExample(example))
     .sort(compareNeutralAuditExamples)
@@ -146,6 +117,52 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     neutralAuditExamples,
     examplesByStatus,
     examples,
+  };
+}
+
+export function closureProofAuditRows(tag: string, labelCutoffOverride?: string | null) {
+  const release = getRelease(tag);
+  const audit = getReleaseScoreAudit(tag);
+  const labelCutoff = labelCutoffOverride !== undefined
+    ? labelCutoffOverride
+    : release ? releaseLabelCutoff(release, audit?.scored_at ?? null) : null;
+  return closureProofRows(tag)
+    .map((row) => closureProofAuditItemFromRow(row, labelCutoff))
+    .sort(compareClosureProofExamples);
+}
+
+function closureProofAuditItemFromRow(row: ClosureProofJoinedRow, labelCutoff: string | null) {
+  const classification = effectiveClosureClassification(row, labelCutoff);
+  const effectiveRiskRow = classification
+    ? {
+      status: row.status,
+      sentiment: classification.classification.sentiment,
+      severity: classification.classification.severity,
+      scope: classification.classification.scope,
+      functionality: classification.classification.functionality,
+      affected_users: classification.classification.affectedUsers,
+    }
+    : row;
+  return {
+    number: row.issue_number,
+    title: row.title,
+    url: row.html_url,
+    closedAt: row.closed_at,
+    status: row.status,
+    summary: row.summary,
+    sentiment: classification?.classification.sentiment ?? row.sentiment,
+    severity: classification?.classification.severity ?? row.severity,
+    scope: classification?.classification.scope ?? row.scope,
+    functionality: classification?.classification.functionality ?? row.functionality,
+    affectedUsers: classification?.classification.affectedUsers ?? row.affected_users,
+    checkedAt: row.checked_at,
+    labels: classification?.labels ?? parseJson<string[]>(row.labels, []),
+    rawClassification: classification?.rawClassification ?? null,
+    classification: classification?.classification ?? null,
+    classificationDiff: classification?.classificationDiff ?? {},
+    riskWeight: roundMetric(closureRiskWeightForRow(effectiveRiskRow)),
+    riskDisposition: closureRiskDisposition(row.status),
+    evidence: parseJson(row.evidence_json, {}),
   };
 }
 
