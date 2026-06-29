@@ -32,6 +32,12 @@ import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versio
 import { bandFor, type InstallStatus } from '../lib/score';
 import { SCORE_HISTORY_CHART_LIMIT } from '../lib/historyWindow';
 import { PUBLIC_ISSUES_PER_RELEASE, publicIssueSummariesForRelease } from '../lib/publicIssueSummary';
+import {
+  RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
+  RELEASE_ISSUE_EVIDENCE_TIERS,
+  releaseIssueEvidenceRows,
+  type ReleaseIssueEvidenceTier,
+} from '../lib/releaseIssueEvidence';
 
 export const api = Router();
 
@@ -47,6 +53,8 @@ const CVE_BADGE_WINDOW = 0;
 const CLOSURE_PROOF_AUDIT_SCHEMA_VERSION = 1;
 const CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT = 50;
 const CLOSURE_PROOF_AUDIT_MAX_LIMIT = 100;
+const ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT = 50;
+const ISSUE_EVIDENCE_AUDIT_MAX_LIMIT = 250;
 const PR_REACHABILITY_AUDIT_SCHEMA_VERSION = 1;
 const PR_REACHABILITY_AUDIT_DEFAULT_LIMIT = 100;
 const PR_REACHABILITY_AUDIT_MAX_LIMIT = 250;
@@ -564,6 +572,44 @@ api.get('/releases/:tag/review', (req, res) => {
     payload.upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
   }
   res.json(payload);
+});
+
+api.get('/releases/:tag/review/issues', (req, res) => {
+  const tag = req.params.tag;
+  const release = getRelease(tag);
+  if (!release) {
+    res.status(404).json({ error: 'release not found', tag });
+    return;
+  }
+  const tierFilter = typeof req.query.tier === 'string' && req.query.tier.trim()
+    ? req.query.tier.trim()
+    : null;
+  if (tierFilter && !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tierFilter)) {
+    res.status(400).json({ error: 'invalid tier', tier: tierFilter });
+    return;
+  }
+  const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
+  const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  const evidence = releaseIssueEvidenceRows(tag);
+  if (!evidence) {
+    res.status(404).json({ error: 'release evidence not found', tag });
+    return;
+  }
+  const allRows = evidence.rows.filter((row) => !tierFilter || row.tier === tierFilter);
+  const pageRows = allRows.slice(cursor, cursor + limit);
+  const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
+  res.json({
+    schemaVersion: RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
+    tag,
+    labelCutoffAt: evidence.labelCutoffAt,
+    filters: { tier: tierFilter as ReleaseIssueEvidenceTier | null },
+    countsByTier: evidence.countsByTier,
+    total: allRows.length,
+    limit,
+    cursor,
+    nextCursor,
+    rows: pageRows,
+  });
 });
 
 api.get('/releases/:tag/review/closure-proofs', (req, res) => {

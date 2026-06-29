@@ -412,6 +412,47 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       rows: pageRows,
     };
   };
+  const issueEvidencePage = (url: string) => {
+    const parsed = new URL(url);
+    const row = {
+      tier: 'verifiedFixed',
+      issue: {
+        number: 1,
+        title: 'issue 1',
+        url: 'https://github.com/x/y/issues/1',
+        state: 'closed',
+        labels: [],
+        rawClassification: {},
+        classification: {},
+        classificationDiff: {},
+      },
+    };
+    const tierFilter = parsed.searchParams.get('tier');
+    const rows = !tierFilter || tierFilter === row.tier ? [row] : [];
+    const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
+    const limit = Number(parsed.searchParams.get('limit') ?? 50);
+    const pageRows = rows.slice(cursor, cursor + limit);
+    return {
+      schemaVersion: 1,
+      tag: 'v1',
+      labelCutoffAt: null,
+      filters: { tier: tierFilter },
+      countsByTier: {
+        verifiedDebt: 0,
+        carryoverDebt: 0,
+        staleDebt: 0,
+        openedFeltSerious: 0,
+        verifiedFixed: 1,
+        unverifiedClosed: 0,
+        unclassifiedIssues: 0,
+      },
+      total: rows.length,
+      limit,
+      cursor,
+      nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
+      rows: pageRows,
+    };
+  };
   return async (url: string) => {
     if (url.endsWith('/api/status')) {
       return { schemaVersion: 1, refreshing: false, lastError: null, lastRefreshAt: null, processLastRefreshAt: null, lastScoredAt: auditScoredAt, dataFreshness };
@@ -480,6 +521,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     }
     if (url.includes('/api/releases/v1/review/closure-proofs')) return closurePage(url);
     if (url.includes('/api/releases/v1/review/reachability')) return reachabilityPage(url);
+    if (url.includes('/api/releases/v1/review/issues')) return issueEvidencePage(url);
     if (url.endsWith('/api/releases/v1/review')) {
       return {
         snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },

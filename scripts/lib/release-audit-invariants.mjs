@@ -6,6 +6,10 @@ import {
 } from '../../src/lib/labelOverrides.ts';
 import { publicIssueSummariesForRelease } from '../../src/lib/publicIssueSummary.ts';
 import {
+  RELEASE_ISSUE_EVIDENCE_TIERS,
+  RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
+} from '../../src/lib/releaseIssueEvidence.ts';
+import {
   CLOSURE_PROOF_STATUSES,
   CLOSURE_RISK_DISPOSITIONS,
   CLOSURE_RISK_DISPOSITION_BY_STATUS,
@@ -61,11 +65,13 @@ const closureProofSchemaVersion = 1;
 const closureProofAuditSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
 const issueEvidenceSchemaVersion = 1;
+const issueEvidenceAuditSchemaVersion = RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION;
 const labelTimelineSchemaVersion = 1;
 const releaseChecksSchemaVersion = 1;
 const artifactVerificationSchemaVersion = 1;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
+const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationCodes = new Set([
   'field_visible_reports_opened',
   'source_carryover_risk',
@@ -1608,6 +1614,14 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       `review gateEvidence schemaVersion (${review.local?.gateEvidence?.schemaVersion}) must equal ${gateEvidenceSchemaVersion}`);
     expect(failures, release.tag, review.local?.issueEvidence?.schemaVersion === issueEvidenceSchemaVersion,
       `review issueEvidence schemaVersion (${review.local?.issueEvidence?.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
+    await verifyIssueEvidenceAuditEndpoint({
+      apiBase,
+      fetchJson,
+      failures,
+      reader,
+      tag: release.tag,
+      issueEvidence: review.local?.issueEvidence,
+    });
     verifyReleaseChecksGate({
       failures,
       tag: release.tag,
@@ -1766,6 +1780,112 @@ function verifyClosureProofExamplesByStatus({ failures, tag, proof, label }) {
       expect(failures, tag, example.status === status,
         `${label} examplesByStatus ${status} contains example with status ${example.status}`);
     }
+  }
+}
+
+async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, reader, tag, issueEvidence }) {
+  const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/issues`;
+  const firstPage = await fetchJson(`${base}?limit=11`);
+  expect(failures, tag, firstPage.schemaVersion === issueEvidenceAuditSchemaVersion,
+    `issue evidence audit schemaVersion must be ${issueEvidenceAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  expect(failures, tag, firstPage.tag === tag,
+    `issue evidence audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.limit === 11,
+    `issue evidence audit limit must be 11, got ${firstPage.limit}`);
+  expect(failures, tag, firstPage.cursor === 0,
+    `issue evidence audit cursor must be 0, got ${firstPage.cursor}`);
+  expect(failures, tag, isObject(firstPage.countsByTier),
+    'issue evidence audit countsByTier must be an object');
+  for (const [tier, count] of Object.entries(firstPage.countsByTier ?? {})) {
+    expect(failures, tag, knownIssueEvidenceTiers.has(tier),
+      `issue evidence audit countsByTier contains unknown tier ${tier}`);
+    expect(failures, tag, Number.isInteger(count) && count >= 0,
+      `issue evidence audit count for ${tier} must be a non-negative integer`);
+  }
+  const countSum = Object.values(firstPage.countsByTier ?? {}).reduce((sum, count) => sum + Number(count ?? 0), 0);
+  expect(failures, tag, firstPage.total === countSum,
+    `issue evidence audit total (${firstPage.total}) must equal countsByTier sum (${countSum})`);
+  expect(failures, tag, Array.isArray(firstPage.rows),
+    'issue evidence audit rows must be an array');
+  expect(failures, tag, firstPage.rows.length <= 11,
+    `issue evidence audit rows length must respect limit, got ${firstPage.rows.length}`);
+  if (firstPage.total > firstPage.rows.length) {
+    expect(failures, tag, Number.isInteger(firstPage.nextCursor) && firstPage.nextCursor === firstPage.rows.length,
+      `issue evidence audit nextCursor (${firstPage.nextCursor}) must advance by returned rows (${firstPage.rows.length})`);
+    const nextPage = await fetchJson(`${base}?limit=11&cursor=${firstPage.nextCursor}`);
+    expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
+      `issue evidence audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
+    if (firstPage.rows.length > 0 && nextPage.rows.length > 0) {
+      expect(failures, tag,
+        firstPage.rows[0].tier !== nextPage.rows[0].tier ||
+        firstPage.rows[0].issue?.number !== nextPage.rows[0].issue?.number,
+        'issue evidence audit pagination must not repeat first row on next page');
+    }
+  } else {
+    expect(failures, tag, firstPage.nextCursor == null,
+      `issue evidence audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
+  }
+
+  for (const row of firstPage.rows ?? []) {
+    expect(failures, tag, knownIssueEvidenceTiers.has(row.tier),
+      `issue evidence audit row tier must be known, got ${row.tier}`);
+    expect(failures, tag, isObject(row.issue),
+      `issue evidence audit row ${row.tier} must expose issue object`);
+    expect(failures, tag,
+      Number.isInteger(row.issue?.number) && row.issue.number > 0 || row.issue?.missing === true,
+      `issue evidence audit row ${row.tier} issue number must be positive or explicitly missing`);
+    if (row.issue?.missing !== true) {
+      expect(failures, tag, typeof row.issue?.title === 'string' && row.issue.title.length > 0,
+        `issue evidence audit row #${row.issue?.number} title must be present`);
+      expect(failures, tag, Array.isArray(row.issue?.labels),
+        `issue evidence audit row #${row.issue?.number} labels must be an array`);
+      if (['verifiedDebt', 'carryoverDebt', 'staleDebt', 'openedFeltSerious', 'verifiedFixed', 'unverifiedClosed'].includes(row.tier)) {
+        expect(failures, tag, isObject(row.issue?.classification),
+          `issue evidence audit row #${row.issue?.number} must expose effective classification`);
+        expect(failures, tag, isObject(row.issue?.rawClassification),
+          `issue evidence audit row #${row.issue?.number} must expose raw classification`);
+        expect(failures, tag, isObject(row.issue?.classificationDiff),
+          `issue evidence audit row #${row.issue?.number} must expose classificationDiff`);
+      }
+    }
+    if (['verifiedDebt', 'carryoverDebt', 'staleDebt'].includes(row.tier)) {
+      expect(failures, tag, typeof row.weight === 'number' && Number.isFinite(row.weight),
+        `issue evidence audit debt row #${row.issue?.number} must expose numeric weight`);
+      expect(failures, tag, typeof row.installImpactClass === 'string' && row.installImpactClass.length > 0,
+        `issue evidence audit debt row #${row.issue?.number} must expose installImpactClass`);
+    }
+  }
+
+  const expectedDebtCounts = {
+    verifiedDebt: Number(issueEvidence?.debtSummary?.verified?.count ?? 0),
+    carryoverDebt: Number(issueEvidence?.debtSummary?.carryover?.count ?? 0),
+    staleDebt: Number(issueEvidence?.debtSummary?.stale?.count ?? 0),
+  };
+  for (const [tier, expected] of Object.entries(expectedDebtCounts)) {
+    if (!Number.isFinite(expected)) continue;
+    expect(failures, tag, Number(firstPage.countsByTier?.[tier] ?? 0) === expected,
+      `issue evidence audit ${tier} count (${firstPage.countsByTier?.[tier]}) must match persisted debtSummary count (${expected})`);
+  }
+  if (typeof reader.verifiedFixedForRelease === 'function') {
+    const expected = reader.verifiedFixedForRelease(tag).length;
+    expect(failures, tag, Number(firstPage.countsByTier?.verifiedFixed ?? 0) === expected,
+      `issue evidence audit verifiedFixed count (${firstPage.countsByTier?.verifiedFixed}) must match DB verified fixed (${expected})`);
+  }
+  if (typeof reader.unverifiedClosedForRelease === 'function') {
+    const expected = reader.unverifiedClosedForRelease(tag).length;
+    expect(failures, tag, Number(firstPage.countsByTier?.unverifiedClosed ?? 0) === expected,
+      `issue evidence audit unverifiedClosed count (${firstPage.countsByTier?.unverifiedClosed}) must match DB unverified closed (${expected})`);
+  }
+
+  const tiersToProbe = Object.entries(firstPage.countsByTier ?? {})
+    .filter(([, count]) => Number(count ?? 0) > 0)
+    .slice(0, 3);
+  for (const [tier, count] of tiersToProbe) {
+    const page = await fetchJson(`${base}?limit=5&tier=${encodeURIComponent(tier)}`);
+    expect(failures, tag, page.total === Number(count),
+      `issue evidence audit tier filter total (${page.total}) must match ${tier} count (${count})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.tier === tier),
+      `issue evidence audit tier filter must return only ${tier} rows`);
   }
 }
 
