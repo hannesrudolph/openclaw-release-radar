@@ -102,6 +102,17 @@ function reader(overrides: Partial<{
         reachableFixCommits: [],
         notReachableFixCommits: [],
         fixCommitProof: [],
+        linkedPrs: [{
+          number: 1,
+          repositoryNameWithOwner: 'openclaw/openclaw',
+          source: 'closedByPullRequestsReferences',
+          willCloseTarget: 1,
+          merged: 1,
+          reachabilityStatus: 'reachable',
+          reachabilityMethod: 'git-merge-base',
+          reachabilityEvidence: 'reachable_from_release_tag',
+          mergeCommitOid: 'merge-1',
+        }],
         stateReasons: ['COMPLETED'],
       }),
     }],
@@ -113,6 +124,7 @@ function reader(overrides: Partial<{
       status: 'reachable',
       tag_commit_oid: 'tag-commit',
       release_tag_commit_oid: 'tag-commit',
+      merge_commit_oid: 'merge-1',
     }],
     audit: {
       prompt_version: 6,
@@ -854,6 +866,42 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /merged reachable PR row/.test(failure)));
+  });
+
+  it('fails when reachable linked PR proof is backed by a different PR row', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        prEvidence: [{
+          issue_number: 1,
+          pr_repository_name_with_owner: 'openclaw/openclaw',
+          pr_number: 2,
+          merged: 1,
+          status: 'reachable',
+          tag_commit_oid: 'tag-commit',
+          release_tag_commit_oid: 'tag-commit',
+          merge_commit_oid: 'merge-2',
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /hasReachableClosingPr must have a merged reachable PR row/.test(failure)));
+  });
+
+  it('fails when embedded linked PR reachability disagrees with persisted reachability rows', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        prEvidence: [{
+          issue_number: 1,
+          pr_repository_name_with_owner: 'openclaw/openclaw',
+          pr_number: 1,
+          merged: 1,
+          status: 'not_reachable',
+          tag_commit_oid: 'tag-commit',
+          release_tag_commit_oid: 'tag-commit',
+          merge_commit_oid: 'merge-1',
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /reachabilityStatus .* must match persisted reachability/.test(failure)));
   });
 
   it('fails when unknown PR reachability lacks an evidence reason', async () => {

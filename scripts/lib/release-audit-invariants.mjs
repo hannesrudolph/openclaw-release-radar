@@ -789,6 +789,10 @@ function verifyProofFreshness({ failures, tag, proofRows, audit }) {
 }
 
 function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence }) {
+  const prEvidenceByKey = new Map(prEvidence.map((pr) => [
+    prKey(pr.pr_repository_name_with_owner, pr.pr_number),
+    pr,
+  ]));
   for (const linkedPr of Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : []) {
     const repo = String(linkedPr?.repositoryNameWithOwner ?? '');
     const number = Number(linkedPr?.number ?? 0);
@@ -807,6 +811,17 @@ function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvi
       `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityMethod`);
     expect(failures, tag, typeof linkedPr.reachabilityEvidence === 'string' && linkedPr.reachabilityEvidence.length > 0,
       `proof issue #${row.issue_number} linked PR ${repo}#${number} must carry reachabilityEvidence`);
+    const persisted = prEvidenceByKey.get(prKey(repo, number));
+    expect(failures, tag, !!persisted,
+      `proof issue #${row.issue_number} linked PR ${repo}#${number} must have matching persisted reachability row`);
+    if (persisted) {
+      expect(failures, tag, linkedPr.reachabilityStatus === persisted.status,
+        `proof issue #${row.issue_number} linked PR ${repo}#${number} reachabilityStatus (${linkedPr.reachabilityStatus}) must match persisted reachability (${persisted.status})`);
+      if (linkedPr.mergeCommitOid != null && persisted.merge_commit_oid != null) {
+        expect(failures, tag, linkedPr.mergeCommitOid === persisted.merge_commit_oid,
+          `proof issue #${row.issue_number} linked PR ${repo}#${number} mergeCommitOid (${linkedPr.mergeCommitOid}) must match persisted reachability (${persisted.merge_commit_oid})`);
+      }
+    }
   }
   for (const pr of prEvidence) {
     const prLabel = `${pr.pr_repository_name_with_owner ?? 'unknown-repo'}#${pr.pr_number}`;
@@ -825,13 +840,26 @@ function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvi
     }
   }
   if (evidence.hasReachableClosingPr === true) {
-    expect(failures, tag, prEvidence.some((pr) => pr.merged === 1 && pr.status === 'reachable'),
+    expect(failures, tag, linkedMergedPrEvidence(evidence).some((linkedPr) =>
+      matchingReachabilityPr(prEvidenceByKey, linkedPr, 'reachable')),
       `proof issue #${row.issue_number} hasReachableClosingPr must have a merged reachable PR row`);
   }
   if (evidence.hasNotReachableClosingPr === true) {
-    expect(failures, tag, prEvidence.some((pr) => pr.merged === 1 && pr.status === 'not_reachable'),
+    expect(failures, tag, linkedMergedPrEvidence(evidence).some((linkedPr) =>
+      matchingReachabilityPr(prEvidenceByKey, linkedPr, 'not_reachable')),
       `proof issue #${row.issue_number} hasNotReachableClosingPr must have a merged not-reachable PR row`);
   }
+}
+
+function prKey(repo, number) {
+  return `${String(repo ?? '')}#${Number(number ?? 0)}`;
+}
+
+function matchingReachabilityPr(prEvidenceByKey, linkedPr, status) {
+  const repo = String(linkedPr?.repositoryNameWithOwner ?? '');
+  const number = Number(linkedPr?.number ?? 0);
+  const persisted = prEvidenceByKey.get(prKey(repo, number));
+  return !!persisted && persisted.merged === 1 && persisted.status === status;
 }
 
 function verifyAllowedKeys({ failures, tag, label, value, allowed }) {
@@ -1086,6 +1114,11 @@ function linkedClosingPrEvidence(evidence) {
       source === 'closedByPullRequestsReferences' ||
       source === 'ClosedEvent.closer';
   });
+}
+
+function linkedMergedPrEvidence(evidence) {
+  const linkedPrs = Array.isArray(evidence?.linkedPrs) ? evidence.linkedPrs : [];
+  return linkedPrs.filter((pr) => Number(pr?.merged ?? 0) === 1);
 }
 
 function relatedPrContext(evidence) {

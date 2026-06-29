@@ -347,7 +347,6 @@ export class ReleaseAuditReader {
         JOIN release_pr_reachability rpr ON rpr.tag=? AND rpr.pr_repository_name_with_owner=l.pr_repository_name_with_owner AND rpr.pr_number=l.pr_number
       LEFT JOIN release_commits rc ON rc.tag=rpr.tag
       WHERE l.issue_number=?
-        AND ${CREDITED_FIX_LINK_SQL}
         ORDER BY l.pr_repository_name_with_owner, l.pr_number
     `).all(tag, issueNumber);
   }
