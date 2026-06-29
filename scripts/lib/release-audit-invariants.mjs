@@ -625,7 +625,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       verifyReleaseChecksGate({ failures, tag, releaseChecks: gate.releaseChecks });
       verifyArtifactVerificationGate({ failures, tag, artifactVerification: gate.artifactVerification });
       verifyClosedClassificationPromptVersion({ failures, tag, closed, audit });
-      verifyProofFreshness({ failures, tag, proofRows, audit });
+      verifyProofFreshness({ failures, tag, proofRows, audit, reader });
       expect(failures, tag, issueEvidence.schemaVersion === issueEvidenceSchemaVersion,
         `persisted issueEvidence schemaVersion (${issueEvidence.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
     const fix = gate.fixProvenance ?? {};
@@ -767,7 +767,7 @@ function verifyClosedClassificationPromptVersion({ failures, tag, closed, audit 
   }
 }
 
-function verifyProofFreshness({ failures, tag, proofRows, audit }) {
+function verifyProofFreshness({ failures, tag, proofRows, audit, reader }) {
   const scoredAt = Date.parse(audit.scored_at ?? '');
   expect(failures, tag, Number.isFinite(scoredAt),
     `audit scored_at must be a valid timestamp, got ${audit.scored_at}`);
@@ -784,6 +784,17 @@ function verifyProofFreshness({ failures, tag, proofRows, audit }) {
     if (Number.isFinite(closedAt)) {
       expect(failures, tag, checkedAt >= closedAt,
         `proof issue #${row.issue_number} checked_at (${row.checked_at}) must be newer than closure time (${evidence.closedAt})`);
+    }
+    if (typeof reader.proofDependencyFreshnessForIssue === 'function') {
+      for (const source of reader.proofDependencyFreshnessForIssue(tag, row.issue_number) ?? []) {
+        if (!source?.max_ts) continue;
+        const sourceAt = Date.parse(source.max_ts);
+        expect(failures, tag, Number.isFinite(sourceAt),
+          `proof issue #${row.issue_number} ${source.source} dependency max timestamp must be valid, got ${source.max_ts}`);
+        if (!Number.isFinite(sourceAt)) continue;
+        expect(failures, tag, sourceAt <= checkedAt,
+          `proof issue #${row.issue_number} checked_at (${row.checked_at}) must be newer than ${source.source} dependency (${source.max_ts})`);
+      }
     }
   }
 }

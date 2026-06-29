@@ -329,6 +329,71 @@ export class ReleaseAuditReader {
     `).all(tag, tag, tag);
   }
 
+  proofDependencyFreshnessForIssue(tag, issueNumber) {
+    const hasCommitReferences = this.tableExists('issue_commit_references');
+    const commitReferenceFreshnessSql = hasCommitReferences
+      ? `UNION ALL
+      SELECT 'issue_commit_references', MAX(c.fetched_at)
+      FROM issue_commit_references c
+      WHERE c.issue_number=?`
+      : `UNION ALL
+      SELECT 'issue_commit_references', NULL`;
+    const params = [
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      issueNumber,
+      ...(hasCommitReferences ? [issueNumber] : []),
+      tag,
+    ];
+    return this.db.prepare(`
+      WITH linked_prs AS (
+        SELECT DISTINCT pr_repository_name_with_owner, pr_number
+        FROM issue_pr_links
+        WHERE issue_number=?
+      )
+      SELECT 'issue_rows' AS source, MAX(updated_at) AS max_ts
+      FROM issues
+      WHERE number=?
+      UNION ALL
+      SELECT 'classification_rows', MAX(classified_at)
+      FROM classifications
+      WHERE issue_number=?
+      UNION ALL
+      SELECT 'label_events', MAX(fetched_at)
+      FROM issue_label_events
+      WHERE issue_number=?
+      UNION ALL
+      SELECT 'label_snapshots', MAX(fetched_at)
+      FROM issue_label_snapshots
+      WHERE issue_number=?
+      UNION ALL
+      SELECT 'closure_events', MAX(fetched_at)
+      FROM issue_closure_events
+      WHERE issue_number=?
+      UNION ALL
+      SELECT 'reopen_events', MAX(fetched_at)
+      FROM issue_reopen_events
+      WHERE issue_number=?
+      UNION ALL
+      SELECT 'issue_pr_links', MAX(fetched_at)
+      FROM issue_pr_links
+      WHERE issue_number=?
+      ${commitReferenceFreshnessSql}
+      UNION ALL
+      SELECT 'release_pr_reachability', MAX(r.checked_at)
+      FROM release_pr_reachability r
+      JOIN linked_prs l
+        ON l.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+       AND l.pr_number=r.pr_number
+      WHERE r.tag=?
+    `).all(...params);
+  }
+
   prReachabilityEvidenceForIssue(tag, issueNumber) {
     return this.db.prepare(`
       SELECT l.issue_number,

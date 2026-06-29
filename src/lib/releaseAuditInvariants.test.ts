@@ -73,6 +73,7 @@ function reader(overrides: Partial<{
   unverified: any[];
   proofRows: any[];
   prEvidence: any[];
+  proofDependencyFreshness: any[];
   audit: any;
 }> = {}) {
   const data = {
@@ -126,6 +127,7 @@ function reader(overrides: Partial<{
       release_tag_commit_oid: 'tag-commit',
       merge_commit_oid: 'merge-1',
     }],
+    proofDependencyFreshness: [],
     audit: {
       prompt_version: 6,
       scored_at: auditScoredAt,
@@ -179,6 +181,7 @@ function reader(overrides: Partial<{
       ...row,
     })),
     prReachabilityEvidenceForIssue: () => data.prEvidence,
+    proofDependencyFreshnessForIssue: () => data.proofDependencyFreshness,
     prReachabilityRowsForRelease: () => data.prEvidence.map((row: any) => ({
       tag: 'v1',
       pr_repository_name_with_owner: row.pr_repository_name_with_owner,
@@ -631,6 +634,18 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /must not be newer than audit scored_at/.test(failure)));
+  });
+
+  it('fails when proof dependency source evidence is newer than the proof row', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofDependencyFreshness: [{
+          source: 'issue_pr_links',
+          max_ts: '2026-01-02T00:00:00.500Z',
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /newer than issue_pr_links dependency/.test(failure)));
   });
 
   it('fails when source evidence changed after the score audit', async () => {
