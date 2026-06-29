@@ -674,7 +674,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   }
 
   if (apiBase) {
-    await verifyApi({ apiBase: apiBase.replace(/\/$/, ''), fetchJson, releases, failures });
+    await verifyApi({ apiBase: apiBase.replace(/\/$/, ''), fetchJson, reader, releases, failures });
   }
 
   return { releases, rows, failures };
@@ -1355,7 +1355,7 @@ function hasConcreteNonActionableRationale(evidence) {
   return comments.some((comment) => concreteNonActionableRationaleRe.test(String(comment?.snippet ?? '')));
 }
 
-async function verifyApi({ apiBase, fetchJson, releases, failures }) {
+async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
   const status = await fetchJson(`${apiBase}/api/status`);
   expect(failures, 'api/status', status.schemaVersion === statusPayloadSchemaVersion,
     `status schemaVersion must be ${statusPayloadSchemaVersion}, got ${JSON.stringify(status.schemaVersion)}`);
@@ -1579,7 +1579,13 @@ async function verifyApi({ apiBase, fetchJson, releases, failures }) {
     const proof = review.local?.gateEvidence?.fixProvenance?.closureProof;
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (proof || credit) {
+      const persistedGate = parseJson(reader.getReleaseScoreAudit(release.tag)?.gate_evidence_json, {});
+      const persistedFix = persistedGate?.fixProvenance ?? {};
       expect(failures, release.tag, !!proof && !!credit, 'review must expose closureProof and releaseFixCredit together');
+      expectJsonEqual(failures, release.tag, 'review closureProof must match persisted audit closureProof',
+        proof, persistedFix.closureProof);
+      expectJsonEqual(failures, release.tag, 'review releaseFixCredit must match persisted audit releaseFixCredit',
+        credit, persistedFix.releaseFixCredit);
       expect(failures, release.tag, proof.schemaVersion === closureProofSchemaVersion,
         `closureProof schemaVersion (${proof.schemaVersion}) must equal ${closureProofSchemaVersion}`);
       expect(failures, release.tag, credit.schemaVersion === releaseFixCreditSchemaVersion,

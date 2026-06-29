@@ -659,6 +659,39 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /issue_rows ageHoursAtScore/.test(failure)));
   });
 
+  it('fails when review closure proof masks stale persisted audit proof payload', async () => {
+    const staleProof = closureProofFixture({
+      examples: [{ number: 999, status: 'fixed_in_release', riskWeight: 0 }],
+    });
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          input_json: JSON.stringify({ schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 }),
+          components_json: JSON.stringify({ schemaVersion: 1, components: {}, explanation: { schemaVersion: 1 } }),
+          issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
+          gate_evidence_json: JSON.stringify({
+            schemaVersion: 1,
+            labelTimeline: labelTimelineFixture,
+            releaseChecks: releaseChecksFixture,
+            artifactVerification: artifactVerificationFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: staleProof,
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson(),
+    });
+
+    assert.ok(result.failures.some((failure) => /review closureProof must match persisted audit closureProof/.test(failure)));
+  });
+
   it('fails when audit fix counts drift from verified queries', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
