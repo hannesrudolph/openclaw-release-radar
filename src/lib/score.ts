@@ -145,6 +145,7 @@ interface IssueSignalFields {
   reactionTotal?: number;
   positiveReactionCount?: number;
   clusterHumanReporterCount?: number;
+  clusterExternalReporterCount?: number;
   clusterCommentCount?: number;
   clusterHumanCommenterCount?: number;
   clusterMaintainerCommenterCount?: number;
@@ -253,6 +254,7 @@ function isBotIssue(item: IssueSignalFields): boolean {
 
 function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & Required<Pick<IssueSignalFields,
   'clusterHumanReporterCount' |
+  'clusterExternalReporterCount' |
   'clusterCommentCount' |
   'clusterHumanCommenterCount' |
   'clusterMaintainerCommenterCount' |
@@ -262,6 +264,7 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
 >>> {
   const stats = new Map<string, {
     reporters: Set<string>;
+    externalReporters: Set<string>;
     comments: number;
     humanCommenters: number;
     maintainerCommenters: number;
@@ -274,6 +277,7 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
     const key = issueKey(item, index);
     const current = stats.get(key) ?? {
       reporters: new Set<string>(),
+      externalReporters: new Set<string>(),
       comments: 0,
       humanCommenters: 0,
       maintainerCommenters: 0,
@@ -282,7 +286,10 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
       positiveReactions: 0,
       releaseLocalValues: [],
     };
-    if (!isBotIssue(item) && item.author) current.reporters.add(item.author);
+    if (!isBotIssue(item) && item.author) {
+      current.reporters.add(item.author);
+      if (!isInternalAssociation(item.authorAssociation)) current.externalReporters.add(item.author);
+    }
     current.comments += Math.max(0, item.comments ?? 0);
     current.humanCommenters += Math.max(0, item.uniqueHumanCommenterCount ?? 0);
     current.maintainerCommenters += Math.max(0, item.maintainerCommenterCount ?? 0);
@@ -298,6 +305,7 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
     return {
       ...item,
       clusterHumanReporterCount: current?.reporters.size ?? 0,
+      clusterExternalReporterCount: current?.externalReporters.size ?? 0,
       clusterCommentCount: current?.comments ?? 0,
       clusterHumanCommenterCount: current?.humanCommenters ?? 0,
       clusterMaintainerCommenterCount: current?.maintainerCommenters ?? 0,
@@ -311,8 +319,17 @@ function enrichIssueSignals<T extends IssueSignalFields>(items: T[]): Array<T & 
   });
 }
 
+function isInternalAssociation(association: string | null | undefined): boolean {
+  return ['OWNER', 'MEMBER', 'COLLABORATOR', 'CONTRIBUTOR'].includes(association ?? '');
+}
+
 function hasCommunityConfirmation(item: IssueSignalFields): boolean {
-  return (item.clusterHumanReporterCount ?? 0) >= 2 || (item.clusterHumanCommenterCount ?? 0) >= 2;
+  const externalReporters = Math.max(0, item.clusterExternalReporterCount ?? item.clusterHumanReporterCount ?? 0);
+  const humanCommenters = Math.max(0, item.clusterHumanCommenterCount ?? item.uniqueHumanCommenterCount ?? 0);
+  const maintainers = Math.max(0, item.clusterMaintainerCommenterCount ?? item.maintainerCommenterCount ?? 0);
+  const contributors = Math.max(0, item.clusterContributorCommenterCount ?? item.contributorCommenterCount ?? 0);
+  const externalCommenters = Math.max(0, humanCommenters - maintainers - contributors);
+  return externalReporters >= 2 || externalCommenters >= 2;
 }
 
 function communityMultiplier(item: IssueSignalFields): number {

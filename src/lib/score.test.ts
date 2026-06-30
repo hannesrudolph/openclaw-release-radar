@@ -428,7 +428,7 @@ describe('openDebtLoad — current issue debt', () => {
     assert.equal(explanation.evidence[0]?.installImpactMultiplier, 0.65);
   });
 
-  it('uses unique human commenters as field/community evidence for source-repro findings', () => {
+  it('uses external human commenters as field/community evidence for source-repro findings', () => {
     const discussed = openDebtLoad([
       dc({
         issueNumber: 203,
@@ -441,6 +441,52 @@ describe('openDebtLoad — current issue debt', () => {
       }),
     ]);
     assert.ok(discussed.verified > 0);
+  });
+
+  it('does not use maintainer-only comments as field/community confirmation', () => {
+    const discussed = openDebtLoad([
+      dc({
+        issueNumber: 216,
+        uniqueHumanCommenterCount: 2,
+        maintainerCommenterCount: 2,
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.equal(discussed.verified, 0);
+    assert.ok(discussed.carryover > 0);
+  });
+
+  it('does not use maintainer duplicate reporters as field/community confirmation', () => {
+    const clustered = openDebtLoad([
+      dc({
+        issueNumber: 217,
+        duplicateCluster: 'maintainer-only-cluster',
+        author: 'maintainer-a',
+        authorAssociation: 'MEMBER',
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+      dc({
+        issueNumber: 218,
+        duplicateCluster: 'maintainer-only-cluster',
+        author: 'maintainer-b',
+        authorAssociation: 'OWNER',
+        labels: ['clawsweeper:source-repro'],
+        releaseLocal: true,
+        functionality: 'core',
+        severity: 'high',
+        scope: 'broad',
+      }),
+    ]);
+    assert.equal(clustered.verified, 0);
+    assert.ok(clustered.carryover > 0);
   });
 
   it('does not use raw comment volume alone as field/community evidence', () => {
