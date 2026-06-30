@@ -132,7 +132,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `duplicate_to_fixed_in_release`: closure moved the report to a canonical issue or canonical fix/source commit that is reachable from this release tag.
 - `duplicate_to_open_canonical`: closure moved the report to a canonical issue that remains open.
 - `duplicate_to_closed_canonical`: closure moved the report to a canonical issue that is also closed.
-- `duplicate_to_non_actionable_canonical`: closure moved the report to a canonical issue that closed as non-actionable or non-bug evidence.
+- `duplicate_to_non_actionable_canonical`: closure moved the report to a canonical issue that closed as non-actionable or non-bug evidence. A canonical terminal `not_planned` proof only qualifies when the terminal proof carries concrete non-actionable rationale; bare not-planned terminal proof remains unresolved closed-canonical risk.
 - `duplicate_to_known_not_in_release_canonical`: closure moved the report to a canonical issue whose terminal proof is known not to be in this release tag.
 - `duplicate_to_open_pr_canonical`: closure moved the report to a canonical issue that is closed, but its terminal proof still points to open PR/canonical risk.
 - `duplicate_to_unverified_closed_canonical`: closure moved the report to a canonical issue that is closed, but terminal proof does not establish release resolution.

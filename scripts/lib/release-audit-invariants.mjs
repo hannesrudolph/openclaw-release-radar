@@ -692,8 +692,13 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       if (row.status === 'duplicate_to_non_actionable_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',
           `duplicate_to_non_actionable_canonical issue #${row.issue_number} must resolve to a closed terminal`);
-        expect(failures, tag, riskDispositionForStatus(evidence.canonicalResolution?.terminalProof?.status) === 'neutral_or_non_actionable',
+        const terminalProof = evidence.canonicalResolution?.terminalProof;
+        expect(failures, tag, riskDispositionForStatus(terminalProof?.status) === 'neutral_or_non_actionable',
           `duplicate_to_non_actionable_canonical issue #${row.issue_number} must resolve to neutral/non-actionable terminal proof`);
+        if (terminalProof?.status === 'not_planned') {
+          expect(failures, tag, terminalProof.concreteNonActionableRationale === true,
+            `duplicate_to_non_actionable_canonical issue #${row.issue_number} with not_planned terminal proof must include concrete non-actionable rationale`);
+        }
       }
       if (row.status === 'duplicate_to_known_not_in_release_canonical') {
         expect(failures, tag, evidence.canonicalResolution?.terminalIssue?.state === 'closed',

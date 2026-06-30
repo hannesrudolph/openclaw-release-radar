@@ -248,7 +248,7 @@ SELECT published_at FROM releases WHERE tag=?
 `);
 
 const crossReleaseTerminalProofRowsStmt = db.prepare(`
-SELECT p.release_tag, p.status, p.summary, r.published_at
+SELECT p.release_tag, p.status, p.summary, p.evidence_json, r.published_at
 FROM issue_closure_proofs p
 LEFT JOIN releases r ON r.tag=p.release_tag
 WHERE p.issue_number=?
@@ -753,6 +753,7 @@ function classificationDiff(
 
 const fullCommitOidRe = /^[0-9a-f]{40}$/i;
 const fixShapedCommitHeadlineRe = /\b(fix(?:e[sd])?|resolv(?:e[sd])?|repair(?:ed)?|patch(?:ed)?|address(?:ed)?)\b/i;
+const concreteNonActionableTerminalRe = /\b(won't fix|wont fix|expected behavior|working as intended|by design|outside\s+(?:the\s+)?OpenClaw\s+source|outside\s+(?:the\s+)?(?:repo|repository)|repo(?:sitory)?\s+boundary|plugin-owned|not\s+present\s+in\s+(?:the\s+)?OpenClaw\s+source|not\s+actionable|out\s+of\s+scope|unsupported)\b/i;
 
 function commitReferenceMentionsByIssue(issueNumbers: number[]): Map<number, ClosureCommentCommitMention[]> {
   const byIssue = new Map<number, ClosureCommentCommitMention[]>();
@@ -1168,7 +1169,10 @@ function closedCanonicalRollup(
     };
   }
   const terminalDisposition = closureRiskDisposition(terminalProof.status);
-  if (terminalDisposition === 'neutral_or_non_actionable') {
+  if (
+    terminalDisposition === 'neutral_or_non_actionable' &&
+    terminalProofCanResolveAsNonActionable(terminalProof)
+  ) {
     return {
       status: 'duplicate_to_non_actionable_canonical',
       summary: 'Closed as duplicate/superseded; canonical issue closed with non-actionable or non-bug terminal proof.',
@@ -1228,6 +1232,7 @@ function crossReleaseTerminalProofForIssue(
     release_tag: string;
     status: ClosureProofStatus;
     summary: string;
+    evidence_json: string | null;
     published_at: string | null;
   }>;
   const candidates = rows
@@ -1236,7 +1241,7 @@ function crossReleaseTerminalProofForIssue(
       return {
         status: row.status,
         summary: row.summary,
-        evidence: {},
+        evidence: parseEvidenceObject(row.evidence_json),
         releaseTag: row.release_tag,
         timing,
         sourceReleasePublishedAt: sourcePublishedAt,
@@ -1257,6 +1262,7 @@ function terminalProofEvidence(proof: TerminalProofForCanonical): Record<string,
   const base = {
     status: proof.status,
     summary: proof.summary,
+    ...(terminalProofHasConcreteNonActionableRationale(proof) ? { concreteNonActionableRationale: true } : {}),
   };
   if (proof.crossRelease !== true) return base;
   return {
@@ -1267,6 +1273,38 @@ function terminalProofEvidence(proof: TerminalProofForCanonical): Record<string,
     sourceReleasePublishedAt: proof.sourceReleasePublishedAt ?? null,
     terminalReleasePublishedAt: proof.terminalReleasePublishedAt ?? null,
   };
+}
+
+function terminalProofCanResolveAsNonActionable(proof: TerminalProofForCanonical): boolean {
+  return proof.status !== 'not_planned' || terminalProofHasConcreteNonActionableRationale(proof);
+}
+
+function terminalProofHasConcreteNonActionableRationale(proof: TerminalProofForCanonical): boolean {
+  const evidence = proof.evidence && typeof proof.evidence === 'object' && !Array.isArray(proof.evidence)
+    ? proof.evidence as Record<string, unknown>
+    : {};
+  if (Array.isArray(evidence.nonActionableRationaleComments) && evidence.nonActionableRationaleComments.length > 0) {
+    return true;
+  }
+  const comments = Array.isArray(evidence.matchingComments) ? evidence.matchingComments : [];
+  return comments.some((comment) => {
+    const snippet = comment && typeof comment === 'object'
+      ? (comment as Record<string, unknown>).snippet
+      : null;
+    return concreteNonActionableTerminalRe.test(String(snippet ?? ''));
+  });
+}
+
+function parseEvidenceObject(json: string | null): Record<string, unknown> {
+  if (!json) return {};
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+      ? parsed as Record<string, unknown>
+      : {};
+  } catch {
+    return {};
+  }
 }
 
 function releaseTiming(sourcePublishedAt: string | null, terminalPublishedAt: string | null): 'after' | 'same_or_before' | 'unknown' {

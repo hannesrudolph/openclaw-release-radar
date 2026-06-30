@@ -561,6 +561,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8'), /analyzeClosureProofsForRelease\(rel\.tag, \{ persistScoreAuditPayload: false \}\)/);
     assert.match(readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8'), /analyzeClosureProofsForRelease\(tag, \{ persistScoreAuditPayload: false \}\)/);
     assert.match(readFileSync(join(root, 'docs/scoring-model.md'), 'utf8'), /refresh does not patch existing `release_score_audits`/);
+    assert.match(readFileSync(join(root, 'docs/scoring-model.md'), 'utf8'), /bare not-planned terminal proof remains unresolved closed-canonical risk/);
     assert.match(payload, /gate_evidence_json is malformed; refusing to persist closure proof payload/);
     assert.match(payload, /updateReleaseScoreAuditClosureProofGateEvidence/);
     assert.doesNotMatch(payload, /updateReleaseScoreAuditGateEvidence/);
@@ -576,6 +577,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(reachability, /isCommitUnavailableFetch/);
     assert.match(reachability, /throw new Error\(gitFailureMessage\('merge_base_error'/);
     assert.match(analysis, /direct_closer_commits/);
+    assert.match(analysis, /terminalProofCanResolveAsNonActionable/);
+    assert.match(analysis, /concreteNonActionableRationale/);
+    assert.match(analysis, /p\.evidence_json/);
     assert.match(analysis, /e\.closer_type='Commit'/);
     assert.match(analysis, /directClosureCommitMentions/);
     assert.match(analysis, /GitHub ClosedEvent closer commit/);

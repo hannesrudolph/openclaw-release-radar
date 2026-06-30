@@ -242,7 +242,7 @@ describe('closure proof canonical roll-up', () => {
     });
   });
 
-  it('uses non-fix cross-release terminal proof to avoid missing-proof status', () => {
+  it('keeps weak not-planned cross-release terminal proof unresolved', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,
       result('duplicate_or_superseded', 'Closed as duplicate.'),
@@ -262,8 +262,47 @@ describe('closure proof canonical roll-up', () => {
       }),
     );
 
-    assert.equal(adjusted.status, 'duplicate_to_non_actionable_canonical');
+    assert.equal(adjusted.status, 'duplicate_to_unverified_closed_canonical');
     assert.equal((adjusted.evidence.canonicalResolution as any).terminalProof.status, 'not_planned');
+    assert.equal((adjusted.evidence.canonicalResolution as any).terminalProof.concreteNonActionableRationale, undefined);
+  });
+
+  it('uses concrete non-actionable cross-release terminal proof to neutralize duplicate risk', () => {
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      { canonicalIssues: [20] },
+      new Map([[10, [20]]]),
+      new Map(),
+      'v1',
+      () => ({
+        status: 'not_planned',
+        summary: 'Canonical was closed as non-actionable.',
+        evidence: {
+          nonActionableRationaleComments: [{
+            author: 'maintainer',
+            snippet: 'Close: this is outside the OpenClaw source repository.',
+          }],
+        },
+        releaseTag: 'v2',
+        timing: 'after',
+        sourceReleasePublishedAt: '2026-06-01T00:00:00Z',
+        terminalReleasePublishedAt: '2026-06-02T00:00:00Z',
+        crossRelease: true,
+      }),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_to_non_actionable_canonical');
+    assert.deepEqual((adjusted.evidence.canonicalResolution as any).terminalProof, {
+      status: 'not_planned',
+      summary: 'Canonical was closed as non-actionable.',
+      concreteNonActionableRationale: true,
+      releaseTag: 'v2',
+      timing: 'after',
+      crossRelease: true,
+      sourceReleasePublishedAt: '2026-06-01T00:00:00Z',
+      terminalReleasePublishedAt: '2026-06-02T00:00:00Z',
+    });
   });
 
   it('classifies closed canonical terminal risk by terminal disposition', () => {

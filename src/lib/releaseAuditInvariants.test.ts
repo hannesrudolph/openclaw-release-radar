@@ -2407,6 +2407,65 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /more specific canonical status/.test(failure)));
   });
 
+  it('fails when weak not-planned canonical terminal proof is treated as non-actionable', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'duplicate_to_non_actionable_canonical',
+          evidence_json: JSON.stringify({
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            canonicalResolution: {
+              terminalIssue: { state: 'closed' },
+              terminalProof: { status: 'not_planned', summary: 'canonical was closed not planned' },
+            },
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { duplicate_to_non_actionable_canonical: 1 },
+                byRiskDisposition: { neutral_or_non_actionable: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 1,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 0,
+                  unresolvedWeightedRisk: 0,
+                  weightedRiskByDisposition: {},
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /not_planned terminal proof must include concrete non-actionable rationale/.test(failure)));
+  });
+
   it('fails when negative NOT_PLANNED is neutral without concrete rationale', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
