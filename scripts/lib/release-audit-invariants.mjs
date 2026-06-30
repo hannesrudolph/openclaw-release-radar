@@ -2211,6 +2211,22 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     expect(failures, tag, (page.rows ?? []).every((row) => row.status === status),
       `closure proof audit status filter must return only ${status} rows`);
   }
+  const proofMetadataStatuses = [
+    ['fixed_in_later_release', 'laterFixProof', (proof) => proof?.releaseTag && ['pr', 'commit'].includes(proof?.proofType)],
+    ['non_bug_fixed_in_later_release', 'laterFixProof', (proof) => proof?.releaseTag && ['pr', 'commit'].includes(proof?.proofType)],
+    ['fixed_after_latest_release', 'unscoredFixProof', (proof) => proof?.timing === 'after_latest_release'],
+    ['non_bug_fixed_after_latest_release', 'unscoredFixProof', (proof) => proof?.timing === 'after_latest_release'],
+    ['fixed_skipped_by_later_releases', 'unscoredFixProof', (proof) => proof?.timing === 'skipped_by_later_releases'],
+    ['non_bug_fixed_skipped_by_later_releases', 'unscoredFixProof', (proof) => proof?.timing === 'skipped_by_later_releases'],
+  ];
+  for (const [proofStatus, evidenceField, isValidProof] of proofMetadataStatuses) {
+    if (Number(proof.byStatus?.[proofStatus] ?? 0) <= 0) continue;
+    const page = await fetchJson(`${base}?limit=3&status=${encodeURIComponent(proofStatus)}`);
+    expect(failures, tag, (page.rows ?? []).length > 0,
+      `closure proof audit ${proofStatus} filter must return at least one row`);
+    expect(failures, tag, (page.rows ?? []).every((row) => isValidProof(row.evidence?.[evidenceField])),
+      `closure proof audit ${proofStatus} rows must expose valid ${evidenceField} metadata`);
+  }
 
   const [disposition, dispositionCount] = Object.entries(proof.byRiskDisposition ?? {}).find(([, count]) => Number(count ?? 0) > 0) ?? [];
   if (disposition) {

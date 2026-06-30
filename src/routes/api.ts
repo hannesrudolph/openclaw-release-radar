@@ -179,6 +179,8 @@ function compactClosureProofEvidence(evidence: unknown) {
     reachableTrustedFixProofPrs: arrayOf(raw.reachableTrustedFixProofPrs, compactPrRef),
     matchingComments: arrayOf(raw.matchingComments, compactCommentRef, 5),
     nonActionableRationaleComments: arrayOf(raw.nonActionableRationaleComments, compactCommentRef, 5),
+    laterFixProof: compactLaterFixProof(raw.laterFixProof),
+    unscoredFixProof: compactUnscoredFixProof(raw.unscoredFixProof),
     fixCommitProof: arrayOf(raw.fixCommitProof, compactCommitProof),
     canonicalFixCommitProof: arrayOf(raw.canonicalFixCommitProof, compactCommitProof),
     reachableFixCommits: arrayOf(raw.reachableFixCommits, compactScalar),
@@ -283,6 +285,34 @@ function compactCommitProof(value: unknown) {
     source: typeof raw.source === 'string' ? raw.source : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     snippet: typeof raw.snippet === 'string' ? raw.snippet : null,
+  };
+}
+
+function compactLaterFixProof(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    releaseTag: typeof raw.releaseTag === 'string' ? raw.releaseTag : null,
+    publishedAt: typeof raw.publishedAt === 'string' ? raw.publishedAt : null,
+    proofType: typeof raw.proofType === 'string' ? raw.proofType : null,
+    prNumber: Number.isInteger(Number(raw.prNumber)) ? Number(raw.prNumber) : null,
+    prRepositoryNameWithOwner: typeof raw.prRepositoryNameWithOwner === 'string' ? raw.prRepositoryNameWithOwner : null,
+    commitOid: typeof raw.commitOid === 'string' ? raw.commitOid : null,
+  };
+}
+
+function compactUnscoredFixProof(value: unknown) {
+  if (!value || typeof value !== 'object') return null;
+  const raw = value as Record<string, unknown>;
+  return {
+    timing: typeof raw.timing === 'string' ? raw.timing : null,
+    proofTime: typeof raw.proofTime === 'string' ? raw.proofTime : null,
+    latestScoredReleaseTag: typeof raw.latestScoredReleaseTag === 'string' ? raw.latestScoredReleaseTag : null,
+    latestScoredReleasePublishedAt: typeof raw.latestScoredReleasePublishedAt === 'string' ? raw.latestScoredReleasePublishedAt : null,
+    proofType: typeof raw.proofType === 'string' ? raw.proofType : null,
+    prNumber: Number.isInteger(Number(raw.prNumber)) ? Number(raw.prNumber) : null,
+    prRepositoryNameWithOwner: typeof raw.prRepositoryNameWithOwner === 'string' ? raw.prRepositoryNameWithOwner : null,
+    commitOid: typeof raw.commitOid === 'string' ? raw.commitOid : null,
   };
 }
 

@@ -354,6 +354,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /filteredCountsByStatus/);
     assert.match(api, /unfilteredCountsByRiskDisposition/);
     assert.match(api, /filteredCountsByRiskDisposition/);
+    assert.match(api, /laterFixProof: compactLaterFixProof/);
+    assert.match(api, /unscoredFixProof: compactUnscoredFixProof/);
     const publicIssues = readFileSync(join(root, 'src/lib/publicIssueSummary.ts'), 'utf8');
     assert.match(publicIssues, /classifyIssueRowWithLabels/);
     assert.match(publicIssues, /labelsForIssueAt/);
