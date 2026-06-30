@@ -113,6 +113,7 @@ export interface ScoreExplanationCap {
 
 export interface ScoreExplanationDetail {
   code: string;
+  label?: string;
   text: string;
   metrics?: Record<string, number | string | boolean | null>;
   buckets?: Record<string, number>;
@@ -694,9 +695,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const example = issueListText(carryover, 3);
     addLimit(
       'source_carryover_risk',
-      `There is open non-verified risk: open negative issues overlapping this release are inherited, source-derived, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
+      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
+        label: 'Open unconfirmed issue risk',
         metrics: {
           count: Number(debtSummary.carryover?.count ?? carryoverDebt.length),
           storedExampleCount: carryoverDebt.length,
@@ -922,11 +924,11 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'carryoverDebt',
-      label: 'Open non-verified risk',
+      label: 'Open unconfirmed issue risk',
       points: roundMetric(components.carryoverDebt),
       kind: scoreLedgerKind(components.carryoverDebt),
       metric: roundMetric(input.carryoverDebtWeight),
-      note: 'Open negative issue debt overlapping this release that is inherited, source-derived, or otherwise not proven release-local field-blocker evidence.',
+      note: 'Open negative issue debt overlapping this release that is inherited, source-only, or otherwise not proven release-local field-blocker evidence.',
     },
     {
       key: 'staleDebt',
@@ -1442,7 +1444,7 @@ function roundMetric(value: unknown): number {
 
 function installVerdictText(status: string, recommended: boolean): string {
   if (recommended) {
-    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, source-derived risk, or closed issues not tied to this release tag keep it below a perfect score.';
+    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
   }
   if (status === 'eligible') {
     return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';

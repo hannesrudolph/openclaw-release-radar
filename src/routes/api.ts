@@ -331,8 +331,12 @@ function parsePrFilter(raw: unknown): { repo: string | null; number: number } | 
 function parseIssueEvidenceTierFilter(raw: unknown): ReleaseIssueEvidenceTier[] | null {
   const tiers = parseCommaList(raw);
   if (!tiers.length) return null;
-  if (tiers.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) return [];
-  return tiers as ReleaseIssueEvidenceTier[];
+  const aliases: Record<string, ReleaseIssueEvidenceTier> = {
+    openUnconfirmedRisk: 'carryoverDebt',
+  };
+  const normalized = tiers.map((tier) => aliases[tier] ?? tier);
+  if (normalized.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) return [];
+  return [...new Set(normalized)] as ReleaseIssueEvidenceTier[];
 }
 
 function parseIssueEvidenceImpactFilter(raw: unknown): ReleaseIssueEvidenceImpactClass[] | null {

@@ -25,7 +25,7 @@ Advisory version ranges are score-critical. Score writers refuse malformed or un
 The normal score starts from a base value, then applies bounded components:
 
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
-- `carryoverDebt`: open non-verified risk: open negative issue debt overlapping the release that is inherited, source-derived, or otherwise not proven release-local field-blocker evidence. This is capped.
+- `carryoverDebt` internally, displayed as open unconfirmed issue risk: open negative issue debt overlapping the release that is inherited, source-only, or otherwise not proven release-local field-blocker evidence. This is capped.
 - `staleDebt`: low-confidence, stale, needs-info, or weak evidence risk. This is heavily capped.
 - `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and does not score non-bug, reporter-withdrawn, or concretely non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
@@ -45,7 +45,7 @@ When unresolved closed-release risk is heavy, the model also applies a score cei
 Issue evidence is cluster-aware:
 
 - Duplicate clusters are deduplicated globally across debt tiers.
-- A duplicate cluster only counts as release-local when every report in that cluster is release-local; fresh duplicate reports can add field breadth to an older bug, but they do not turn that older carryover bug into a new release-local blocker.
+- A duplicate cluster only counts as release-local when every report in that cluster is release-local; fresh duplicate reports can add field breadth to an older bug, but they do not turn that older open unconfirmed risk item into a new release-local blocker.
 - Independent human reporters increase field/community confidence.
 - Unique human commenters increase field/community confidence. Refresh cursor-paginates issue comments until exhausted, so commenter counts and comment-derived fix proof are not capped to the most recent page.
 - Reactions only provide a small weight lift; they never make a source-only issue verified.
@@ -56,7 +56,7 @@ Issue evidence is cluster-aware:
 The model deliberately separates:
 
 - field-confirmed breakage
-- open non-verified risk
+- open unconfirmed issue risk
 - weak or stale issue evidence
 - incomplete classification coverage
 - unresolved closed issues not counted for this release
@@ -64,7 +64,7 @@ The model deliberately separates:
 
 Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override. Open-debt rows can also expose `debtClassification` and `debtClassificationDiff` when debt scoring uses a risk-only bug-evidence hint that differs from the display classification.
 
-Debt evidence also records `installImpactClass` and `installImpactMultiplier`, so damped provider/security/product-debt risks are auditable in the score explanation instead of being hidden inside the final weight. Stale or weak rows with concrete bug evidence, such as source-repro plus impact labels, remain capped as `staleDebt`; they are not promoted to verified field-blocker debt.
+Debt evidence also records `installImpactClass` and `installImpactMultiplier`, so damped provider/security/product-debt risks are auditable in the score explanation instead of being hidden inside the final weight. Stale or weak rows with concrete bug evidence, such as source-only repro plus impact labels, remain capped as `staleDebt`; they are not promoted to verified field-blocker debt.
 
 If raw attributed issues exist without current classifications, the score explanation includes `incomplete_classification_coverage` with raw/classified counts, the missing count, the evidence-coverage ratio, the capped penalty, and example unclassified issue references when available. This makes coverage penalties explicit instead of hiding them inside the final score.
 
@@ -214,7 +214,7 @@ The closure proof payload also rolls status buckets into risk dispositions:
 - `neutral_or_non_actionable`: not-scored closure evidence such as non-bug reports, concrete non-actionable rationale, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.
 
-`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, not-planned closures resolved by trusted release proof, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale or proof are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, a risk-only bug-evidence hint, then disposition weight times severity, functionality, scope, and affected-user reach. Neutral/stale/enhancement-shaped rows are treated as negative risk when concrete bug evidence is present, such as source-repro plus impact labels, data-loss labels, explicit bug/regression labels, affected-version evidence, or bug-shaped titles. This prevents a manual/bot close or stale label from becoming zero-risk solely because the display classification is neutral. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty. Separately, if `unresolvedClosureRiskWeight` is at least 80, the final eligible score is capped at 7.9 so heavy unresolved closure risk cannot still display as `solid`.
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, not-planned closures resolved by trusted release proof, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale or proof are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, a risk-only bug-evidence hint, then disposition weight times severity, functionality, scope, and affected-user reach. Neutral/stale/enhancement-shaped rows are treated as negative risk when concrete bug evidence is present, such as source-only repro plus impact labels, data-loss labels, explicit bug/regression labels, affected-version evidence, or bug-shaped titles. This prevents a manual/bot close or stale label from becoming zero-risk solely because the display classification is neutral. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty. Separately, if `unresolvedClosureRiskWeight` is at least 80, the final eligible score is capped at 7.9 so heavy unresolved closure risk cannot still display as `solid`.
 
 The API exposes a coherent `releaseFixCredit` object:
 

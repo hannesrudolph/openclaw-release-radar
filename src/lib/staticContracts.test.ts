@@ -71,7 +71,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /score-explain__proof/);
     assert.match(html, /issueEvidenceApiLinksHtml/);
     assert.match(html, /\/review\/issues/);
-    assert.match(html, /tier=carryoverDebt/);
+    assert.match(html, /tier=openUnconfirmedRisk/);
+    assert.doesNotMatch(html, /tier=carryoverDebt/);
     assert.match(html, /fieldConfirmed=true/);
     assert.match(html, /severity=critical/);
     assert.match(html, /functionality=core/);
@@ -79,13 +80,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /tier=staleDebt/);
     assert.match(html, /high-weight stale evidence/);
     assert.match(html, /tier=openedFeltSerious/);
-    assert.match(html, /Non-verified/);
-    assert.match(html, /Non-verified open risk means open negative issues/);
+    assert.match(html, /Open unconfirmed/);
+    assert.match(html, /Open unconfirmed issue risk means open negative issues/);
+    assert.doesNotMatch(html, /Non-verified/);
+    assert.match(html, /componentLabel/);
     const issueEvidence = readFileSync(join(root, 'src/lib/releaseIssueEvidence.ts'), 'utf8');
     assert.match(issueEvidence, /RELEASE_ISSUE_EVIDENCE_TIER_INFO/);
     assert.match(issueEvidence, /summaryByTier/);
     assert.match(issueEvidence, /summarizeIssueEvidenceRows/);
-    assert.match(issueEvidence, /Open non-verified risk/);
+    assert.match(issueEvidence, /Open unconfirmed issue risk/);
     assert.match(issueEvidence, /not proven release-local field blockers/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated current-DB issue-evidence rows/);

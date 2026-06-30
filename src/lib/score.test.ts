@@ -195,9 +195,9 @@ describe('installConfidence — graded signals', () => {
       unresolvedClosureIssueCount: 118,
     }), NOW);
 
-    assert.match(result.reason, /228 open non-verified issues \(risk weight 506\)/);
+    assert.match(result.reason, /228 open unconfirmed issues \(evidence weight 506\)/);
     assert.match(result.reason, /118 unresolved closed-release issues \(risk weight 93\)/);
-    assert.doesNotMatch(result.reason, /506 non-verified open-risk weight/);
+    assert.doesNotMatch(result.reason, /506 open unconfirmed issue-risk weight/);
   });
 
   it('unresolved closed-release risk lowers confidence but stays capped', () => {

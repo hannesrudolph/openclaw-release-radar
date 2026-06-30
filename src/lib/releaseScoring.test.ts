@@ -164,9 +164,10 @@ describe('release score explanations', () => {
 
     const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
     assert.ok(carryover);
+    assert.equal(carryover.label, 'Open unconfirmed issue risk');
     assert.ok((carryover.metrics?.count ?? 0) > 0);
     assert.equal(run.scored[0].input.carryoverDebtIssueCount, carryover.metrics?.count);
-    assert.match(run.scored[0].conf.reason, new RegExp(`${carryover.metrics?.count} open non-verified issues`));
+    assert.match(run.scored[0].conf.reason, new RegExp(`${carryover.metrics?.count} open unconfirmed issues`));
     assert.equal(typeof carryover.metrics?.maxPenalty, 'number');
     assert.equal(typeof carryover.metrics?.capApplied, 'boolean');
     assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);

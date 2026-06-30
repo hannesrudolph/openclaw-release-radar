@@ -669,8 +669,8 @@ function reasonFor(
   if (debt.carryover > 8) {
     const count = positiveInteger(input.carryoverDebtIssueCount);
     bits.push(count == null
-      ? `${Math.round(debt.carryover)} non-verified open-risk weight`
-      : `${count} open non-verified ${plural(count, 'issue', 'issues')} (risk weight ${Math.round(debt.carryover)})`);
+      ? `${Math.round(debt.carryover)} open unconfirmed issue-risk weight`
+      : `${count} open unconfirmed ${plural(count, 'issue', 'issues')} (evidence weight ${Math.round(debt.carryover)})`);
   }
   if (input.unresolvedClosureRiskWeight > 0) {
     const count = positiveInteger(input.unresolvedClosureIssueCount);

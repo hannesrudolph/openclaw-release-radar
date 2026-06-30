@@ -3045,6 +3045,10 @@ function verifyExplanationDetails({ failures, tag, source, label, details, text 
       `${source} score explanation ${label}[${idx}] code ${JSON.stringify(detail.code)} must be known`);
     expect(failures, tag, detail.text === text[idx],
       `${source} score explanation ${label}[${idx}] text must match prose line`);
+    if ('label' in detail) {
+      expect(failures, tag, typeof detail.label === 'string' && detail.label.length > 0,
+        `${source} score explanation ${label}[${idx}] label must be non-empty string when present`);
+    }
     if ('metrics' in detail) {
       expect(failures, tag, isObject(detail.metrics),
         `${source} score explanation ${label}[${idx}] metrics must be an object when present`);

@@ -314,7 +314,7 @@ function scoreExplanationFixture() {
       rows: [
         { key: 'base', label: 'Base', points: 7.5, kind: 'base' },
         { key: 'verifiedDebt', label: 'Field blocker debt', points: 0, kind: 'neutral' },
-        { key: 'carryoverDebt', label: 'Open non-verified risk', points: 0, kind: 'neutral' },
+        { key: 'carryoverDebt', label: 'Open unconfirmed issue risk', points: 0, kind: 'neutral' },
         { key: 'staleDebt', label: 'Stale/low-confidence risk', points: 0, kind: 'neutral' },
         { key: 'closureRisk', label: 'Closed-release risk', points: 0, kind: 'neutral' },
         { key: 'coverage', label: 'Classification coverage', points: 0, kind: 'neutral' },
@@ -722,8 +722,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           description: 'Release-local field/community-confirmed blocker evidence that counts as hard open debt.',
         },
         carryoverDebt: {
-          label: 'Open non-verified risk',
-          description: 'Open negative issues overlapping this release that are inherited, source-derived, or otherwise not proven release-local field blockers.',
+          label: 'Open unconfirmed issue risk',
+          description: 'Open negative issues overlapping this release that are inherited, source-only, or otherwise not proven release-local field blockers.',
         },
         staleDebt: {
           label: 'Stale or weak evidence',
