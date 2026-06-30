@@ -1801,6 +1801,10 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     'issue evidence audit summaryByTier must be an object');
   expect(failures, tag, isObject(firstPage.filteredSummary),
     'issue evidence audit filteredSummary must be an object');
+  expect(failures, tag, firstPage.filters?.sort === 'rank',
+    `issue evidence audit default sort (${firstPage.filters?.sort}) must be rank`);
+  expect(failures, tag, firstPage.filters?.direction === 'asc',
+    `issue evidence audit default direction (${firstPage.filters?.direction}) must be asc`);
   expectJsonEqual(failures, tag, 'issue evidence audit tierInfo must match shared tier metadata',
     firstPage.tierInfo, RELEASE_ISSUE_EVIDENCE_TIER_INFO);
   for (const [tier, count] of Object.entries(firstPage.countsByTier ?? {})) {
@@ -2005,6 +2009,34 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
       Number(row.weight ?? 0) >= minWeight && Number(row.weight ?? 0) <= maxWeight),
     `issue evidence audit weight filter must return only rows between ${minWeight} and ${maxWeight}`);
   }
+  const weightSorted = await fetchJson(`${base}?limit=7&sort=weight&direction=desc`);
+  expect(failures, tag, weightSorted.filters?.sort === 'weight',
+    `issue evidence audit sort echo (${weightSorted.filters?.sort}) must be weight`);
+  expect(failures, tag, weightSorted.filters?.direction === 'desc',
+    `issue evidence audit direction echo (${weightSorted.filters?.direction}) must be desc`);
+  expect(failures, tag, isNonIncreasing((weightSorted.rows ?? []).map((row) => Number(row.weight ?? 0))),
+    'issue evidence audit weight desc sort must be non-increasing');
+  const numberSorted = await fetchJson(`${base}?limit=7&sort=number&direction=asc`);
+  expect(failures, tag, numberSorted.filters?.sort === 'number',
+    `issue evidence audit sort echo (${numberSorted.filters?.sort}) must be number`);
+  expect(failures, tag, numberSorted.filters?.direction === 'asc',
+    `issue evidence audit direction echo (${numberSorted.filters?.direction}) must be asc`);
+  expect(failures, tag, isNonDecreasing((numberSorted.rows ?? []).map((row) => Number(row.issue?.number ?? 0))),
+    'issue evidence audit number asc sort must be non-decreasing');
+}
+
+function isNonIncreasing(values) {
+  for (let i = 1; i < values.length; i++) {
+    if (values[i - 1] < values[i]) return false;
+  }
+  return true;
+}
+
+function isNonDecreasing(values) {
+  for (let i = 1; i < values.length; i++) {
+    if (values[i - 1] > values[i]) return false;
+  }
+  return true;
 }
 
 async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {

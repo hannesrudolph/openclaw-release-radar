@@ -463,6 +463,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const fieldConfirmed = fieldConfirmedFilter == null ? null : ['1', 'true', 'yes'].includes(fieldConfirmedFilter.toLowerCase());
     const minWeight = parsed.searchParams.get('minWeight') == null ? null : Number(parsed.searchParams.get('minWeight'));
     const maxWeight = parsed.searchParams.get('maxWeight') == null ? null : Number(parsed.searchParams.get('maxWeight'));
+    const sort = parsed.searchParams.get('sort') ?? 'rank';
+    const direction = parsed.searchParams.get('direction') ?? (sort === 'rank' ? 'asc' : 'desc');
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&
       (!states.length || states.includes(row.issue.state)) &&
@@ -503,6 +505,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         fieldConfirmed,
         minWeight,
         maxWeight,
+        sort,
+        direction,
       },
       countsByTier: {
         verifiedDebt: 0,

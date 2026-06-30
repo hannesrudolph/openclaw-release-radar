@@ -66,6 +66,9 @@ const ISSUE_EVIDENCE_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const
 const ISSUE_EVIDENCE_FUNCTIONALITIES = ['core', 'integration', 'provider', 'docs'] as const;
 const ISSUE_EVIDENCE_SCOPES = ['broad', 'moderate', 'niche'] as const;
 const ISSUE_EVIDENCE_AFFECTED_USERS = ['many', 'some', 'few', 'unknown'] as const;
+const ISSUE_EVIDENCE_SORTS = ['rank', 'weight', 'updated', 'created', 'closed', 'number'] as const;
+type IssueEvidenceSort = (typeof ISSUE_EVIDENCE_SORTS)[number];
+type SortDirection = 'asc' | 'desc';
 
 // Cross-reference each release tag against cached advisories. `affected` = CVEs in
 // this version's own window (see CVE_BADGE_WINDOW); `patched` = CVEs whose fix first
@@ -337,6 +340,20 @@ function parseNumberFilter(raw: unknown): number | null | undefined {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function parseIssueEvidenceSort(raw: unknown): IssueEvidenceSort | null {
+  if (raw == null || raw === '') return 'rank';
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const text = String(value).trim();
+  return (ISSUE_EVIDENCE_SORTS as readonly string[]).includes(text) ? text as IssueEvidenceSort : null;
+}
+
+function parseSortDirection(raw: unknown, sort: IssueEvidenceSort): SortDirection | null {
+  if (raw == null || raw === '') return sort === 'rank' ? 'asc' : 'desc';
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  const text = String(value).trim().toLowerCase();
+  return text === 'asc' || text === 'desc' ? text : null;
+}
+
 function parseCommaList(raw: unknown): string[] {
   const values = Array.isArray(raw) ? raw : typeof raw === 'string' ? [raw] : [];
   return [...new Set(values
@@ -357,6 +374,50 @@ function issueClassificationField(row: { issue?: unknown }, field: string): stri
     : null;
   const value = classification?.[field];
   return typeof value === 'string' ? value : null;
+}
+
+function sortedIssueEvidenceRows<T extends { row: any; rank: number }>(
+  rows: T[],
+  sort: IssueEvidenceSort,
+  direction: SortDirection,
+): T[] {
+  const multiplier = direction === 'asc' ? 1 : -1;
+  return [...rows].sort((a, b) => {
+    const valueDiff = compareIssueEvidenceSortValue(a, b, sort);
+    if (valueDiff !== 0) return valueDiff * multiplier;
+    return a.rank - b.rank;
+  });
+}
+
+function compareIssueEvidenceSortValue(
+  a: { row: any; rank: number },
+  b: { row: any; rank: number },
+  sort: IssueEvidenceSort,
+): number {
+  if (sort === 'rank') return a.rank - b.rank;
+  const av = issueEvidenceSortValue(a.row, sort);
+  const bv = issueEvidenceSortValue(b.row, sort);
+  const aMissing = av == null || Number.isNaN(av);
+  const bMissing = bv == null || Number.isNaN(bv);
+  if (aMissing && bMissing) return 0;
+  if (aMissing) return 1;
+  if (bMissing) return -1;
+  return av === bv ? 0 : av < bv ? -1 : 1;
+}
+
+function issueEvidenceSortValue(row: any, sort: IssueEvidenceSort): number | null {
+  if (sort === 'weight') return Number(row.weight ?? 0);
+  if (sort === 'number') return Number(row.issue?.number ?? 0);
+  if (sort === 'updated') return timestampValue(row.issue?.updatedAt);
+  if (sort === 'created') return timestampValue(row.issue?.createdAt);
+  if (sort === 'closed') return timestampValue(row.issue?.closedAt);
+  return null;
+}
+
+function timestampValue(value: unknown): number | null {
+  if (typeof value !== 'string') return null;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
@@ -714,6 +775,16 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(400).json({ error: 'invalid weight range', minWeight, maxWeight });
     return;
   }
+  const sort = parseIssueEvidenceSort(req.query.sort);
+  if (!sort) {
+    res.status(400).json({ error: 'invalid sort', sort: req.query.sort });
+    return;
+  }
+  const direction = parseSortDirection(req.query.direction, sort);
+  if (!direction) {
+    res.status(400).json({ error: 'invalid direction', direction: req.query.direction });
+    return;
+  }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
   const evidence = releaseIssueEvidenceRows(tag);
@@ -729,18 +800,20 @@ api.get('/releases/:tag/review/issues', (req, res) => {
   const functionalitySet = functionalityFilter ? new Set(functionalityFilter) : null;
   const scopeSet = scopeFilter ? new Set(scopeFilter) : null;
   const affectedUsersSet = affectedUsersFilter ? new Set(affectedUsersFilter) : null;
-  const allRows = evidence.rows
-    .filter((row) => !tierSet || tierSet.has(row.tier))
-    .filter((row) => !impactSet || impactSet.has(row.installImpactClass as ReleaseIssueEvidenceImpactClass))
-    .filter((row) => !stateSet || stateSet.has(issueEvidenceState(row)))
-    .filter((row) => !sentimentSet || sentimentSet.has(issueClassificationField(row, 'sentiment') as any))
-    .filter((row) => !severitySet || severitySet.has(issueClassificationField(row, 'severity') as any))
-    .filter((row) => !functionalitySet || functionalitySet.has(issueClassificationField(row, 'functionality') as any))
-    .filter((row) => !scopeSet || scopeSet.has(issueClassificationField(row, 'scope') as any))
-    .filter((row) => !affectedUsersSet || affectedUsersSet.has(issueClassificationField(row, 'affectedUsers') as any))
-    .filter((row) => fieldConfirmedFilter == null || row.fieldConfirmed === fieldConfirmedFilter)
-    .filter((row) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
-    .filter((row) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
+  const filteredRows = evidence.rows
+    .map((row, rank) => ({ row, rank }))
+    .filter(({ row }) => !tierSet || tierSet.has(row.tier))
+    .filter(({ row }) => !impactSet || impactSet.has(row.installImpactClass as ReleaseIssueEvidenceImpactClass))
+    .filter(({ row }) => !stateSet || stateSet.has(issueEvidenceState(row)))
+    .filter(({ row }) => !sentimentSet || sentimentSet.has(issueClassificationField(row, 'sentiment') as any))
+    .filter(({ row }) => !severitySet || severitySet.has(issueClassificationField(row, 'severity') as any))
+    .filter(({ row }) => !functionalitySet || functionalitySet.has(issueClassificationField(row, 'functionality') as any))
+    .filter(({ row }) => !scopeSet || scopeSet.has(issueClassificationField(row, 'scope') as any))
+    .filter(({ row }) => !affectedUsersSet || affectedUsersSet.has(issueClassificationField(row, 'affectedUsers') as any))
+    .filter(({ row }) => fieldConfirmedFilter == null || row.fieldConfirmed === fieldConfirmedFilter)
+    .filter(({ row }) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
+    .filter(({ row }) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
+  const allRows = sortedIssueEvidenceRows(filteredRows, sort, direction).map(({ row }) => row);
   const pageRows = allRows.slice(cursor, cursor + limit);
   const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
@@ -767,6 +840,8 @@ api.get('/releases/:tag/review/issues', (req, res) => {
       fieldConfirmed: fieldConfirmedFilter,
       minWeight,
       maxWeight,
+      sort,
+      direction,
     },
     countsByTier: evidence.countsByTier,
     summaryByTier: evidence.summaryByTier,
