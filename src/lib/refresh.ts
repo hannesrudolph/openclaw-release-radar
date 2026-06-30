@@ -653,20 +653,45 @@ export async function refresh(): Promise<{
       }
 
       // Pass 2: pull recent comments in one GraphQL batch, then classify pending
-      // issues in parallel. Per-issue failures are isolated — one issue erroring
-      // out doesn't kill the rest of the page or the back-fill.
+      // issues in parallel. Per-issue failures are isolated and page classification
+      // rows are only written after the whole page classifies cleanly.
+      const stagedClassifications: Array<{
+        issueNumber: number;
+        classification: IssueClassification;
+        issueUpdatedAt: string;
+        promptVersion: number;
+      }> = [];
+      const classificationFailuresBeforePage = classificationFailures.length;
       await runWithConcurrency(toClassify, CLASSIFY_CONCURRENCY, async (issue) => {
         try {
           const comments = commentsByIssue.get(issue.number) ?? [];
-          const cls: IssueClassification = await classifyIssue(issue, comments, tags);
-          upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
-          classifiedCount++;
+          const classification: IssueClassification = await classifyIssue(issue, comments, tags);
+          stagedClassifications.push({
+            issueNumber: issue.number,
+            classification,
+            issueUpdatedAt: issue.updated_at,
+            promptVersion: PROMPT_VERSION,
+          });
         } catch (e) {
           const message = `[classify] issue #${issue.number} failed: ${(e as Error).message}`;
           classificationFailures.push(message);
           console.error(message);
         }
       });
+      if (classificationFailures.length === classificationFailuresBeforePage && stagedClassifications.length > 0) {
+        try {
+          runInWriteTransaction(() => {
+            for (const row of stagedClassifications) {
+              upsertClassification(row.issueNumber, row.classification, row.issueUpdatedAt, row.promptVersion);
+            }
+          });
+          classifiedCount += stagedClassifications.length;
+        } catch (error) {
+          const message = recordEvidenceRefreshFailure('issue-classification-write', pageEvidenceScope, error, pageEvidenceContext);
+          console.warn(`${message}; rolled back issue classification writes and refusing score persistence`);
+          classificationFailures.push(message);
+        }
+      }
 
       if (crossedOldest) crossedOldestEver = true;
 

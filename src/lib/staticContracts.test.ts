@@ -557,6 +557,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /runInWriteTransaction\(\(\) => \{[\s\S]*persistIssueStateEvidence\(stateEvidence\)/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('issue-page-write', pageEvidenceScope, error, pageEvidenceContext\)/);
+    assert.match(refresh, /const stagedClassifications/);
+    assert.match(refresh, /stagedClassifications\.push/);
+    assert.match(refresh, /runInWriteTransaction\(\(\) => \{[\s\S]*upsertClassification\(row\.issueNumber/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('issue-classification-write', pageEvidenceScope, error, pageEvidenceContext\)/);
     assert.ok(
       refresh.indexOf('const commentsByIssue = settledValue(commentsResult)') < refresh.indexOf('runInWriteTransaction(() => {'),
       'refresh must fetch issue page evidence before transactionally writing page rows',
@@ -565,8 +569,13 @@ describe('static scoring/UI contracts', () => {
       refresh.indexOf('runInWriteTransaction(() => {') < refresh.indexOf('await runWithConcurrency(toClassify'),
       'refresh must finish page evidence write transaction before classification',
     );
+    assert.ok(
+      refresh.indexOf('stagedClassifications.push') < refresh.indexOf('upsertClassification(row.issueNumber'),
+      'refresh must stage classifications before transactional classification writes',
+    );
     assert.doesNotMatch(refresh, /issue\.labels\.length/);
     assert.match(scoringDoc, /issue-page write failures are recorded as `issue-page-write`, rolled back, and score-blocking/);
+    assert.match(scoringDoc, /classifications are also staged in memory and written in one transaction/);
   });
 
   it('refresh treats release checks and advisories as score-blocking evidence', () => {
