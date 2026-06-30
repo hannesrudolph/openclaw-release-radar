@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { listReleasesDb } from '../src/lib/db.ts';
 import { computeHoursToNextStable } from '../src/lib/releaseNotes.ts';
 import { buildReleaseScoreRun, persistReleaseScoreRun } from '../src/lib/releaseScoring.ts';
+import { assertCleanIngestionMetadataBeforeScore } from './lib/score-ingestion-guard.mjs';
 
 const db = new DatabaseSync(process.env.DB_PATH ?? './data/radar.db');
 const setStableGap = db.prepare(`UPDATE releases SET hours_to_next_stable=? WHERE tag=?`);
@@ -23,6 +24,7 @@ for (const release of allReleases) {
 }
 
 const monitored = listReleasesDb(10);
+assertCleanIngestionMetadataBeforeScore(monitored);
 const scoreRun = buildReleaseScoreRun({
   releases: monitored,
 });

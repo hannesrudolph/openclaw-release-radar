@@ -269,9 +269,13 @@ describe('static scoring/UI contracts', () => {
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
+    assert.match(populate, /assertCleanIngestionMetadataBeforeScore\(monitored\)/);
     assert.match(populate, /persistReleaseScoreRun/);
     assert.match(backfill, /buildReleaseScoreRun/);
+    assert.match(backfill, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
     assert.match(backfill, /persistReleaseScoreRun/);
+    assert.match(populate, /score-ingestion-guard\.mjs/);
+    assert.match(backfill, /score-ingestion-guard\.mjs/);
     assert.doesNotMatch(populate, /installConfidence/);
     assert.doesNotMatch(populate, /openDebtLoad/);
     assert.doesNotMatch(populate, /feltLoad/);
@@ -318,6 +322,7 @@ describe('static scoring/UI contracts', () => {
   it('closed-window backfill classifies raw closed gaps and reruns proof pipeline', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
+    const guard = readFileSync(join(root, 'scripts/lib/score-ingestion-guard.mjs'), 'utf8');
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
     assert.equal(pkg.scripts['backfill:closed-windows'], 'tsx scripts/backfill-closed-windows.mjs');
     assert.match(script, /listIssuesBatch/);
@@ -326,8 +331,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
     assert.match(script, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
-    assert.match(script, /getMeta\('issue_crawl_last_run'\)/);
-    assert.match(script, /ingestionEvidenceFailuresAfter/);
+    assert.match(guard, /getMeta\('issue_crawl_last_run'\)/);
+    assert.match(guard, /ingestionEvidenceFailuresAfter/);
     assert.match(script, /persistReleaseScoreRun/);
     assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
     assert.match(analysis, /missingClassificationClosureProof/);
@@ -424,7 +429,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
     assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);
     assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
-    assert.match(scoringDoc, /Before writing scores, the script refuses dirty ingestion metadata/);
+    assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(readme, /structured `explanation` object/);
