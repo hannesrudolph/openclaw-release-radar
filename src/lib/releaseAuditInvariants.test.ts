@@ -330,11 +330,13 @@ function scoreExplanationFixture() {
     positives: ['The release is eligible and recommended.'],
     positiveDetails: [{
       code: 'release_recommended',
+      label: 'Release recommended',
       text: 'The release is eligible and recommended.',
     }],
     limits: ['One closed issue still needs release proof.'],
     limitDetails: [{
       code: 'closed_issues_not_counted_as_release_fixes',
+      label: 'Closed issue release proof',
       text: 'One closed issue still needs release proof.',
       metrics: { notCountedClosedCount: 1 },
       issueRefs: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
@@ -885,6 +887,23 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
   };
 }
 
+function apiFixtureFetchJsonWithMutatedExplanation(mutator: (explanation: any) => void) {
+  const fetchJson = apiFixtureFetchJson();
+  return async (url: string) => {
+    const payload = JSON.parse(JSON.stringify(await fetchJson(url)));
+    if (url.endsWith('/api/public')) {
+      mutator(payload.releases[0].explanation);
+    } else if (url.endsWith('/api/releases')) {
+      mutator(payload[0].explanation);
+    } else if (url.endsWith('/api/comparison')) {
+      mutator(payload.releases[0].local.components.explanation);
+    } else if (url.endsWith('/api/releases/v1/review')) {
+      mutator(payload.local.components.explanation);
+    }
+    return payload;
+  };
+}
+
 function throwHttpError(url: string, status: number, payload: unknown): never {
   const error: any = new Error(`${url} returned ${status}: ${JSON.stringify(payload)}`);
   error.status = status;
@@ -914,6 +933,25 @@ describe('verifyReleaseAudit', () => {
     assert.deepEqual(result.failures, []);
   });
 
+  it('fails when the recommended flag does not match the scoring threshold policy', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        releases: [{
+          tag: 'v1',
+          final_score: 7.5,
+          state: 'eligible',
+          recommended: 0,
+          scored_at: auditScoredAt,
+          score_reason: 'test reason',
+          negative_issues: 1,
+          positive_issues: 0,
+        }],
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /recommended release tags/.test(failure)));
+  });
+
   it('fails when releases API rows expose unexpected keys', async () => {
     const fetchJson = apiFixtureFetchJson();
     const result = await verifyReleaseAudit({
@@ -929,6 +967,70 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /releases row must not expose unknown keys: unexpectedDebugField/.test(failure)));
+  });
+
+  it('fails when score ledger row identity drifts', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJsonWithMutatedExplanation((explanation) => {
+        const rows = explanation.scoreLedger.rows;
+        rows.splice(rows.findIndex((row: any) => row.key === 'closureRisk'), 1);
+        rows.find((row: any) => row.key === 'releaseVerification').label = 'Checks';
+        rows.push({ ...rows.find((row: any) => row.key === 'coverage') });
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /scoreLedger component row order/.test(failure)));
+    assert.ok(result.failures.some((failure) => /releaseVerification.*label/.test(failure)));
+    assert.ok(result.failures.some((failure) => /duplicate keys: coverage/.test(failure)));
+  });
+
+  it('fails when score ledger caps use unknown or misordered identities', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJsonWithMutatedExplanation((explanation) => {
+        explanation.scoreLedger.caps = [
+          { key: 'hotfixCeiling', label: 'Hotfix successor ceiling', ceiling: 8, applied: false, before: 7.5, after: 7.5, reason: 'test' },
+          { key: 'closureRiskCeiling', label: 'Wrong closure label', ceiling: 7.9, applied: false, before: 7.5, after: 7.5, reason: 'test' },
+          { key: 'mysteryCeiling', label: 'Mystery', ceiling: 7, applied: true, before: 7.5, after: 7, reason: 'test' },
+        ];
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /scoreLedger cap order/.test(failure)));
+    assert.ok(result.failures.some((failure) => /closureRiskCeiling.*label/.test(failure)));
+    assert.ok(result.failures.some((failure) => /unknown cap key/.test(failure)));
+  });
+
+  it('fails when score explanation details lack canonical labels or use the wrong code category', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJsonWithMutatedExplanation((explanation) => {
+        delete explanation.positiveDetails[0].label;
+        explanation.limitDetails[0].code = 'release_recommended';
+        explanation.limitDetails[0].label = 'Release recommended';
+        explanation.limitDetails[0].debugPayload = true;
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /positiveDetails\[0\] label must be present/.test(failure)));
+    assert.ok(result.failures.some((failure) => /limitDetails\[0\] code .* must be known for limitDetails/.test(failure)));
+    assert.ok(result.failures.some((failure) => /limitDetails\[0\] must not expose unknown keys: debugPayload/.test(failure)));
+  });
+
+  it('fails when score ledger band drifts from the release band', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJsonWithMutatedExplanation((explanation) => {
+        explanation.scoreLedger.band = 'solid';
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /scoreLedger band .* must match release band/.test(failure)));
   });
 
   it('fails when summary release audit links drift from canonical endpoints', async () => {

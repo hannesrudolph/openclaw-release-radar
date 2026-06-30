@@ -124,7 +124,7 @@ export interface ScoreExplanationCap {
 
 export interface ScoreExplanationDetail {
   code: string;
-  label?: string;
+  label: string;
   text: string;
   metrics?: Record<string, number | string | boolean | null>;
   buckets?: Record<string, number>;
@@ -197,6 +197,23 @@ export const SCORE_EXPLANATION_POSITIVE_CODES = [
 ] as const;
 type ScoreExplanationLimitCode = (typeof SCORE_EXPLANATION_LIMIT_CODES)[number];
 type ScoreExplanationPositiveCode = (typeof SCORE_EXPLANATION_POSITIVE_CODES)[number];
+
+export const SCORE_EXPLANATION_DETAIL_LABELS: Record<ScoreExplanationLimitCode | ScoreExplanationPositiveCode, string> = {
+  field_visible_reports_opened: 'Field-visible reports opened',
+  verified_field_blocker_debt: 'Field blocker debt',
+  source_carryover_risk: 'Open unconfirmed issue risk',
+  stale_low_confidence_evidence: 'Stale or weak evidence',
+  incomplete_classification_coverage: 'Incomplete classification coverage',
+  closed_issues_not_counted_as_release_fixes: 'Closed issue release proof',
+  unverified_closed_fix_reachability: 'Unverified closed fix reachability',
+  missing_full_release_evidence_report: 'Missing full release evidence report',
+  model_ceiling_and_capped_confidence: 'Model ceiling and capped confidence',
+  no_verified_field_blocker_debt: 'No verified field-blocker debt',
+  release_checks_passed: 'Release checks passed',
+  artifact_verified: 'Artifact verified',
+  release_recommended: 'Release recommended',
+  hard_gates_passed: 'Install eligibility passed',
+};
 
 export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseScoreRun {
   const releases = options.releases ?? listReleasesDb(options.releaseLimit ?? 20);
@@ -694,10 +711,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const addLimit = (
     code: ScoreExplanationLimitCode,
     text: string,
-    extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
+    extra: Omit<ScoreExplanationDetail, 'code' | 'label' | 'text'> = {},
   ) => {
     limits.push(text);
-    limitDetails.push({ code, text, ...extra });
+    limitDetails.push({ code, text, ...extra, label: SCORE_EXPLANATION_DETAIL_LABELS[code] });
   };
 
   if (opened.length) {
@@ -750,7 +767,6 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
-        label: 'Open unconfirmed issue risk',
         metrics: {
           count: Number(debtSummary.carryover?.count ?? carryoverDebt.length),
           storedExampleCount: carryoverDebt.length,
@@ -899,10 +915,10 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   const addPositive = (
     code: ScoreExplanationPositiveCode,
     text: string,
-    extra: Omit<ScoreExplanationDetail, 'code' | 'text'> = {},
+    extra: Omit<ScoreExplanationDetail, 'code' | 'label' | 'text'> = {},
   ) => {
     positives.push(text);
-    positiveDetails.push({ code, text, ...extra });
+    positiveDetails.push({ code, text, ...extra, label: SCORE_EXPLANATION_DETAIL_LABELS[code] });
   };
   if (!verified.length) {
     addPositive(
@@ -1092,12 +1108,12 @@ function buildGateScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedge
   const input = result.input;
   const row: ScoreExplanationLedgerRow = result.conf.status === 'skip-cve'
     ? {
-      key: 'cveGate',
-      label: 'CVE safety gate',
-      points: roundMetric(result.conf.score ?? 0),
-      kind: 'penalty',
-      metric: roundMetric(input.cveLoad),
-      note: 'Known medium-or-higher CVE exposure activates a hard skip gate; score is bounded below normal install confidence.',
+	      key: 'cveGate',
+	      label: 'CVE install gate',
+	      points: roundMetric(result.conf.score ?? 0),
+	      kind: 'penalty',
+	      metric: roundMetric(input.cveLoad),
+	      note: 'Known medium-or-higher CVE exposure activates an install skip gate; score is bounded below normal install confidence.',
     }
     : {
       key: 'settleGate',

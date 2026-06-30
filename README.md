@@ -160,7 +160,7 @@ Main public payload:
 curl http://127.0.0.1:8787/api/public
 ```
 
-Top-level `schemaVersion` is the public payload contract version. Current value: `1`.
+Top-level `schemaVersion` is the public payload contract version. Current value: `2`.
 
 Score review:
 
@@ -245,8 +245,9 @@ The structured score explanation appears at these paths:
 That structured `explanation` object contains:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.
+- `scoreLedger`: canonical score math rows with stable row keys/labels, subtotal, cap rows, score after caps, and final rounded score.
 - `positives` / `limits`: human-readable evidence lines for the UI.
-- `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets` / `riskBuckets`, and `issueRefs`.
+- `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, mandatory canonical `label`, optional `metrics`, `buckets` / `riskBuckets`, and `issueRefs`.
 - `verdict`: install-facing interpretation of the score.
 
 The `/api/releases/:tag/review` `local.input` and `local.components` objects also expose `schemaVersion`. Current value: `1`.
@@ -256,7 +257,8 @@ The `/api/releases/:tag/review` `local.gateEvidence` object also exposes `schema
 The `/api/releases/:tag/review` `local.gateEvidence.labelTimeline` object also exposes `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.gateEvidence.releaseChecks` and `local.gateEvidence.artifactVerification` objects also expose `schemaVersion`. Current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
-The `/api/status`, `/api/config`, `/api/releases` rows, `/api/releases/history` rows, and `/api/public` release rows also expose `schemaVersion`. Current value: `1`.
+The `/api/status`, `/api/config`, and `/api/releases/history` rows also expose `schemaVersion`. Current value: `1`.
+The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `2`.
 
 ## Development Commands
 

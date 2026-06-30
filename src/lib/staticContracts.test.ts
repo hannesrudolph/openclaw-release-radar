@@ -571,8 +571,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /releaseClosureProofIntegrity/);
     assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
+    assert.match(readme, /public payload contract version\. Current value: `2`/);
+    assert.match(readme, /mandatory canonical `label`/);
+    assert.match(scoringDoc, /ledger row keys, labels, order, cap keys, and cap order/);
+    assert.match(scoringDoc, /mandatory canonical `label`/);
     assert.match(readme, /score_persistence_last_run/);
     assert.match(readme, /Current value: `1`/);
+    assert.match(readme, /Current value: `2`/);
     assert.match(readme, /stable reason `code`/);
   });
 
@@ -588,6 +593,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const SCORE_EXPLANATION_LIMIT_CODES/);
     assert.match(scorer, /export const SCORE_EXPLANATION_POSITIVE_CODES/);
+    assert.match(scorer, /export const SCORE_EXPLANATION_DETAIL_LABELS/);
   });
 
   it('public issue summaries use effective scoring classifications', () => {

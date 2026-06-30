@@ -314,25 +314,26 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
   | jq '{score: .local.score, explanation: .local.components.explanation, fix: .local.gateEvidence.fixProvenance.releaseFixCredit}'
 ```
 
-`/api/public` exposes top-level `schemaVersion` for the public payload contract. Current value: `1`.
+`/api/public` exposes top-level `schemaVersion` for the public payload contract. Current value: `2`.
 
 `components.explanation` is the stable "Why not 10?" contract:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.
-- `scoreLedger`: ordered score math rows (`base`, evidence penalties, survival/shakeout/release/artifact bonuses), cap rows such as heavy closure-risk ceiling and hotfix ceiling, subtotal before caps, score after caps, and final rounded score.
+- `scoreLedger`: ordered score math rows (`base`, evidence penalties, survival/shakeout/release/artifact bonuses), cap rows such as heavy closure-risk ceiling and hotfix ceiling, subtotal before caps, score after caps, and final rounded score. The audit verifier treats ledger row keys, labels, order, cap keys, and cap order as part of the contract.
 - `positives`: human-readable favorable evidence lines.
 - `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.
 - `limits`: human-readable limiting evidence lines.
 - `limitDetails`: machine-readable entries aligned 1:1 with `limits`.
 - `verdict`: install-facing interpretation of the score.
 
-Each detail entry has a stable `code`, matching `text`, and may include `metrics`, `buckets`, and `issueRefs`.
+Each detail entry has a stable `code`, mandatory canonical `label`, matching `text`, and may include `metrics`, `buckets`, and `issueRefs`.
 
 `/api/releases/:tag/review` exposes `local.input.schemaVersion` and `local.components.schemaVersion`. Current value: `1`.
 `/api/releases/:tag/review` exposes `local.schemaVersion`; `/api/public` and `/api/releases` expose `scoreAudit.schemaVersion`. Current value: `1`.
 `/api/releases/:tag/review` also exposes `local.issueEvidence.schemaVersion`. Current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
-The `/api/status`, `/api/config`, `/api/releases` rows, `/api/releases/history` rows, and `/api/public` release rows also expose `schemaVersion`. Current value: `1`.
+The `/api/status`, `/api/config`, and `/api/releases/history` rows also expose `schemaVersion`. Current value: `1`.
+The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `2`.
 
 ## Validation Commands
 

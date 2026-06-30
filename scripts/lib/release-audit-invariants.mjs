@@ -4,6 +4,7 @@ import {
   applyTitleFunctionalityHint,
   applyTitleIssueShapeHint,
 } from '../../src/lib/labelOverrides.ts';
+import { REC_THRESHOLD } from '../../src/lib/score.ts';
 import { publicIssueSummariesForRelease } from '../../src/lib/publicIssueSummary.ts';
 import {
   RELEASE_ISSUE_EVIDENCE_TIERS,
@@ -23,6 +24,9 @@ import {
   LABEL_TIMELINE_SCHEMA_VERSION,
   RELEASE_CHECKS_SCHEMA_VERSION,
   SCORE_COMPONENTS_SCHEMA_VERSION,
+  SCORE_EXPLANATION_DETAIL_LABELS,
+  SCORE_EXPLANATION_LIMIT_CODES,
+  SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_INPUT_SCHEMA_VERSION,
 } from '../../src/lib/releaseScoring.ts';
 
@@ -105,22 +109,9 @@ const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 2;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
-const knownExplanationCodes = new Set([
-  'field_visible_reports_opened',
-  'verified_field_blocker_debt',
-  'source_carryover_risk',
-  'stale_low_confidence_evidence',
-  'incomplete_classification_coverage',
-  'closed_issues_not_counted_as_release_fixes',
-  'unverified_closed_fix_reachability',
-  'missing_full_release_evidence_report',
-  'model_ceiling_and_capped_confidence',
-  'no_verified_field_blocker_debt',
-  'release_checks_passed',
-  'artifact_verified',
-  'release_recommended',
-  'hard_gates_passed',
-]);
+const knownExplanationLimitCodes = new Set(SCORE_EXPLANATION_LIMIT_CODES);
+const knownExplanationPositiveCodes = new Set(SCORE_EXPLANATION_POSITIVE_CODES);
+const expectedExplanationDetailLabels = new Map(Object.entries(SCORE_EXPLANATION_DETAIL_LABELS));
 const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
 const releaseRowKeys = new Set([
   'advisories',
@@ -394,6 +385,39 @@ const publicSentimentRank = new Map([['negative', 0], ['positive', 1], ['neutral
 const publicSeverityRank = new Map([['critical', 0], ['high', 1], ['medium', 2], ['low', 3]]);
 const publicScopeRank = new Map([['broad', 0], ['moderate', 1], ['niche', 2]]);
 const publicAffectedUsersRank = new Map([['many', 0], ['some', 1], ['few', 2], ['unknown', 3]]);
+const componentLedgerRows = [
+  ['base', 'Base'],
+  ['verifiedDebt', 'Field blocker debt'],
+  ['carryoverDebt', 'Open unconfirmed issue risk'],
+  ['staleDebt', 'Stale/low-confidence risk'],
+  ['closureRisk', 'Closed-release risk'],
+  ['coverage', 'Classification coverage'],
+  ['survival', 'Stable survival'],
+  ['shakeout', 'Beta shakeout'],
+  ['regression', 'Opened vs fixed balance'],
+  ['breaking', 'Breaking changes'],
+  ['releaseVerification', 'Release checks'],
+  ['artifactVerification', 'Artifact verification'],
+];
+const componentLedgerLabels = new Map(componentLedgerRows);
+const gateLedgerLabels = new Map([
+  ['cveGate', 'CVE install gate'],
+  ['settleGate', 'Settle-time gate'],
+]);
+const optionalLedgerLabels = new Map([
+  ['precisionAdjustment', 'Unrounded model adjustment'],
+]);
+const ledgerCapLabels = new Map([
+  ['closureRiskCeiling', 'Heavy closure-risk ceiling'],
+  ['hotfixCeiling', 'Hotfix successor ceiling'],
+]);
+const ledgerKeys = new Set(['schemaVersion', 'finalScore', 'status', 'band', 'subtotalBeforeCaps', 'scoreAfterCaps', 'rows', 'caps']);
+const ledgerRowKeys = new Set(['key', 'label', 'points', 'kind', 'metric', 'note']);
+const ledgerCapKeys = new Set(['key', 'label', 'ceiling', 'applied', 'before', 'after', 'reason']);
+const explanationDetailKeys = new Set(['code', 'label', 'text', 'metrics', 'buckets', 'riskBuckets', 'issueRefs']);
+const explanationIssueRefKeys = new Set(['number', 'title', 'url', 'state', 'status', 'tier', 'weight', 'installImpactClass', 'installImpactMultiplier', 'proof']);
+const explanationIssueProofKeys = new Set(['status', 'statusLabel', 'riskDisposition', 'riskDispositionLabel', 'summary', 'riskWeight', 'canonicalIssue', 'canonicalPath', 'openPrs', 'reachablePrs', 'notReachablePrs']);
+const explanationLinkedRefKeys = new Set(['number', 'title', 'url', 'state', 'status']);
 const forbiddenPublicKeys = new Set([
   'comparison',
   'delta',
@@ -411,6 +435,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   const rows = [];
   const latestScoredStableRelease = releases.find((release) =>
     release.final_score != null || release.score != null || release.scored_at != null || release.scoredAt != null);
+  verifyRecommendedReleaseInvariant({ failures, releases });
 
   for (const release of releases) {
     const tag = release.tag;
@@ -1760,6 +1785,24 @@ function expect(failures, tag, condition, message) {
   if (!condition) failures.push(`${tag}: ${message}`);
 }
 
+function verifyRecommendedReleaseInvariant({ failures, releases }) {
+  const actualRecommendedTags = releases
+    .filter((release) => release.recommended === true || Number(release.recommended ?? 0) === 1)
+    .map((release) => release.tag);
+  const expectedRecommendedTag = releases.find((release) =>
+    String(release.state ?? release.status ?? '') === 'eligible' &&
+    releaseScoreValue(release) != null &&
+    Number(releaseScoreValue(release)) >= REC_THRESHOLD)?.tag ?? null;
+  const expectedRecommendedTags = expectedRecommendedTag ? [expectedRecommendedTag] : [];
+  expect(failures, 'recommendation', stableJson(actualRecommendedTags) === stableJson(expectedRecommendedTags),
+    `recommended release tags (${JSON.stringify(actualRecommendedTags)}) must equal newest eligible score >= ${REC_THRESHOLD} (${JSON.stringify(expectedRecommendedTags)})`);
+}
+
+function releaseScoreValue(release) {
+  const value = release.final_score ?? release.score ?? null;
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function expectArrayEqual(failures, tag, label, actual, expected) {
   expect(failures, tag, actual.length === expected.length && actual.every((item, idx) => item === expected[idx]),
     `${label} must equal sorted unique proof commits; got ${JSON.stringify(actual)}, expected ${JSON.stringify(expected)}`);
@@ -1911,6 +1954,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         tag: release.tag,
         explanation: releaseApi.explanation,
         recommended: release.recommended === 1,
+        expectedBand: releaseApi.band,
         source: 'releases',
       });
     }
@@ -1983,6 +2027,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         tag: release.tag,
         explanation: publicRelease.explanation,
         recommended: release.recommended === 1,
+        expectedBand: publicRelease.band,
         source: 'public',
       });
     }
@@ -2082,6 +2127,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       tag: release.tag,
       explanation: review.local?.components?.explanation,
       recommended: release.recommended === 1,
+      expectedBand: review.local?.band,
       source: 'review',
     });
     if (releaseApi) {
@@ -2947,14 +2993,14 @@ function verifyScoreAuditSummary({ failures, tag, summary }) {
     `scoreAudit classifiedIssueCount must be a non-negative integer, got ${summary.classifiedIssueCount}`);
 }
 
-function verifyScoreExplanation({ failures, tag, explanation, recommended, source }) {
+function verifyScoreExplanation({ failures, tag, explanation, recommended, expectedBand = null, source }) {
   expect(failures, tag, isObject(explanation), `${source} score explanation must be present`);
   if (!isObject(explanation)) return;
   expect(failures, tag, explanation.schemaVersion === scoreExplanationSchemaVersion,
     `${source} score explanation schemaVersion must be ${scoreExplanationSchemaVersion}, got ${JSON.stringify(explanation.schemaVersion)}`);
   expect(failures, tag, explanation.title === 'Why not 10?',
     `${source} score explanation title must be "Why not 10?", got ${JSON.stringify(explanation.title)}`);
-  verifyScoreLedger({ failures, tag, source, ledger: explanation.scoreLedger });
+  verifyScoreLedger({ failures, tag, source, ledger: explanation.scoreLedger, expectedBand });
   expect(failures, tag, isStringArray(explanation.positives) && explanation.positives.length > 0,
     `${source} score explanation positives must be a non-empty string array`);
   expect(failures, tag, isStringArray(explanation.limits) && explanation.limits.length > 0,
@@ -2965,6 +3011,7 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
     source,
     label: 'positiveDetails',
     details: explanation.positiveDetails,
+    expectedCodes: knownExplanationPositiveCodes,
     text: explanation.positives,
   });
   verifyExplanationDetails({
@@ -2973,6 +3020,7 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
     source,
     label: 'limitDetails',
     details: explanation.limitDetails,
+    expectedCodes: knownExplanationLimitCodes,
     text: explanation.limits,
   });
   expect(failures, tag, typeof explanation.verdict === 'string' && explanation.verdict.length > 0,
@@ -2988,9 +3036,10 @@ function verifyScoreExplanation({ failures, tag, explanation, recommended, sourc
   }
 }
 
-function verifyScoreLedger({ failures, tag, source, ledger }) {
+function verifyScoreLedger({ failures, tag, source, ledger, expectedBand = null }) {
   expect(failures, tag, isObject(ledger), `${source} score explanation scoreLedger must be present`);
   if (!isObject(ledger)) return;
+  verifyAllowedKeys({ failures, tag, label: `${source} scoreLedger`, value: ledger, allowed: ledgerKeys });
   expect(failures, tag, ledger.schemaVersion === 1,
     `${source} scoreLedger schemaVersion must be 1, got ${JSON.stringify(ledger.schemaVersion)}`);
   expect(failures, tag, ledger.finalScore == null || typeof ledger.finalScore === 'number',
@@ -2999,13 +3048,18 @@ function verifyScoreLedger({ failures, tag, source, ledger }) {
     `${source} scoreLedger status must be present`);
   expect(failures, tag, typeof ledger.band === 'string' && ledger.band.length > 0,
     `${source} scoreLedger band must be present`);
-  const minimumRows = ledger.status === 'eligible' || ledger.status === 'skip-hotfix' ? 8 : 1;
-  expect(failures, tag, Array.isArray(ledger.rows) && ledger.rows.length >= minimumRows,
+  if (expectedBand != null) {
+    expect(failures, tag, ledger.band === expectedBand,
+      `${source} scoreLedger band (${ledger.band}) must match release band (${expectedBand})`);
+  }
+  expect(failures, tag, Array.isArray(ledger.rows) && ledger.rows.length > 0,
     `${source} scoreLedger rows must include score components`);
+  verifyScoreLedgerIdentity({ failures, tag, source, ledger });
   let subtotal = 0;
   for (const row of ledger.rows ?? []) {
     expect(failures, tag, isObject(row), `${source} scoreLedger row must be an object`);
     if (!isObject(row)) continue;
+    verifyAllowedKeys({ failures, tag, label: `${source} scoreLedger row ${String(row.key ?? '?')}`, value: row, allowed: ledgerRowKeys });
     expect(failures, tag, typeof row.key === 'string' && row.key.length > 0,
       `${source} scoreLedger row key must be present`);
     expect(failures, tag, typeof row.label === 'string' && row.label.length > 0,
@@ -3014,6 +3068,17 @@ function verifyScoreLedger({ failures, tag, source, ledger }) {
       `${source} scoreLedger row ${row.key} points must be numeric`);
     expect(failures, tag, ['base', 'bonus', 'penalty', 'neutral'].includes(row.kind),
       `${source} scoreLedger row ${row.key} kind must be known`);
+    const expectedKind = expectedScoreLedgerRowKind(row);
+    expect(failures, tag, row.kind === expectedKind,
+      `${source} scoreLedger row ${row.key} kind (${row.kind}) must match expected kind (${expectedKind}) for points ${row.points}`);
+    if ('metric' in row) {
+      expect(failures, tag, row.metric == null || ['number', 'string'].includes(typeof row.metric),
+        `${source} scoreLedger row ${row.key} metric must be null, number, or string`);
+    }
+    if ('note' in row) {
+      expect(failures, tag, row.note == null || typeof row.note === 'string',
+        `${source} scoreLedger row ${row.key} note must be null or string`);
+    }
     subtotal += Number(row.points ?? 0);
   }
   subtotal = roundMetric(subtotal);
@@ -3021,15 +3086,21 @@ function verifyScoreLedger({ failures, tag, source, ledger }) {
     `${source} scoreLedger subtotalBeforeCaps (${ledger.subtotalBeforeCaps}) must equal row total (${subtotal})`);
   let afterCaps = subtotal;
   expect(failures, tag, Array.isArray(ledger.caps), `${source} scoreLedger caps must be an array`);
+  verifyScoreLedgerCapIdentity({ failures, tag, source, caps: ledger.caps ?? [] });
   for (const cap of ledger.caps ?? []) {
     expect(failures, tag, isObject(cap), `${source} scoreLedger cap must be an object`);
     if (!isObject(cap)) continue;
+    verifyAllowedKeys({ failures, tag, label: `${source} scoreLedger cap ${String(cap.key ?? '?')}`, value: cap, allowed: ledgerCapKeys });
     expect(failures, tag, typeof cap.key === 'string' && cap.key.length > 0,
       `${source} scoreLedger cap key must be present`);
+    expect(failures, tag, typeof cap.label === 'string' && cap.label.length > 0,
+      `${source} scoreLedger cap ${cap.key} label must be present`);
     expect(failures, tag, typeof cap.ceiling === 'number' && Number.isFinite(cap.ceiling),
       `${source} scoreLedger cap ${cap.key} ceiling must be numeric`);
     expect(failures, tag, typeof cap.applied === 'boolean',
       `${source} scoreLedger cap ${cap.key} applied must be boolean`);
+    expect(failures, tag, cap.reason == null || typeof cap.reason === 'string',
+      `${source} scoreLedger cap ${cap.key} reason must be string`);
     const expectedAfter = roundMetric(Math.min(afterCaps, Number(cap.ceiling)));
     expect(failures, tag, sameNumber(cap.before, afterCaps),
       `${source} scoreLedger cap ${cap.key} before (${cap.before}) must equal prior score (${afterCaps})`);
@@ -3047,6 +3118,75 @@ function verifyScoreLedger({ failures, tag, source, ledger }) {
   }
 }
 
+function verifyScoreLedgerIdentity({ failures, tag, source, ledger }) {
+  const rows = Array.isArray(ledger.rows) ? ledger.rows.filter(isObject) : [];
+  const keys = rows.map((row) => row.key);
+  const duplicateKeys = keys.filter((key, index) => typeof key === 'string' && keys.indexOf(key) !== index);
+  expect(failures, tag, duplicateKeys.length === 0,
+    `${source} scoreLedger rows must not contain duplicate keys: ${[...new Set(duplicateKeys)].join(', ')}`);
+
+  const componentStatus = ledger.status === 'eligible' || ledger.status === 'skip-hotfix';
+  if (componentStatus) {
+    const expectedKeys = componentLedgerRows.map(([key]) => key);
+    const prefix = keys.slice(0, expectedKeys.length);
+    expect(failures, tag, stableJson(prefix) === stableJson(expectedKeys),
+      `${source} scoreLedger component row order must be ${expectedKeys.join(', ')}, got ${keys.join(', ')}`);
+    const trailing = keys.slice(expectedKeys.length);
+    expect(failures, tag, trailing.length === 0 || stableJson(trailing) === stableJson(['precisionAdjustment']),
+      `${source} scoreLedger precisionAdjustment must be the only optional trailing row, got ${trailing.join(', ')}`);
+  } else {
+    expect(failures, tag, keys.length === 1 && gateLedgerLabels.has(keys[0]),
+      `${source} scoreLedger gate rows must contain exactly one known gate row, got ${keys.join(', ')}`);
+  }
+
+  for (const row of rows) {
+    const expectedLabel = componentLedgerLabels.get(row.key) ?? optionalLedgerLabels.get(row.key) ?? gateLedgerLabels.get(row.key);
+    expect(failures, tag, !!expectedLabel,
+      `${source} scoreLedger unknown row key ${JSON.stringify(row.key)}`);
+    if (expectedLabel) {
+      expect(failures, tag, row.label === expectedLabel,
+        `${source} scoreLedger row ${row.key} label (${JSON.stringify(row.label)}) must be ${JSON.stringify(expectedLabel)}`);
+    }
+  }
+}
+
+function verifyScoreLedgerCapIdentity({ failures, tag, source, caps }) {
+  const validCaps = Array.isArray(caps) ? caps.filter(isObject) : [];
+  const keys = validCaps.map((cap) => cap.key);
+  const duplicateKeys = keys.filter((key, index) => typeof key === 'string' && keys.indexOf(key) !== index);
+  expect(failures, tag, duplicateKeys.length === 0,
+    `${source} scoreLedger caps must not contain duplicate keys: ${[...new Set(duplicateKeys)].join(', ')}`);
+  const knownCapOrder = [...ledgerCapLabels.keys()];
+  let lastOrder = -1;
+  for (const cap of validCaps) {
+    const expectedLabel = ledgerCapLabels.get(cap.key);
+    expect(failures, tag, !!expectedLabel,
+      `${source} scoreLedger unknown cap key ${JSON.stringify(cap.key)}`);
+    if (expectedLabel) {
+      const order = knownCapOrder.indexOf(cap.key);
+      expect(failures, tag, order > lastOrder,
+        `${source} scoreLedger cap order must be ${knownCapOrder.join(', ')}, got ${keys.join(', ')}`);
+      lastOrder = order;
+      expect(failures, tag, cap.label === expectedLabel,
+        `${source} scoreLedger cap ${cap.key} label (${JSON.stringify(cap.label)}) must be ${JSON.stringify(expectedLabel)}`);
+    }
+  }
+}
+
+function scoreLedgerKindForPoints(points) {
+  if (points > 0) return 'bonus';
+  if (points < 0) return 'penalty';
+  if (points === 0) return 'neutral';
+  return null;
+}
+
+function expectedScoreLedgerRowKind(row) {
+  if (row.key === 'base') return 'base';
+  if (row.key === 'cveGate') return 'penalty';
+  if (row.key === 'settleGate') return 'neutral';
+  return scoreLedgerKindForPoints(row.points);
+}
+
 function sameNumber(left, right) {
   return typeof left === 'number' && typeof right === 'number' && Math.abs(left - right) <= 1e-9;
 }
@@ -3056,7 +3196,7 @@ function sameNumberOrNull(left, right) {
   return sameNumber(Number(left), Number(right));
 }
 
-function verifyExplanationDetails({ failures, tag, source, label, details, text }) {
+function verifyExplanationDetails({ failures, tag, source, label, details, expectedCodes, text }) {
   expect(failures, tag, Array.isArray(details),
     `${source} score explanation ${label} must be an array`);
   if (!Array.isArray(details)) return;
@@ -3067,29 +3207,49 @@ function verifyExplanationDetails({ failures, tag, source, label, details, text 
     expect(failures, tag, isObject(detail),
       `${source} score explanation ${label}[${idx}] must be an object`);
     if (!isObject(detail)) continue;
+    verifyAllowedKeys({ failures, tag, label: `${source} score explanation ${label}[${idx}]`, value: detail, allowed: explanationDetailKeys });
     expect(failures, tag, typeof detail.code === 'string' && /^[a-z0-9_]+$/.test(detail.code),
       `${source} score explanation ${label}[${idx}] code must be snake_case`);
-    expect(failures, tag, knownExplanationCodes.has(detail.code),
-      `${source} score explanation ${label}[${idx}] code ${JSON.stringify(detail.code)} must be known`);
+    expect(failures, tag, expectedCodes.has(detail.code),
+      `${source} score explanation ${label}[${idx}] code ${JSON.stringify(detail.code)} must be known for ${label}`);
     expect(failures, tag, detail.text === text[idx],
       `${source} score explanation ${label}[${idx}] text must match prose line`);
-    if ('label' in detail) {
-      expect(failures, tag, typeof detail.label === 'string' && detail.label.length > 0,
-        `${source} score explanation ${label}[${idx}] label must be non-empty string when present`);
+    const expectedLabel = expectedExplanationDetailLabels.get(detail.code);
+    expect(failures, tag, typeof detail.label === 'string' && detail.label.length > 0,
+      `${source} score explanation ${label}[${idx}] label must be present`);
+    if (expectedLabel) {
+      expect(failures, tag, detail.label === expectedLabel,
+        `${source} score explanation ${label}[${idx}] label (${JSON.stringify(detail.label)}) must be ${JSON.stringify(expectedLabel)}`);
     }
     if ('metrics' in detail) {
       expect(failures, tag, isObject(detail.metrics),
         `${source} score explanation ${label}[${idx}] metrics must be an object when present`);
+      if (isObject(detail.metrics)) {
+        for (const [metricKey, value] of Object.entries(detail.metrics)) {
+          expect(failures, tag, isMetricValue(value),
+            `${source} score explanation ${label}[${idx}] metrics.${metricKey} must be scalar or a scalar map`);
+        }
+      }
     }
     if ('buckets' in detail) {
       expect(failures, tag, isObject(detail.buckets),
         `${source} score explanation ${label}[${idx}] buckets must be an object when present`);
+      if (isObject(detail.buckets)) verifyNumericMap({ failures, tag, source, label, idx, field: 'buckets', value: detail.buckets });
+    }
+    if ('riskBuckets' in detail) {
+      expect(failures, tag, isObject(detail.riskBuckets),
+        `${source} score explanation ${label}[${idx}] riskBuckets must be an object when present`);
+      if (isObject(detail.riskBuckets)) verifyNumericMap({ failures, tag, source, label, idx, field: 'riskBuckets', value: detail.riskBuckets });
     }
     if ('issueRefs' in detail) {
       expect(failures, tag, Array.isArray(detail.issueRefs),
         `${source} score explanation ${label}[${idx}] issueRefs must be an array when present`);
       if (Array.isArray(detail.issueRefs)) {
         for (const issue of detail.issueRefs) {
+          if (isObject(issue)) {
+            verifyAllowedKeys({ failures, tag, label: `${source} score explanation ${label}[${idx}] issueRef`, value: issue, allowed: explanationIssueRefKeys });
+            if (isObject(issue.proof)) verifyExplanationIssueProof({ failures, tag, source, label, idx, proof: issue.proof });
+          }
           expect(failures, tag, isObject(issue) && Number.isInteger(issue.number) && issue.number > 0,
             `${source} score explanation ${label}[${idx}] issueRefs entries must include a positive issue number`);
           expect(failures, tag, isObject(issue) && typeof issue.title === 'string' && issue.title.length > 0,
@@ -3099,5 +3259,57 @@ function verifyExplanationDetails({ failures, tag, source, label, details, text 
         }
       }
     }
+  }
+}
+
+function isMetricValue(value) {
+  if (value == null || ['number', 'string', 'boolean'].includes(typeof value)) return true;
+  if (!isObject(value)) return false;
+  return Object.values(value).every((child) => child == null || ['number', 'string', 'boolean'].includes(typeof child));
+}
+
+function verifyNumericMap({ failures, tag, source, label, idx, field, value }) {
+  for (const [key, count] of Object.entries(value)) {
+    expect(failures, tag, typeof key === 'string' && key.length > 0,
+      `${source} score explanation ${label}[${idx}] ${field} keys must be non-empty strings`);
+    expect(failures, tag, typeof count === 'number' && Number.isFinite(count),
+      `${source} score explanation ${label}[${idx}] ${field}.${key} must be numeric`);
+  }
+}
+
+function verifyExplanationIssueProof({ failures, tag, source, label, idx, proof }) {
+  verifyAllowedKeys({ failures, tag, label: `${source} score explanation ${label}[${idx}] issueRef proof`, value: proof, allowed: explanationIssueProofKeys });
+  for (const [key, value] of Object.entries(proof)) {
+    if (key === 'canonicalPath' && value != null) {
+      expect(failures, tag, Array.isArray(value) && value.every((item) => Number.isInteger(item) && item > 0),
+        `${source} score explanation ${label}[${idx}] issueRef proof canonicalPath must contain positive issue numbers`);
+    }
+    if (key === 'canonicalIssue' && value != null) {
+      verifyLinkedExplanationRef({ failures, tag, source, label, idx, key, value });
+    }
+    if (['openPrs', 'reachablePrs', 'notReachablePrs'].includes(key) && value != null) {
+      expect(failures, tag, Array.isArray(value),
+        `${source} score explanation ${label}[${idx}] issueRef proof ${key} must be an array`);
+      if (Array.isArray(value)) {
+        for (const ref of value) verifyLinkedExplanationRef({ failures, tag, source, label, idx, key, value: ref });
+      }
+    }
+  }
+}
+
+function verifyLinkedExplanationRef({ failures, tag, source, label, idx, key, value }) {
+  expect(failures, tag, isObject(value),
+    `${source} score explanation ${label}[${idx}] issueRef proof ${key} entries must be objects`);
+  if (!isObject(value)) return;
+  verifyAllowedKeys({ failures, tag, label: `${source} score explanation ${label}[${idx}] issueRef proof ${key}`, value, allowed: explanationLinkedRefKeys });
+  expect(failures, tag, Number.isInteger(value.number) && value.number > 0,
+    `${source} score explanation ${label}[${idx}] issueRef proof ${key} entries must include a positive number`);
+  if ('title' in value) {
+    expect(failures, tag, value.title == null || typeof value.title === 'string',
+      `${source} score explanation ${label}[${idx}] issueRef proof ${key} title must be null or string`);
+  }
+  if ('url' in value) {
+    expect(failures, tag, value.url == null || typeof value.url === 'string',
+      `${source} score explanation ${label}[${idx}] issueRef proof ${key} url must be null or string`);
   }
 }

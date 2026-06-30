@@ -7,6 +7,7 @@ import {
   ISSUE_EVIDENCE_SCHEMA_VERSION,
   LABEL_TIMELINE_SCHEMA_VERSION,
   RELEASE_CHECKS_SCHEMA_VERSION,
+  SCORE_EXPLANATION_DETAIL_LABELS,
   SCORE_COMPONENTS_SCHEMA_VERSION,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
@@ -79,6 +80,9 @@ describe('release score explanations', () => {
     assert.ok(explanation.positiveDetails.every((detail, idx) => detail.text === explanation.positives[idx]));
     assert.ok(explanation.limitDetails.every((detail) => SCORE_EXPLANATION_LIMIT_CODES.includes(detail.code as any)));
     assert.ok(explanation.positiveDetails.every((detail) => SCORE_EXPLANATION_POSITIVE_CODES.includes(detail.code as any)));
+    const detailLabels = SCORE_EXPLANATION_DETAIL_LABELS as Record<string, string>;
+    assert.ok(explanation.limitDetails.every((detail) => detail.label === detailLabels[detail.code]));
+    assert.ok(explanation.positiveDetails.every((detail) => detail.label === detailLabels[detail.code]));
     assert.equal(explanation.scoreLedger?.schemaVersion, 1);
     assert.equal(explanation.scoreLedger?.finalScore, run.scored[0].conf.score);
     assert.equal(explanation.scoreLedger?.status, run.scored[0].conf.status);
