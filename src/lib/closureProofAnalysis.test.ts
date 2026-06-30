@@ -991,7 +991,7 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((proof.evidence as any).missingClassification, true);
   });
 
-  it('builds fallback commit proof from eligible referenced commits only', () => {
+  it('builds referenced commit context from eligible same-repo commit references only', () => {
     const rows = [
       {
         issue_number: 10,
@@ -1049,11 +1049,11 @@ describe('closure proof canonical roll-up', () => {
     }]);
   });
 
-  it('uses referenced commit proof when merged closing PRs are not reachable', () => {
+  it('does not use referenced commit context as fallback fix proof', () => {
     assert.equal(__closureProofAnalysisTest.shouldUseReferencedCommitProof({
       directMentionCount: 0,
       reachableClosingPrCount: 0,
-    }), true);
+    }), false);
   });
 
   it('does not use referenced commit fallback when reachable PR or direct commit proof already exists', () => {

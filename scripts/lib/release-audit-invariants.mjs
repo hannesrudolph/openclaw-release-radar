@@ -417,6 +417,7 @@ const closureProofAuditEvidenceKeys = new Set([
   'unscoredFixProof',
   'fixCommitProof',
   'canonicalFixCommitProof',
+  'referencedCommitContext',
   'reachableFixCommits',
   'notReachableFixCommits',
 ]);
@@ -1653,6 +1654,10 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     expect(failures, tag, Array.isArray(evidence.canonicalFixCommitProof),
       `proof issue #${row.issue_number} canonicalFixCommitProof must be an array when present`);
   }
+  if ('referencedCommitContext' in evidence) {
+    expect(failures, tag, Array.isArray(evidence.referencedCommitContext),
+      `proof issue #${row.issue_number} referencedCommitContext must be an array when present`);
+  }
 
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'reachableFixCommits', commits: reachableFixCommits });
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'notReachableFixCommits', commits: notReachableFixCommits });
@@ -1702,6 +1707,21 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
       `proof issue #${row.issue_number} canonicalFixCommitProof commitOid must be a full lowercase 40-hex SHA`);
     expect(failures, tag, knownCommitProofStatuses.has(proof.status),
       `proof issue #${row.issue_number} canonicalFixCommitProof has unknown status ${proof.status}`);
+  }
+  for (const ref of Array.isArray(evidence.referencedCommitContext) ? evidence.referencedCommitContext : []) {
+    expect(failures, tag, isObject(ref),
+      `proof issue #${row.issue_number} referencedCommitContext entries must be objects`);
+    if (!isObject(ref)) continue;
+    expect(failures, tag, ref.issueNumber === row.issue_number,
+      `proof issue #${row.issue_number} referencedCommitContext issueNumber (${ref.issueNumber}) must match proof row`);
+    expect(failures, tag, Number.isInteger(ref.sourceIssueNumber) && ref.sourceIssueNumber > 0,
+      `proof issue #${row.issue_number} referencedCommitContext sourceIssueNumber must be a positive integer`);
+    expect(failures, tag, typeof ref.commitOid === 'string' && fullCommitOidRe.test(ref.commitOid),
+      `proof issue #${row.issue_number} referencedCommitContext commitOid must be a full lowercase 40-hex SHA`);
+    expect(failures, tag, ref.source === 'ReferencedEvent.commit',
+      `proof issue #${row.issue_number} referencedCommitContext source must be ReferencedEvent.commit`);
+    expect(failures, tag, !('status' in ref),
+      `proof issue #${row.issue_number} referencedCommitContext must not carry reachability status or fix credit`);
   }
 
   expectArrayEqual(failures, tag, `proof issue #${row.issue_number} reachableFixCommits`, reachableFixCommits, uniqueSorted(proofReachable));

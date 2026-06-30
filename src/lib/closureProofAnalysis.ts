@@ -41,6 +41,7 @@ export interface ClosureProofAnalysisResult {
 
 export interface AnalyzeClosureProofOptions {
   persistScoreAuditPayload?: boolean;
+  refreshCommentPrMentionEvidence?: boolean;
 }
 
 const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
@@ -304,6 +305,7 @@ export async function analyzeClosureProofsForRelease(
   options: AnalyzeClosureProofOptions = {},
 ): Promise<ClosureProofAnalysisResult> {
   const persistScoreAuditPayload = options.persistScoreAuditPayload ?? true;
+  const refreshCommentPrMentions = options.refreshCommentPrMentionEvidence ?? true;
   const analysisStartedAt = new Date().toISOString();
   const release = getRelease(releaseTag);
   const labelCutoff = release ? releaseLabelCutoff(release, analysisStartedAt) : null;
@@ -336,7 +338,9 @@ export async function analyzeClosureProofsForRelease(
     }
   }
   const analysisIssueNumbers = uniqueNumbers([...issueNumbers, ...terminalCanonicalIssuesToBackfill]);
-  await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue);
+  if (refreshCommentPrMentions) {
+    await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue);
+  }
   await checkReleasePrReachability(releaseTag);
   const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
   const aggregateRows = analysisIssueNumbers.length
@@ -381,7 +385,6 @@ export async function analyzeClosureProofsForRelease(
       reachableClosingPrCount: Number(row?.reachable_closing_prs ?? 0),
     })) {
       useReferencedCommitProofIssues.add(issueNumber);
-      for (const mention of referencedCommitMentionsByIssue.get(issueNumber) ?? []) allCommitOids.add(mention.commitOid);
     }
   }
   for (const row of aggregateRows) {
@@ -456,6 +459,7 @@ export async function analyzeClosureProofsForRelease(
       fixCommitProof: commitProof,
       canonicalFixCommitProof: canonicalCommitProof,
       directFixCommitProof: directCommitProof,
+      referencedCommitContext: referencedCommitMentionsByIssue.get(row.number) ?? [],
       canonicalFixCommitProofCount: canonicalCommitMentionsByIssue.get(row.number)?.length ?? 0,
       canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
     };
@@ -532,7 +536,9 @@ function shouldUseReferencedCommitProof({
   directMentionCount: number;
   reachableClosingPrCount: number;
 }): boolean {
-  return directMentionCount === 0 && reachableClosingPrCount === 0;
+  void directMentionCount;
+  void reachableClosingPrCount;
+  return false;
 }
 
 function enrichLinkedPrReachability(releaseTag: string, rawLinkedPrs: unknown[]): unknown[] {
