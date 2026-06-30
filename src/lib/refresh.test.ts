@@ -51,4 +51,10 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldDropStaleClassificationsAfterPromptSweep('page_cap'), false);
     assert.equal(__refreshTest.shouldDropStaleClassificationsAfterPromptSweep('early_stop'), false);
   });
+
+  it('refuses to score after page-capped issue pagination', () => {
+    assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('page_cap'), true);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('exhausted'), false);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('early_stop'), false);
+  });
 });

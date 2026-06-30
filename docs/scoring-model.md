@@ -224,6 +224,8 @@ Closure proof examples are selected after risk weighting and sorted by descendin
 
 Each release review also exposes `dataFreshness`. `scoredAt` is when the score/audit payload was computed. `issueUpdatedAtMax` is the newest GitHub issue row included in the release issue universe. `issueUpdatedAgeHoursAtScore` makes that gap explicit, because a freshly computed score can still be based on issue rows, labels, or source metadata fetched earlier. The review UI shows this as `Source freshness`, and the API includes per-source timestamps for issue rows, classifications, label events/snapshots, closure proof, closure events, PR links, PR metadata, and release reachability.
 
+Refresh records the latest issue-pagination crawl in `meta.issue_crawl_last_run`, including pages fetched, stop reason, whether issue backfill was complete, truncated comment scans seen during the crawl, and whether score persistence happened after that crawl. If issue pagination stops at `MAX_ISSUE_PAGES`, refresh refuses to persist scores from that incomplete crawl; `npm run doctor -- --fail-on-warnings` surfaces recorded page-cap stops and truncated comment scans so a score cannot quietly look fresh after incomplete evidence ingestion.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence.

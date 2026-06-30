@@ -157,6 +157,7 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
 }
 
 const BACKFILL_FLAG = 'backfill_completed_at';
+export const ISSUE_CRAWL_META_KEY = 'issue_crawl_last_run';
 type IssuePaginationStopReason = 'exhausted' | 'early_stop' | 'page_cap';
 
 let refreshing = false;
@@ -377,12 +378,16 @@ export async function refresh(): Promise<{
     const fullIssueBackfill = config.refresh.fullIssueBackfill;
     const MAX_PAGES = config.refresh.maxIssuePages;
     let pagesFetched = 0;
+    let issuesFetched = 0;
+    let monitoredIssuesFetched = 0;
+    let commenterScanTruncatedCount = 0;
     let classifiedCount = 0;
     let crossedOldestEver = false;
     let issuePaginationStopReason: IssuePaginationStopReason = 'exhausted';
 
     paginate: for await (const page of paginateIssues(100)) {
       pagesFetched++;
+      issuesFetched += page.length;
 
       // Page can be empty after PR filtering — keep going until we hit a real signal
       // or run out of pages.
@@ -392,6 +397,7 @@ export async function refresh(): Promise<{
       const monitoredIssueNumbers = page
         .filter((issue) => issueOverlapsMonitoredWindow(issue))
         .map((issue) => issue.number);
+      monitoredIssuesFetched += monitoredIssueNumbers.length;
       const [commentsByIssue, labelEventsByIssue, stateEvidenceByIssue] = await Promise.all([
         listIssueCommentsBatch(page.filter((issue) => issue.comments > 0).map((issue) => issue.number)),
         listIssueLabelEventsBatch(monitoredIssueNumbers),
@@ -404,6 +410,7 @@ export async function refresh(): Promise<{
         const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
         const comments = commentsByIssue.get(issue.number) ?? [];
         const stats = commentStats(issue, comments);
+        if (stats.commenter_scan_truncated) commenterScanTruncatedCount++;
         upsertIssue({
           number: issue.number,
           state: issue.state,
@@ -506,6 +513,32 @@ export async function refresh(): Promise<{
       console.warn(`[refresh] issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; backfill remains incomplete`);
     }
 
+    const issueCrawlMeta = {
+      schemaVersion: 1,
+      startedAt: refreshStartedAt,
+      finishedAt: new Date().toISOString(),
+      fullIssueBackfill,
+      backfillCompleteAtStart: backfillDone,
+      backfillCompleteAfterRun: getMeta(BACKFILL_FLAG) !== null,
+      promptSweep,
+      staleClassificationsAtStart: staleRows,
+      monitoredReleaseCount,
+      oldestMonitoredAt: Number.isFinite(oldestMonitoredMs) ? new Date(oldestMonitoredMs).toISOString() : null,
+      pagesFetched,
+      issuesFetched,
+      monitoredIssuesFetched,
+      maxIssuePages: MAX_PAGES,
+      stopReason: issuePaginationStopReason,
+      crossedOldestEver,
+      commenterScanTruncatedCount,
+      scorePersisted: false,
+      scorePersistedAt: null,
+    };
+    persistIssueCrawlMeta(issueCrawlMeta);
+    if (shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason)) {
+      throw new Error(`Issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; refusing to persist scores from incomplete crawl`);
+    }
+
     // After a prompt-sweep that walked the full pagination: if any rows are
     // STILL on the old prompt version, they're issues whose updated_at is too
     // old for GitHub pagination to reach within MAX_PAGES — they will keep
@@ -559,6 +592,11 @@ export async function refresh(): Promise<{
       stableTagsNewestFirst,
     });
     persistReleaseScoreRun(scoreRun);
+    persistIssueCrawlMeta({
+      ...issueCrawlMeta,
+      scorePersisted: true,
+      scorePersistedAt: new Date().toISOString(),
+    });
 
     processLastRefreshAt = new Date().toISOString();
     invalidateCache();
@@ -593,9 +631,18 @@ function shouldDropStaleClassificationsAfterPromptSweep(issuePaginationStopReaso
   return issuePaginationStopReason === 'exhausted';
 }
 
+function shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason: IssuePaginationStopReason): boolean {
+  return issuePaginationStopReason === 'page_cap';
+}
+
+function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
+  setMeta(ISSUE_CRAWL_META_KEY, JSON.stringify(meta));
+}
+
 export const __refreshTest = {
   shouldDropStaleClassificationsAfterPromptSweep,
   shouldMarkBackfillComplete,
+  shouldRefuseScoreAfterIssuePagination,
 };
 
 export {

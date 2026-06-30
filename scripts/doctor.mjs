@@ -2,6 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
+import { assessIssueCrawlHealth } from './lib/doctor-health.mjs';
 
 const SCHEMA_VERSION = 1;
 const CORE_TABLES = [
@@ -51,6 +52,7 @@ export function buildDoctorReport({
     latestScoredStable: null,
     recommendation: null,
     freshness: null,
+    ingestion: null,
     coverage: null,
     closureProof: null,
     reachability: null,
@@ -111,6 +113,14 @@ export function buildDoctorReport({
     }
     if (Number(report.freshness.issueUpdatedAgeHoursNow ?? 0) > maxIssueLagHours) {
       warnings.push(`${latest.tag}: latest issue data is ${report.freshness.issueUpdatedAgeHoursNow}h old now`);
+    }
+
+    report.ingestion = ingestionSummary(db, latest);
+    const crawlHealth = assessIssueCrawlHealth(report.ingestion.issueCrawl, latest);
+    warnings.push(...crawlHealth.warnings);
+    failures.push(...crawlHealth.failures);
+    if (report.ingestion.commenterScanTruncatedIssueCount > 0) {
+      warnings.push(`${latest.tag}: ${report.ingestion.commenterScanTruncatedIssueCount} issue row(s) have truncated comment scans`);
     }
 
     report.closureProof = closureProofSummary(db, latest.tag, gate);
@@ -418,6 +428,76 @@ function comparisonSummary(db) {
     },
     releaseCount: scalar(db, `SELECT COUNT(*) FROM comparison_releases WHERE snapshot_id=?`, snapshot.id),
   };
+}
+
+function ingestionSummary(db, latest) {
+  return {
+    issueCrawl: parseJson(getMetaValue(db, 'issue_crawl_last_run'), null),
+    commenterScanTruncatedIssueCount: latest?.tag ? commenterScanTruncatedIssueCount(db, latest.tag) : 0,
+  };
+}
+
+function getMetaValue(db, key) {
+  const row = db.prepare(`SELECT value FROM meta WHERE key=?`).get(key);
+  return row?.value ?? null;
+}
+
+function commenterScanTruncatedIssueCount(db, tag) {
+  return scalar(db, `
+    WITH target AS (
+      SELECT
+        tag,
+        published_at AS start_at,
+        COALESCE(
+          (SELECT MIN(next.published_at)
+           FROM releases next
+           WHERE next.published_at > releases.published_at
+             AND next.prerelease = 0),
+          '9999-12-31T23:59:59Z'
+        ) AS end_at
+      FROM releases
+      WHERE tag=?
+    ),
+    issue_open_intervals AS (
+      SELECT
+        i.number AS issue_number,
+        i.created_at AS open_at,
+        COALESCE(
+          (SELECT MIN(c.closed_at)
+           FROM issue_closure_events c
+           WHERE c.issue_number=i.number
+             AND c.closed_at > i.created_at),
+          i.closed_at
+        ) AS close_at
+      FROM issues i
+      UNION ALL
+      SELECT
+        r.issue_number,
+        r.reopened_at AS open_at,
+        COALESCE(
+          (SELECT MIN(c.closed_at)
+           FROM issue_closure_events c
+           WHERE c.issue_number=r.issue_number
+             AND c.closed_at > r.reopened_at),
+          CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+        ) AS close_at
+      FROM issue_reopen_events r
+      JOIN issues i ON i.number=r.issue_number
+      WHERE r.reopened_at IS NOT NULL
+    )
+    SELECT COUNT(DISTINCT i.number)
+    FROM issues i
+    JOIN target
+    WHERE target.start_at IS NOT NULL
+      AND i.commenter_scan_truncated=1
+      AND EXISTS (
+        SELECT 1
+        FROM issue_open_intervals interval
+        WHERE interval.issue_number=i.number
+          AND interval.open_at < target.end_at
+          AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+      )
+  `, tag);
 }
 
 async function apiSummary(apiBase) {
