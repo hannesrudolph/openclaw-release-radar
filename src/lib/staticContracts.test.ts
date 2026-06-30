@@ -328,6 +328,22 @@ describe('static scoring/UI contracts', () => {
     }
   });
 
+  it('issue-state backfill fetches evidence before writing rows', () => {
+    const script = readFileSync(join(root, 'scripts/backfill-issue-state-events.mjs'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
+    assert.match(script, /insertIngestionEvidenceFailure/);
+    assert.match(script, /recordBackfillEvidenceFailure/);
+    assert.match(script, /onMissingIssueAlias/);
+    assert.match(script, /const evidenceByIssue = new Map/);
+    assert.ok(
+      script.indexOf('const evidenceByIssue = new Map') < script.indexOf('snapshotCurrentLabels(issueNumbers, snapshotAt)'),
+      'issue-state backfill must fetch all evidence before snapshot writes',
+    );
+    assert.match(readme, /fetches all GitHub state evidence before writing snapshots\/events/);
+    assert.match(scoringDoc, /manual state backfills cannot leave partial evidence/);
+  });
+
   it('closed-window backfill classifies raw closed gaps and reruns proof pipeline', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');

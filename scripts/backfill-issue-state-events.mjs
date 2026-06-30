@@ -1,5 +1,6 @@
 import {
   db,
+  insertIngestionEvidenceFailure,
   upsertIssueClosureEvent,
   upsertIssueLabelSnapshot,
   upsertIssuePrLink,
@@ -15,6 +16,7 @@ const dryRun = args['dry-run'] === true;
 
 const issueNumbers = roughScoredIssueUniverse(limit);
 const snapshotAt = new Date().toISOString();
+const runId = snapshotAt;
 console.log(JSON.stringify({
   selectedIssues: issueNumbers.length,
   limit,
@@ -29,11 +31,53 @@ let prLinks = 0;
 let pullRequests = 0;
 
 if (!dryRun) {
+  const evidenceByIssue = new Map();
+  let missingAliasCount = 0;
+  for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
+    const chunk = issueNumbers.slice(offset, offset + batchSize);
+    const beforeMissingAliases = missingAliasCount;
+    let chunkEvidence;
+    try {
+      chunkEvidence = await listIssueFixEvidenceBatch(chunk, {
+        onMissingIssueAlias: ({ issueNumber, aliasIndex }) => {
+          missingAliasCount++;
+          recordBackfillEvidenceFailure(
+            'backfill-issue-state-events-missing-alias',
+            `issue #${issueNumber}`,
+            new Error('GitHub issue alias was missing during fix evidence batch recovery'),
+            { issueNumber, aliasIndex, offset, batchSize },
+          );
+        },
+      });
+    } catch (error) {
+      const message = recordBackfillEvidenceFailure(
+        'backfill-issue-state-events',
+        `offset ${offset}`,
+        error,
+        {
+          offset,
+          batchSize,
+          issueCount: chunk.length,
+          firstIssueNumber: chunk[0] ?? null,
+          lastIssueNumber: chunk[chunk.length - 1] ?? null,
+        },
+      );
+      throw new Error(`${message}; refusing to write partial issue state evidence`);
+    }
+    if (missingAliasCount > beforeMissingAliases) {
+      throw new Error(`Refusing to write partial issue state evidence after ${missingAliasCount - beforeMissingAliases} missing issue alias failure(s)`);
+    }
+    for (const [issueNumber, evidence] of chunkEvidence.entries()) {
+      evidenceByIssue.set(issueNumber, evidence);
+    }
+    console.log(`[state-events:fetch] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
+  }
+
   snapshotCurrentLabels(issueNumbers, snapshotAt);
   for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
     const chunk = issueNumbers.slice(offset, offset + batchSize);
-    const evidenceByIssue = await listIssueFixEvidenceBatch(chunk);
     for (const evidence of evidenceByIssue.values()) {
+      if (!chunk.includes(evidence.issueNumber)) continue;
       for (const event of evidence.closureEvents) {
         upsertIssueClosureEvent({
           issue_number: event.issueNumber,
@@ -90,6 +134,20 @@ if (!dryRun) {
     }
     console.log(`[state-events] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
   }
+}
+
+function recordBackfillEvidenceFailure(source, scope, error, context = {}) {
+  const message = `[${source}] ${scope} failed: ${error instanceof Error ? error.message : String(error)}`;
+  insertIngestionEvidenceFailure({
+    run_id: runId,
+    source,
+    scope,
+    issue_number: typeof context.issueNumber === 'number' ? context.issueNumber : null,
+    message,
+    context_json: JSON.stringify(context),
+    scoring_blocking: 1,
+  });
+  return message;
 }
 
 console.log(JSON.stringify({

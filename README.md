@@ -286,7 +286,7 @@ npm start
 
 `npm run doctor` requires the local SQLite DB and emits a read-only JSON health report. Add `-- --api-base http://127.0.0.1:8787` when you want it to also verify the running server's recommendation and score timestamp match the DB; add `-- --fail-on-warnings` when warnings such as stale issue evidence should return a failing exit code.
 
-`npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence.
+`npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence. It fetches all GitHub state evidence before writing snapshots/events; fetch failures or missing issue aliases are recorded in `ingestion_evidence_failures` and abort the write.
 
 `npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit.
 
