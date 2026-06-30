@@ -591,6 +591,7 @@ describe('static scoring/UI contracts', () => {
 
   it('refresh treats release checks and advisories as score-blocking evidence', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.match(refresh, /const evidenceRefreshFailures: string\[\] = \[\]/);
     assert.match(refresh, /insertIngestionEvidenceFailure/);
     assert.match(refresh, /persistEarlyEvidenceFailureCrawlMeta/);
@@ -599,6 +600,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /issue-comments-missing-alias/);
     assert.match(refresh, /issue-label-events-missing-alias/);
     assert.match(refresh, /issue-fix-evidence-missing-alias/);
+    assert.match(refresh, /shouldRefuseScoreAfterTruncatedCommentScans\(commenterScanTruncatedCount\)/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('issue-comments-truncated', null, error/);
+    assert.match(refresh, /refusing score persistence until issue comments are fully scanned/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('release-checks', r\.tag_name, e/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('advisories', advisoryScope, e/);
     assert.match(refresh, /Promise\.allSettled/);
@@ -606,6 +610,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /persistIssueCrawlMeta\(buildIssueCrawlMeta\(\)\)/);
     assert.match(refresh, /evidenceRefreshFailures\.push\(message\)/);
     assert.match(refresh, /evidenceRefreshFailures: summarizeFailures\(evidenceRefreshFailures\)/);
+    assert.match(scoringDoc, /Truncated comment scans are treated as score-blocking incomplete evidence/);
     assert.doesNotMatch(refresh, /release-checks[\s\S]{0,120}continuing/);
     assert.doesNotMatch(refresh, /advisories[\s\S]{0,120}continuing/);
     assert.doesNotMatch(refresh, /artifacts[\s\S]{0,120}continuing/);

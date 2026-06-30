@@ -722,6 +722,17 @@ export async function refresh(): Promise<{
       console.warn(`[refresh] issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; backfill remains incomplete`);
     }
 
+    if (shouldRefuseScoreAfterTruncatedCommentScans(commenterScanTruncatedCount)) {
+      const error = new Error(`${commenterScanTruncatedCount} issue(s) had incomplete comment scans`);
+      const message = recordEvidenceRefreshFailure('issue-comments-truncated', null, error, {
+        commenterScanTruncatedCount,
+      });
+      console.warn(`${message}; refusing score persistence until issue comments are fully scanned`);
+      issuePaginationStopReason = 'evidence_failure';
+      persistIssueCrawlMeta(buildIssueCrawlMeta());
+      throw new Error(`${message}; refusing to persist scores from incomplete comment evidence`);
+    }
+
     const issueCrawlMeta = buildIssueCrawlMeta();
     persistIssueCrawlMeta(issueCrawlMeta);
     if (shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason)) {
@@ -854,6 +865,10 @@ function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {
   return failures.length > 0;
 }
 
+function shouldRefuseScoreAfterTruncatedCommentScans(count: number): boolean {
+  return count > 0;
+}
+
 function evidenceRefreshFailureMessage(source: string, scope: string | null, error: unknown): string {
   const suffix = scope ? ` ${scope}` : '';
   const message = error instanceof Error ? error.message : String(error);
@@ -882,6 +897,7 @@ export const __refreshTest = {
   shouldRefuseScoreAfterClassificationFailures,
   shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
+  shouldRefuseScoreAfterTruncatedCommentScans,
   evidenceRefreshFailureMessage,
   summarizeFailures,
 };

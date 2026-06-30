@@ -77,6 +77,11 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures(['closure proof failed']), true);
   });
 
+  it('refuses to score after truncated comment scans', () => {
+    assert.equal(__refreshTest.shouldRefuseScoreAfterTruncatedCommentScans(0), false);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterTruncatedCommentScans(1), true);
+  });
+
   it('formats score-blocking evidence refresh failures with source and scope', () => {
     assert.equal(
       __refreshTest.evidenceRefreshFailureMessage('release-checks', 'v2026.6.10', new Error('GraphQL missing contexts')),
@@ -93,6 +98,10 @@ describe('refresh backfill completion', () => {
     assert.equal(
       __refreshTest.evidenceRefreshFailureMessage('advisories', null, new Error('GraphQL unavailable')),
       '[advisories] failed: GraphQL unavailable',
+    );
+    assert.equal(
+      __refreshTest.evidenceRefreshFailureMessage('issue-comments-truncated', null, new Error('2 issue(s) had incomplete comment scans')),
+      '[issue-comments-truncated] failed: 2 issue(s) had incomplete comment scans',
     );
   });
 
