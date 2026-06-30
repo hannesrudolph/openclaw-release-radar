@@ -238,7 +238,7 @@ Refresh records the latest issue-pagination crawl in `meta.issue_crawl_last_run`
 
 Every score write also records `meta.score_persistence_last_run` in the same transaction as release rows and `release_score_audits`. The record captures the writer source, scope, release tags, recommended tag, model/prompt versions, score timestamps, and issue-crawl coordinates used by that writer. Doctor fails if current score rows drift from this provenance, including the exact release-tag set, model version, and prompt version, so manual score writes such as `populate-db` or `backfill:closed-windows` are auditable instead of silently replacing refresh-produced scores.
 
-GraphQL nested evidence connections are treated as required provenance, not optional decoration. Missing `nodes`, missing `pageInfo`, or a `hasNextPage` page without `endCursor` fails ingestion for score-affecting issue labels, comments, label timelines, fix evidence, release check contexts, and advisory pages instead of being interpreted as empty evidence.
+GraphQL nested evidence connections are treated as required provenance, not optional decoration. Missing `nodes`, null nodes, missing `pageInfo`, or a `hasNextPage` page without `endCursor` fails ingestion for score-affecting release pages, issue pages, issue labels, comments, label timelines, fix evidence, release check contexts, and advisory pages instead of being interpreted as empty evidence.
 
 `ingestion_evidence_failures` is append-only provenance for score-blocking fetch failures. It records the refresh run id, source, scope, optional release/issue/PR coordinates, message, context JSON, and occurrence timestamp so failed evidence pulls remain auditable even when refresh exits before it can complete normal crawl metadata.
 

@@ -594,6 +594,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(github, /listIssueLabelEventsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueFixEvidenceBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /function requireGraphqlConnection/);
+    assert.match(github, /returned null node at index/);
     assert.match(github, /function nextGraphqlPageCursor/);
     assert.match(github, /pageInfo hasNextPage without endCursor/);
     assert.doesNotMatch(github, /connection\?\.nodes \?\? \[\]/);
@@ -680,6 +681,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
     assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);
+    assert.match(scoringDoc, /Missing `nodes`, null nodes, missing `pageInfo`/);
     assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
     assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
     assert.match(scoringDoc, /score_persistence_last_run/);

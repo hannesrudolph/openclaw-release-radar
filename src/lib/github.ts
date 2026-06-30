@@ -491,11 +491,13 @@ type GraphqlConnection<T> = {
 function requireGraphqlConnection<T>(
   connection: GraphqlConnection<T> | null | undefined,
   context: string,
-): { nodes: Array<T | null>; pageInfo: PageInfo } {
+): { nodes: T[]; pageInfo: PageInfo } {
   if (!connection) throw new Error(`GitHub GraphQL missing ${context} connection`);
   if (!Array.isArray(connection.nodes)) throw new Error(`GitHub GraphQL ${context} connection missing nodes`);
+  const nullIndex = connection.nodes.findIndex((node) => node == null);
+  if (nullIndex >= 0) throw new Error(`GitHub GraphQL ${context} connection returned null node at index ${nullIndex}`);
   if (!isPageInfo(connection.pageInfo)) throw new Error(`GitHub GraphQL ${context} connection missing pageInfo`);
-  return { nodes: connection.nodes, pageInfo: connection.pageInfo };
+  return { nodes: connection.nodes as T[], pageInfo: connection.pageInfo };
 }
 
 function isPageInfo(value: unknown): value is PageInfo {
@@ -525,7 +527,7 @@ function mapRelease(node: ReleaseNode): GhRelease {
   };
 }
 
-function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string } | null> = []): GhIssue {
+function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string }> = []): GhIssue {
   if (!Array.isArray(node.reactionGroups)) {
     throw new Error(`GitHub GraphQL issue #${node.number} missing reactionGroups`);
   }
@@ -533,7 +535,6 @@ function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string } | nul
   const labels = requireGraphqlConnection(node.labels, `issue #${node.number} labels`);
   const labelNames = new Set(
     [...labels.nodes, ...extraLabelNodes]
-      .filter((label): label is { name: string } => !!label)
       .map((label) => label.name),
   );
   return {
@@ -651,7 +652,6 @@ export async function listReleases(fetchSize = 60): Promise<GhRelease[]> {
     const connection = requireGraphqlConnection(assertRepo(data.repository).releases, 'repository.releases');
     releases.push(
       ...connection.nodes
-        .filter((node): node is ReleaseNode => !!node)
         .map(mapRelease)
         .filter((r) => !r.draft),
     );
@@ -708,7 +708,7 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
     );
 
     const connection = requireGraphqlConnection(assertRepo(data.repository).issues, 'repository.issues');
-    const issueNodes = connection.nodes.filter((node): node is IssueNode => !!node);
+    const issueNodes = connection.nodes;
     const extraLabels = await remainingIssueLabelsForNodes(issueNodes);
     const page = issueNodes.map((node) => mapIssue(node, extraLabels.get(node.number) ?? []));
     if (page.length === 0) return;
@@ -772,8 +772,8 @@ function buildIssuesBatchQuery(size: number): string {
   }`;
 }
 
-async function remainingIssueLabelsForNodes(nodes: IssueNode[]): Promise<Map<number, Array<{ name: string } | null>>> {
-  const out = new Map<number, Array<{ name: string } | null>>();
+async function remainingIssueLabelsForNodes(nodes: IssueNode[]): Promise<Map<number, Array<{ name: string }>>> {
+  const out = new Map<number, Array<{ name: string }>>();
   await Promise.all(nodes.map(async (node) => {
     const connection = requireGraphqlConnection(node.labels, `issue #${node.number} labels`);
     const labels = await remainingIssueLabelNodes(node.number, connection.pageInfo);
@@ -785,8 +785,8 @@ async function remainingIssueLabelsForNodes(nodes: IssueNode[]): Promise<Map<num
 async function remainingIssueLabelNodes(
   issueNumber: number,
   pageInfo: PageInfo | null,
-): Promise<Array<{ name: string } | null>> {
-  const labels: Array<{ name: string } | null> = [];
+): Promise<Array<{ name: string }>> {
+  const labels: Array<{ name: string }> = [];
   let after = pageInfo ? nextGraphqlPageCursor(pageInfo, `issue #${issueNumber} labels`) : null;
   while (after) {
     const data = await gh<{ repository: { issue: { labels: { nodes: Array<{ name: string } | null> | null; pageInfo: PageInfo } | null } | null } | null }>(
@@ -859,9 +859,7 @@ export async function listIssueCommentsBatch(
         if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while fetching comments`);
         const connection = requireGraphqlConnection<CommentNode>(issue.comments, `issue #${issueNumber} comments`);
         const comments = all.get(issueNumber) ?? [];
-        comments.push(...(connection.nodes
-          .filter((node): node is CommentNode => !!node)
-          .map(mapComment)));
+        comments.push(...connection.nodes.map(mapComment));
         all.set(issueNumber, comments);
         const nextCursor = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} comments`);
         if (nextCursor) {
@@ -1043,9 +1041,8 @@ function buildReleaseCommitQuery(): string {
   }`;
 }
 
-function mapReleaseCheckContexts(nodes: Array<any | null>): GhReleaseCheckContext[] {
+function mapReleaseCheckContexts(nodes: any[]): GhReleaseCheckContext[] {
   return nodes
-    .filter((node): node is NonNullable<typeof node> => !!node)
     .map((node) => {
       if (node.__typename === 'StatusContext') {
         return {
@@ -1150,7 +1147,7 @@ export async function listIssueFixEvidenceBatch(
 function appendClosedByPullRequestReferences(
   evidence: GhIssueFixEvidence,
   issueNumber: number,
-  nodes: Array<any | null>,
+  nodes: any[],
 ): void {
   for (const pr of nodes) {
     if (!pr?.number) continue;
@@ -1172,7 +1169,7 @@ function appendClosedByPullRequestReferences(
 function appendFixTimelineNodes(
   evidence: GhIssueFixEvidence,
   issueNumber: number,
-  nodes: Array<any | null>,
+  nodes: any[],
 ): void {
   for (const node of nodes) {
     if (!node?.__typename) continue;
@@ -1894,7 +1891,7 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
     );
 
     const connection = requireGraphqlConnection(data.securityVulnerabilities, 'securityVulnerabilities');
-    vulnerabilities.push(...connection.nodes.filter((node): node is SecurityVulnerabilityNode => !!node));
+    vulnerabilities.push(...connection.nodes);
 
     after = nextGraphqlPageCursor(connection.pageInfo, 'securityVulnerabilities');
     if (!after) break;

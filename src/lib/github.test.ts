@@ -42,7 +42,7 @@ describe('GitHub GraphQL mapping', () => {
         { content: 'THUMBS_UP', reactors: { totalCount: 4 } },
         { content: 'CONFUSED', reactors: { totalCount: 1 } },
       ],
-      labels: { nodes: [{ name: 'bug' }, null, { name: 'impact:discord' }], pageInfo: { hasNextPage: false, endCursor: null } },
+      labels: { nodes: [{ name: 'bug' }, { name: 'impact:discord' }], pageInfo: { hasNextPage: false, endCursor: null } },
     });
 
     assert.equal(issue.state, 'closed');
@@ -80,6 +80,10 @@ describe('GitHub GraphQL mapping', () => {
       /issue #42 labels connection missing nodes/,
     );
     assert.throws(
+      () => __githubTest.mapIssue({ ...issueNode, labels: { nodes: [null], pageInfo: { hasNextPage: false, endCursor: null } } }),
+      /issue #42 labels connection returned null node at index 0/,
+    );
+    assert.throws(
       () => __githubTest.mapIssue({ ...issueNode, reactionGroups: null }),
       /issue #42 missing reactionGroups/,
     );
@@ -100,6 +104,10 @@ describe('GitHub GraphQL mapping', () => {
     assert.throws(
       () => __githubTest.requireGraphqlConnection({ nodes: null, pageInfo: { hasNextPage: false, endCursor: null } }, 'test.labels'),
       /test\.labels connection missing nodes/,
+    );
+    assert.throws(
+      () => __githubTest.requireGraphqlConnection({ nodes: [{ name: 'bug' }, null], pageInfo: { hasNextPage: false, endCursor: null } }, 'test.labels'),
+      /test\.labels connection returned null node at index 1/,
     );
     assert.throws(
       () => __githubTest.requireGraphqlConnection({ nodes: [], pageInfo: null }, 'test.labels'),
