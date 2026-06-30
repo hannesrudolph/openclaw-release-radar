@@ -133,6 +133,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /releaseScoring\.ts/);
     assert.match(verifier, /releaseRowKeys/);
     assert.match(verifier, /releaseHistoryRowKeys/);
+    assert.match(verifier, /issueEvidenceAuditKeys/);
+    assert.match(verifier, /closureProofAuditRowKeys/);
+    assert.match(verifier, /reachabilityAuditRowKeys/);
     assert.match(verifier, /SCORE_INPUT_SCHEMA_VERSION/);
     assert.match(verifier, /SCORE_COMPONENTS_SCHEMA_VERSION/);
     assert.match(verifier, /GATE_EVIDENCE_SCHEMA_VERSION/);

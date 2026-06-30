@@ -819,6 +819,31 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /releases row must not expose unknown keys: unexpectedDebugField/.test(failure)));
   });
 
+  it('fails when dynamic audit endpoint payloads expose unexpected keys', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.includes('/api/releases/v1/review/issues') && !url.includes('not-a-tier')) {
+          return { ...payload, debugPayload: true };
+        }
+        if (url.includes('/api/releases/v1/review/closure-proofs') && payload.rows?.[0]) {
+          return { ...payload, rows: [{ ...payload.rows[0], debugRow: true }] };
+        }
+        if (url.includes('/api/releases/v1/review/reachability') && payload.rows?.[0]) {
+          return { ...payload, rows: [{ ...payload.rows[0], debugRow: true }] };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /issue evidence audit payload must not expose unknown keys: debugPayload/.test(failure)));
+    assert.ok(result.failures.some((failure) => /closure proof audit row must not expose unknown keys: debugRow/.test(failure)));
+    assert.ok(result.failures.some((failure) => /PR reachability audit row must not expose unknown keys: debugRow/.test(failure)));
+  });
+
   it('fails when data freshness sourceFetchedAtMax is not the max source timestamp', async () => {
     const result = await verifyReleaseAudit({
       reader: reader(),

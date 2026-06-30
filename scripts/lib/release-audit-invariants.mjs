@@ -158,6 +158,199 @@ const publicIssueKeys = new Set([
   'title',
   'url',
 ]);
+const issueEvidenceAuditKeys = new Set([
+  'schemaVersion',
+  'tag',
+  'labelCutoffAt',
+  'filters',
+  'countsByTier',
+  'summaryByTier',
+  'unfilteredCountsByTier',
+  'unfilteredSummaryByTier',
+  'filteredCountsByTier',
+  'filteredSummaryByTier',
+  'filteredSummary',
+  'tierInfo',
+  'totals',
+  'total',
+  'totalRows',
+  'distinctIssueCount',
+  'limit',
+  'cursor',
+  'nextCursor',
+  'rows',
+]);
+const issueEvidenceAuditFilterKeys = new Set([
+  'tier',
+  'tiers',
+  'impact',
+  'impacts',
+  'state',
+  'states',
+  'sentiment',
+  'sentiments',
+  'severity',
+  'severities',
+  'functionality',
+  'functionalities',
+  'scope',
+  'scopes',
+  'affectedUsers',
+  'affectedUsersList',
+  'fieldConfirmed',
+  'minWeight',
+  'maxWeight',
+  'sort',
+  'direction',
+  'summaryOnly',
+]);
+const issueEvidenceAuditTotalsKeys = new Set(['unfilteredRows', 'filteredRows', 'unfilteredDistinctIssues', 'filteredDistinctIssues']);
+const issueEvidenceAuditRowKeys = new Set([
+  'tier',
+  'tierLabel',
+  'tierDescription',
+  'issue',
+  'weight',
+  'duplicateCluster',
+  'humanReporterCount',
+  'commentCount',
+  'fieldConfirmed',
+  'humanCommenterCount',
+  'maintainerCommenterCount',
+  'contributorCommenterCount',
+  'reactionTotal',
+  'positiveReactionCount',
+  'commenterScanTruncated',
+  'installImpactClass',
+  'installImpactMultiplier',
+  'clusterReleaseLocal',
+]);
+const issueEvidenceIssueKeys = new Set([
+  'number',
+  'title',
+  'url',
+  'state',
+  'createdAt',
+  'updatedAt',
+  'closedAt',
+  'author',
+  'authorAssociation',
+  'isBot',
+  'comments',
+  'uniqueHumanCommenters',
+  'maintainerCommenters',
+  'contributorCommenters',
+  'commenterScanTruncated',
+  'reactionTotal',
+  'positiveReactions',
+  'labels',
+  'currentLabels',
+  'labelSource',
+  'labelTimelineEventCount',
+  'labelSnapshotCount',
+  'labelCutoffAt',
+  'rawClassification',
+  'classification',
+  'classificationDiff',
+  'affectsVersion',
+  'duplicateCluster',
+  'missing',
+]);
+const closureProofAuditKeys = new Set([
+  'schemaVersion',
+  'tag',
+  'filters',
+  'totals',
+  'total',
+  'totalRows',
+  'distinctIssueCount',
+  'unfilteredCountsByStatus',
+  'filteredCountsByStatus',
+  'unfilteredCountsByRiskDisposition',
+  'filteredCountsByRiskDisposition',
+  'limit',
+  'cursor',
+  'nextCursor',
+  'rows',
+]);
+const closureProofAuditFilterKeys = new Set(['status', 'riskDisposition']);
+const closureProofAuditTotalsKeys = new Set(['unfilteredRows', 'filteredRows', 'unfilteredDistinctIssues', 'filteredDistinctIssues']);
+const closureProofAuditRowKeys = new Set([
+  'issueNumber',
+  'title',
+  'url',
+  'closedAt',
+  'status',
+  'summary',
+  'riskDisposition',
+  'riskWeight',
+  'checkedAt',
+  'labels',
+  'classification',
+  'classificationDiff',
+  'evidence',
+]);
+const closureProofAuditEvidenceKeys = new Set([
+  'stateReasons',
+  'closureActors',
+  'closureContextCommentCount',
+  'hasClosingLink',
+  'hasMergedClosingPr',
+  'hasReachableClosingPr',
+  'hasNotReachableClosingPr',
+  'hasReachableFixCommit',
+  'hasNotReachableFixCommit',
+  'canonicalIssues',
+  'canonicalIssueDetails',
+  'canonicalResolution',
+  'closingPrs',
+  'linkedPrs',
+  'relatedPrContext',
+  'reachableTrustedFixProofPrs',
+  'matchingComments',
+  'nonActionableRationaleComments',
+  'laterFixProof',
+  'unscoredFixProof',
+  'fixCommitProof',
+  'canonicalFixCommitProof',
+  'reachableFixCommits',
+  'notReachableFixCommits',
+]);
+const reachabilityAuditKeys = new Set([
+  'schemaVersion',
+  'tag',
+  'filters',
+  'totals',
+  'total',
+  'totalRows',
+  'distinctPullRequestCount',
+  'countsByStatus',
+  'filteredCountsByStatus',
+  'unfilteredCountsByStatus',
+  'limit',
+  'cursor',
+  'nextCursor',
+  'rows',
+]);
+const reachabilityAuditFilterKeys = new Set(['status', 'pr']);
+const reachabilityAuditTotalsKeys = new Set(['unfilteredRows', 'filteredRows', 'unfilteredPullRequests', 'filteredPullRequests']);
+const reachabilityAuditRowKeys = new Set([
+  'repositoryNameWithOwner',
+  'number',
+  'title',
+  'url',
+  'state',
+  'merged',
+  'mergedAt',
+  'status',
+  'method',
+  'checkedAt',
+  'tagCommitOid',
+  'mergeCommitOid',
+  'prMergeCommitOid',
+  'baseRefName',
+  'evidence',
+]);
 const publicSentimentRank = new Map([['negative', 0], ['positive', 1], ['neutral', 2]]);
 const publicSeverityRank = new Map([['critical', 0], ['high', 1], ['medium', 2], ['low', 3]]);
 const publicScopeRank = new Map([['broad', 0], ['moderate', 1], ['niche', 2]]);
@@ -1844,6 +2037,9 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   }
   expect(failures, tag, firstPage.schemaVersion === issueEvidenceAuditSchemaVersion,
     `issue evidence audit schemaVersion must be ${issueEvidenceAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  verifyAllowedKeys({ failures, tag, label: 'issue evidence audit payload', value: firstPage, allowed: issueEvidenceAuditKeys });
+  verifyAllowedKeys({ failures, tag, label: 'issue evidence audit filters', value: firstPage.filters, allowed: issueEvidenceAuditFilterKeys });
+  verifyAllowedKeys({ failures, tag, label: 'issue evidence audit totals', value: firstPage.totals, allowed: issueEvidenceAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `issue evidence audit tag (${firstPage.tag}) must match release tag (${tag})`);
   expect(failures, tag, firstPage.limit === 11,
@@ -1946,6 +2142,7 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     `issue evidence audit summaryOnly filteredSummary count (${summaryOnlyPage.filteredSummary?.count}) must match total (${summaryOnlyPage.total})`);
 
   for (const row of firstPage.rows ?? []) {
+    verifyAllowedKeys({ failures, tag, label: 'issue evidence audit row', value: row, allowed: issueEvidenceAuditRowKeys });
     expect(failures, tag, knownIssueEvidenceTiers.has(row.tier),
       `issue evidence audit row tier must be known, got ${row.tier}`);
     const tierInfo = RELEASE_ISSUE_EVIDENCE_TIER_INFO[row.tier];
@@ -1955,6 +2152,7 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
       `issue evidence audit row ${row.tier} tierDescription must match shared metadata`);
     expect(failures, tag, isObject(row.issue),
       `issue evidence audit row ${row.tier} must expose issue object`);
+    verifyAllowedKeys({ failures, tag, label: 'issue evidence audit row issue', value: row.issue, allowed: issueEvidenceIssueKeys });
     expect(failures, tag,
       Number.isInteger(row.issue?.number) && row.issue.number > 0 || row.issue?.missing === true,
       `issue evidence audit row ${row.tier} issue number must be positive or explicitly missing`);
@@ -2214,6 +2412,9 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
   });
   expect(failures, tag, firstPage.schemaVersion === closureProofAuditSchemaVersion,
     `closure proof audit schemaVersion must be ${closureProofAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  verifyAllowedKeys({ failures, tag, label: 'closure proof audit payload', value: firstPage, allowed: closureProofAuditKeys });
+  verifyAllowedKeys({ failures, tag, label: 'closure proof audit filters', value: firstPage.filters, allowed: closureProofAuditFilterKeys });
+  verifyAllowedKeys({ failures, tag, label: 'closure proof audit totals', value: firstPage.totals, allowed: closureProofAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `closure proof audit tag (${firstPage.tag}) must match release tag (${tag})`);
   expect(failures, tag, firstPage.total === proof.creditedCount + proof.notCreditedCount,
@@ -2255,6 +2456,7 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
       `closure proof audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
   }
   for (const row of firstPage.rows ?? []) {
+    verifyAllowedKeys({ failures, tag, label: 'closure proof audit row', value: row, allowed: closureProofAuditRowKeys });
     expect(failures, tag, Number.isInteger(row.issueNumber) && row.issueNumber > 0,
       `closure proof audit row issueNumber must be positive integer, got ${row.issueNumber}`);
     expect(failures, tag, typeof row.status === 'string' && knownProofStatuses.has(row.status),
@@ -2267,6 +2469,7 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
       `closure proof audit row #${row.issueNumber} riskWeight must be numeric`);
     expect(failures, tag, isObject(row.evidence),
       `closure proof audit row #${row.issueNumber} evidence must be present`);
+    verifyAllowedKeys({ failures, tag, label: 'closure proof audit row evidence', value: row.evidence, allowed: closureProofAuditEvidenceKeys });
   }
 
   const [status, statusCount] = Object.entries(proof.byStatus ?? {}).find(([, count]) => Number(count ?? 0) > 0) ?? [];
@@ -2319,6 +2522,9 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
   const firstPage = await fetchJson(`${base}?limit=7`);
   expect(failures, tag, firstPage.schemaVersion === 1,
     `PR reachability audit schemaVersion must be 1, got ${JSON.stringify(firstPage.schemaVersion)}`);
+  verifyAllowedKeys({ failures, tag, label: 'PR reachability audit payload', value: firstPage, allowed: reachabilityAuditKeys });
+  verifyAllowedKeys({ failures, tag, label: 'PR reachability audit filters', value: firstPage.filters, allowed: reachabilityAuditFilterKeys });
+  verifyAllowedKeys({ failures, tag, label: 'PR reachability audit totals', value: firstPage.totals, allowed: reachabilityAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `PR reachability audit tag (${firstPage.tag}) must match release tag (${tag})`);
   expect(failures, tag, firstPage.total === rows.length,
@@ -2346,6 +2552,7 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
   expectJsonEqual(failures, tag, 'PR reachability audit filteredCountsByStatus must match countsByStatus without filters',
     firstPage.filteredCountsByStatus ?? {}, expectedCounts);
   for (const row of firstPage.rows ?? []) {
+    verifyAllowedKeys({ failures, tag, label: 'PR reachability audit row', value: row, allowed: reachabilityAuditRowKeys });
     expect(failures, tag, Number.isInteger(row.number) && row.number > 0,
       `PR reachability audit row number must be positive integer, got ${row.number}`);
     expect(failures, tag, typeof row.repositoryNameWithOwner === 'string' && row.repositoryNameWithOwner.includes('/'),
