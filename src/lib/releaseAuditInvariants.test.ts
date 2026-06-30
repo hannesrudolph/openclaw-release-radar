@@ -156,7 +156,14 @@ function reader(overrides: Partial<{
       prompt_version: 6,
       scored_at: auditScoredAt,
       input_json: JSON.stringify(defaultScoreInput),
-      components_json: JSON.stringify({ schemaVersion: 1, components: {}, explanation: { schemaVersion: 1 } }),
+      components_json: JSON.stringify({
+        schemaVersion: 1,
+        components: {},
+        evidenceCoverage: 1,
+        hotfix: false,
+        reason: 'test reason',
+        explanation: scoreExplanationFixture(),
+      }),
       issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
       gate_evidence_json: JSON.stringify({
         schemaVersion: 1,
@@ -180,7 +187,17 @@ function reader(overrides: Partial<{
     data.audit = { ...data.audit, input_json: JSON.stringify(defaultScoreInput) };
   }
   if (data.audit && data.audit.components_json === undefined) {
-    data.audit = { ...data.audit, components_json: JSON.stringify({ schemaVersion: 1, components: {}, explanation: { schemaVersion: 1 } }) };
+    data.audit = {
+      ...data.audit,
+      components_json: JSON.stringify({
+        schemaVersion: 1,
+        components: {},
+        evidenceCoverage: 1,
+        hotfix: false,
+        reason: 'test reason',
+        explanation: scoreExplanationFixture(),
+      }),
+    };
   }
   if (data.audit?.gate_evidence_json) {
     const gate = JSON.parse(data.audit.gate_evidence_json);
@@ -269,16 +286,8 @@ function reader(overrides: Partial<{
   };
 }
 
-function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) => void) {
-  const scoreAudit = {
-    schemaVersion: 1,
-    modelVersion: 'test-model',
-    promptVersion: 6,
-    evidenceCoverage: 1,
-    rawIssueCount: 1,
-    classifiedIssueCount: 1,
-  };
-  const explanation = {
+function scoreExplanationFixture() {
+  return {
     schemaVersion: 1,
     title: 'Why not 10?',
     scoreLedger: {
@@ -318,6 +327,18 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     }],
     verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
   };
+}
+
+function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) => void) {
+  const scoreAudit = {
+    schemaVersion: 1,
+    modelVersion: 'test-model',
+    promptVersion: 6,
+    evidenceCoverage: 1,
+    rawIssueCount: 1,
+    classifiedIssueCount: 1,
+  };
+  const explanation = scoreExplanationFixture();
   const dataFreshness = {
     schemaVersion: 1,
     tag: 'v1',
@@ -811,18 +832,28 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           scoredAt: auditScoredAt,
           dataFreshness,
           sourceProvenance,
-          input: { schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 },
+          input: defaultScoreInput,
           issueEvidence: { schemaVersion: 1 },
           gateEvidence: {
             schemaVersion: 1,
+            labelTimeline: labelTimelineFixture,
             releaseChecks: releaseChecksFixture,
             artifactVerification: artifactVerificationFixture,
             fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
               closureProof: closureProofFixture(),
               releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
             },
           },
-          components: { schemaVersion: 1, explanation },
+          components: {
+            schemaVersion: 1,
+            components: {},
+            evidenceCoverage: 1,
+            hotfix: false,
+            reason: 'test reason',
+            explanation,
+          },
         },
       };
     }
@@ -1023,6 +1054,74 @@ describe('verifyReleaseAudit', () => {
 
     assert.ok(result.failures.some((failure) => /scoreTimestampAligned/.test(failure)));
     assert.ok(result.failures.some((failure) => /rawRows must point at review row endpoints/.test(failure)));
+  });
+
+  it('fails when audit scalar columns drift from the release row', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          final_score: 4.2,
+          status: 'wait',
+          band: 'wait',
+          recommended: 0,
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          input_json: JSON.stringify(defaultScoreInput),
+          components_json: JSON.stringify({
+            schemaVersion: 1,
+            components: {},
+            evidenceCoverage: 1,
+            hotfix: false,
+            reason: 'stale reason',
+            explanation: scoreExplanationFixture(),
+          }),
+          issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
+          gate_evidence_json: JSON.stringify({
+            schemaVersion: 1,
+            labelTimeline: labelTimelineFixture,
+            releaseChecks: releaseChecksFixture,
+            artifactVerification: artifactVerificationFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /audit final_score/.test(failure)));
+    assert.ok(result.failures.some((failure) => /audit status/.test(failure)));
+    assert.ok(result.failures.some((failure) => /audit recommended/.test(failure)));
+    assert.ok(result.failures.some((failure) => /score components reason/.test(failure)));
+  });
+
+  it('fails when review input masks stale persisted audit input', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/releases/v1/review')) {
+          return {
+            ...payload,
+            local: {
+              ...payload.local,
+              input: {
+                ...payload.local.input,
+                rawIssueCount: 999,
+              },
+            },
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /review input must match persisted audit input/.test(failure)));
   });
 
   it('fails when review closure proof masks stale persisted audit proof payload', async () => {

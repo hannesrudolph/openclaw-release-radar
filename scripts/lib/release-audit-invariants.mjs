@@ -871,6 +871,7 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       const scoreComponents = parseJson(audit.components_json, {});
       const gate = parseJson(audit.gate_evidence_json, {});
       const issueEvidence = parseJson(audit.issue_evidence_json, {});
+      verifyPersistedAuditTuple({ failures, tag, release, audit, scoreInput, scoreComponents });
       expect(failures, tag, scoreInput.schemaVersion === scoreInputSchemaVersion,
         `persisted score input schemaVersion (${scoreInput.schemaVersion}) must equal ${scoreInputSchemaVersion}`);
       expect(failures, tag, scoreComponents.schemaVersion === scoreComponentsSchemaVersion,
@@ -1192,6 +1193,44 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
       expect(failures, tag, typeof value === 'number' && Number.isFinite(value),
         `dataFreshness ${key} must be numeric`);
     }
+  }
+}
+
+function verifyPersistedAuditTuple({ failures, tag, release, audit, scoreInput, scoreComponents }) {
+  if ('final_score' in audit) {
+    expect(failures, tag, sameNumberOrNull(audit.final_score, release.final_score),
+      `audit final_score (${audit.final_score}) must match DB final_score (${release.final_score})`);
+  }
+  if ('status' in audit) {
+    expect(failures, tag, audit.status === release.state,
+      `audit status (${audit.status}) must match DB state (${release.state})`);
+  }
+  if ('band' in audit) {
+    expect(failures, tag, typeof audit.band === 'string' && audit.band.length > 0,
+      `audit band (${audit.band}) must be present`);
+  }
+  if ('recommended' in audit) {
+    expect(failures, tag, Number(audit.recommended) === Number(release.recommended ?? 0),
+      `audit recommended (${audit.recommended}) must match DB recommended (${release.recommended})`);
+  }
+  if ('scored_at' in audit) {
+    expect(failures, tag, audit.scored_at === release.scored_at,
+      `audit scored_at (${audit.scored_at}) must match DB scored_at (${release.scored_at})`);
+  }
+  if (scoreComponents?.reason != null) {
+    expect(failures, tag, scoreComponents.reason === release.score_reason,
+      `score components reason (${scoreComponents.reason}) must match DB score_reason (${release.score_reason})`);
+  }
+  const ledger = scoreComponents?.explanation?.scoreLedger;
+  if (ledger) {
+    expect(failures, tag, sameNumberOrNull(ledger.finalScore, release.final_score),
+      `score ledger finalScore (${ledger.finalScore}) must match DB final_score (${release.final_score})`);
+    expect(failures, tag, ledger.status === release.state,
+      `score ledger status (${ledger.status}) must match DB state (${release.state})`);
+  }
+  if (typeof scoreInput.rawIssueCount === 'number' && typeof scoreInput.classifiedIssueCount === 'number') {
+    expect(failures, tag, scoreInput.classifiedIssueCount <= scoreInput.rawIssueCount,
+      `score input classifiedIssueCount (${scoreInput.classifiedIssueCount}) must not exceed rawIssueCount (${scoreInput.rawIssueCount})`);
   }
 }
 
@@ -1867,6 +1906,11 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     }
 
     const review = await fetchJson(`${apiBase}/api/releases/${encodeURIComponent(release.tag)}/review`);
+    const persistedAuditForReview = reader.getReleaseScoreAudit(release.tag);
+    const persistedInput = parseJson(persistedAuditForReview?.input_json, null);
+    const persistedComponents = parseJson(persistedAuditForReview?.components_json, null);
+    const persistedIssueEvidence = parseJson(persistedAuditForReview?.issue_evidence_json, null);
+    const persistedGateEvidence = parseJson(persistedAuditForReview?.gate_evidence_json, null);
     verifyComparisonSnapshot({ failures, label: `${release.tag} review`, snapshot: review.snapshot });
     expect(failures, release.tag, review.local?.schemaVersion === localAuditSchemaVersion,
       `review local schemaVersion (${review.local?.schemaVersion}) must equal ${localAuditSchemaVersion}`);
@@ -1904,6 +1948,14 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       `review gateEvidence schemaVersion (${review.local?.gateEvidence?.schemaVersion}) must equal ${gateEvidenceSchemaVersion}`);
     expect(failures, release.tag, review.local?.issueEvidence?.schemaVersion === issueEvidenceSchemaVersion,
       `review issueEvidence schemaVersion (${review.local?.issueEvidence?.schemaVersion}) must equal ${issueEvidenceSchemaVersion}`);
+    expectJsonEqual(failures, release.tag, 'review input must match persisted audit input',
+      review.local?.input, persistedInput);
+    expectJsonEqual(failures, release.tag, 'review components must match persisted audit components',
+      review.local?.components, persistedComponents);
+    expectJsonEqual(failures, release.tag, 'review issueEvidence must match persisted audit issueEvidence',
+      review.local?.issueEvidence, persistedIssueEvidence);
+    expectJsonEqual(failures, release.tag, 'review gateEvidence must match persisted audit gateEvidence',
+      review.local?.gateEvidence, persistedGateEvidence);
     await verifyIssueEvidenceAuditEndpoint({
       apiBase,
       fetchJson,
@@ -2897,6 +2949,11 @@ function verifyScoreLedger({ failures, tag, source, ledger }) {
 
 function sameNumber(left, right) {
   return typeof left === 'number' && typeof right === 'number' && Math.abs(left - right) <= 1e-9;
+}
+
+function sameNumberOrNull(left, right) {
+  if (left == null || right == null) return left == null && right == null;
+  return sameNumber(Number(left), Number(right));
 }
 
 function verifyExplanationDetails({ failures, tag, source, label, details, text }) {
