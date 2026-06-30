@@ -16,17 +16,32 @@ const allRel = db.prepare(
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 const allFetchedTags = allRel.map((r) => r.tag);
 const stableTagsNewestFirst = allRel.filter((r) => !r.prerelease).map((r) => r.tag);
+const auditedStableRows = db.prepare(`
+  SELECT r.*
+  FROM releases r
+  LEFT JOIN release_score_audits a ON a.release_tag=r.tag
+  WHERE r.prerelease=0
+    AND (
+      r.final_score IS NOT NULL
+      OR r.scored_at IS NOT NULL
+      OR a.release_tag IS NOT NULL
+    )
+  ORDER BY r.published_at IS NULL, r.published_at DESC
+`).all();
 const scoredStableCount = Number((db.prepare(`
   SELECT COUNT(*) AS count
   FROM releases
   WHERE prerelease=0 AND final_score IS NOT NULL
 `).get()).count ?? 0);
 const limit = args.all ? scoredStableCount : Number(args.limit ?? 10);
+const releasesToVerify = args.all ? auditedStableRows : undefined;
+const effectiveLimit = args.all ? undefined : limit;
 
 const failures = [];
 verifyScoredReleaseCoverage(failures);
 const { scored, recommendedTag } = buildReleaseScoreRun({
-  releaseLimit: limit,
+  releases: releasesToVerify,
+  releaseLimit: effectiveLimit,
   allFetchedTags,
   stableTagsNewestFirst,
   nowForRelease: (rel) => scoredAtMillis(rel, auditStmt.get(rel.tag), failures),
@@ -63,11 +78,11 @@ function verifyScoredReleaseCoverage(failures) {
     FROM releases r
     LEFT JOIN release_score_audits a ON a.release_tag=r.tag
     WHERE r.prerelease=0
-      AND r.final_score IS NOT NULL
+      AND (r.final_score IS NOT NULL OR r.scored_at IS NOT NULL)
       AND a.release_tag IS NULL
     ORDER BY r.published_at DESC
   `).all();
-  for (const row of missingAudits) failures.push(`${row.tag}: scored stable release is missing release_score_audits row`);
+  for (const row of missingAudits) failures.push(`${row.tag}: audited stable release is missing release_score_audits row`);
 
   const orphanAudits = db.prepare(`
     SELECT a.release_tag
