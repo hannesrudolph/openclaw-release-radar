@@ -305,6 +305,33 @@ describe('release fix provenance', () => {
     assert.notEqual(first.digest, second.digest);
   });
 
+  it('public issue summary freshness digest changes when emitted issue fields change', async () => {
+    const db = await freshDb('public-issue-summary-freshness');
+    seedRelease(db, 'v1');
+    seedIssue(db, 9101, null, '2026-06-01T12:00:00Z');
+
+    const first = db.publicIssueSummaryFreshness(10);
+    db.upsertIssue({
+      number: 9101,
+      state: 'open',
+      title: 'issue 9101 updated title',
+      author: 'tester',
+      html_url: 'https://example.test/issues/9101',
+      created_at: '2026-06-01T12:00:00Z',
+      updated_at: '2026-06-01T12:00:00Z',
+      closed_at: null,
+      comments: 0,
+      labels: '[]',
+      is_bot: 0,
+    });
+    const second = db.publicIssueSummaryFreshness(10);
+
+    assert.ok(first.count >= 2);
+    assert.equal(second.count, first.count);
+    assert.equal(second.max_ts, first.max_ts);
+    assert.notEqual(first.digest, second.digest);
+  });
+
   it('stores release check rollup evidence with the release commit', async () => {
     const db = await freshDb('release-checks');
     seedRelease(db, 'v1');

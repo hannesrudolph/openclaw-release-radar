@@ -17,6 +17,7 @@ import {
   latestComparisonSnapshot,
   listAdvisories,
   releaseDataFreshness,
+  publicIssueSummaryFreshness,
   publicReleaseRowsFreshness,
   releasePrReachabilityRows,
   releaseScoreAuditFreshness,
@@ -1101,6 +1102,7 @@ function publicCacheKey(
   freshness = releaseScoreAuditFreshness(),
   sourceFreshness = dataFreshnessCacheDigest(),
   releaseFreshness = publicReleaseRowsFreshness(config.limits.releases),
+  issueSummaryFreshness = publicIssueSummaryFreshness(config.limits.releases),
 ): string {
   return [
     PUBLIC_PAYLOAD_SCHEMA_VERSION,
@@ -1113,6 +1115,9 @@ function publicCacheKey(
     sourceFreshness.max_ts ?? '',
     sourceFreshness.count,
     sourceFreshness.digest,
+    issueSummaryFreshness.max_ts ?? '',
+    issueSummaryFreshness.count,
+    issueSummaryFreshness.digest,
   ].join(':');
 }
 

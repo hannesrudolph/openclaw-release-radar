@@ -960,6 +960,182 @@ export function publicReleaseRowsFreshness(limit: number): { count: number; max_
   };
 }
 
+const publicIssueSummaryFreshnessStmt = db.prepare(`
+WITH target_releases AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE prerelease=0
+  ORDER BY published_at DESC
+  LIMIT ?
+),
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND c.closed_at > i.created_at),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT MIN(c.closed_at)
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND c.closed_at > r.reopened_at),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+),
+issue_universe AS (
+  SELECT DISTINCT i.number
+  FROM issues i
+  JOIN target_releases target
+  WHERE target.start_at IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM issue_open_intervals interval
+      WHERE interval.issue_number=i.number
+        AND interval.open_at < target.end_at
+        AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+    )
+)
+SELECT
+  'issue' AS source,
+  CAST(i.number AS TEXT) AS item_key,
+  i.updated_at AS max_ts,
+  i.number AS a,
+  i.state AS b,
+  i.title AS c,
+  i.author AS d,
+  i.author_association AS e,
+  i.html_url AS f,
+  i.created_at AS g,
+  i.updated_at AS h,
+  i.closed_at AS i,
+  i.comments AS j,
+  i.unique_human_commenters AS k,
+  i.maintainer_commenters AS l,
+  i.contributor_commenters AS m,
+  i.commenter_scan_truncated AS n,
+  i.reaction_total AS o,
+  i.positive_reactions AS p,
+  i.labels AS q,
+  i.is_bot AS r
+FROM issues i
+JOIN issue_universe u ON u.number=i.number
+UNION ALL
+SELECT
+  'classification' AS source,
+  CAST(c.issue_number AS TEXT) AS item_key,
+  c.classified_at AS max_ts,
+  c.issue_number AS a,
+  c.sentiment AS b,
+  c.severity AS c,
+  c.scope AS d,
+  c.functionality AS e,
+  c.affected_users AS f,
+  c.has_workaround AS g,
+  c.workaround_status AS h,
+  c.duplicate_cluster AS i,
+  c.affects_version AS j,
+  c.confidence AS k,
+  c.rationale AS l,
+  c.classified_at AS m,
+  c.classified_updated_at AS n,
+  c.prompt_version AS o,
+  NULL AS p,
+  NULL AS q,
+  NULL AS r
+FROM classifications c
+JOIN issue_universe u ON u.number=c.issue_number
+UNION ALL
+SELECT
+  'label_event' AS source,
+  CAST(e.issue_number AS TEXT) || ':' || e.event_id AS item_key,
+  e.fetched_at AS max_ts,
+  e.issue_number AS a,
+  e.event_id AS b,
+  e.action AS c,
+  e.label_name AS d,
+  e.actor_login AS e,
+  e.created_at AS f,
+  e.fetched_at AS g,
+  NULL AS h,
+  NULL AS i,
+  NULL AS j,
+  NULL AS k,
+  NULL AS l,
+  NULL AS m,
+  NULL AS n,
+  NULL AS o,
+  NULL AS p,
+  NULL AS q,
+  NULL AS r
+FROM issue_label_events e
+JOIN issue_universe u ON u.number=e.issue_number
+UNION ALL
+SELECT
+  'label_snapshot' AS source,
+  CAST(s.issue_number AS TEXT) || ':' || s.snapshot_at AS item_key,
+  s.fetched_at AS max_ts,
+  s.issue_number AS a,
+  s.snapshot_at AS b,
+  s.labels_json AS c,
+  s.fetched_at AS d,
+  NULL AS e,
+  NULL AS f,
+  NULL AS g,
+  NULL AS h,
+  NULL AS i,
+  NULL AS j,
+  NULL AS k,
+  NULL AS l,
+  NULL AS m,
+  NULL AS n,
+  NULL AS o,
+  NULL AS p,
+  NULL AS q,
+  NULL AS r
+FROM issue_label_snapshots s
+JOIN issue_universe u ON u.number=s.issue_number
+ORDER BY source, item_key
+`);
+
+export function publicIssueSummaryFreshness(limit: number): { count: number; max_ts: string | null; digest: string } {
+  const rows = publicIssueSummaryFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown> & { max_ts?: string | null }>;
+  const hash = createHash('sha256');
+  let maxTs: string | null = null;
+  for (const row of rows) {
+    const ts = typeof row.max_ts === 'string' ? row.max_ts : null;
+    if (ts && (!maxTs || ts > maxTs)) maxTs = ts;
+    hash.update(JSON.stringify(row));
+    hash.update('\n');
+  }
+  return {
+    count: rows.length,
+    max_ts: maxTs,
+    digest: hash.digest('hex'),
+  };
+}
+
 export interface ReleaseDataFreshnessSource {
   source: string;
   maxAt: string | null;
