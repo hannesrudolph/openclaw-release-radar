@@ -2140,6 +2140,24 @@ function timestampOrNull(value) {
 async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/closure-proofs`;
   const firstPage = await fetchJson(`${base}?limit=5`);
+  await expectFetchJsonStatus({
+    failures,
+    tag,
+    fetchJson,
+    url: `${base}?status=fixed-in-release`,
+    status: 400,
+    label: 'closure proof audit invalid status',
+    payloadCheck: (payload) => payload?.error === 'invalid status' && Array.isArray(payload.allowedStatuses),
+  });
+  await expectFetchJsonStatus({
+    failures,
+    tag,
+    fetchJson,
+    url: `${base}?riskDisposition=not-a-real-disposition`,
+    status: 400,
+    label: 'closure proof audit invalid riskDisposition',
+    payloadCheck: (payload) => payload?.error === 'invalid riskDisposition' && Array.isArray(payload.allowedRiskDispositions),
+  });
   expect(failures, tag, firstPage.schemaVersion === closureProofAuditSchemaVersion,
     `closure proof audit schemaVersion must be ${closureProofAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
   expect(failures, tag, firstPage.tag === tag,
@@ -2352,8 +2370,36 @@ function verifyComparisonSnapshot({ failures, label, snapshot }) {
 
 async function defaultFetchJson(url) {
   const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url} returned ${res.status}`);
+  if (!res.ok) {
+    const body = await res.text();
+    const error = new Error(`${url} returned ${res.status}${body ? `: ${body}` : ''}`);
+    error.status = res.status;
+    error.body = body;
+    try {
+      error.payload = body ? JSON.parse(body) : null;
+    } catch {
+      error.payload = null;
+    }
+    throw error;
+  }
   return res.json();
+}
+
+async function expectFetchJsonStatus({ failures, tag, fetchJson, url, status, label, payloadCheck = null }) {
+  try {
+    await fetchJson(url);
+    expect(failures, tag, false, `${label} must return HTTP ${status}`);
+  } catch (error) {
+    const message = String(error?.message ?? error);
+    const actual = Number(error?.status ?? (/returned\s+(\d+)/.exec(message)?.[1] ?? NaN));
+    expect(failures, tag, actual === status,
+      `${label} returned HTTP ${Number.isFinite(actual) ? actual : 'unknown'} instead of ${status}: ${message}`);
+    if (payloadCheck) {
+      const payload = error?.payload ?? parseJson(error?.body, null);
+      expect(failures, tag, payloadCheck(payload),
+        `${label} response body must expose expected error metadata`);
+    }
+  }
 }
 
 async function fetchOptionalComparisonPayload({ apiBase, fetchJson, failures }) {

@@ -124,6 +124,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /closureProofTaxonomy\.ts/);
     assert.match(verifier, /new Set\(CLOSURE_PROOF_STATUSES\)/);
     assert.match(verifier, /Object\.entries\(CLOSURE_RISK_DISPOSITION_BY_STATUS\)/);
+    assert.match(verifier, /expectFetchJsonStatus/);
+    assert.match(verifier, /invalid status/);
+    assert.match(verifier, /invalid riskDisposition/);
     assert.doesNotMatch(verifier, /'fixed_in_release'[\s\S]*'unknown'[\s\S]*\]\);/);
   });
 

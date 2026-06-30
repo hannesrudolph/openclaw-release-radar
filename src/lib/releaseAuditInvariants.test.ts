@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { verifyReleaseAudit } from '../../scripts/lib/release-audit-invariants.mjs';
+import { CLOSURE_PROOF_STATUSES, CLOSURE_RISK_DISPOSITIONS } from './closureProofTaxonomy.ts';
 
 const labelTimelineFixture = {
   schemaVersion: 1,
@@ -331,6 +332,22 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
   mutator?.(dataFreshness, publicRelease);
   const closurePage = (url: string) => {
     const parsed = new URL(url);
+    const statusFilter = parsed.searchParams.get('status');
+    const riskDispositionFilter = parsed.searchParams.get('riskDisposition');
+    if (statusFilter && !CLOSURE_PROOF_STATUSES.includes(statusFilter as any)) {
+      throwHttpError(url, 400, {
+        error: 'invalid status',
+        status: statusFilter,
+        allowedStatuses: CLOSURE_PROOF_STATUSES,
+      });
+    }
+    if (riskDispositionFilter && !CLOSURE_RISK_DISPOSITIONS.includes(riskDispositionFilter as any)) {
+      throwHttpError(url, 400, {
+        error: 'invalid riskDisposition',
+        riskDisposition: riskDispositionFilter,
+        allowedRiskDispositions: CLOSURE_RISK_DISPOSITIONS,
+      });
+    }
     const row = {
       issueNumber: 1,
       title: 'issue 1',
@@ -346,8 +363,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       classificationDiff: {},
       evidence: {},
     };
-    const rows = (!parsed.searchParams.get('status') || parsed.searchParams.get('status') === row.status) &&
-      (!parsed.searchParams.get('riskDisposition') || parsed.searchParams.get('riskDisposition') === row.riskDisposition)
+    const rows = (!statusFilter || statusFilter === row.status) &&
+      (!riskDispositionFilter || riskDispositionFilter === row.riskDisposition)
       ? [row]
       : [];
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
@@ -726,6 +743,14 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     }
     throw new Error(`unexpected URL ${url}`);
   };
+}
+
+function throwHttpError(url: string, status: number, payload: unknown): never {
+  const error: any = new Error(`${url} returned ${status}: ${JSON.stringify(payload)}`);
+  error.status = status;
+  error.body = JSON.stringify(payload);
+  error.payload = payload;
+  throw error;
 }
 
 describe('verifyReleaseAudit', () => {
