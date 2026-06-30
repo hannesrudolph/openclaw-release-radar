@@ -211,6 +211,32 @@ export async function refresh(): Promise<{
       });
       return message;
     };
+    const persistEarlyEvidenceFailureCrawlMeta = () => {
+      const backfillDoneAtStart = getMeta(BACKFILL_FLAG) !== null;
+      persistIssueCrawlMeta({
+        schemaVersion: 1,
+        startedAt: refreshStartedAt,
+        finishedAt: new Date().toISOString(),
+        fullIssueBackfill: config.refresh.fullIssueBackfill,
+        backfillCompleteAtStart: backfillDoneAtStart,
+        backfillCompleteAfterRun: getMeta(BACKFILL_FLAG) !== null,
+        promptSweep: false,
+        staleClassificationsAtStart: countStaleClassifications(PROMPT_VERSION),
+        monitoredReleaseCount: config.limits.releases,
+        oldestMonitoredAt: null,
+        pagesFetched: 0,
+        issuesFetched: 0,
+        monitoredIssuesFetched: 0,
+        maxIssuePages: config.refresh.maxIssuePages,
+        stopReason: 'evidence_failure',
+        crossedOldestEver: false,
+        commenterScanTruncatedCount: 0,
+        classificationFailures: [],
+        evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
+        scorePersisted: false,
+        scorePersistedAt: null,
+      });
+    };
     // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
     // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
     // computation (betaCount, hoursToNextRelease, aggregate breaking) but only
@@ -230,7 +256,18 @@ export async function refresh(): Promise<{
     // Chart points 11–20 are intentionally frozen rows already scored in past runs
     // (served straight from the DB), kept purely as comparative trend context.
     const monitoredReleaseCount = config.limits.releases;
-    const fetched = await listReleases(monitoredReleaseCount * 6);
+    let fetched;
+    try {
+      fetched = await listReleases(monitoredReleaseCount * 6);
+    } catch (e) {
+      const message = recordEvidenceRefreshFailure('release-metadata', 'listReleases', e, {
+        monitoredReleaseCount,
+        fetchSize: monitoredReleaseCount * 6,
+      });
+      console.warn(`${message}; refusing score persistence before release metadata refresh completes`);
+      persistEarlyEvidenceFailureCrawlMeta();
+      throw new Error(`${message}; refusing score persistence before release metadata refresh completes`);
+    }
     const releases = fetched.filter((r) => !r.prerelease).slice(0, monitoredReleaseCount);
     for (const r of releases) {
       upsertRelease({

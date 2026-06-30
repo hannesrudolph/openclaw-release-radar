@@ -90,7 +90,7 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
   }
 
   if (Array.isArray(evidenceRefreshFailures) && evidenceRefreshFailures.length > 0) {
-    const message = `latest issue crawl recorded ${evidenceRefreshFailures.length} score-affecting evidence refresh failure(s); score persistence is unsafe until release checks, advisories, closure evidence, PR reachability, and closure proof all refresh cleanly`;
+    const message = `latest issue crawl recorded ${evidenceRefreshFailures.length} score-affecting evidence refresh failure(s); score persistence is unsafe until release metadata, artifact verification, release checks, advisories, closure evidence, PR reachability, and closure proof all refresh cleanly`;
     if (scorePersisted || !crawlStartedAfterLatestScore) {
       failures.push(message);
     } else {
