@@ -191,6 +191,7 @@ export const SCORE_EXPLANATION_LIMIT_CODES = [
   'stale_low_confidence_evidence',
   'incomplete_classification_coverage',
   'closed_issues_not_counted_as_release_fixes',
+  'audit_only_closed_issue_flags',
   'unverified_closed_fix_reachability',
   'missing_full_release_evidence_report',
   'model_ceiling_and_capped_confidence',
@@ -212,6 +213,7 @@ export const SCORE_EXPLANATION_DETAIL_LABELS: Record<ScoreExplanationLimitCode |
   stale_low_confidence_evidence: 'Stale or weak evidence',
   incomplete_classification_coverage: 'Incomplete classification coverage',
   closed_issues_not_counted_as_release_fixes: 'Closed issue release proof',
+  audit_only_closed_issue_flags: 'Audit-only closed issue flags',
   unverified_closed_fix_reachability: 'Unverified closed fix reachability',
   missing_full_release_evidence_report: 'Missing full release evidence report',
   model_ceiling_and_capped_confidence: 'Model ceiling and capped confidence',
@@ -856,25 +858,17 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       'credited_release_fix',
       'resolved_by_canonical_release_fix',
       'resolved_by_release_fix_proof',
+      'neutral_or_non_actionable',
     ]);
     const riskSummary = closureProof.riskSummary ?? {};
-    const neutralAuditRefs = issueRefs(closureProof.neutralAuditExamples ?? [], 2);
-    const primaryIssueRefLimit = Math.max(3, 5 - neutralAuditRefs.length);
-    const closureExamples = closureProofExamplesForExplanation(closureProof, primaryIssueRefLimit);
-    const closureIssueRefs = mergeIssueRefs(
-      issueRefs(closureExamples, primaryIssueRefLimit),
-      neutralAuditRefs,
-      5,
-    );
+    const closureExamples = closureProofExamplesForExplanation(closureProof, 5);
+    const closureIssueRefs = issueRefs(closureExamples, 5);
     addLimit(
       'closed_issues_not_counted_as_release_fixes',
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
-      ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including not-scored or non-actionable closures.` +
+      ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit; this penalty is based only on unresolved release risk, not neutral or non-actionable audit rows.` +
       ` This contributes ${penaltyText(components.closureRisk)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty} point penalty.` +
       ((components.closureRiskCeiling ?? 0) > 0 ? ` Because unresolved closure risk is ${roundMetric(input.unresolvedClosureRiskWeight)} across ${unresolvedClosureCount} issue(s), the final score is capped at ${components.closureRiskCeiling}.` : '') +
-      ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0)
-        ? ` Audit-only closure flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped not-scored closures were left out of the scored closure penalty; review them separately.`
-        : '') +
       (riskText ? ` Risk split: ${riskText}.` : '') +
       (bucketText ? ` Breakdown: ${bucketText}.` : ''),
       {
@@ -908,6 +902,32 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
         issueRefs: closureIssueRefs,
       },
     );
+    const neutralAuditExamples = closureProof.neutralAuditExamples ?? [];
+    if ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0) &&
+      Array.isArray(neutralAuditExamples) && neutralAuditExamples.length > 0) {
+      addLimit(
+        'audit_only_closed_issue_flags',
+        `${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped closed issue(s) were reviewed as audit-only neutral/non-actionable context. They are shown for human review, but they are not included in the closure-risk penalty.`,
+        {
+          metrics: {
+            neutralOrNonActionableCount: Number(riskSummary.neutralOrNonActionableCount ?? 0),
+            neutralHighImpactCount: Number(riskSummary.neutralHighImpactCount ?? 0),
+            neutralBugShapedCount: Number(riskSummary.neutralBugShapedCount ?? 0),
+            scoredPenalty: 0,
+          },
+          buckets: proofBucketsExceptFixed(closureProof.byRiskDisposition, [
+            'credited_release_fix',
+            'resolved_by_canonical_release_fix',
+            'resolved_by_release_fix_proof',
+            'known_not_in_release',
+            'open_canonical_risk',
+            'unsupported_closure_claim',
+            'missing_evidence',
+          ]),
+          issueRefs: issueRefs(neutralAuditExamples, 3),
+        },
+      );
+    }
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
     addLimit(
       'unverified_closed_fix_reachability',
@@ -1350,10 +1370,8 @@ const CLOSURE_EXPLANATION_DISPOSITION_ORDER = [
   'known_not_in_release',
   'unsupported_closure_claim',
   'missing_evidence',
-  'neutral_or_non_actionable',
-  'resolved_by_canonical_release_fix',
-  'resolved_by_release_fix_proof',
 ];
+const CLOSURE_EXPLANATION_RISK_DISPOSITIONS = new Set(CLOSURE_EXPLANATION_DISPOSITION_ORDER);
 
 const CLOSURE_EXPLANATION_STATUS_PREFERENCE: Record<string, string[]> = {
   open_canonical_risk: [
@@ -1399,7 +1417,13 @@ function closureProofExamplesForExplanation(closureProof: any, limit: number): a
   const cap = Math.max(0, limit);
   if (cap <= 0) return [];
   const candidates = closureProofExamplesWithStatusCoverage(closureProof)
-    .filter((item: any) => item.status !== 'fixed_in_release');
+    .filter((item: any) => {
+      if (item.status === 'fixed_in_release') return false;
+      const disposition = typeof item?.riskDisposition === 'string' && item.riskDisposition
+        ? item.riskDisposition
+        : typeof item?.status === 'string' ? closureRiskDisposition(item.status) : null;
+      return typeof disposition === 'string' && CLOSURE_EXPLANATION_RISK_DISPOSITIONS.has(disposition);
+    });
   const selected: any[] = [];
   const seen = new Set<number>();
   const add = (item: any) => {
@@ -1425,6 +1449,7 @@ function closureProofExamplesForExplanation(closureProof: any, limit: number): a
   }
   for (const [disposition, count] of Object.entries(dispositionCounts)) {
     if (CLOSURE_EXPLANATION_DISPOSITION_ORDER.includes(disposition)) continue;
+    if (!CLOSURE_EXPLANATION_RISK_DISPOSITIONS.has(disposition)) continue;
     if (Number(count ?? 0) > 0) {
       add(preferredClosureExampleForDisposition(disposition, candidates) ?? byDisposition.get(disposition));
     }
@@ -1462,22 +1487,6 @@ function debtTierSummary(items: any[], tier: 'verified' | 'carryover' | 'stale')
     storedWeight: roundMetric(tierItems.slice(0, 25).reduce((sum, item) => sum + Number(item.weight ?? 0), 0)),
     byInstallImpactClass,
   };
-}
-
-function mergeIssueRefs(
-  primary: ScoreExplanationIssueRef[],
-  secondary: ScoreExplanationIssueRef[],
-  limit: number,
-): ScoreExplanationIssueRef[] {
-  const seen = new Set<number>();
-  const merged: ScoreExplanationIssueRef[] = [];
-  for (const issue of [...primary, ...secondary]) {
-    if (!Number.isInteger(issue.number) || seen.has(issue.number)) continue;
-    seen.add(issue.number);
-    merged.push(issue);
-    if (merged.length >= limit) break;
-  }
-  return merged;
 }
 
 function classificationDiff(

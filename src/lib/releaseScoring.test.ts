@@ -121,6 +121,7 @@ describe('release score explanations', () => {
     assert.equal(typeof closure.metrics?.neutralBugShapedCount, 'number');
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
+    assert.equal(closure.riskBuckets?.neutral_or_non_actionable, undefined);
     const unresolvedClosureCount = Number(closure.metrics?.unresolvedForReleaseCount ?? 0);
     assert.ok(unresolvedClosureCount > 0);
     assert.equal(run.scored[0].input.unresolvedClosureIssueCount, unresolvedClosureCount);
@@ -148,9 +149,17 @@ describe('release score explanations', () => {
       assert.ok(closureProof.examplesByStatus[status].every((example: any) => example.status === status));
     }
     if ((closure.metrics?.neutralHighImpactCount ?? 0) > 0 || (closure.metrics?.neutralBugShapedCount ?? 0) > 0) {
+      const auditOnly = explanation.limitDetails.find((detail) => detail.code === 'audit_only_closed_issue_flags');
+      assert.ok(auditOnly);
+      assert.equal(auditOnly.label, 'Audit-only closed issue flags');
+      assert.equal(auditOnly.metrics?.scoredPenalty, 0);
+      assert.ok(auditOnly.text.includes('not included in the closure-risk penalty'));
+      assert.equal(auditOnly.riskBuckets, undefined);
       assert.ok((closureProof.neutralAuditExamples?.length ?? 0) > 0);
-      assert.ok(closure.issueRefs?.some((issue) =>
+      assert.ok(auditOnly.issueRefs?.some((issue) =>
         closureProof.neutralAuditExamples.some((example: any) => example.number === issue.number)));
+      assert.ok(closure.issueRefs?.every((issue) =>
+        !closureProof.neutralAuditExamples.some((example: any) => example.number === issue.number)));
     }
     const closureExamples = (closureProof.examples ?? [])
       .filter((item: any) => item.status !== 'fixed_in_release');
