@@ -217,6 +217,11 @@ describe('release scoring DB bridge', () => {
       assert.equal(rescued.debtClassification.sentiment, 'negative');
       assert.deepEqual(rescued.debtClassificationDiff.sentiment, { raw: 'neutral', effective: 'negative' });
       assert.equal(rescued.issue.classification.sentiment, 'neutral');
+      assert.throws(
+        () => scoring.persistReleaseScoreRun(run),
+        /complete classification coverage: v1 5\/6/,
+      );
+      assert.equal(db.getRelease('v1')?.final_score, null);
     } finally {
       try { db.db.close(); } catch { /* already closed */ }
       rmSync(dir, { recursive: true, force: true });

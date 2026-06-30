@@ -254,6 +254,7 @@ describe('static scoring/UI contracts', () => {
     const populate = readFileSync(join(root, 'scripts/populate-db.mjs'), 'utf8');
     const backfill = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
+    const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
     assert.match(populate, /persistReleaseScoreRun/);
@@ -270,6 +271,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(bridgeTest, /verifiedDebtWeight/);
     assert.match(bridgeTest, /unresolvedClosureRiskWeight/);
     assert.match(bridgeTest, /unclassified release issue/);
+    assert.match(scorer, /assertReleaseScoreRunPersistable/);
+    assert.match(scorer, /complete classification coverage/);
+    assert.match(bridgeTest, /persistReleaseScoreRun/);
   });
 
   it('legacy fix provenance ingestion runs the full proof pipeline', () => {

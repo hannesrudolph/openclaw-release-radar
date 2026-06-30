@@ -237,6 +237,7 @@ export function scoreTagWindow(releases: Array<{ tag: string; prerelease?: numbe
 }
 
 export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
+  assertReleaseScoreRunPersistable(run);
   for (const result of run.scored) {
     const scoredAt = result.scoredAt;
     const recommended = result.rel.tag === run.recommendedTag ? 1 : 0;
@@ -276,6 +277,22 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
     });
   }
 }
+
+function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
+  const incomplete = run.scored.filter((result) =>
+    Number(result.input.classifiedIssueCount ?? 0) !== Number(result.input.rawIssueCount ?? 0));
+  if (incomplete.length === 0) return;
+  const examples = incomplete
+    .slice(0, 5)
+    .map((result) => `${result.rel.tag} ${result.input.classifiedIssueCount}/${result.input.rawIssueCount}`)
+    .join(', ');
+  const suffix = incomplete.length > 5 ? `, +${incomplete.length - 5} more` : '';
+  throw new Error(`Refusing to persist scores without complete classification coverage: ${examples}${suffix}`);
+}
+
+export const __releaseScorePersistenceTest = {
+  assertReleaseScoreRunPersistable,
+};
 
 function scoreRelease(args: {
   release: ReleaseRow;

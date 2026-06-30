@@ -182,6 +182,8 @@ npm run ui:smoke
 
 `verify:local` and `verify:live` start with `npm run doctor -- --fail-on-warnings` and use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit, the latest evidence is stale, or the latest crawl recorded classification/evidence failures that could affect the current score.
 
+Score writers also enforce complete classification coverage before updating release rows or score audits. If any release has `classifiedIssueCount !== rawIssueCount`, `persistReleaseScoreRun` refuses the whole run instead of writing a partial or under-classified score.
+
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
 A healthy `/api/status` response has:
