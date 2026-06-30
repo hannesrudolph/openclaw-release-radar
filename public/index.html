@@ -1296,15 +1296,6 @@ function issueBackedSurfaces(r) {
       .map(([, surf]) => surf));
 }
 
-function profileIssueWeight(issue) {
-  if (!issue || issue.sentiment === 'positive' || issue.sentiment === 'neutral') return 0;
-  const severity = { critical: 2.2, high: 1.5, medium: 0.8, low: 0.35 }[issue.severity] ?? 0.6;
-  const confidence = Math.max(0.5, Math.min(1.25, Number(issue.confidence ?? 1)));
-  const state = String(issue.state ?? '').toLowerCase();
-  const stateFactor = state === 'closed' ? 0.35 : 1;
-  return severity * confidence * stateFactor;
-}
-
 function issueSurfaceLabel(issue) {
   return normalizeSurfaceLabel(enrichIssue(issue)?.surface?.label);
 }

@@ -609,6 +609,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
     assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers,/);
+    assert.match(refresh, /upsertIssueCommitReference/);
+    assert.match(refresh, /for \(const ref of evidence\.commitReferences\)/);
     assert.match(refresh, /runInWriteTransaction\(\(\) => \{[\s\S]*persistIssueStateEvidence\(stateEvidence\)/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('issue-page-write', pageEvidenceScope, error, pageEvidenceContext\)/);
     assert.match(refresh, /const stagedClassifications/);

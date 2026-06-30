@@ -70,6 +70,7 @@ import {
   upsertClassification,
   upsertIssue,
   upsertIssueClosureEvent,
+  upsertIssueCommitReference,
   upsertIssueLabelEvent,
   upsertIssueLabelSnapshot,
   upsertIssuePrLink,
@@ -120,6 +121,22 @@ function persistIssueStateEvidence(evidence: GhIssueFixEvidence): void {
       source: link.source,
       will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
       referenced_at: link.referencedAt,
+    });
+  }
+  for (const ref of evidence.commitReferences) {
+    upsertIssueCommitReference({
+      issue_number: ref.issueNumber,
+      event_id: ref.eventId,
+      commit_oid: ref.commitOid,
+      commit_message_headline: ref.commitMessageHeadline,
+      commit_repository_owner: ref.commitRepositoryOwner,
+      commit_repository_name: ref.commitRepositoryName,
+      commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
+      is_cross_repository: ref.isCrossRepository ? 1 : 0,
+      is_direct_reference: ref.isDirectReference ? 1 : 0,
+      referenced_at: ref.referencedAt,
+      actor_login: ref.actorLogin,
+      raw_json: JSON.stringify(ref.raw),
     });
   }
     for (const pr of evidence.pullRequests) {
@@ -990,6 +1007,7 @@ export const __refreshTest = {
   shouldRefuseScoreAfterTruncatedCommentScans,
   releaseWindowCompleteness,
   evidenceRefreshFailureMessage,
+  persistIssueStateEvidence,
   summarizeFailures,
 };
 
