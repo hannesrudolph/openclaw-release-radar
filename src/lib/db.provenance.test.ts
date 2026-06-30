@@ -965,4 +965,71 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.verifiedFixedForRelease('v3').map((row: any) => row.number), [301]);
     assert.deepEqual(db.unverifiedClosedForRelease('v3').map((row: any) => row.number).sort((a: number, b: number) => a - b), [302, 303, 304]);
   });
+
+  it('treats null-score audited stable releases as latest audited freshness targets', async () => {
+    const db = await freshDb('null-score-audited-stable');
+    seedRelease(db, 'v-old', '2040-06-01T00:00:00Z');
+    seedRelease(db, 'v-wait', '2040-06-10T00:00:00Z');
+    const oldScore = {
+      tag: 'v-old',
+      final_score: 7.5,
+      negative_issues: 0,
+      positive_issues: 0,
+      state: 'eligible',
+      recommended: 1,
+      score_reason: 'old stable',
+      broken_surfaces: '[]',
+      closed_serious_fixed: 0,
+      opened_serious_during_reign: 0,
+      scored_at: '2040-06-01T01:00:00Z',
+    };
+    db.updateReleaseScore(oldScore);
+    db.upsertReleaseScoreAudit({
+      release_tag: 'v-old',
+      scored_at: oldScore.scored_at,
+      score_model_version: 'test-model',
+      prompt_version: 6,
+      final_score: oldScore.final_score,
+      status: oldScore.state,
+      band: 'ok',
+      recommended: 1,
+      input_json: '{"schemaVersion":1,"rawIssueCount":0,"classifiedIssueCount":0}',
+      components_json: '{"schemaVersion":1,"components":{},"explanation":{"schemaVersion":1}}',
+      issue_evidence_json: '{"schemaVersion":1}',
+      gate_evidence_json: '{"schemaVersion":1}',
+    });
+    const waitScore = {
+      tag: 'v-wait',
+      final_score: null,
+      negative_issues: 0,
+      positive_issues: 0,
+      state: 'wait',
+      recommended: 0,
+      score_reason: 'settle time gate',
+      broken_surfaces: '[]',
+      closed_serious_fixed: 0,
+      opened_serious_during_reign: 0,
+      scored_at: '2040-06-10T01:00:00Z',
+    };
+    db.updateReleaseScore(waitScore);
+    db.upsertReleaseScoreAudit({
+      release_tag: 'v-wait',
+      scored_at: waitScore.scored_at,
+      score_model_version: 'test-model',
+      prompt_version: 6,
+      final_score: null,
+      status: waitScore.state,
+      band: 'wait',
+      recommended: 0,
+      input_json: '{"schemaVersion":1,"rawIssueCount":0,"classifiedIssueCount":0}',
+      components_json: '{"schemaVersion":1,"components":{},"explanation":{"schemaVersion":1}}',
+      issue_evidence_json: '{"schemaVersion":1}',
+      gate_evidence_json: '{"schemaVersion":1}',
+    });
+
+    assert.equal(db.latestScoredStableReleaseTag(), 'v-wait');
+    const reader = new ReleaseAuditReader(db.db);
+    assert.ok(reader.scoredStableReleaseCount() >= 2);
+    assert.deepEqual(reader.listReleases(2, { scoredOnly: true }).map((row: any) => row.tag), ['v-wait', 'v-old']);
+  });
 });

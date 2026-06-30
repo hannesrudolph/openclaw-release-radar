@@ -25,9 +25,11 @@ export class ReleaseAuditReader {
   listReleases(limit = 10, options = {}) {
     return this.db.prepare(`
       SELECT *
-      FROM releases
-      WHERE prerelease = 0
-        AND (? = 0 OR final_score IS NOT NULL)
+      FROM releases r
+      WHERE r.prerelease = 0
+        AND (? = 0 OR r.final_score IS NOT NULL OR EXISTS (
+          SELECT 1 FROM release_score_audits a WHERE a.release_tag=r.tag
+        ))
       ORDER BY published_at IS NULL, published_at DESC
       LIMIT ?
     `).all(options.scoredOnly ? 1 : 0, limit);
@@ -36,9 +38,11 @@ export class ReleaseAuditReader {
   scoredStableReleaseCount() {
     const row = this.db.prepare(`
       SELECT COUNT(*) AS count
-      FROM releases
-      WHERE prerelease = 0
-        AND final_score IS NOT NULL
+      FROM releases r
+      WHERE r.prerelease = 0
+        AND (r.final_score IS NOT NULL OR EXISTS (
+          SELECT 1 FROM release_score_audits a WHERE a.release_tag=r.tag
+        ))
     `).get();
     return Number(row?.count ?? 0);
   }

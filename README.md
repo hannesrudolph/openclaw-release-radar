@@ -184,6 +184,8 @@ npm run ui:smoke
 
 Score writers also enforce complete classification coverage before updating release rows or score audits. If any release has `classifiedIssueCount !== rawIssueCount`, `persistReleaseScoreRun` refuses the whole run instead of writing a partial or under-classified score.
 
+Audit freshness follows the newest audited stable release, including null-score `wait` rows. Recommendation counts still require a numeric score, so wait/gated audits do not become install candidates.
+
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
 A healthy `/api/status` response has:

@@ -87,7 +87,7 @@ export function buildDoctorReport({
     const latest = latestScoredStable(db);
     report.latestScoredStable = latest;
     if (!latest) {
-      failures.push('no scored stable release found');
+      failures.push('no audited stable release found');
       return finish(report, { failOnWarnings });
     }
     if (!latest.auditPresent) failures.push(`${latest.tag}: missing release_score_audits row`);
@@ -216,7 +216,11 @@ function latestScoredStable(db) {
            a.prompt_version
     FROM releases r
     LEFT JOIN release_score_audits a ON a.release_tag=r.tag
-    WHERE r.prerelease=0 AND r.final_score IS NOT NULL
+    WHERE r.prerelease=0
+      AND (
+        r.final_score IS NOT NULL
+        OR a.release_tag IS NOT NULL
+      )
     ORDER BY r.published_at DESC
     LIMIT 1
   `).get();

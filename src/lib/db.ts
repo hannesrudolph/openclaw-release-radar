@@ -1367,9 +1367,16 @@ pr_universe AS (
 
 const latestScoredStableReleaseTagStmt = db.prepare(`
 SELECT tag
-FROM releases
-WHERE prerelease=0
-  AND final_score IS NOT NULL
+FROM releases r
+WHERE r.prerelease=0
+  AND (
+    r.final_score IS NOT NULL
+    OR EXISTS (
+      SELECT 1
+      FROM release_score_audits a
+      WHERE a.release_tag=r.tag
+    )
+  )
 ORDER BY published_at DESC
 LIMIT 1
 `);

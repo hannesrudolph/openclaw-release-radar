@@ -206,6 +206,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(doctor, /PRAGMA query_only = ON/);
     assert.match(doctor, /closure proof rows/);
     assert.match(doctor, /expected exactly one recommended scored stable release/);
+    assert.match(doctor, /no audited stable release found/);
     assert.match(doctorHealth, /classificationFailures/);
     assert.match(doctor, /failOnWarnings/);
     assert.match(doctor, /fail-on-warnings/);
@@ -239,6 +240,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:live/);
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
+    assert.match(readme, /newest audited stable release/);
+    assert.match(readme, /null-score `wait` rows/);
     assert.match(readme, /local\.sourceProvenance/);
     assert.match(readme, /--fail-on-warnings/);
     assert.match(readme, /read-only SQLite health report/);
