@@ -115,7 +115,7 @@ GitHub `ReferencedEvent` commit references are stored separately from closure ev
 
 Every same-repo merged PR stored in closure proof `linkedPrs` carries release-tag reachability metadata: `reachabilityStatus`, `reachabilityMethod`, `tagCommitOid`, `mergeCommitOid`, and `reachabilityEvidence`. This makes each proof row self-auditing instead of requiring reviewers to cross-reference `release_pr_reachability` manually. Merged PRs from external repositories are marked `external_repo_unchecked` with `external_repository_not_checked_against_openclaw_release_tag`; they remain visible as context but are not release inclusion proof.
 
-Named direct fix/source commit proof also fails closed on git infrastructure errors. Missing release commit evidence, release commit fetch failures, candidate commit fetch failures, and merge-base errors abort closure proof persistence so transient git failures cannot downgrade a reachable fix into unknown proof without durable failure provenance.
+Named direct fix/source commit proof also fails closed on git infrastructure errors. Missing release commit evidence, release commit fetch failures, candidate commit fetch infrastructure failures, and merge-base errors abort closure proof persistence so transient git failures cannot downgrade a reachable fix into unknown proof without durable failure provenance. A named SHA that GitHub explicitly reports as not present in the repository remains non-crediting `commit_unavailable` evidence instead of blocking the whole release.
 
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
@@ -241,6 +241,8 @@ GitHub partial responses for missing issue aliases are recovered only when a cal
 Refresh recomputes closure proof automatically for monitored releases. The manual proof commands rerun the same proof pass for a specific tag when debugging. They require the release to exist locally, require clean ingestion metadata before writing, and record score-blocking `ingestion_evidence_failures` rows when the proof/reachability pipeline aborts.
 
 PR reachability is staged before replacement. `checkReleasePrReachability` fetches the release commit, fetches and validates each candidate PR merge commit, builds the full replacement row set in memory, validates row evidence shape, then replaces `release_pr_reachability` for that tag inside one DB transaction. Run-level git evidence failures abort before deleting old reachability rows; refresh records them as score-blocking evidence failures, and the standalone reachability command records a durable `ingestion_evidence_failures` row before exiting.
+
+PR reachability evidence must cover the current merged linked-PR candidate set before scores can be persisted or verified. For each scored release, the guard requires every current same-repo merged linked PR to have a reachability row, rejects extra rows outside that candidate set, rejects rows older than current PR metadata, and rejects reachable/not-reachable rows whose merge commit or base ref no longer matches current PR metadata. Link-row refetches alone do not force reachability stale; new or removed linked PR candidates are covered by the missing/extra row checks.
 
 Closure evidence refresh also stages comment-derived PR lookups before replacing link rows. Raw closure evidence and comment-link replacement delete and insert their affected link rows inside DB transactions, so failed PR detail fetches do not first wipe prior link evidence.
 

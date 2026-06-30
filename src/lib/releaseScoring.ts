@@ -28,6 +28,8 @@ import {
   listAdvisories,
   listReleasesDb,
   openedDuringReign,
+  formatReleasePrReachabilityIntegrityFailure,
+  releasePrReachabilityIntegrity,
   unclassifiedIssuesForVersion,
   updateReleaseScore,
   upsertReleaseScoreAudit,
@@ -294,13 +296,24 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
 function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
   const incomplete = run.scored.filter((result) =>
     Number(result.input.classifiedIssueCount ?? 0) !== Number(result.input.rawIssueCount ?? 0));
-  if (incomplete.length === 0) return;
-  const examples = incomplete
-    .slice(0, 5)
-    .map((result) => `${result.rel.tag} ${result.input.classifiedIssueCount}/${result.input.rawIssueCount}`)
-    .join(', ');
-  const suffix = incomplete.length > 5 ? `, +${incomplete.length - 5} more` : '';
-  throw new Error(`Refusing to persist scores without complete classification coverage: ${examples}${suffix}`);
+  const failures: string[] = [];
+  if (incomplete.length > 0) {
+    const examples = incomplete
+      .slice(0, 5)
+      .map((result) => `${result.rel.tag} ${result.input.classifiedIssueCount}/${result.input.rawIssueCount}`)
+      .join(', ');
+    const suffix = incomplete.length > 5 ? `, +${incomplete.length - 5} more` : '';
+    failures.push(`incomplete classification coverage: ${examples}${suffix}`);
+  }
+  for (const result of run.scored) {
+    const reachabilityFailure = formatReleasePrReachabilityIntegrityFailure(
+      releasePrReachabilityIntegrity(result.rel.tag, 3),
+    );
+    if (reachabilityFailure) failures.push(reachabilityFailure);
+  }
+  if (failures.length > 0) {
+    throw new Error(`Refusing to persist scores until score evidence is complete: ${failures.join('; ')}`);
+  }
 }
 
 export const __releaseScorePersistenceTest = {

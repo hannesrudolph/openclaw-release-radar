@@ -470,6 +470,82 @@ describe('release fix provenance', () => {
     assert.deepEqual(afterFailedReplace, afterReplace);
   });
 
+  it('reports stale or missing release reachability evidence', async () => {
+    const db = await freshDb('reachability-integrity');
+    seedRelease(db, 'v-integrity');
+    seedIssue(db, 9301);
+    seedPr(db, 9301, true);
+    db.upsertIssuePrLink({
+      issue_number: 9301,
+      pr_number: 9301,
+      source: 'closedByPullRequestsReferences',
+      will_close_target: 1,
+      referenced_at: '2026-06-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-integrity',
+      pr_number: 9301,
+      tag_commit_oid: 'v-integrity-commit',
+      merge_commit_oid: 'merge-9301',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{"schemaVersion":1,"evidence":"merge_commit_in_release_history"}',
+    });
+
+    let report = db.releasePrReachabilityIntegrity('v-integrity');
+    assert.equal(db.formatReleasePrReachabilityIntegrityFailure(report), null);
+
+    db.db.prepare(`
+      UPDATE release_pr_reachability
+      SET checked_at='2000-01-01T00:00:00Z'
+      WHERE tag='v-integrity' AND pr_number=9301
+    `).run();
+    report = db.releasePrReachabilityIntegrity('v-integrity');
+    assert.equal(report.staleCount, 1);
+    assert.match(db.formatReleasePrReachabilityIntegrityFailure(report) ?? '', /stale=1/);
+
+    db.db.prepare(`DELETE FROM release_pr_reachability WHERE tag='v-integrity'`).run();
+    report = db.releasePrReachabilityIntegrity('v-integrity');
+    assert.equal(report.missingCount, 1);
+    assert.match(db.formatReleasePrReachabilityIntegrityFailure(report) ?? '', /missing=1/);
+  });
+
+  it('preserves pull request freshness when metadata is unchanged', async () => {
+    const db = await freshDb('pr-freshness-preserve');
+    seedPr(db, 9401, true);
+    db.db.prepare(`
+      UPDATE pull_request_fixes
+      SET fetched_at='2000-01-01T00:00:00Z'
+      WHERE pr_number=9401
+    `).run();
+
+    seedPr(db, 9401, true);
+    let row = db.db.prepare(`
+      SELECT title, fetched_at
+      FROM pull_request_fixes
+      WHERE pr_number=9401
+    `).get() as any;
+    assert.equal(row.fetched_at, '2000-01-01T00:00:00Z');
+
+    db.upsertPullRequestFix({
+      pr_number: 9401,
+      title: 'Changed PR title',
+      url: 'https://example.test/pull/9401',
+      state: 'MERGED',
+      merged: 1,
+      merged_at: '2026-05-31T00:00:00Z',
+      merge_commit_oid: 'merge-9401',
+      base_ref_name: 'main',
+    });
+    row = db.db.prepare(`
+      SELECT title, fetched_at
+      FROM pull_request_fixes
+      WHERE pr_number=9401
+    `).get() as any;
+    assert.equal(row.title, 'Changed PR title');
+    assert.notEqual(row.fetched_at, '2000-01-01T00:00:00Z');
+  });
+
   it('score audit freshness digest changes when audit payload changes', async () => {
     const db = await freshDb('score-audit-freshness');
     const audit = {

@@ -215,6 +215,15 @@ export async function checkReleaseCommitReachability(
     const commitFetchArgs = ['fetch', '--filter=blob:none', '--no-tags', 'origin', commitOid];
     const commitFetch = git(commitFetchArgs, { allowFailure: true });
     if (commitFetch.status !== 0) {
+      if (isCommitUnavailableFetch(commitFetch)) {
+        results.set(commitOid, {
+          commitOid,
+          tagCommitOid: release.tag_commit_oid,
+          status: 'unknown',
+          evidence: 'commit_unavailable',
+        });
+        continue;
+      }
       throw new Error(gitFailureMessage('commit_fetch_failed', commitFetchArgs, commitFetch));
     }
     const exists = git(['cat-file', '-e', `${commitOid}^{commit}`], { allowFailure: true });
@@ -320,6 +329,11 @@ function gitFailureMessage(reason: ReachabilityEvidenceReason, args: string[], r
     stdout ? `stdout: ${stdout}` : null,
     res.signal ? `signal: ${res.signal}` : null,
   ].filter(Boolean).join('; ');
+}
+
+function isCommitUnavailableFetch(res: ReturnType<typeof run>): boolean {
+  const output = `${String(res.stderr ?? '')}\n${String(res.stdout ?? '')}`;
+  return /\bnot our ref\b|couldn't find remote ref|could not find remote ref|remote ref .* not found/i.test(output);
 }
 
 function run(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {}) {

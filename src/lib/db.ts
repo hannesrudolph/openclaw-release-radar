@@ -2046,6 +2046,19 @@ VALUES (
   :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
 )
 ON CONFLICT(pr_repository_name_with_owner, pr_number) DO UPDATE SET
+  fetched_at=CASE
+    WHEN pull_request_fixes.pr_repository_owner IS NOT excluded.pr_repository_owner
+      OR pull_request_fixes.pr_repository_name IS NOT excluded.pr_repository_name
+      OR pull_request_fixes.title IS NOT excluded.title
+      OR pull_request_fixes.url IS NOT excluded.url
+      OR pull_request_fixes.state IS NOT excluded.state
+      OR pull_request_fixes.merged IS NOT excluded.merged
+      OR pull_request_fixes.merged_at IS NOT excluded.merged_at
+      OR pull_request_fixes.merge_commit_oid IS NOT excluded.merge_commit_oid
+      OR pull_request_fixes.base_ref_name IS NOT excluded.base_ref_name
+    THEN excluded.fetched_at
+    ELSE pull_request_fixes.fetched_at
+  END,
   pr_repository_owner=excluded.pr_repository_owner,
   pr_repository_name=excluded.pr_repository_name,
   title=excluded.title,
@@ -2054,8 +2067,7 @@ ON CONFLICT(pr_repository_name_with_owner, pr_number) DO UPDATE SET
   merged=excluded.merged,
   merged_at=excluded.merged_at,
   merge_commit_oid=excluded.merge_commit_oid,
-  base_ref_name=excluded.base_ref_name,
-  fetched_at=excluded.fetched_at
+  base_ref_name=excluded.base_ref_name
 `);
 
 export function upsertPullRequestFix(input: PullRequestFixInput): void {
@@ -2203,6 +2215,201 @@ export interface ReleasePrReachabilityRow {
   merged_at: string | null;
   pr_merge_commit_oid: string | null;
   pr_base_ref_name: string | null;
+}
+
+export interface ReleasePrReachabilityIntegrity {
+  tag: string;
+  candidateCount: number;
+  rowCount: number;
+  missingCount: number;
+  extraCount: number;
+  staleCount: number;
+  mismatchedCount: number;
+  examples: Array<{
+    kind: 'missing' | 'extra' | 'stale' | 'mismatch';
+    repository: string;
+    prNumber: number;
+    checkedAt: string | null;
+    dependencyFetchedAt: string | null;
+    detail: string;
+  }>;
+}
+
+const reachabilityCandidateSql = `
+WITH candidates AS (
+  SELECT
+    p.pr_repository_name_with_owner,
+    p.pr_number,
+    p.merge_commit_oid,
+    p.base_ref_name,
+    p.fetched_at AS dependency_fetched_at
+  FROM pull_request_fixes p
+  JOIN issue_pr_links l
+    ON l.pr_repository_name_with_owner=p.pr_repository_name_with_owner
+   AND l.pr_number=p.pr_number
+  WHERE p.merged=1
+    AND p.pr_repository_name_with_owner=?
+  GROUP BY
+    p.pr_repository_name_with_owner,
+    p.pr_number,
+    p.merge_commit_oid,
+    p.base_ref_name
+),
+rows AS (
+  SELECT *
+  FROM release_pr_reachability
+  WHERE tag=?
+    AND pr_repository_name_with_owner=?
+)
+`;
+
+const reachabilityIntegrityCountsStmt = db.prepare(`
+${reachabilityCandidateSql}
+SELECT
+  (SELECT COUNT(*) FROM candidates) AS candidateCount,
+  (SELECT COUNT(*) FROM rows) AS rowCount,
+  (SELECT COUNT(*)
+   FROM candidates c
+   LEFT JOIN rows r
+     ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+    AND r.pr_number=c.pr_number
+   WHERE r.pr_number IS NULL) AS missingCount,
+  (SELECT COUNT(*)
+   FROM rows r
+   LEFT JOIN candidates c
+     ON c.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+    AND c.pr_number=r.pr_number
+   WHERE c.pr_number IS NULL) AS extraCount,
+  (SELECT COUNT(*)
+   FROM candidates c
+   JOIN rows r
+     ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+    AND r.pr_number=c.pr_number
+   WHERE unixepoch(r.checked_at) < unixepoch(c.dependency_fetched_at)) AS staleCount,
+  (SELECT COUNT(*)
+   FROM candidates c
+   JOIN rows r
+     ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+    AND r.pr_number=c.pr_number
+   WHERE r.status != 'unknown'
+     AND (
+       COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
+       OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
+     )) AS mismatchedCount
+`);
+
+const reachabilityIntegrityExamplesStmt = db.prepare(`
+${reachabilityCandidateSql}
+SELECT *
+FROM (
+  SELECT
+    'missing' AS kind,
+    c.pr_repository_name_with_owner AS repository,
+    c.pr_number AS prNumber,
+    NULL AS checkedAt,
+    c.dependency_fetched_at AS dependencyFetchedAt,
+    'candidate PR is missing release reachability row' AS detail
+  FROM candidates c
+  LEFT JOIN rows r
+    ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+   AND r.pr_number=c.pr_number
+  WHERE r.pr_number IS NULL
+
+  UNION ALL
+
+  SELECT
+    'extra' AS kind,
+    r.pr_repository_name_with_owner AS repository,
+    r.pr_number AS prNumber,
+    r.checked_at AS checkedAt,
+    NULL AS dependencyFetchedAt,
+    'reachability row no longer has a merged linked PR candidate' AS detail
+  FROM rows r
+  LEFT JOIN candidates c
+    ON c.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+   AND c.pr_number=r.pr_number
+  WHERE c.pr_number IS NULL
+
+  UNION ALL
+
+  SELECT
+    'stale' AS kind,
+    c.pr_repository_name_with_owner AS repository,
+    c.pr_number AS prNumber,
+    r.checked_at AS checkedAt,
+    c.dependency_fetched_at AS dependencyFetchedAt,
+    'reachability row predates linked PR evidence' AS detail
+  FROM candidates c
+  JOIN rows r
+    ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+   AND r.pr_number=c.pr_number
+  WHERE unixepoch(r.checked_at) < unixepoch(c.dependency_fetched_at)
+
+  UNION ALL
+
+  SELECT
+    'mismatch' AS kind,
+    c.pr_repository_name_with_owner AS repository,
+    c.pr_number AS prNumber,
+    r.checked_at AS checkedAt,
+    c.dependency_fetched_at AS dependencyFetchedAt,
+    'reachability row merge commit/base ref differs from current PR evidence' AS detail
+  FROM candidates c
+  JOIN rows r
+    ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
+   AND r.pr_number=c.pr_number
+  WHERE r.status != 'unknown'
+    AND (
+      COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
+      OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
+    )
+)
+ORDER BY kind, repository, prNumber
+LIMIT ?
+`);
+
+export function releasePrReachabilityIntegrity(tag: string, exampleLimit = 10): ReleasePrReachabilityIntegrity {
+  const counts = reachabilityIntegrityCountsStmt.get(
+    defaultPrRepositoryNameWithOwner,
+    tag,
+    defaultPrRepositoryNameWithOwner,
+  ) as Record<string, unknown> | undefined;
+  const examples = reachabilityIntegrityExamplesStmt.all(
+    defaultPrRepositoryNameWithOwner,
+    tag,
+    defaultPrRepositoryNameWithOwner,
+    Math.max(0, Math.floor(exampleLimit)),
+  ) as ReleasePrReachabilityIntegrity['examples'];
+  return {
+    tag,
+    candidateCount: Number(counts?.candidateCount ?? 0),
+    rowCount: Number(counts?.rowCount ?? 0),
+    missingCount: Number(counts?.missingCount ?? 0),
+    extraCount: Number(counts?.extraCount ?? 0),
+    staleCount: Number(counts?.staleCount ?? 0),
+    mismatchedCount: Number(counts?.mismatchedCount ?? 0),
+    examples: examples.map((example) => ({
+      kind: example.kind,
+      repository: example.repository,
+      prNumber: Number(example.prNumber),
+      checkedAt: example.checkedAt ?? null,
+      dependencyFetchedAt: example.dependencyFetchedAt ?? null,
+      detail: example.detail,
+    })),
+  };
+}
+
+export function formatReleasePrReachabilityIntegrityFailure(report: ReleasePrReachabilityIntegrity): string | null {
+  const failed = report.missingCount + report.extraCount + report.staleCount + report.mismatchedCount;
+  if (failed === 0) return null;
+  const examples = report.examples
+    .slice(0, 3)
+    .map((example) => `${example.kind} ${example.repository}#${example.prNumber}`)
+    .join(', ');
+  const suffix = examples ? `; examples: ${examples}` : '';
+  return `${report.tag}: PR reachability evidence is not current for ${failed} row(s) ` +
+    `(candidates=${report.candidateCount}, rows=${report.rowCount}, missing=${report.missingCount}, ` +
+    `extra=${report.extraCount}, stale=${report.staleCount}, mismatched=${report.mismatchedCount})${suffix}`;
 }
 
 const releasePrReachabilityRowsStmt = db.prepare(`

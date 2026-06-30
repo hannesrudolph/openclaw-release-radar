@@ -18,6 +18,10 @@ const {
   SCORE_INPUT_SCHEMA_VERSION,
   SCORE_MODEL_VERSION,
 } = await import('../src/lib/releaseScoring.ts');
+const {
+  formatReleasePrReachabilityIntegrityFailure,
+  releasePrReachabilityIntegrity,
+} = await import('../src/lib/db.ts');
 
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
 const auditedStableRows = db.prepare(`
@@ -133,6 +137,8 @@ function comparePersisted({ failures, result, audit, recommended }) {
   if (input.rawIssueCount !== input.classifiedIssueCount) {
     failures.push(`${tag}: scored release requires complete classification coverage (${input.classifiedIssueCount}/${input.rawIssueCount})`);
   }
+  const reachabilityFailure = formatReleasePrReachabilityIntegrityFailure(releasePrReachabilityIntegrity(tag, 3));
+  if (reachabilityFailure) failures.push(reachabilityFailure);
 
   expectEqual(failures, tag, 'negative issue count', Number(rel.negative_issues ?? 0), result.neg);
   expectEqual(failures, tag, 'positive issue count', Number(rel.positive_issues ?? 0), result.pos);

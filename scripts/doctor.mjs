@@ -9,6 +9,7 @@ import {
 } from './lib/doctor-health.mjs';
 
 const SCHEMA_VERSION = 1;
+const TRACKED_PR_REPOSITORY = `${process.env.GITHUB_OWNER ?? 'openclaw'}/${process.env.GITHUB_REPO ?? 'openclaw'}`;
 const CORE_TABLES = [
   'releases',
   'issues',
@@ -138,6 +139,11 @@ export function buildDoctorReport({
     }
 
     report.reachability = reachabilitySummary(db, latest.tag);
+    if (report.reachability.integrity.failedCount > 0) {
+      failures.push(`${latest.tag}: PR reachability evidence is stale or incomplete ` +
+        `(missing=${report.reachability.integrity.missingCount}, extra=${report.reachability.integrity.extraCount}, ` +
+        `stale=${report.reachability.integrity.staleCount}, mismatched=${report.reachability.integrity.mismatchedCount})`);
+    }
     report.comparison = comparisonSummary(db);
   } finally {
     db.close();
@@ -438,7 +444,62 @@ function reachabilitySummary(db, tag) {
   return {
     total: rows.reduce((sum, row) => sum + Number(row.count ?? 0), 0),
     byStatus: Object.fromEntries(rows.map((row) => [row.status, Number(row.count ?? 0)])),
+    integrity: reachabilityIntegritySummary(db, tag),
   };
+}
+
+function reachabilityIntegritySummary(db, tag) {
+  const counts = db.prepare(`
+    WITH candidates AS (
+      SELECT
+        p.pr_repository_name_with_owner,
+        p.pr_number,
+        p.merge_commit_oid,
+        p.base_ref_name,
+        p.fetched_at AS dependency_fetched_at
+      FROM pull_request_fixes p
+      JOIN issue_pr_links l
+        ON l.pr_repository_name_with_owner=p.pr_repository_name_with_owner
+       AND l.pr_number=p.pr_number
+      WHERE p.merged=1
+        AND p.pr_repository_name_with_owner=?
+      GROUP BY p.pr_repository_name_with_owner, p.pr_number, p.merge_commit_oid, p.base_ref_name
+    ),
+    rows AS (
+      SELECT *
+      FROM release_pr_reachability
+      WHERE tag=?
+        AND pr_repository_name_with_owner=?
+    )
+    SELECT
+      (SELECT COUNT(*) FROM candidates) AS candidateCount,
+      (SELECT COUNT(*) FROM rows) AS rowCount,
+      (SELECT COUNT(*) FROM candidates c LEFT JOIN rows r
+         ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner AND r.pr_number=c.pr_number
+       WHERE r.pr_number IS NULL) AS missingCount,
+      (SELECT COUNT(*) FROM rows r LEFT JOIN candidates c
+         ON c.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND c.pr_number=r.pr_number
+       WHERE c.pr_number IS NULL) AS extraCount,
+      (SELECT COUNT(*) FROM candidates c JOIN rows r
+         ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner AND r.pr_number=c.pr_number
+       WHERE unixepoch(r.checked_at) < unixepoch(c.dependency_fetched_at)) AS staleCount,
+      (SELECT COUNT(*) FROM candidates c JOIN rows r
+         ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner AND r.pr_number=c.pr_number
+       WHERE r.status != 'unknown'
+         AND (COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
+          OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, ''))) AS mismatchedCount
+  `).get(TRACKED_PR_REPOSITORY, tag, TRACKED_PR_REPOSITORY);
+  const summary = {
+    candidateCount: Number(counts?.candidateCount ?? 0),
+    rowCount: Number(counts?.rowCount ?? 0),
+    missingCount: Number(counts?.missingCount ?? 0),
+    extraCount: Number(counts?.extraCount ?? 0),
+    staleCount: Number(counts?.staleCount ?? 0),
+    mismatchedCount: Number(counts?.mismatchedCount ?? 0),
+    failedCount: 0,
+  };
+  summary.failedCount = summary.missingCount + summary.extraCount + summary.staleCount + summary.mismatchedCount;
+  return summary;
 }
 
 function comparisonSummary(db) {

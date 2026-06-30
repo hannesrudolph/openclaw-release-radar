@@ -299,6 +299,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /isRangeParseable/);
     assert.match(scorer, /complete classification coverage/);
     assert.match(scorer, /runInWriteTransaction/);
+    assert.match(scorer, /releasePrReachabilityIntegrity/);
+    assert.match(scorer, /formatReleasePrReachabilityIntegrityFailure/);
     assert.match(bridgeTest, /FOREIGN KEY constraint failed/);
     assert.match(bridgeTest, /getReleaseScoreAudit\('v-tx'\), undefined/);
     assert.match(bridgeTest, /persistReleaseScoreRun/);
@@ -409,6 +411,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(reachability, /refusing to check direct commit reachability/);
     assert.match(reachability, /throw new Error\(gitFailureMessage\('release_commit_fetch_failed'/);
     assert.match(reachability, /throw new Error\(gitFailureMessage\('commit_fetch_failed'/);
+    assert.match(reachability, /isCommitUnavailableFetch/);
     assert.match(reachability, /throw new Error\(gitFailureMessage\('merge_base_error'/);
     assert.match(analysis, /direct_closer_commits/);
     assert.match(analysis, /e\.closer_type='Commit'/);
@@ -432,6 +435,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(reachability, /replaceReleasePrReachabilityForRelease\(tag, rows\)/);
     assert.doesNotMatch(reachability, /deleteReleasePrReachabilityForRelease/);
     assert.match(db, /replaceReleasePrReachabilityForRelease/);
+    assert.match(db, /releasePrReachabilityIntegrity/);
+    assert.match(db, /formatReleasePrReachabilityIntegrityFailure/);
     assert.match(db, /runInWriteTransaction\(\(\) => \{\s*deleteReleasePrReachabilityForReleaseStmt\.run\(tag\);/);
     assert.match(script, /getRelease/);
     assert.match(script, /insertIngestionEvidenceFailure/);
@@ -494,6 +499,8 @@ describe('static scoring/UI contracts', () => {
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
+    const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
+    const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const scoreModel = readFileSync(join(root, 'src/lib/score.ts'), 'utf8')
       .match(/SCORE_MODEL_VERSION = '([^']+)'/)?.[1];
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
@@ -516,6 +523,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
+    assert.match(scoringDoc, /PR reachability evidence must cover the current merged linked-PR candidate set/);
+    assert.match(doctor, /reachabilityIntegritySummary/);
+    assert.match(doctor, /PR reachability evidence is stale or incomplete/);
+    assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
     assert.match(readme, /Current value: `1`/);
     assert.match(readme, /stable reason `code`/);
