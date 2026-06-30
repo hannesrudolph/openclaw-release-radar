@@ -10,6 +10,16 @@ export function assessDataFreshnessHealth(freshness, latest, {
   const sourceFetchedAtMax = freshness.sourceFetchedAtMax ?? null;
   const issueUpdatedAtMax = freshness.issueUpdatedAtMax ?? null;
 
+  if (scoredAt != null && !isTimestamp(scoredAt)) {
+    failures.push(`${tag}: score freshness scoredAt is not a valid timestamp: ${scoredAt}`);
+  }
+  if (sourceFetchedAtMax != null && !isTimestamp(sourceFetchedAtMax)) {
+    failures.push(`${tag}: sourceFetchedAtMax is not a valid timestamp: ${sourceFetchedAtMax}`);
+  }
+  if (issueUpdatedAtMax != null && !isTimestamp(issueUpdatedAtMax)) {
+    failures.push(`${tag}: issueUpdatedAtMax is not a valid timestamp: ${issueUpdatedAtMax}`);
+  }
+
   if (isAfter(sourceFetchedAtMax, scoredAt)) {
     const newerSources = Array.isArray(freshness.sources)
       ? freshness.sources
@@ -26,6 +36,9 @@ export function assessDataFreshnessHealth(freshness, latest, {
     for (const source of freshness.sources) {
       if (Number(source?.nullCount ?? 0) > 0) {
         failures.push(`${tag}: ${source.source} freshness has ${Number(source.nullCount)} row(s) without timestamp; rerun a complete refresh before trusting current score`);
+      }
+      if (Number(source?.count ?? 0) > 0 && source.maxAt != null && !isTimestamp(source.maxAt)) {
+        failures.push(`${tag}: ${source.source} freshness maxAt is not a valid timestamp: ${source.maxAt}`);
       }
       if (!requiredTimestampSources.has(source?.source)) continue;
       if (Number(source.count ?? 0) > 0 && source.maxAt == null) {
@@ -149,4 +162,8 @@ function isAfter(left, right) {
   const leftMs = Date.parse(left);
   const rightMs = Date.parse(right);
   return Number.isFinite(leftMs) && Number.isFinite(rightMs) && leftMs > rightMs;
+}
+
+function isTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
 }

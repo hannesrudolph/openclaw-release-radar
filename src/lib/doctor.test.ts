@@ -78,6 +78,26 @@ describe('doctor data freshness health', () => {
     assert.ok(result.failures.some((failure) => /issue_pr_links freshness has 2 row/.test(failure)));
   });
 
+  it('fails when freshness timestamps are malformed', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: 'not-a-score-date',
+      issueUpdatedAtMax: 'not-an-issue-date',
+      issueUpdatedAgeHoursAtScore: 0.02,
+      issueUpdatedAgeHoursNow: 0.03,
+      sourceFetchedAtMax: 'not-a-source-date',
+      sources: [
+        { source: 'closure_proofs', count: 1, nullCount: 0, maxAt: 'not-a-date' },
+        { source: 'empty_source', count: 0, nullCount: 0, maxAt: 'also-not-a-date' },
+      ],
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /scoredAt is not a valid timestamp/.test(failure)));
+    assert.ok(result.failures.some((failure) => /sourceFetchedAtMax is not a valid timestamp/.test(failure)));
+    assert.ok(result.failures.some((failure) => /issueUpdatedAtMax is not a valid timestamp/.test(failure)));
+    assert.ok(result.failures.some((failure) => /closure_proofs freshness maxAt is not a valid timestamp/.test(failure)));
+    assert.ok(!result.failures.some((failure) => /empty_source/.test(failure)));
+  });
+
   it('fails when issue rows include updates after the latest score', () => {
     const result = assessDataFreshnessHealth({
       scoredAt: latest.scoredAt,

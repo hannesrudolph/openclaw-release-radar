@@ -270,6 +270,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(doctor, /expected exactly one recommended scored stable release/);
     assert.match(doctor, /no audited stable release found/);
     assert.match(doctorHealth, /classificationFailures/);
+    assert.match(doctorHealth, /scoredAt is not a valid timestamp/);
+    assert.match(doctorHealth, /sourceFetchedAtMax is not a valid timestamp/);
+    assert.match(doctorHealth, /issueUpdatedAtMax is not a valid timestamp/);
+    assert.match(doctorHealth, /freshness maxAt is not a valid timestamp/);
     assert.match(doctor, /failOnWarnings/);
     assert.match(doctor, /fail-on-warnings/);
     assert.match(doctor, /api-base/);
