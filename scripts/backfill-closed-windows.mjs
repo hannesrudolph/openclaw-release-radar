@@ -129,7 +129,7 @@ if (!dryRun && !skipProof) {
       throw new Error(`${message}; refusing to continue closed-window backfill`);
     }
     try {
-      proof = await analyzeClosureProofsForRelease(tag);
+      proof = await analyzeClosureProofsForRelease(tag, { persistScoreAuditPayload: false });
     } catch (error) {
       const message = recordBackfillFailure(
         'backfill-closed-windows-closure-proof',

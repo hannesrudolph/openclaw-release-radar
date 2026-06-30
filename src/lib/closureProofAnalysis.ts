@@ -39,6 +39,10 @@ export interface ClosureProofAnalysisResult {
   };
 }
 
+export interface AnalyzeClosureProofOptions {
+  persistScoreAuditPayload?: boolean;
+}
+
 const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
 const trackedPrRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
 const LINKED_PR_SOURCE_PRIORITY_SQL = `
@@ -295,7 +299,11 @@ WHERE tag=?
 
 const issueExistsStmt = db.prepare(`SELECT 1 FROM issues WHERE number=?`);
 
-export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
+export async function analyzeClosureProofsForRelease(
+  releaseTag: string,
+  options: AnalyzeClosureProofOptions = {},
+): Promise<ClosureProofAnalysisResult> {
+  const persistScoreAuditPayload = options.persistScoreAuditPayload ?? true;
   const analysisStartedAt = new Date().toISOString();
   const release = getRelease(releaseTag);
   const labelCutoff = release ? releaseLabelCutoff(release, analysisStartedAt) : null;
@@ -486,7 +494,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   runInWriteTransaction(() => {
     deleteIssueClosureProofsForRelease(releaseTag);
     for (const row of proofRows) upsertIssueClosureProof(row);
-    persistClosureProofInScoreAudit(releaseTag);
+    if (persistScoreAuditPayload) persistClosureProofInScoreAudit(releaseTag);
   });
 
   return {

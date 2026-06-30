@@ -777,7 +777,7 @@ export async function refresh(): Promise<{
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
       try {
-        const proof = await analyzeClosureProofsForRelease(rel.tag);
+        const proof = await analyzeClosureProofsForRelease(rel.tag, { persistScoreAuditPayload: false });
         console.log(`[closure-proof] ${rel.tag}: ${proof.analyzed} analyzed`);
       } catch (e) {
         const message = recordEvidenceRefreshFailure('closure-proof', rel.tag, e, {

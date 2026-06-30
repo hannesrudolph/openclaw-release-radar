@@ -437,6 +437,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /backfill-closed-windows-closure-evidence/);
     assert.match(script, /backfill-closed-windows-reachability/);
     assert.match(script, /backfill-closed-windows-closure-proof/);
+    assert.match(script, /analyzeClosureProofsForRelease\(tag, \{ persistScoreAuditPayload: false \}\)/);
     assert.match(script, /release_tag: typeof context\.releaseTag === 'string' \? context\.releaseTag : null/);
     assert.match(script, /insertIngestionEvidenceFailure/);
     assert.ok(
@@ -456,9 +457,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /missingClassificationClosureProof/);
     assert.match(readme, /stages all classification results before writing them in one transaction/);
     assert.match(readme, /closure-evidence, reachability, or closure-proof failures are recorded/);
+    assert.match(readme, /fresh proof payloads attached to stale score audits/);
     assert.match(scoringDoc, /writes the staged classification set in one DB transaction/);
     assert.match(scoringDoc, /recorded in `ingestion_evidence_failures` with release context where applicable/);
     assert.match(scoringDoc, /without leaving partial closed-window classification writes/);
+    assert.match(scoringDoc, /fresh proof payloads attached to stale score audits/);
   });
 
   it('closure evidence refresh fetches PR mention evidence before replacing links', () => {
@@ -485,7 +488,11 @@ describe('static scoring/UI contracts', () => {
       analysis.indexOf('const proofRows = preparedRows') < analysis.indexOf('deleteIssueClosureProofsForRelease(releaseTag)'),
       'closure proof rows must be staged before deleting persisted proof rows',
     );
-    assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssueClosureProofsForRelease\(releaseTag\);[\s\S]*persistClosureProofInScoreAudit\(releaseTag\);/);
+    assert.match(analysis, /const persistScoreAuditPayload = options\.persistScoreAuditPayload \?\? true/);
+    assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssueClosureProofsForRelease\(releaseTag\);[\s\S]*if \(persistScoreAuditPayload\) persistClosureProofInScoreAudit\(releaseTag\);/);
+    assert.match(readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8'), /analyzeClosureProofsForRelease\(rel\.tag, \{ persistScoreAuditPayload: false \}\)/);
+    assert.match(readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8'), /analyzeClosureProofsForRelease\(tag, \{ persistScoreAuditPayload: false \}\)/);
+    assert.match(readFileSync(join(root, 'docs/scoring-model.md'), 'utf8'), /refresh does not patch existing `release_score_audits`/);
     assert.match(payload, /gate_evidence_json is malformed; refusing to persist closure proof payload/);
     assert.match(payload, /updateReleaseScoreAuditClosureProofGateEvidence/);
     assert.doesNotMatch(payload, /updateReleaseScoreAuditGateEvidence/);

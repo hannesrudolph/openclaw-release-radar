@@ -294,13 +294,13 @@ npm start
 
 `npm run check:release-pr-reachability -- v2026.6.10` rebuilds PR merge-commit reachability for one release tag. It stages the full replacement set before writing, then swaps rows in one transaction; git evidence failures leave the previous rows intact and are recorded as score-blocking `ingestion_evidence_failures`.
 
-`npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, stages all classification results before writing them in one transaction, reruns closure evidence, reachability, and closure proof for scored stable releases, and persists the refreshed score audit. Fetch, classification, classification-write, closure-evidence, reachability, or closure-proof failures are recorded in `ingestion_evidence_failures` and abort without leaving partial closed-window classification writes.
+`npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, stages all classification results before writing them in one transaction, reruns closure evidence, reachability, and closure proof for scored stable releases, then persists refreshed score rows and score audits in the final score transaction. Fetch, classification, classification-write, closure-evidence, reachability, or closure-proof failures are recorded in `ingestion_evidence_failures` and abort without leaving partial closed-window classification writes or fresh proof payloads attached to stale score audits.
 
 `npm run dev` runs TypeScript directly with watch mode.
 
 `npm start` runs the compiled app from `dist/`.
 
-Refresh computes closure proof automatically. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging. It requires clean ingestion metadata before writing, requires the release to exist locally, and records score-blocking `ingestion_evidence_failures` if the proof pipeline aborts.
+Refresh computes closure proof automatically. During refresh and closed-window backfill, closure proof updates side-table proof rows but leaves `release_score_audits` unchanged until the final score write succeeds, so a failed evidence pass cannot attach fresh proof payloads to stale scores. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging. It requires clean ingestion metadata before writing, requires the release to exist locally, and records score-blocking `ingestion_evidence_failures` if the proof pipeline aborts.
 
 `npm run ingest:fix-provenance -- <tag>` is kept as a compatibility alias and now runs the same guarded closure-proof/reachability pipeline.
 
