@@ -119,4 +119,63 @@ describe('refresh backfill completion', () => {
     assert.equal(summarized[24], 'failure 25');
     assert.equal(summarized[25], '[summary] 2 additional failure(s) omitted');
   });
+
+  it('accepts release windows with monitored stables plus an older stable boundary', () => {
+    const result = __refreshTest.releaseWindowCompleteness([
+      release('v4'),
+      release('v3-beta.1', true),
+      release('v3'),
+      release('v2-beta.1', true),
+      release('v2'),
+      release('v1-beta.1', true),
+      release('v1'),
+    ], 3, 7);
+
+    assert.equal(result.complete, true);
+    assert.equal(result.oldestMonitoredTag, 'v2');
+  });
+
+  it('accepts release windows with fewer stables when GitHub release pagination is exhausted', () => {
+    const result = __refreshTest.releaseWindowCompleteness([
+      release('v2'),
+      release('v2-beta.1', true),
+      release('v1'),
+    ], 10, 60);
+
+    assert.equal(result.complete, true);
+    assert.equal(result.exhausted, true);
+  });
+
+  it('refuses release windows that hit the fetch limit before enough stable releases', () => {
+    const result = __refreshTest.releaseWindowCompleteness([
+      release('v2'),
+      release('v2-beta.5', true),
+      release('v2-beta.4', true),
+      release('v2-beta.3', true),
+      release('v2-beta.2', true),
+      release('v2-beta.1', true),
+    ], 2, 6);
+
+    assert.equal(result.complete, false);
+    assert.match(result.reason ?? '', /1\/2 stable releases/);
+  });
+
+  it('refuses release windows missing the older stable boundary for the oldest monitored stable', () => {
+    const result = __refreshTest.releaseWindowCompleteness([
+      release('v3'),
+      release('v2-beta.2', true),
+      release('v2-beta.1', true),
+      release('v2'),
+      release('v1-beta.2', true),
+      release('v1-beta.1', true),
+    ], 2, 6);
+
+    assert.equal(result.complete, false);
+    assert.equal(result.oldestMonitoredTag, 'v2');
+    assert.match(result.reason ?? '', /older stable boundary/);
+  });
 });
+
+function release(tag_name: string, prerelease = false) {
+  return { tag_name, prerelease };
+}

@@ -286,7 +286,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /classification failures/);
     assert.match(readme, /release-metadata\/artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);
     assert.match(readme, /durable `ingestion_evidence_failures` rows/);
-    assert.match(readme, /Release metadata, artifact verification, release commit checks, and security advisories are score-affecting evidence/);
+    assert.match(readme, /Release metadata, release-window context, artifact verification, release commit checks, and security advisories are score-affecting evidence/);
     assert.match(readme, /stopReason: "evidence_failure"/);
     assert.match(readme, /recover only when the caller provides an explicit missing-alias reporter/);
     assert.match(readme, /Other callers fail closed/);
@@ -614,6 +614,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /insertIngestionEvidenceFailure/);
     assert.match(refresh, /persistEarlyEvidenceFailureCrawlMeta/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('release-metadata', 'listReleases', e/);
+    assert.match(refresh, /releaseWindowCompleteness\(fetched, monitoredReleaseCount, releaseFetchSize\)/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('release-window', 'listReleases', error/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('artifact-verification', r\.tag_name, e/);
     assert.match(refresh, /issue-comments-missing-alias/);
     assert.match(refresh, /issue-label-events-missing-alias/);
@@ -651,6 +653,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
     assert.match(scoringDoc, /release-metadata\/artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(scoringDoc, /fetched release window lacks enough stable releases/);
     assert.match(scoringDoc, /If release metadata cannot be fetched/);
     assert.match(scoringDoc, /artifact verification, release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);

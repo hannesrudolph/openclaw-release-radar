@@ -257,19 +257,35 @@ export async function refresh(): Promise<{
     // Chart points 11–20 are intentionally frozen rows already scored in past runs
     // (served straight from the DB), kept purely as comparative trend context.
     const monitoredReleaseCount = config.limits.releases;
+    const releaseFetchSize = monitoredReleaseCount * 6;
     let fetched;
     try {
-      fetched = await listReleases(monitoredReleaseCount * 6);
+      fetched = await listReleases(releaseFetchSize);
     } catch (e) {
       const message = recordEvidenceRefreshFailure('release-metadata', 'listReleases', e, {
         monitoredReleaseCount,
-        fetchSize: monitoredReleaseCount * 6,
+        fetchSize: releaseFetchSize,
       });
       console.warn(`${message}; refusing score persistence before release metadata refresh completes`);
       persistEarlyEvidenceFailureCrawlMeta();
       throw new Error(`${message}; refusing score persistence before release metadata refresh completes`);
     }
     const releases = fetched.filter((r) => !r.prerelease).slice(0, monitoredReleaseCount);
+    const releaseWindow = releaseWindowCompleteness(fetched, monitoredReleaseCount, releaseFetchSize);
+    if (!releaseWindow.complete) {
+      const error = new Error(releaseWindow.reason ?? 'release window is incomplete');
+      const message = recordEvidenceRefreshFailure('release-window', 'listReleases', error, {
+        monitoredReleaseCount,
+        fetchSize: releaseFetchSize,
+        stableCount: releaseWindow.stableCount,
+        fetchedCount: fetched.length,
+        exhausted: releaseWindow.exhausted,
+        oldestMonitoredTag: releaseWindow.oldestMonitoredTag,
+      });
+      console.warn(`${message}; refusing score persistence before release metadata refresh completes`);
+      persistEarlyEvidenceFailureCrawlMeta();
+      throw new Error(`${message}; refusing score persistence before release metadata refresh completes`);
+    }
     for (const r of releases) {
       upsertRelease({
         tag: r.tag_name,
@@ -869,6 +885,59 @@ function shouldRefuseScoreAfterTruncatedCommentScans(count: number): boolean {
   return count > 0;
 }
 
+function releaseWindowCompleteness(
+  fetched: Array<{ tag_name: string; prerelease: boolean }>,
+  monitoredReleaseCount: number,
+  fetchSize: number,
+): {
+  complete: boolean;
+  reason: string | null;
+  stableCount: number;
+  exhausted: boolean;
+  oldestMonitoredTag: string | null;
+} {
+  const stable = fetched.filter((release) => !release.prerelease);
+  const exhausted = fetched.length < fetchSize;
+  const monitored = stable.slice(0, monitoredReleaseCount);
+  const oldestMonitoredTag = monitored[monitored.length - 1]?.tag_name ?? null;
+  if (stable.length < monitoredReleaseCount && !exhausted) {
+    return {
+      complete: false,
+      reason: `release fetch returned ${stable.length}/${monitoredReleaseCount} stable releases before hitting fetch size ${fetchSize}`,
+      stableCount: stable.length,
+      exhausted,
+      oldestMonitoredTag,
+    };
+  }
+  if (!monitored.length) {
+    return {
+      complete: false,
+      reason: 'release fetch did not return any stable releases',
+      stableCount: stable.length,
+      exhausted,
+      oldestMonitoredTag,
+    };
+  }
+  const oldestIndex = fetched.findIndex((release) => release.tag_name === oldestMonitoredTag);
+  const hasOlderStableBoundary = oldestIndex >= 0 && fetched.slice(oldestIndex + 1).some((release) => !release.prerelease);
+  if (stable.length >= monitoredReleaseCount && !hasOlderStableBoundary && !exhausted) {
+    return {
+      complete: false,
+      reason: `release fetch lacks an older stable boundary after ${oldestMonitoredTag}; beta/breaking rollups may be truncated`,
+      stableCount: stable.length,
+      exhausted,
+      oldestMonitoredTag,
+    };
+  }
+  return {
+    complete: true,
+    reason: null,
+    stableCount: stable.length,
+    exhausted,
+    oldestMonitoredTag,
+  };
+}
+
 function evidenceRefreshFailureMessage(source: string, scope: string | null, error: unknown): string {
   const suffix = scope ? ` ${scope}` : '';
   const message = error instanceof Error ? error.message : String(error);
@@ -898,6 +967,7 @@ export const __refreshTest = {
   shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
   shouldRefuseScoreAfterTruncatedCommentScans,
+  releaseWindowCompleteness,
   evidenceRefreshFailureMessage,
   summarizeFailures,
 };
