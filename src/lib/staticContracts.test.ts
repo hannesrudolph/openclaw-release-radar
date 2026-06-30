@@ -514,11 +514,22 @@ describe('static scoring/UI contracts', () => {
 
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
     assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers,/);
-    assert.match(refresh, /persistIssueStateEvidence\(stateEvidence\)/);
+    assert.match(refresh, /runInWriteTransaction\(\(\) => \{[\s\S]*persistIssueStateEvidence\(stateEvidence\)/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('issue-page-write', pageEvidenceScope, error, pageEvidenceContext\)/);
+    assert.ok(
+      refresh.indexOf('const commentsByIssue = settledValue(commentsResult)') < refresh.indexOf('runInWriteTransaction(() => {'),
+      'refresh must fetch issue page evidence before transactionally writing page rows',
+    );
+    assert.ok(
+      refresh.indexOf('runInWriteTransaction(() => {') < refresh.indexOf('await runWithConcurrency(toClassify'),
+      'refresh must finish page evidence write transaction before classification',
+    );
     assert.doesNotMatch(refresh, /issue\.labels\.length/);
+    assert.match(scoringDoc, /issue-page write failures are recorded as `issue-page-write`, rolled back, and score-blocking/);
   });
 
   it('refresh treats release checks and advisories as score-blocking evidence', () => {

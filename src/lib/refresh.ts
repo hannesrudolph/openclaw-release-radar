@@ -62,6 +62,7 @@ import {
   issuesForVersion,
   listReleasesDb,
   openedDuringReign,
+  runInWriteTransaction,
   setMeta,
   updateReleaseDerivedStats,
   updateReleaseArtifactVerification,
@@ -574,70 +575,81 @@ export async function refresh(): Promise<{
       const labelEventsByIssue = settledValue(labelEventsResult);
       const stateEvidenceByIssue = settledValue(stateEvidenceResult);
 
-      // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
-      for (const issue of page) {
-        const author = issue.user?.login ?? null;
-        const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
-        const comments = commentsByIssue.get(issue.number) ?? [];
-        const stats = commentStats(issue, comments);
-        if (stats.commenter_scan_truncated) commenterScanTruncatedCount++;
-        upsertIssue({
-          number: issue.number,
-          state: issue.state,
-          title: issue.title,
-          author,
-          author_association: issue.author_association ?? null,
-          html_url: issue.html_url,
-          created_at: issue.created_at,
-          updated_at: issue.updated_at,
-          closed_at: issue.closed_at,
-          comments: issue.comments,
-          unique_human_commenters: stats.unique_human_commenters,
-          maintainer_commenters: stats.maintainer_commenters,
-          contributor_commenters: stats.contributor_commenters,
-          commenter_scan_truncated: stats.commenter_scan_truncated,
-          reaction_total: issue.reaction_total ?? 0,
-          positive_reactions: issue.positive_reactions ?? 0,
-          labels: labelsJson,
-          is_bot: detectBot(author, labelsJson) ? 1 : 0,
+      // Pass 1: upsert + decide what needs LLM. Page evidence writes are atomic:
+      // a failed row cannot leave mixed issue/label/state evidence for this page.
+      try {
+        runInWriteTransaction(() => {
+          for (const issue of page) {
+            const author = issue.user?.login ?? null;
+            const labelsJson = JSON.stringify(issue.labels.map((l) => l.name));
+            const comments = commentsByIssue.get(issue.number) ?? [];
+            const stats = commentStats(issue, comments);
+            if (stats.commenter_scan_truncated) commenterScanTruncatedCount++;
+            upsertIssue({
+              number: issue.number,
+              state: issue.state,
+              title: issue.title,
+              author,
+              author_association: issue.author_association ?? null,
+              html_url: issue.html_url,
+              created_at: issue.created_at,
+              updated_at: issue.updated_at,
+              closed_at: issue.closed_at,
+              comments: issue.comments,
+              unique_human_commenters: stats.unique_human_commenters,
+              maintainer_commenters: stats.maintainer_commenters,
+              contributor_commenters: stats.contributor_commenters,
+              commenter_scan_truncated: stats.commenter_scan_truncated,
+              reaction_total: issue.reaction_total ?? 0,
+              positive_reactions: issue.positive_reactions ?? 0,
+              labels: labelsJson,
+              is_bot: detectBot(author, labelsJson) ? 1 : 0,
+            });
+            for (const event of labelEventsByIssue.get(issue.number) ?? []) {
+              upsertIssueLabelEvent({
+                issue_number: event.issueNumber,
+                event_id: event.eventId,
+                action: event.action,
+                label_name: event.labelName,
+                actor_login: event.actorLogin,
+                created_at: event.createdAt,
+              });
+            }
+            upsertIssueLabelSnapshot({
+              issue_number: issue.number,
+              snapshot_at: refreshStartedAt,
+              labels_json: labelsJson,
+            });
+            const stateEvidence = stateEvidenceByIssue.get(issue.number);
+            if (stateEvidence) persistIssueStateEvidence(stateEvidence);
+
+            if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
+
+            // Full history is fetched for accurate open/closed linkage, but spend
+            // classification tokens only on issues whose lifetime overlaps a release
+            // being scored. Closed-before-release issues cannot affect that score.
+            if (!issueOverlapsMonitoredWindow(issue)) continue;
+
+            const existing = getClassification(issue.number);
+            const skip = existing && (
+              // Back-fill mode: preserve tokens — anything already classified is left as-is,
+              // even if updated_at moved on or prompt_version is stale. The next normal run
+              // (once the back-fill flag is set) will pick up those rows incrementally.
+              !backfillDone ||
+              // Normal mode: only skip when the row is fully current.
+              (existing.classified_updated_at === issue.updated_at && existing.prompt_version === PROMPT_VERSION)
+            );
+            if (skip) continue;
+            allUnchanged = false;
+            toClassify.push(issue);
+          }
         });
-        for (const event of labelEventsByIssue.get(issue.number) ?? []) {
-          upsertIssueLabelEvent({
-            issue_number: event.issueNumber,
-            event_id: event.eventId,
-            action: event.action,
-            label_name: event.labelName,
-            actor_login: event.actorLogin,
-            created_at: event.createdAt,
-          });
-        }
-        upsertIssueLabelSnapshot({
-          issue_number: issue.number,
-          snapshot_at: refreshStartedAt,
-          labels_json: labelsJson,
-        });
-        const stateEvidence = stateEvidenceByIssue.get(issue.number);
-        if (stateEvidence) persistIssueStateEvidence(stateEvidence);
-
-        if (Date.parse(issue.updated_at) < oldestMonitoredMs) crossedOldest = true;
-
-        // Full history is fetched for accurate open/closed linkage, but spend
-        // classification tokens only on issues whose lifetime overlaps a release
-        // being scored. Closed-before-release issues cannot affect that score.
-        if (!issueOverlapsMonitoredWindow(issue)) continue;
-
-        const existing = getClassification(issue.number);
-        const skip = existing && (
-          // Back-fill mode: preserve tokens — anything already classified is left as-is,
-          // even if updated_at moved on or prompt_version is stale. The next normal run
-          // (once the back-fill flag is set) will pick up those rows incrementally.
-          !backfillDone ||
-          // Normal mode: only skip when the row is fully current.
-          (existing.classified_updated_at === issue.updated_at && existing.prompt_version === PROMPT_VERSION)
-        );
-        if (skip) continue;
-        allUnchanged = false;
-        toClassify.push(issue);
+      } catch (error) {
+        const message = recordEvidenceRefreshFailure('issue-page-write', pageEvidenceScope, error, pageEvidenceContext);
+        console.warn(`${message}; rolled back issue page evidence writes and refusing score persistence`);
+        issuePaginationStopReason = 'evidence_failure';
+        persistIssueCrawlMeta(buildIssueCrawlMeta());
+        throw new Error(`${message}; rolled back issue page evidence writes; refusing to persist scores`);
       }
 
       // Pass 2: pull recent comments in one GraphQL batch, then classify pending
