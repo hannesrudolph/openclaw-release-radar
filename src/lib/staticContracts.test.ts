@@ -226,11 +226,16 @@ describe('static scoring/UI contracts', () => {
 
   it('offline score writers use the shared release scorer', () => {
     const populate = readFileSync(join(root, 'scripts/populate-db.mjs'), 'utf8');
+    const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
     assert.match(populate, /persistReleaseScoreRun/);
     assert.doesNotMatch(populate, /installConfidence/);
     assert.doesNotMatch(populate, /openDebtLoad/);
     assert.doesNotMatch(populate, /feltLoad/);
+    assert.match(bridgeTest, /buildReleaseScoreRun/);
+    assert.match(bridgeTest, /verifiedDebtWeight/);
+    assert.match(bridgeTest, /unresolvedClosureRiskWeight/);
+    assert.match(bridgeTest, /unclassified release issue/);
   });
 
   it('legacy fix provenance ingestion runs the full proof pipeline', () => {
