@@ -294,7 +294,7 @@ npm start
 
 `npm run check:release-pr-reachability -- v2026.6.10` rebuilds PR merge-commit reachability for one release tag. It stages the full replacement set before writing, then swaps rows in one transaction; git evidence failures leave the previous rows intact and are recorded as score-blocking `ingestion_evidence_failures`.
 
-`npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit.
+`npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, stages all classification results before writing them in one transaction, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit. Fetch, classification, or classification-write failures are recorded in `ingestion_evidence_failures` and abort without leaving partial closed-window classification writes.
 
 `npm run dev` runs TypeScript directly with watch mode.
 

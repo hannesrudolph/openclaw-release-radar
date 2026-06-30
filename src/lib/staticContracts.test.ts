@@ -411,9 +411,21 @@ describe('static scoring/UI contracts', () => {
     const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
     const guard = readFileSync(join(root, 'scripts/lib/score-ingestion-guard.mjs'), 'utf8');
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.equal(pkg.scripts['backfill:closed-windows'], 'tsx scripts/backfill-closed-windows.mjs');
     assert.match(script, /listIssuesBatch/);
     assert.match(script, /classifyIssue/);
+    assert.match(script, /const stagedClassifications = new Map/);
+    assert.match(script, /stagedClassifications\.set/);
+    assert.match(script, /runInWriteTransaction\(\(\) => \{[\s\S]*upsertClassification/);
+    assert.match(script, /backfill-closed-windows-classification/);
+    assert.match(script, /backfill-closed-windows-classification-write/);
+    assert.match(script, /insertIngestionEvidenceFailure/);
+    assert.ok(
+      script.indexOf('stagedClassifications.set') < script.indexOf('runInWriteTransaction(() => {'),
+      'closed-window backfill must stage classifications before transactional writes',
+    );
     assert.match(script, /refreshClosureEvidenceForRelease/);
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
@@ -425,6 +437,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /persistReleaseScoreRun/);
     assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
     assert.match(analysis, /missingClassificationClosureProof/);
+    assert.match(readme, /stages all classification results before writing them in one transaction/);
+    assert.match(scoringDoc, /writes the staged classification set in one DB transaction/);
+    assert.match(scoringDoc, /without leaving partial closed-window classification writes/);
   });
 
   it('closure evidence refresh fetches PR mention evidence before replacing links', () => {

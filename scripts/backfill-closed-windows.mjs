@@ -2,7 +2,9 @@ import { analyzeClosureProofsForRelease, refreshClosureEvidenceForRelease } from
 import {
   db,
   getClassification,
+  insertIngestionEvidenceFailure,
   listReleasesDb,
+  runInWriteTransaction,
   upsertClassification,
 } from '../src/lib/db.ts';
 import { listIssueCommentsBatch, listIssuesBatch } from '../src/lib/github.ts';
@@ -19,6 +21,7 @@ const tagsArg = typeof args.tags === 'string' ? new Set(args.tags.split(',').map
 const dryRun = args['dry-run'] === true;
 const skipProof = args['skip-proof'] === true;
 const skipScore = args['skip-score'] === true;
+const runId = new Date().toISOString();
 
 const releases = listReleasesDb(Math.max(limit, 1))
   .filter((release) => release.final_score != null)
@@ -38,21 +41,62 @@ console.log(JSON.stringify({
 
 let classified = 0;
 if (!dryRun && issueNumbers.length) {
+  const stagedClassifications = new Map();
   for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
     const chunk = issueNumbers.slice(offset, offset + batchSize);
-    const issues = await listIssuesBatch(chunk);
-    const commentsByIssue = await listIssueCommentsBatch(chunk);
-    await runWithConcurrency(chunk, classifyConcurrency, async (issueNumber) => {
-      const issue = issues.get(issueNumber);
-      if (!issue) throw new Error(`GitHub issue #${issueNumber} was not returned`);
-      const existing = getClassification(issue.number);
-      if (existing && Number(existing.prompt_version) === PROMPT_VERSION) return;
-      const comments = commentsByIssue.get(issue.number) ?? [];
-      const cls = await classifyIssue(issue, comments, releaseTags);
-      upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
-      classified++;
+    try {
+      const issues = await listIssuesBatch(chunk);
+      const commentsByIssue = await listIssueCommentsBatch(chunk);
+      await runWithConcurrency(chunk, classifyConcurrency, async (issueNumber) => {
+        const issue = issues.get(issueNumber);
+        if (!issue) throw new Error(`GitHub issue #${issueNumber} was not returned`);
+        const existing = getClassification(issue.number);
+        if (existing && Number(existing.prompt_version) === PROMPT_VERSION) return;
+        const comments = commentsByIssue.get(issue.number) ?? [];
+        const classification = await classifyIssue(issue, comments, releaseTags);
+        stagedClassifications.set(issue.number, {
+          issueNumber: issue.number,
+          classification,
+          issueUpdatedAt: issue.updated_at,
+          promptVersion: PROMPT_VERSION,
+        });
+      });
+      console.log(`[classify:stage] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
+    } catch (error) {
+      const message = recordBackfillFailure(
+        'backfill-closed-windows-classification',
+        `offset ${offset}`,
+        error,
+        {
+          offset,
+          batchSize,
+          issueCount: chunk.length,
+          firstIssueNumber: chunk[0] ?? null,
+          lastIssueNumber: chunk[chunk.length - 1] ?? null,
+        },
+      );
+      throw new Error(`${message}; refusing to write partial closed-window classifications`);
+    }
+  }
+  try {
+    runInWriteTransaction(() => {
+      for (const row of stagedClassifications.values()) {
+        upsertClassification(row.issueNumber, row.classification, row.issueUpdatedAt, row.promptVersion);
+      }
     });
-    console.log(`[classify] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
+    classified = stagedClassifications.size;
+  } catch (error) {
+    const message = recordBackfillFailure(
+      'backfill-closed-windows-classification-write',
+      'write phase',
+      error,
+      {
+        stagedClassificationCount: stagedClassifications.size,
+        issueCount: issueNumbers.length,
+        batchSize,
+      },
+    );
+    throw new Error(`${message}; rolled back closed-window classification writes`);
   }
 }
 
@@ -136,6 +180,20 @@ async function runWithConcurrency(items, limit, worker) {
     }
   });
   await Promise.all(workers);
+}
+
+function recordBackfillFailure(source, scope, error, context = {}) {
+  const message = `[${source}] ${scope} failed: ${error instanceof Error ? error.message : String(error)}`;
+  insertIngestionEvidenceFailure({
+    run_id: runId,
+    source,
+    scope,
+    issue_number: typeof context.issueNumber === 'number' ? context.issueNumber : null,
+    message,
+    context_json: JSON.stringify(context),
+    scoring_blocking: 1,
+  });
+  return message;
 }
 
 function parseArgs(argv) {
