@@ -386,12 +386,45 @@ export class ReleaseAuditReader {
         FROM releases
         WHERE tag=?
       ),
+      issue_open_intervals AS (
+        SELECT
+          i.number AS issue_number,
+          i.created_at AS open_at,
+          COALESCE(
+            (SELECT MIN(c.closed_at)
+             FROM issue_closure_events c
+             WHERE c.issue_number=i.number
+               AND c.closed_at > i.created_at),
+            i.closed_at
+          ) AS close_at
+        FROM issues i
+        UNION ALL
+        SELECT
+          r.issue_number,
+          r.reopened_at AS open_at,
+          COALESCE(
+            (SELECT MIN(c.closed_at)
+             FROM issue_closure_events c
+             WHERE c.issue_number=r.issue_number
+               AND c.closed_at > r.reopened_at),
+            CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+          ) AS close_at
+        FROM issue_reopen_events r
+        JOIN issues i ON i.number=r.issue_number
+        WHERE r.reopened_at IS NOT NULL
+      ),
       issue_universe AS (
         SELECT DISTINCT i.number
         FROM issues i
         JOIN target
-        WHERE i.created_at < target.end_at
-          AND (i.closed_at IS NULL OR i.closed_at > target.published_at)
+        WHERE target.published_at IS NOT NULL
+          AND EXISTS (
+            SELECT 1
+            FROM issue_open_intervals interval
+            WHERE interval.issue_number=i.number
+              AND interval.open_at < target.end_at
+              AND (interval.close_at IS NULL OR interval.close_at > target.published_at)
+          )
       ),
       closed_universe AS (
         SELECT DISTINCT i.number

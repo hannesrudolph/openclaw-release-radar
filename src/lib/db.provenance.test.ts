@@ -4,14 +4,21 @@ import { mkdtempSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import type { IssueClassification } from './llm.ts';
+import { ReleaseAuditReader } from '../../scripts/lib/release-audit-reader.mjs';
 
 function dbPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), `radar-${name}-`)), 'radar.db');
 }
 
 async function freshDb(name: string) {
-  process.env.DB_PATH = dbPath(name);
-  return import(`./db.ts?case=${name}-${Date.now()}-${Math.random()}`);
+  return (await freshDbWithPath(name)).db;
+}
+
+async function freshDbWithPath(name: string) {
+  const path = dbPath(name);
+  process.env.DB_PATH = path;
+  const db = await import(`./db.ts?case=${name}-${Date.now()}-${Math.random()}`);
+  return { db, path };
 }
 
 function classification(overrides: Partial<IssueClassification> = {}): IssueClassification {
@@ -203,6 +210,28 @@ describe('release fix provenance', () => {
 
     assert.ok(!db.issuesForVersion('v1').some((row: any) => row.number === 7002));
     assert.ok(db.issuesForVersion('v2').some((row: any) => row.number === 7002));
+  });
+
+  it('uses open intervals for audit source freshness issue universes', async () => {
+    const db = await freshDb('source-freshness-reopen-interval');
+    seedRelease(db, 'v-source-old', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v-source-new', '2026-06-10T00:00:00Z');
+    seedIssue(db, 7011, null, '2026-06-09T00:00:00Z');
+    seedIssue(db, 7012, '2026-06-15T00:00:00Z', '2026-05-01T00:00:00Z');
+    seedClosure(db, 7012, 'COMPLETED', '2026-05-02T00:00:00Z');
+    seedReopen(db, 7012, '2026-06-12T00:00:00Z');
+    db.upsertIssue({
+      ...(db.getIssue(7012) as any),
+      updated_at: '2026-06-15T00:00:00Z',
+      closed_at: '2026-06-15T00:00:00Z',
+    });
+    db.upsertClassification(7012, classification(), '2026-06-15T00:00:00Z', 1);
+
+    const reader = new ReleaseAuditReader(db.db);
+    const oldIssueRows = reader.sourceFreshnessFor('v-source-old').find((row: any) => row.source === 'issue_rows');
+    const newIssueRows = reader.sourceFreshnessFor('v-source-new').find((row: any) => row.source === 'issue_rows');
+    assert.equal(oldIssueRows.max_ts, '2026-06-09T00:00:00Z');
+    assert.equal(newIssueRows.max_ts, '2026-06-15T00:00:00Z');
   });
 
   it('falls back to issue closed_at when closure timeline events are missing', async () => {
