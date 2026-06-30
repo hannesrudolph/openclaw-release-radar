@@ -117,7 +117,7 @@ The older public JSON snapshot importer is still available as a one-off utility:
 npm run import:public-snapshot -- --allow-overwrite-local-releases https://isitstable.iclaw.digital/api/public
 ```
 
-This is legacy recovery tooling. It refuses to run unless `--allow-overwrite-local-releases` is present because it writes external data into the local release table. It imports release metadata only; external scores/recommendations are not treated as local audit-backed scores. Run a local refresh after import. Do not use it as a benchmark source; prefer `scrape:upstream`.
+This is legacy recovery tooling. It refuses to run unless `--allow-overwrite-local-releases` is present because it writes external data into the local release table. If the local DB already has scored releases, it also requires `--allow-overwrite-scored-local-releases` before touching those rows. It imports release metadata only; external scores/recommendations are not treated as local audit-backed scores. Run a local refresh after import. Do not use it as a benchmark source; prefer `scrape:upstream`.
 
 ## Tokens
 

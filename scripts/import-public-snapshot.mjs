@@ -1,7 +1,9 @@
 const DEFAULT_URL = 'https://isitstable.iclaw.digital/api/public';
 const ALLOW_FLAG = '--allow-overwrite-local-releases';
+const ALLOW_SCORED_FLAG = '--allow-overwrite-scored-local-releases';
 const args = process.argv.slice(2);
 const allowOverwrite = args.includes(ALLOW_FLAG) || process.env.ALLOW_PUBLIC_SNAPSHOT_IMPORT === 'true';
+const allowScoredOverwrite = args.includes(ALLOW_SCORED_FLAG) || process.env.ALLOW_SCORED_PUBLIC_SNAPSHOT_IMPORT === 'true';
 const sourceUrl = args.find((arg) => !arg.startsWith('--')) ?? process.env.PUBLIC_SNAPSHOT_URL ?? DEFAULT_URL;
 
 if (!allowOverwrite) {
@@ -20,6 +22,22 @@ function assertObject(value, label) {
 
 async function main() {
   const { db, setMeta } = await import('../src/lib/db.ts');
+  const scoredLocalReleases = db.prepare(`
+    SELECT tag
+    FROM releases
+    WHERE prerelease=0
+      AND (final_score IS NOT NULL OR scored_at IS NOT NULL OR recommended=1)
+    ORDER BY published_at DESC
+    LIMIT 10
+  `).all();
+  if (scoredLocalReleases.length > 0 && !allowScoredOverwrite) {
+    throw new Error(
+      `Refusing to overwrite ${scoredLocalReleases.length} scored local release row(s) from an external public snapshot. ` +
+      `Pass ${ALLOW_SCORED_FLAG} only when intentionally replacing local scored rows during legacy recovery. ` +
+      `Existing scored releases: ${scoredLocalReleases.map((row) => row.tag).join(', ')}`,
+    );
+  }
+
   const res = await fetch(sourceUrl);
   if (!res.ok) {
     const body = await res.text().catch(() => '');
@@ -101,6 +119,7 @@ async function main() {
     sourceUpdatedAt: payload.updatedAt ?? null,
     sourceRecommended: recommended,
     localScoresImported: false,
+    scoredLocalRowsOverwritten: scoredLocalReleases.length,
     nextStep: 'Run npm run dev or a manual refresh to compute local scores and score audits.',
   }, null, 2));
 }

@@ -207,6 +207,10 @@ describe('static scoring/UI contracts', () => {
     const script = readFileSync(join(root, 'scripts/import-public-snapshot.mjs'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     assert.match(script, /--allow-overwrite-local-releases/);
+    assert.match(script, /--allow-overwrite-scored-local-releases/);
+    assert.match(script, /ALLOW_SCORED_PUBLIC_SNAPSHOT_IMPORT/);
+    assert.match(script, /final_score IS NOT NULL OR scored_at IS NOT NULL OR recommended=1/);
+    assert.match(script, /scoredLocalRowsOverwritten/);
     assert.doesNotMatch(script, /^import \{ db, setMeta \} from '\.\.\/src\/lib\/db\.ts';/m);
     assert.match(script, /await import\('\.\.\/src\/lib\/db\.ts'\)/);
     assert.match(script, /final_score: null/);
@@ -214,6 +218,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /localScoresImported: false/);
     assert.doesNotMatch(script, /nullableNumber\(release\.score\)/);
     assert.match(readme, /external scores\/recommendations are not treated as local audit-backed scores/);
+    assert.match(readme, /requires `--allow-overwrite-scored-local-releases` before touching those rows/);
   });
 
   it('score verifier is wired as a hard drift check', () => {
