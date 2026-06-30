@@ -126,6 +126,8 @@ describe('static scoring/UI contracts', () => {
     const routeTest = readFileSync(join(root, 'src/lib/apiRoutes.test.ts'), 'utf8');
     assert.match(verifier, /closureProofTaxonomy\.ts/);
     assert.match(verifier, /releaseScoring\.ts/);
+    assert.match(verifier, /releaseRowKeys/);
+    assert.match(verifier, /releaseHistoryRowKeys/);
     assert.match(verifier, /SCORE_INPUT_SCHEMA_VERSION/);
     assert.match(verifier, /SCORE_COMPONENTS_SCHEMA_VERSION/);
     assert.match(verifier, /GATE_EVIDENCE_SCHEMA_VERSION/);

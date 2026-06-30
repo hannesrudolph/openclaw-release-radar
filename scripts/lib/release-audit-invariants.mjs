@@ -99,6 +99,30 @@ const knownExplanationCodes = new Set([
   'hard_gates_passed',
 ]);
 const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
+const releaseRowKeys = new Set([
+  'advisories',
+  'band',
+  'brokenSurfaces',
+  'closedSeriousFixed',
+  'dataFreshness',
+  'explanation',
+  'finalScore',
+  'htmlUrl',
+  'maintainerSignals',
+  'name',
+  'negativeIssues',
+  'openedSeriousDuringReign',
+  'positiveIssues',
+  'publishedAt',
+  'reason',
+  'recommended',
+  'schemaVersion',
+  'scoreAudit',
+  'scoredAt',
+  'status',
+  'tag',
+]);
+const releaseHistoryRowKeys = new Set(['schemaVersion', 'tag', 'publishedAt', 'finalScore']);
 const publicReleaseKeys = new Set([
   'band',
   'dataFreshness',
@@ -1457,6 +1481,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
   const historyPayload = await fetchJson(`${apiBase}/api/releases/history`);
   expect(failures, 'api/releases/history', Array.isArray(historyPayload), 'history payload must be an array');
   for (const row of historyPayload ?? []) {
+    verifyAllowedKeys({ failures, tag: row?.tag ?? 'api/releases/history', label: 'history row', value: row, allowed: releaseHistoryRowKeys });
     expect(failures, row?.tag ?? 'api/releases/history', row.schemaVersion === releaseHistoryRowSchemaVersion,
       `history row schemaVersion must be ${releaseHistoryRowSchemaVersion}, got ${JSON.stringify(row?.schemaVersion)}`);
     expect(failures, row?.tag ?? 'api/releases/history', typeof row.tag === 'string' && row.tag.length > 0,
@@ -1481,6 +1506,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     const releaseApi = releaseApiByTag.get(release.tag);
     expect(failures, release.tag, !!releaseApi, 'releases API must include monitored release');
     if (releaseApi) {
+      verifyAllowedKeys({ failures, tag: release.tag, label: 'releases row', value: releaseApi, allowed: releaseRowKeys });
       expect(failures, release.tag, releaseApi.schemaVersion === releaseRowSchemaVersion,
         `releases row schemaVersion must be ${releaseRowSchemaVersion}, got ${JSON.stringify(releaseApi.schemaVersion)}`);
       expect(failures, release.tag, releaseApi.finalScore === release.final_score,
