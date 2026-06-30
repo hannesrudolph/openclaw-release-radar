@@ -106,6 +106,16 @@ function seedClosure(db: any, issue: number, reason = 'COMPLETED', closedAt = '2
   });
 }
 
+function seedClosureProof(db: any, tag: string, issue: number, status = 'fixed_in_release') {
+  db.upsertIssueClosureProof({
+    release_tag: tag,
+    issue_number: issue,
+    status,
+    summary: 'Test closure proof.',
+    evidence_json: '{}',
+  });
+}
+
 function seedReopen(db: any, issue: number, reopenedAt = '2026-06-02T12:00:00Z') {
   db.upsertIssueReopenEvent({
     issue_number: issue,
@@ -1089,7 +1099,7 @@ describe('release fix provenance', () => {
     );
   });
 
-  it('counts only completed issues fixed by merged reachable PRs or proof rows', async () => {
+  it('counts only completed issues with fixed-in-release proof rows', async () => {
     const db = await freshDb('verified-fixed');
     seedRelease(db, 'v1');
 
@@ -1123,8 +1133,36 @@ describe('release fix provenance', () => {
         evidence_json: '{}',
       });
     }
+    seedClosureProof(db, 'v1', 1);
 
     assert.deepEqual(db.verifiedFixedForRelease('v1').map((row: any) => row.number), [1]);
+  });
+
+  it('keeps reachable merged PR links without closure proof unverified', async () => {
+    const db = await freshDb('verified-requires-proof');
+    seedRelease(db, 'v-proof-required', '2031-06-01T00:00:00Z');
+    seedIssue(db, 6, '2031-06-02T00:00:00Z', '2031-06-01T12:00:00Z');
+    seedClosure(db, 6, 'COMPLETED', '2031-06-02T00:00:00Z');
+    seedPr(db, 206, true);
+    db.upsertIssuePrLink({
+      issue_number: 6,
+      pr_number: 206,
+      source: 'closedByPullRequestsReferences',
+      will_close_target: 1,
+      referenced_at: '2031-06-02T00:00:00Z',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-proof-required',
+      pr_number: 206,
+      tag_commit_oid: 'v-proof-required-commit',
+      merge_commit_oid: 'merge-206',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{}',
+    });
+
+    assert.deepEqual(db.verifiedFixedForRelease('v-proof-required').map((row: any) => row.number), []);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-proof-required').map((row: any) => row.number), [6]);
   });
 
   it('credits completed closures with reachable commit proof rows', async () => {
@@ -1180,6 +1218,7 @@ describe('release fix provenance', () => {
       status: 'reachable',
       evidence_json: '{}',
     });
+    seedClosureProof(db, 'v-new', 41);
 
     assert.deepEqual(db.verifiedFixedForRelease('v-old').map((row: any) => row.number), []);
     assert.deepEqual(db.verifiedFixedForRelease('v-new').map((row: any) => row.number), [41]);
@@ -1248,6 +1287,7 @@ describe('release fix provenance', () => {
         evidence_json: '{}',
       });
     }
+    seedClosureProof(db, 'v-comment', 11);
 
     assert.deepEqual(db.verifiedFixedForRelease('v-comment').map((row: any) => row.number), [11]);
   });
@@ -1462,6 +1502,7 @@ describe('release fix provenance', () => {
         evidence_json: '{}',
       });
     }
+    seedClosureProof(db, 'v-skew', 33);
 
     assert.deepEqual(db.verifiedFixedForRelease('v-skew').map((row: any) => row.number), [33]);
     assert.deepEqual(db.unverifiedClosedForRelease('v-skew').map((row: any) => row.number), [34]);
@@ -1485,6 +1526,7 @@ describe('release fix provenance', () => {
     db.upsertReleasePrReachability({ tag: 'v3', pr_number: 201, tag_commit_oid: 'v3-commit', merge_commit_oid: 'merge-201', base_ref_name: 'main', status: 'reachable', evidence_json: '{}' });
     db.upsertIssuePrLink({ issue_number: 302, pr_number: 202, source: 'closedByPullRequestsReferences', will_close_target: 1, referenced_at: null });
     db.upsertReleasePrReachability({ tag: 'v3', pr_number: 202, tag_commit_oid: 'v3-commit', merge_commit_oid: 'merge-202', base_ref_name: 'main', status: 'not_reachable', evidence_json: '{}' });
+    seedClosureProof(db, 'v3', 301);
 
     assert.deepEqual(db.verifiedFixedForRelease('v3').map((row: any) => row.number), [301]);
     assert.deepEqual(db.unverifiedClosedForRelease('v3').map((row: any) => row.number).sort((a: number, b: number) => a - b), [302, 303, 304]);

@@ -107,6 +107,8 @@ Fix credit requires:
 
 Closed issues without a reachable merged PR or reachable named fix/source commit remain visible in audit evidence, but they do not reduce release risk.
 
+The scoring query that supplies verified fixes is proof-row-only: it credits only `issue_closure_proofs.status = fixed_in_release` for the scored release tag. Raw linked PR reachability, closure comments, and commit references are inputs to closure-proof analysis; they are not a direct fallback path to scoring credit when the proof row is missing.
+
 Closed-window fix credit is final-close based. If an issue closes during one stable's reign, reopens, and finally closes during a later stable's reign, only the later final close is analyzed for release fix credit. The earlier close is treated as a failed or superseded resolution attempt, not as a stable fix.
 
 Reachability has three states: `reachable`, `not_reachable`, and `unknown`. `not_reachable` is only used when Git can prove exact non-ancestry with `merge-base --is-ancestor` exit status `1`. Missing release commits, missing PR merge commits, unavailable objects, and Git errors are stored as `unknown`; they never receive fix credit and remain auditable instead of being collapsed into proof that the fix is absent. Each persisted reachability row stores schema-versioned evidence with a known reason, the release tag commit, the checked PR merge/fix commit, base ref, and command diagnostics when a Git command determines the result.

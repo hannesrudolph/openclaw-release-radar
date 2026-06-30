@@ -3489,27 +3489,6 @@ WHERE
         AND proof.issue_number = i.number
         AND proof.status = 'fixed_in_release'
     )
-    OR (
-      NOT EXISTS (
-        SELECT 1
-        FROM issue_closure_proofs proof
-        WHERE proof.release_tag = target.tag
-          AND proof.issue_number = i.number
-      )
-      AND c.sentiment = 'negative'
-      AND EXISTS (
-        SELECT 1
-        FROM window_closure e
-          JOIN issue_pr_links l ON l.issue_number = e.issue_number
-          JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
-          JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
-        WHERE e.issue_number = i.number
-          AND e.state_reason = 'COMPLETED'
-          AND p.merged = 1
-          AND rpr.status = 'reachable'
-          AND ${creditedFixLinkSql('l')}
-      )
-    )
   )
 ORDER BY i.closed_at DESC
 `);
@@ -3548,24 +3527,6 @@ WHERE
     WHERE proof.release_tag = target.tag
       AND proof.issue_number = i.number
       AND proof.status = 'fixed_in_release'
-    UNION ALL
-    SELECT 1
-    FROM window_closure e
-      JOIN issue_pr_links l ON l.issue_number = e.issue_number
-      JOIN pull_request_fixes p ON p.pr_repository_name_with_owner = l.pr_repository_name_with_owner AND p.pr_number = l.pr_number
-      JOIN release_pr_reachability rpr ON rpr.tag = target.tag AND rpr.pr_repository_name_with_owner = p.pr_repository_name_with_owner AND rpr.pr_number = p.pr_number
-    WHERE e.issue_number = i.number
-      AND c.sentiment = 'negative'
-      AND e.state_reason = 'COMPLETED'
-      AND p.merged = 1
-      AND rpr.status = 'reachable'
-      AND ${creditedFixLinkSql('l')}
-      AND NOT EXISTS (
-        SELECT 1
-        FROM issue_closure_proofs proof
-        WHERE proof.release_tag = target.tag
-          AND proof.issue_number = i.number
-      )
   )
 ORDER BY i.closed_at DESC
 `);

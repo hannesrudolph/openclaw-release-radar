@@ -27,6 +27,16 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(api, /setCached\(data, publicCacheKey\(\)\)/);
   });
 
+  it('verified fix scoring is proof-row-only', () => {
+    const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
+    const verifiedQuery = db.match(/const verifiedFixedForReleaseStmt = db\.prepare\(`([\s\S]*?)`\);/)?.[1] ?? '';
+    const unverifiedQuery = db.match(/const unverifiedClosedForReleaseStmt = db\.prepare\(`([\s\S]*?)`\);/)?.[1] ?? '';
+    assert.match(verifiedQuery, /issue_closure_proofs proof[\s\S]*proof\.status = 'fixed_in_release'/);
+    assert.doesNotMatch(verifiedQuery, /release_pr_reachability|issue_pr_links|pull_request_fixes|creditedFixLinkSql/);
+    assert.match(unverifiedQuery, /issue_closure_proofs proof[\s\S]*proof\.status = 'fixed_in_release'/);
+    assert.doesNotMatch(unverifiedQuery, /UNION ALL|release_pr_reachability|issue_pr_links|pull_request_fixes|creditedFixLinkSql/);
+  });
+
   it('score color helper keeps weak scores below caution threshold', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /if \(n >= 5\.5\) return 'var\(--warn\)'/);
