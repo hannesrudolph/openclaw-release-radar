@@ -240,9 +240,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:live/);
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
-    assert.match(readme, /release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(readme, /artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);
     assert.match(readme, /durable `ingestion_evidence_failures` rows/);
-    assert.match(readme, /Release commit checks and security advisories are score-affecting evidence/);
+    assert.match(readme, /Artifact verification, release commit checks, and security advisories are score-affecting evidence/);
     assert.match(readme, /stopReason: "evidence_failure"/);
     assert.match(readme, /recover only when the caller provides an explicit missing-alias reporter/);
     assert.match(readme, /Other callers fail closed/);
@@ -396,6 +396,7 @@ describe('static scoring/UI contracts', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const evidenceRefreshFailures: string\[\] = \[\]/);
     assert.match(refresh, /insertIngestionEvidenceFailure/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('artifact-verification', r\.tag_name, e/);
     assert.match(refresh, /issue-comments-missing-alias/);
     assert.match(refresh, /issue-label-events-missing-alias/);
     assert.match(refresh, /issue-fix-evidence-missing-alias/);
@@ -408,6 +409,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /evidenceRefreshFailures: summarizeFailures\(evidenceRefreshFailures\)/);
     assert.doesNotMatch(refresh, /release-checks[\s\S]{0,120}continuing/);
     assert.doesNotMatch(refresh, /advisories[\s\S]{0,120}continuing/);
+    assert.doesNotMatch(refresh, /artifacts[\s\S]{0,120}continuing/);
   });
 
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
@@ -423,8 +425,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
-    assert.match(scoringDoc, /release-check\/advisory\/monitored-release evidence refresh failures/);
-    assert.match(scoringDoc, /release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
+    assert.match(scoringDoc, /artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(scoringDoc, /artifact verification, release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
     assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);

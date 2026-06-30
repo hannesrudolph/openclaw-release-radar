@@ -83,6 +83,10 @@ describe('refresh backfill completion', () => {
       '[release-checks] v2026.6.10 failed: GraphQL missing contexts',
     );
     assert.equal(
+      __refreshTest.evidenceRefreshFailureMessage('artifact-verification', 'v2026.6.10', new Error('npm registry timeout')),
+      '[artifact-verification] v2026.6.10 failed: npm registry timeout',
+    );
+    assert.equal(
       __refreshTest.evidenceRefreshFailureMessage('advisories', null, new Error('GraphQL unavailable')),
       '[advisories] failed: GraphQL unavailable',
     );

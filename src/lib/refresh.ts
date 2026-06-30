@@ -311,7 +311,13 @@ export async function refresh(): Promise<{
           artifact_mismatch: artifact.mismatch,
         });
       } catch (e) {
-        console.warn(`[artifacts] ${r.tag_name} npm verification failed (continuing): ${(e as Error).message}`);
+        const message = recordEvidenceRefreshFailure('artifact-verification', r.tag_name, e, {
+          releaseTag: r.tag_name,
+          npmPackageUrl: stats.npmPackageUrl ?? null,
+          ciReportUrl: stats.fullReleaseCiReportUrl ?? null,
+          releaseValidationUrl: stats.fullReleaseValidationUrl ?? null,
+        });
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
     }
 
