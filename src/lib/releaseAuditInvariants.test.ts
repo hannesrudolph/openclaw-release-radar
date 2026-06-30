@@ -845,7 +845,6 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (url.includes('/api/releases/v1/review/issues')) return issueEvidencePage(url);
     if (url.endsWith('/api/releases/v1/review')) {
       return {
-        snapshot: { id: 1, sourceUrl: 'http://source.test', capturedAt: 't', pageTitle: 'Snapshot' },
         local: {
           schemaVersion: 1,
           score: 7.5,
@@ -1085,6 +1084,28 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /issue evidence audit payload must not expose unknown keys: debugPayload/.test(failure)));
     assert.ok(result.failures.some((failure) => /closure proof audit row must not expose unknown keys: debugRow/.test(failure)));
     assert.ok(result.failures.some((failure) => /PR reachability audit row must not expose unknown keys: debugRow/.test(failure)));
+  });
+
+  it('fails when review payload exposes comparison data', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/releases/v1/review')) {
+          return {
+            ...payload,
+            upstream: { score: 8.7 },
+            snapshot: { id: 1 },
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /review payload must not expose internal\/comparison key upstream/.test(failure)));
+    assert.ok(result.failures.some((failure) => /review payload must not expose internal\/comparison key snapshot/.test(failure)));
   });
 
   it('fails when data freshness sourceFetchedAtMax is not the max source timestamp', async () => {

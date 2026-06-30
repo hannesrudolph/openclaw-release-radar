@@ -690,11 +690,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /COMPARISON_DELTA_SCHEMA_VERSION = 1/);
     assert.match(api, /config\.comparison\.apiEnabled/);
     assert.match(api, /comparison api disabled/);
+    assert.doesNotMatch(api, /includeComparison/);
+    assert.doesNotMatch(api, /payload\.upstream/);
+    assert.doesNotMatch(api, /payload\.snapshot/);
     assert.match(db, /function validateComparisonSnapshotInput/);
     assert.match(db, /comparison snapshot releases must be a non-empty array/);
     assert.match(db, /comparison release tag .* appears more than once/);
     assert.match(db, /runInWriteTransaction\(\(\) => \{[\s\S]*insertComparisonSnapshotStmt\.run/);
     assert.match(readme, /stored separately from local model data after validating the rendered release rows/);
+    assert.match(readme, /Review endpoints do not expose upstream comparison fields/);
     assert.match(scoringDoc, /Comparison snapshots are internal calibration artifacts/);
     assert.match(api, /function reviewSourceProvenance/);
     assert.match(api, /sourceMode: 'current_db'/);

@@ -818,14 +818,6 @@ api.get('/releases/:tag/review', (req, res) => {
       gateEvidence,
     },
   };
-  if (req.query.includeComparison === '1') {
-    if (!config.comparison.apiEnabled) {
-      res.status(404).json({ error: 'comparison api disabled', tag });
-      return;
-    }
-    payload.snapshot = normalizeComparisonSnapshot(latestComparisonSnapshot());
-    payload.upstream = normalizeComparison(comparisonReleases().find((row) => row.tag === tag));
-  }
   res.json(payload);
 });
 

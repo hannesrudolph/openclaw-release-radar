@@ -428,6 +428,15 @@ const forbiddenPublicKeys = new Set([
   'sourceUrl',
   'upstream',
 ]);
+const forbiddenReviewComparisonKeys = new Set([
+  'comparison',
+  'delta',
+  'pageText',
+  'rawCardText',
+  'snapshot',
+  'sourceUrl',
+  'upstream',
+]);
 
 export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = defaultFetchJson, limit = 10, scoredOnly = false }) {
   const releases = reader.listReleases(limit, { scoredOnly });
@@ -1396,16 +1405,16 @@ function maxFreshnessTimestamp(values) {
     .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
-function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public release' }) {
+function verifyNoForbiddenPublicKeys({ failures, tag, value, path = 'public release', forbidden = forbiddenPublicKeys }) {
   if (Array.isArray(value)) {
-    value.forEach((item, idx) => verifyNoForbiddenPublicKeys({ failures, tag, value: item, path: `${path}[${idx}]` }));
+    value.forEach((item, idx) => verifyNoForbiddenPublicKeys({ failures, tag, value: item, path: `${path}[${idx}]`, forbidden }));
     return;
   }
   if (!isObject(value)) return;
   for (const [key, child] of Object.entries(value)) {
-    expect(failures, tag, !forbiddenPublicKeys.has(key),
+    expect(failures, tag, !forbidden.has(key),
       `${path} must not expose internal/comparison key ${key}`);
-    verifyNoForbiddenPublicKeys({ failures, tag, value: child, path: `${path}.${key}` });
+    verifyNoForbiddenPublicKeys({ failures, tag, value: child, path: `${path}.${key}`, forbidden });
   }
 }
 
@@ -2056,7 +2065,13 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     const persistedComponents = parseJson(persistedAuditForReview?.components_json, null);
     const persistedIssueEvidence = parseJson(persistedAuditForReview?.issue_evidence_json, null);
     const persistedGateEvidence = parseJson(persistedAuditForReview?.gate_evidence_json, null);
-    verifyComparisonSnapshot({ failures, label: `${release.tag} review`, snapshot: review.snapshot });
+    verifyNoForbiddenPublicKeys({
+      failures,
+      tag: release.tag,
+      value: review,
+      path: 'review payload',
+      forbidden: forbiddenReviewComparisonKeys,
+    });
     expect(failures, release.tag, review.local?.schemaVersion === localAuditSchemaVersion,
       `review local schemaVersion (${review.local?.schemaVersion}) must equal ${localAuditSchemaVersion}`);
     expect(failures, release.tag, review.local?.score === release.final_score,

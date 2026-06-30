@@ -109,7 +109,7 @@ During model calibration, you can capture an external rendered UI snapshot as a 
 npm run scrape:upstream
 ```
 
-The snapshot is stored separately from local model data after validating the rendered release rows. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores. `/api/comparison` is disabled unless `COMPARISON_API_ENABLED=true`.
+The snapshot is stored separately from local model data after validating the rendered release rows. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores. Review endpoints do not expose upstream comparison fields. `/api/comparison` is disabled unless `COMPARISON_API_ENABLED=true`.
 
 The older public JSON snapshot importer is still available as a one-off utility:
 
@@ -229,7 +229,7 @@ A healthy completed refresh also records `meta.issue_crawl_last_run`, which `npm
 | `/api/releases` | Dashboard release data; each row includes `auditLinks` for review, issue evidence, closure proofs, and PR reachability |
 | `/api/releases/history` | Score history |
 | `/api/public` | Main install recommendation payload; each release row includes `auditLinks` for audit drill-down |
-| `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default; includes `local.sourceProvenance` with `sourceMode`, score/audit timestamp alignment, freshness sources, and raw-row links |
+| `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields; includes `local.sourceProvenance` with `sourceMode`, score/audit timestamp alignment, freshness sources, and raw-row links |
 | `/api/releases/:tag/review/issues` | Paginated current-DB issue-evidence rows for one release; supports comma-separated `tier`, `impact`, `state`, `sentiment`, `severity`, `functionality`, `scope`, `affectedUsers`, `fieldConfirmed`, `minWeight`, `maxWeight`, `sort`, `direction`, `summaryOnly`, plus `limit` and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, `tierInfo`, `summaryByTier`, `filteredSummary`, `filteredCountsByTier`, `filteredSummaryByTier`, and `totals` |
 | `/api/releases/:tag/review/closure-proofs` | Paginated current-DB closure-proof rows for one release; supports validated `status`, audit enum `riskDisposition`, `limit`, and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, human-readable risk labels, filtered/unfiltered status counts, and filtered/unfiltered risk-disposition counts |
 | `/api/releases/:tag/review/reachability` | Paginated current-DB PR reachability rows for one release; supports `status`, `pr`, `limit`, and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, and filtered/unfiltered status counts |
