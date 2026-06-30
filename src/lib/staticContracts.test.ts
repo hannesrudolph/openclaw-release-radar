@@ -467,12 +467,19 @@ describe('static scoring/UI contracts', () => {
     const payload = readFileSync(join(root, 'src/lib/closureProofPayload.ts'), 'utf8');
     const reachability = readFileSync(join(root, 'src/lib/releaseReachability.ts'), 'utf8');
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
+    const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     assert.ok(
       analysis.indexOf('const proofRows = preparedRows') < analysis.indexOf('deleteIssueClosureProofsForRelease(releaseTag)'),
       'closure proof rows must be staged before deleting persisted proof rows',
     );
     assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssueClosureProofsForRelease\(releaseTag\);[\s\S]*persistClosureProofInScoreAudit\(releaseTag\);/);
     assert.match(payload, /gate_evidence_json is malformed; refusing to persist closure proof payload/);
+    assert.match(payload, /updateReleaseScoreAuditClosureProofGateEvidence/);
+    assert.doesNotMatch(payload, /updateReleaseScoreAuditGateEvidence/);
+    assert.match(db, /function updateReleaseScoreAuditClosureProofGateEvidence/);
+    assert.match(db, /validateClosureProofGateEvidence/);
+    assert.match(db, /releaseFixCredit counts must match closureProof counts/);
+    assert.doesNotMatch(db, /function updateReleaseScoreAuditGateEvidence/);
     assert.match(payload, /emptyClosureProofPayload/);
     assert.doesNotMatch(payload, /if \(!summaryRows\.length\) return null/);
     assert.match(reachability, /refusing to check direct commit reachability/);

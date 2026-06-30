@@ -10,7 +10,7 @@ import {
   issueLabelEventCount,
   issueLabelSnapshotCountAt,
   labelsForIssueAt,
-  updateReleaseScoreAuditGateEvidence,
+  updateReleaseScoreAuditClosureProofGateEvidence,
 } from './db';
 import { releaseLabelCutoff } from './labelCutoff';
 import {
@@ -361,7 +361,7 @@ export function persistClosureProofInScoreAudit(tag: string): boolean {
   const release = getRelease(tag);
   const labelCutoff = release ? releaseLabelCutoff(release, audit.scored_at) : null;
   const enriched = enrichGateEvidenceWithClosureProof(tag, gateEvidence, closureProofPayload(tag, labelCutoff));
-  updateReleaseScoreAuditGateEvidence(tag, JSON.stringify(enriched));
+  updateReleaseScoreAuditClosureProofGateEvidence(tag, JSON.stringify(enriched));
   return true;
 }
 

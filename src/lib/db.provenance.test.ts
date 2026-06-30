@@ -619,6 +619,65 @@ describe('release fix provenance', () => {
     assert.notEqual(first.digest, second.digest);
   });
 
+  it('validates closure-proof gate evidence audit updates', async () => {
+    const db = await freshDb('closure-proof-gate-update');
+    seedRelease(db, 'v-proof');
+    const audit = {
+      release_tag: 'v-proof',
+      scored_at: '2026-06-02T00:00:00Z',
+      score_model_version: 'test-model',
+      prompt_version: 1,
+      final_score: 7.5,
+      status: 'eligible',
+      band: 'ok',
+      recommended: 1,
+      input_json: '{"schemaVersion":1,"rawIssueCount":0,"classifiedIssueCount":0}',
+      components_json: '{"schemaVersion":1,"components":{},"explanation":{"schemaVersion":1}}',
+      issue_evidence_json: '{"schemaVersion":1}',
+      gate_evidence_json: '{"schemaVersion":1}',
+    };
+    db.upsertReleaseScoreAudit(audit);
+
+    const validGate = {
+      schemaVersion: 1,
+      fixProvenance: {
+        closureProof: {
+          schemaVersion: 1,
+          creditedCount: 1,
+          notCreditedCount: 2,
+          analyzedClosedCount: 3,
+        },
+        releaseFixCredit: {
+          schemaVersion: 1,
+          countedClosedCount: 1,
+          notCountedClosedCount: 2,
+          analyzedClosedCount: 3,
+        },
+      },
+    };
+    db.updateReleaseScoreAuditClosureProofGateEvidence('v-proof', JSON.stringify(validGate));
+    assert.deepEqual(JSON.parse(db.getReleaseScoreAudit('v-proof').gate_evidence_json), validGate);
+
+    assert.throws(
+      () => db.updateReleaseScoreAuditClosureProofGateEvidence('v-proof', '{"schemaVersion":1}'),
+      /Expected object field fixProvenance/,
+    );
+    assert.throws(
+      () => db.updateReleaseScoreAuditClosureProofGateEvidence('v-proof', JSON.stringify({
+        ...validGate,
+        fixProvenance: {
+          ...validGate.fixProvenance,
+          releaseFixCredit: {
+            ...validGate.fixProvenance.releaseFixCredit,
+            countedClosedCount: 99,
+          },
+        },
+      })),
+      /releaseFixCredit counts must match closureProof counts/,
+    );
+    assert.deepEqual(JSON.parse(db.getReleaseScoreAudit('v-proof').gate_evidence_json), validGate);
+  });
+
   it('public release row freshness digest changes when emitted score fields change', async () => {
     const db = await freshDb('public-release-row-freshness');
     seedRelease(db, 'v1');

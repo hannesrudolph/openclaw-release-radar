@@ -1501,8 +1501,38 @@ SET gate_evidence_json=?
 WHERE release_tag=?
 `);
 
-export function updateReleaseScoreAuditGateEvidence(tag: string, gateEvidenceJson: string): void {
+export function updateReleaseScoreAuditClosureProofGateEvidence(tag: string, gateEvidenceJson: string): void {
+  validateClosureProofGateEvidence(tag, gateEvidenceJson);
   updateReleaseScoreAuditGateEvidenceStmt.run(gateEvidenceJson, tag);
+}
+
+function validateClosureProofGateEvidence(tag: string, gateEvidenceJson: string): void {
+  const gateEvidence = parseJsonObject(gateEvidenceJson);
+  const fixProvenance = objectField(gateEvidence, 'fixProvenance');
+  const closureProof = objectField(fixProvenance, 'closureProof');
+  const releaseFixCredit = objectField(fixProvenance, 'releaseFixCredit');
+  if (closureProof.schemaVersion !== 1) {
+    throw new Error(`Release ${tag} closureProof payload must have schemaVersion 1`);
+  }
+  if (!Number.isInteger(closureProof.creditedCount) ||
+    !Number.isInteger(closureProof.notCreditedCount) ||
+    !Number.isInteger(closureProof.analyzedClosedCount)) {
+    throw new Error(`Release ${tag} closureProof payload must include credited/notCredited/analyzed counts`);
+  }
+  if (releaseFixCredit.schemaVersion !== 1) {
+    throw new Error(`Release ${tag} releaseFixCredit payload must have schemaVersion 1`);
+  }
+  if (releaseFixCredit.countedClosedCount !== closureProof.creditedCount ||
+    releaseFixCredit.notCountedClosedCount !== closureProof.notCreditedCount ||
+    releaseFixCredit.analyzedClosedCount !== closureProof.analyzedClosedCount) {
+    throw new Error(`Release ${tag} releaseFixCredit counts must match closureProof counts`);
+  }
+}
+
+function objectField(value: Record<string, unknown>, key: string): Record<string, unknown> {
+  const field = value[key];
+  if (field && typeof field === 'object' && !Array.isArray(field)) return field as Record<string, unknown>;
+  throw new Error(`Expected object field ${key}`);
 }
 
 export interface ReleaseCommitInput {
