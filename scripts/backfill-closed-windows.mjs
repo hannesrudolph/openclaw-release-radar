@@ -103,9 +103,42 @@ if (!dryRun && issueNumbers.length) {
 const proofResults = [];
 if (!dryRun && !skipProof) {
   for (const tag of releaseTags) {
-    const closureEvidence = await refreshClosureEvidenceForRelease(tag);
-    const reachability = await checkReleasePrReachability(tag);
-    const proof = await analyzeClosureProofsForRelease(tag);
+    let closureEvidence;
+    let reachability;
+    let proof;
+    try {
+      closureEvidence = await refreshClosureEvidenceForRelease(tag);
+    } catch (error) {
+      const message = recordBackfillFailure(
+        'backfill-closed-windows-closure-evidence',
+        tag,
+        error,
+        { releaseTag: tag },
+      );
+      throw new Error(`${message}; refusing to continue closed-window backfill`);
+    }
+    try {
+      reachability = await checkReleasePrReachability(tag);
+    } catch (error) {
+      const message = recordBackfillFailure(
+        'backfill-closed-windows-reachability',
+        tag,
+        error,
+        { releaseTag: tag },
+      );
+      throw new Error(`${message}; refusing to continue closed-window backfill`);
+    }
+    try {
+      proof = await analyzeClosureProofsForRelease(tag);
+    } catch (error) {
+      const message = recordBackfillFailure(
+        'backfill-closed-windows-closure-proof',
+        tag,
+        error,
+        { releaseTag: tag },
+      );
+      throw new Error(`${message}; refusing to continue closed-window backfill`);
+    }
     proofResults.push({ tag, closureEvidence, reachability, proof });
     console.log(`[proof] ${tag}: ${proof.analyzed} analyzed`);
   }
@@ -188,7 +221,10 @@ function recordBackfillFailure(source, scope, error, context = {}) {
     run_id: runId,
     source,
     scope,
+    release_tag: typeof context.releaseTag === 'string' ? context.releaseTag : null,
     issue_number: typeof context.issueNumber === 'number' ? context.issueNumber : null,
+    pr_repository_name_with_owner: typeof context.prRepositoryNameWithOwner === 'string' ? context.prRepositoryNameWithOwner : null,
+    pr_number: typeof context.prNumber === 'number' ? context.prNumber : null,
     message,
     context_json: JSON.stringify(context),
     scoring_blocking: 1,

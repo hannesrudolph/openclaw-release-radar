@@ -421,6 +421,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /runInWriteTransaction\(\(\) => \{[\s\S]*upsertClassification/);
     assert.match(script, /backfill-closed-windows-classification/);
     assert.match(script, /backfill-closed-windows-classification-write/);
+    assert.match(script, /backfill-closed-windows-closure-evidence/);
+    assert.match(script, /backfill-closed-windows-reachability/);
+    assert.match(script, /backfill-closed-windows-closure-proof/);
+    assert.match(script, /release_tag: typeof context\.releaseTag === 'string' \? context\.releaseTag : null/);
     assert.match(script, /insertIngestionEvidenceFailure/);
     assert.ok(
       script.indexOf('stagedClassifications.set') < script.indexOf('runInWriteTransaction(() => {'),
@@ -438,7 +442,9 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
     assert.match(analysis, /missingClassificationClosureProof/);
     assert.match(readme, /stages all classification results before writing them in one transaction/);
+    assert.match(readme, /closure-evidence, reachability, or closure-proof failures are recorded/);
     assert.match(scoringDoc, /writes the staged classification set in one DB transaction/);
+    assert.match(scoringDoc, /recorded in `ingestion_evidence_failures` with release context where applicable/);
     assert.match(scoringDoc, /without leaving partial closed-window classification writes/);
   });
 
