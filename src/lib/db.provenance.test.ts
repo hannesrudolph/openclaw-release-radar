@@ -833,11 +833,11 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.unverifiedClosedForRelease('v-final').map((row: any) => row.number), [31]);
   });
 
-  it('uses the release-window closure event when later closure events exist', async () => {
-    const db = await freshDb('window-closure-event');
+  it('does not carry fix credit from an earlier close after reopen/reclose', async () => {
+    const db = await freshDb('final-close-after-reopen');
     seedRelease(db, 'v-window-old', '2028-09-01T00:00:00Z');
     seedRelease(db, 'v-window-new', '2028-09-10T00:00:00Z');
-    seedIssue(db, 32, '2028-09-02T00:00:00Z', '2028-09-01T12:00:00Z');
+    seedIssue(db, 32, '2028-09-12T00:00:00Z', '2028-09-01T12:00:00Z');
     seedPr(db, 232, true);
     db.upsertIssueClosureEvent({
       issue_number: 32,
@@ -850,6 +850,7 @@ describe('release fix provenance', () => {
       closer_oid: null,
       raw_json: '{}',
     });
+    seedReopen(db, 32, '2028-09-03T00:00:00Z');
     db.upsertIssueClosureEvent({
       issue_number: 32,
       event_id: 'closed-32-later',
@@ -878,8 +879,16 @@ describe('release fix provenance', () => {
       evidence_json: '{}',
     });
 
-    assert.deepEqual(db.verifiedFixedForRelease('v-window-old').map((row: any) => row.number), [32]);
+    assert.deepEqual(db.closedDuringReign('v-window-old').map((row: any) => row.number), []);
+    assert.deepEqual(db.verifiedFixedForRelease('v-window-old').map((row: any) => row.number), []);
     assert.deepEqual(db.unverifiedClosedForRelease('v-window-old').map((row: any) => row.number), []);
+    assert.deepEqual(db.closedDuringReign('v-window-new').map((row: any) => row.number), [32]);
+    assert.deepEqual(db.verifiedFixedForRelease('v-window-new').map((row: any) => row.number), []);
+    assert.deepEqual(db.unverifiedClosedForRelease('v-window-new').map((row: any) => row.number), [32]);
+
+    const reader = new ReleaseAuditReader(db.db);
+    assert.deepEqual(reader.rawClosedDuringReign('v-window-old').map((row: any) => row.number), []);
+    assert.deepEqual(reader.rawClosedDuringReign('v-window-new').map((row: any) => row.number), [32]);
   });
 
   it('matches final closure events when GitHub timestamps differ by one second', async () => {

@@ -103,6 +103,8 @@ Fix credit requires:
 
 Closed issues without a reachable merged PR or reachable named fix/source commit remain visible in audit evidence, but they do not reduce release risk.
 
+Closed-window fix credit is final-close based. If an issue closes during one stable's reign, reopens, and finally closes during a later stable's reign, only the later final close is analyzed for release fix credit. The earlier close is treated as a failed or superseded resolution attempt, not as a stable fix.
+
 Reachability has three states: `reachable`, `not_reachable`, and `unknown`. `not_reachable` is only used when Git can prove exact non-ancestry with `merge-base --is-ancestor` exit status `1`. Missing release commits, missing PR merge commits, unavailable objects, and Git errors are stored as `unknown`; they never receive fix credit and remain auditable instead of being collapsed into proof that the fix is absent. Each persisted reachability row stores schema-versioned evidence with a known reason, the release tag commit, the checked PR merge/fix commit, base ref, and command diagnostics when a Git command determines the result.
 
 Broad PR/commit mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix/provenance wording from a trusted source, such as a maintainer or the known ClawSweeper reviewer account, identifying the merged PR or fix/source commit that closed, fixed, or proves the reported behavior is present in the release source.
@@ -213,8 +215,8 @@ The closure proof payload also rolls status buckets into risk dispositions:
 The API exposes a coherent `releaseFixCredit` object:
 
 - `countedClosedCount`: closed issues counted as release fixes.
-- `notCountedClosedCount`: closed issues in the release window not counted as release fixes.
-- `analyzedClosedCount`: total closed issues analyzed for the release window.
+- `notCountedClosedCount`: final-closed issues in the release window not counted as release fixes.
+- `analyzedClosedCount`: total final-closed issues analyzed for the release window.
 
 The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCount`.
 

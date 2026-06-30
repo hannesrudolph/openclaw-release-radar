@@ -2526,12 +2526,12 @@ export function unclassifiedIssuesForVersion(tag: string, limit = 25): IssueRow[
   return unclassifiedIssuesForVersionStmt.all(tag, limit) as unknown as IssueRow[];
 }
 
-// Issues CLOSED during a release's reign — the "fixes credit" for that release.
-// An issue counts as fixed-by-R if its closed_at falls inside R's reign window
-// [R.published_at, next_release.published_at). This is what the release shipped
-// in terms of resolved bugs. Used by scoring to give credit for active maintenance:
-// a release that closes 100 core-serious issues during its reign should score
-// noticeably higher than one that closes zero, even if its inherited debt is similar.
+// Issues with final close timestamps during a release's reign — the "fixes
+// credit" universe for that release. Earlier close events do not count after a
+// reopen/reclose; only the final issue.closed_at belongs to one stable window.
+// Used by scoring to give credit for active maintenance: a release with many
+// final-closed core-serious fixes should score noticeably higher than one that
+// closes zero, even if inherited debt is similar.
 const closedDuringReignStmt = db.prepare(`
 SELECT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
