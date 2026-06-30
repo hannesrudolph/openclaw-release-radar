@@ -21,6 +21,16 @@ export function assessDataFreshnessHealth(freshness, latest, {
     failures.push(`${tag}: source evidence changed after latest score${suffix}; rerun scoring after refresh completes`);
   }
 
+  const requiredTimestampSources = new Set(['issue_fetches', 'release_rows']);
+  if (Array.isArray(freshness.sources)) {
+    for (const source of freshness.sources) {
+      if (!requiredTimestampSources.has(source?.source)) continue;
+      if (Number(source.count ?? 0) > 0 && source.maxAt == null) {
+        failures.push(`${tag}: ${source.source} freshness has ${Number(source.count ?? 0)} row(s) but no timestamp; run a freshness backfill or refresh before trusting current score`);
+      }
+    }
+  }
+
   if (isAfter(issueUpdatedAtMax, scoredAt)) {
     failures.push(`${tag}: issue data includes updates after latest score; rerun scoring after refresh completes`);
   }

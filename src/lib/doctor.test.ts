@@ -37,6 +37,23 @@ describe('doctor data freshness health', () => {
     assert.ok(result.failures.some((failure) => /issue_pr_links/.test(failure)));
   });
 
+  it('fails when populated freshness sources have no timestamps', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: latest.scoredAt,
+      issueUpdatedAtMax: '2026-06-30T00:59:00.000Z',
+      issueUpdatedAgeHoursAtScore: 0.02,
+      issueUpdatedAgeHoursNow: 0.03,
+      sourceFetchedAtMax: '2026-06-30T00:59:00.000Z',
+      sources: [
+        { source: 'issue_fetches', count: 10, maxAt: null },
+        { source: 'release_rows', count: 3, maxAt: null },
+      ],
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /issue_fetches freshness/.test(failure)));
+    assert.ok(result.failures.some((failure) => /release_rows freshness/.test(failure)));
+  });
+
   it('fails when issue rows include updates after the latest score', () => {
     const result = assessDataFreshnessHealth({
       scoredAt: latest.scoredAt,

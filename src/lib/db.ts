@@ -456,6 +456,51 @@ for (const sql of [
 }
 
 try {
+  const issueCrawlFinishedAt = (() => {
+    const row = db.prepare(`SELECT value FROM meta WHERE key='issue_crawl_last_run'`).get() as { value?: string } | undefined;
+    if (!row?.value) return null;
+    try {
+      const parsed = JSON.parse(row.value);
+      return typeof parsed.finishedAt === 'string' ? parsed.finishedAt : null;
+    } catch {
+      return null;
+    }
+  })();
+  db.prepare(`
+    UPDATE issues
+    SET fetched_at=COALESCE(?, updated_at)
+    WHERE fetched_at IS NULL
+  `).run(issueCrawlFinishedAt);
+  db.exec(`
+    UPDATE releases
+    SET
+      release_metadata_fetched_at=COALESCE(
+        release_metadata_fetched_at,
+        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+        scored_at,
+        published_at
+      ),
+      release_derived_fetched_at=COALESCE(
+        release_derived_fetched_at,
+        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+        scored_at,
+        published_at
+      ),
+      release_artifact_checked_at=COALESCE(
+        release_artifact_checked_at,
+        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+        scored_at,
+        published_at
+      )
+    WHERE release_metadata_fetched_at IS NULL
+       OR release_derived_fetched_at IS NULL
+       OR release_artifact_checked_at IS NULL
+  `);
+} catch {
+  // Best-effort backfill for DBs that predate freshness columns/tables.
+}
+
+try {
   const tableColumns = (table: string) =>
     db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; pk: number }>;
   const hasCompositePrKey = (table: string) => {
