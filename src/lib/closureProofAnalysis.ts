@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { config } from '../config';
 import {
   db,
@@ -10,6 +11,7 @@ import {
   labelsForIssueAt,
   runInWriteTransaction,
   upsertIssueClosureEvent,
+  upsertIssueCommentSnapshot,
   upsertIssueClosureProof,
   upsertIssueCommitReference,
   upsertIssuePrLink,
@@ -316,6 +318,7 @@ export async function analyzeClosureProofsForRelease(
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
   const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
+  persistCommentSnapshots(commentsByIssue);
   const allCommentsByIssue = new Map(commentsByIssue);
   const canonicalIssueNumbers = new Set<number>();
   const canonicalGraph = new Map<number, number[]>();
@@ -334,6 +337,7 @@ export async function analyzeClosureProofsForRelease(
     const missingComments = terminalCanonicalIssuesToBackfill.filter((number) => !allCommentsByIssue.has(number));
     if (missingComments.length) {
       const fetched = await listIssueCommentsBatch(missingComments);
+      persistCommentSnapshots(fetched);
       for (const number of missingComments) allCommentsByIssue.set(number, fetched.get(number) ?? []);
     }
   }
@@ -869,6 +873,44 @@ function canonicalIssueNumbersFromText(text: string): number[] {
   return [...numbers].sort((a, b) => a - b);
 }
 
+function persistCommentSnapshots(commentsByIssue: Map<number, GhComment[]>): void {
+  if (commentsByIssue.size === 0) return;
+  runInWriteTransaction(() => {
+    for (const [issueNumber, comments] of commentsByIssue) {
+      upsertIssueCommentSnapshot({
+        issue_number: issueNumber,
+        comment_count: comments.length,
+        fetched_comment_count: comments.length,
+        latest_comment_updated_at: latestCommentUpdatedAt(comments),
+        comments_digest: commentDigest(comments),
+      });
+    }
+  });
+}
+
+function latestCommentUpdatedAt(comments: GhComment[]): string | null {
+  return comments
+    .map((comment) => comment.updated_at ?? comment.created_at ?? null)
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+}
+
+function commentDigest(comments: GhComment[]): string {
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify(comments
+    .map((comment) => ({
+      id: comment.id,
+      author: comment.user?.login ?? null,
+      association: comment.author_association ?? null,
+      body: comment.body,
+      createdAt: comment.created_at,
+      updatedAt: comment.updated_at,
+    }))
+    .sort((a, b) => String(a.updatedAt ?? a.createdAt ?? '').localeCompare(String(b.updatedAt ?? b.createdAt ?? '')) ||
+      Number(a.id ?? 0) - Number(b.id ?? 0))));
+  return hash.digest('hex');
+}
+
 function canonicalIssueNumbersFromSignalLines(text: string): number[] {
   const numbers = new Set<number>();
   const signalRe = /\b(?:canonical path|covered by|broader\s+(?:reports?|issues?|trackers?)|especially)\b/i;
@@ -904,6 +946,7 @@ async function expandCanonicalGraph(
   commentsByIssue: Map<number, GhComment[]>,
   seedIssueNumbers: number[],
   fetchComments: (issueNumbers: number[]) => Promise<Map<number, GhComment[]>> = listIssueCommentsBatch,
+  persistFetchedCommentSnapshots = true,
 ): Promise<void> {
   const parsed = new Set(canonicalGraph.keys());
   let frontier = uniqueNumbers(seedIssueNumbers.filter((number) => Number.isInteger(number)));
@@ -911,6 +954,7 @@ async function expandCanonicalGraph(
     const missing = frontier.filter((number) => !commentsByIssue.has(number));
     if (missing.length) {
       const fetched = await fetchComments(missing);
+      if (persistFetchedCommentSnapshots) persistCommentSnapshots(fetched);
       for (const number of missing) commentsByIssue.set(number, fetched.get(number) ?? []);
     }
     const nextFrontier: number[] = [];
@@ -2052,6 +2096,7 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       listIssueFixEvidenceBatch(chunk),
       listIssueCommentsBatch(chunk),
     ]);
+    persistCommentSnapshots(commentsByIssue);
     const commentMentions = chunk.flatMap((issueNumber) =>
       closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
     );

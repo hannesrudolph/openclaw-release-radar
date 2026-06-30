@@ -358,6 +358,12 @@ export class ReleaseAuditReader {
       SELECT 'issue_fetches', MAX(i.fetched_at)
       FROM issues i JOIN issue_universe u ON u.number=i.number`
       : '';
+    const issueCommentFreshnessSql = this.tableHasColumns('issue_comment_snapshots', ['fetched_at'])
+      ? `UNION ALL
+      SELECT 'issue_comments', MAX(s.fetched_at)
+      FROM issue_comment_snapshots s JOIN issue_universe u ON u.number=s.issue_number`
+      : `UNION ALL
+      SELECT 'issue_comments', NULL`;
     const commitReferenceFreshnessSql = this.tableExists('issue_commit_references')
       ? `UNION ALL
       SELECT 'issue_commit_references', MAX(c.fetched_at)
@@ -455,6 +461,7 @@ export class ReleaseAuditReader {
       SELECT 'issue_rows', MAX(i.updated_at)
       FROM issues i JOIN issue_universe u ON u.number=i.number
       ${issueFetchFreshnessSql}
+      ${issueCommentFreshnessSql}
       UNION ALL
       SELECT 'classification_rows', MAX(c.classified_at)
       FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
@@ -490,6 +497,7 @@ export class ReleaseAuditReader {
 
   proofDependencyFreshnessForIssue(tag, issueNumber) {
     const hasIssueFetches = this.tableHasColumns('issues', ['fetched_at']);
+    const hasIssueComments = this.tableHasColumns('issue_comment_snapshots', ['fetched_at']);
     const hasCommitReferences = this.tableExists('issue_commit_references');
     const issueFetchFreshnessSql = hasIssueFetches
       ? `UNION ALL
@@ -497,6 +505,13 @@ export class ReleaseAuditReader {
       FROM issues
       WHERE number=?`
       : '';
+    const issueCommentFreshnessSql = hasIssueComments
+      ? `UNION ALL
+      SELECT 'issue_comments', MAX(fetched_at)
+      FROM issue_comment_snapshots
+      WHERE issue_number=?`
+      : `UNION ALL
+      SELECT 'issue_comments', NULL`;
     const commitReferenceFreshnessSql = hasCommitReferences
       ? `UNION ALL
       SELECT 'issue_commit_references', MAX(c.fetched_at)
@@ -508,6 +523,7 @@ export class ReleaseAuditReader {
       issueNumber,
       issueNumber,
       ...(hasIssueFetches ? [issueNumber] : []),
+      ...(hasIssueComments ? [issueNumber] : []),
       issueNumber,
       issueNumber,
       issueNumber,
@@ -527,6 +543,7 @@ export class ReleaseAuditReader {
       FROM issues
       WHERE number=?
       ${issueFetchFreshnessSql}
+      ${issueCommentFreshnessSql}
       UNION ALL
       SELECT 'classification_rows', MAX(classified_at)
       FROM classifications

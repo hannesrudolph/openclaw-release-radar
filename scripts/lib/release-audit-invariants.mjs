@@ -76,6 +76,7 @@ const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent
 const requiredProofDependencySources = new Set([
   'issue_rows',
   'issue_fetches',
+  'issue_comments',
   'classification_rows',
   'label_events',
   'label_snapshots',

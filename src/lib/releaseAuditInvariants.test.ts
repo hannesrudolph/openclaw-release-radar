@@ -49,6 +49,7 @@ const defaultScoreInput = {
 const proofDependencyFreshnessFixture = [
   'issue_rows',
   'issue_fetches',
+  'issue_comments',
   'classification_rows',
   'label_events',
   'label_snapshots',

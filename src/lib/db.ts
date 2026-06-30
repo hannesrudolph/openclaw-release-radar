@@ -214,6 +214,15 @@ CREATE TABLE IF NOT EXISTS classifications (
 CREATE INDEX IF NOT EXISTS idx_classifications_version ON classifications(affects_version);
 CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at);
 
+CREATE TABLE IF NOT EXISTS issue_comment_snapshots (
+  issue_number INTEGER PRIMARY KEY,
+  fetched_at TEXT NOT NULL,
+  comment_count INTEGER NOT NULL,
+  fetched_comment_count INTEGER NOT NULL,
+  latest_comment_updated_at TEXT,
+  comments_digest TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
@@ -436,6 +445,7 @@ CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_numb
 CREATE INDEX IF NOT EXISTS idx_issue_commit_references_issue ON issue_commit_references(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
 CREATE INDEX IF NOT EXISTS idx_issue_label_snapshots_issue_time ON issue_label_snapshots(issue_number, snapshot_at);
+CREATE INDEX IF NOT EXISTS idx_issue_comment_snapshots_fetched ON issue_comment_snapshots(fetched_at);
 CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
 CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
 CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_occurred ON ingestion_evidence_failures(occurred_at);
@@ -556,6 +566,11 @@ try {
     const repoCol = cols.find((col) => col.name === 'pr_repository_name_with_owner');
     return !!repoCol && repoCol.pk > 0;
   };
+
+  if (!tableColumns('issue_comment_snapshots').some((col) => col.name === 'fetched_comment_count')) {
+    db.exec(`ALTER TABLE issue_comment_snapshots ADD COLUMN fetched_comment_count INTEGER NOT NULL DEFAULT 0`);
+    db.exec(`UPDATE issue_comment_snapshots SET fetched_comment_count=comment_count WHERE fetched_comment_count=0`);
+  }
 
   if (!hasCompositePrKey('pull_request_fixes')) {
     const rows = db.prepare(`SELECT * FROM pull_request_fixes`).all() as Array<any>;
@@ -1437,6 +1452,9 @@ pr_universe AS (
 	  SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN i.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(i.fetched_at)
 	  FROM issues i JOIN issue_universe u ON u.number=i.number` : ''}
 	  UNION ALL
+	  SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN s.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.fetched_at)
+	  FROM issue_comment_snapshots s JOIN issue_universe u ON u.number=s.issue_number
+	  UNION ALL
 	  SELECT 'classification_rows', COUNT(*), COALESCE(SUM(CASE WHEN c.classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(c.classified_at)
 	  FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
 	  UNION ALL
@@ -1527,6 +1545,7 @@ export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
 const dataFreshnessCacheRowsStmt = db.prepare(`
 SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS null_count, MAX(updated_at) AS max_ts FROM issues
 ${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issues` : ''}
+UNION ALL SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_comment_snapshots
 UNION ALL SELECT 'classifications', COUNT(*), COALESCE(SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(classified_at) FROM classifications
 UNION ALL SELECT 'issue_label_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_events
 UNION ALL SELECT 'issue_label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_snapshots
@@ -1745,6 +1764,40 @@ ON CONFLICT(issue_number, snapshot_at) DO UPDATE SET
 
 export function upsertIssueLabelSnapshot(input: IssueLabelSnapshotInput): void {
   upsertIssueLabelSnapshotStmt.run({ ...input, fetched_at: new Date().toISOString() });
+}
+
+export interface IssueCommentSnapshotInput {
+  issue_number: number;
+  comment_count: number;
+  fetched_comment_count: number;
+  latest_comment_updated_at: string | null;
+  comments_digest: string;
+}
+
+const upsertIssueCommentSnapshotStmt = db.prepare(`
+INSERT INTO issue_comment_snapshots (
+  issue_number, fetched_at, comment_count, fetched_comment_count, latest_comment_updated_at, comments_digest
+)
+VALUES (
+  :issue_number, :fetched_at, :comment_count, :fetched_comment_count, :latest_comment_updated_at, :comments_digest
+)
+ON CONFLICT(issue_number) DO UPDATE SET
+  fetched_at=CASE
+    WHEN issue_comment_snapshots.comment_count IS NOT excluded.comment_count
+      OR issue_comment_snapshots.fetched_comment_count IS NOT excluded.fetched_comment_count
+      OR issue_comment_snapshots.latest_comment_updated_at IS NOT excluded.latest_comment_updated_at
+      OR issue_comment_snapshots.comments_digest IS NOT excluded.comments_digest
+    THEN excluded.fetched_at
+    ELSE issue_comment_snapshots.fetched_at
+  END,
+  comment_count=excluded.comment_count,
+  fetched_comment_count=excluded.fetched_comment_count,
+  latest_comment_updated_at=excluded.latest_comment_updated_at,
+  comments_digest=excluded.comments_digest
+`);
+
+export function upsertIssueCommentSnapshot(input: IssueCommentSnapshotInput): void {
+  upsertIssueCommentSnapshotStmt.run({ ...input, fetched_at: new Date().toISOString() });
 }
 
 const issueLabelEventsUntilStmt = db.prepare(`
@@ -2579,6 +2632,7 @@ dependency_sources AS (
   SELECT MAX(i.updated_at) AS max_ts FROM issues i JOIN raw_closed c ON c.number=i.number
   UNION ALL SELECT MAX(i.fetched_at) FROM issues i JOIN raw_closed c ON c.number=i.number
   UNION ALL SELECT MAX(c.classified_at) FROM classifications c JOIN raw_closed r ON r.number=c.issue_number
+  UNION ALL SELECT MAX(s.fetched_at) FROM issue_comment_snapshots s JOIN raw_closed c ON c.number=s.issue_number
   UNION ALL SELECT MAX(e.fetched_at) FROM issue_label_events e JOIN raw_closed c ON c.number=e.issue_number
   UNION ALL SELECT MAX(s.fetched_at) FROM issue_label_snapshots s JOIN raw_closed c ON c.number=s.issue_number
   UNION ALL SELECT MAX(e.fetched_at) FROM issue_closure_events e JOIN raw_closed c ON c.number=e.issue_number

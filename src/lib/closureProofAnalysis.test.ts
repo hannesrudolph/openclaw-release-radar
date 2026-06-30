@@ -23,6 +23,7 @@ describe('closure proof canonical roll-up', () => {
         number,
         number === 20 ? [{ body: 'Root-cause tracker: #30' }] : [],
       ])),
+      false,
     );
 
     assert.deepEqual(graph.get(20), [30]);

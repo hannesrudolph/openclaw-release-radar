@@ -1,4 +1,5 @@
 import { config } from '../config';
+import { createHash } from 'node:crypto';
 import { invalidateCache } from './cache';
 import {
   GhComment,
@@ -70,6 +71,7 @@ import {
   upsertClassification,
   upsertIssue,
   upsertIssueClosureEvent,
+  upsertIssueCommentSnapshot,
   upsertIssueCommitReference,
   upsertIssueLabelEvent,
   upsertIssueLabelSnapshot,
@@ -178,6 +180,43 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
     contributor_commenters: contributors.size,
     commenter_scan_truncated: comments.length < issue.comments ? 1 : 0,
   };
+}
+
+function issueCommentSnapshot(issue: GhIssue, comments: GhComment[]): {
+  issue_number: number;
+  comment_count: number;
+  fetched_comment_count: number;
+  latest_comment_updated_at: string | null;
+  comments_digest: string;
+} {
+  const digest = createHash('sha256');
+  digest.update(JSON.stringify({
+    totalCommentCount: issue.comments,
+    comments: comments
+      .map((comment) => ({
+        id: comment.id,
+        author: comment.user?.login ?? null,
+        association: comment.author_association ?? null,
+        createdAt: comment.created_at,
+        updatedAt: comment.updated_at,
+        body: comment.body,
+      }))
+      .sort((a, b) => String(a.updatedAt ?? a.createdAt ?? '').localeCompare(String(b.updatedAt ?? b.createdAt ?? '')) ||
+        Number(a.id ?? 0) - Number(b.id ?? 0)),
+  }));
+  return {
+    issue_number: issue.number,
+    comment_count: issue.comments,
+    fetched_comment_count: comments.length,
+    latest_comment_updated_at: maxTimestamp(comments.map((comment) => comment.updated_at ?? comment.created_at ?? null)),
+    comments_digest: digest.digest('hex'),
+  };
+}
+
+function maxTimestamp(values: Array<string | null | undefined>): string | null {
+  return values
+    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
 }
 
 const BACKFILL_FLAG = 'backfill_completed_at';
@@ -639,6 +678,7 @@ export async function refresh(): Promise<{
             const comments = commentsByIssue.get(issue.number) ?? [];
             const stats = commentStats(issue, comments);
             if (stats.commenter_scan_truncated) commenterScanTruncatedCount++;
+            upsertIssueCommentSnapshot(issueCommentSnapshot(issue, comments));
             upsertIssue({
               number: issue.number,
               state: issue.state,

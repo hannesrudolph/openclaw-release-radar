@@ -16,6 +16,7 @@ const CORE_TABLES = [
   'classifications',
   'release_score_audits',
   'release_commits',
+  'issue_comment_snapshots',
   'issue_closure_proofs',
   'issue_closure_events',
   'issue_reopen_events',
@@ -241,6 +242,7 @@ function tableSummary(db, table) {
     classifications: 'MAX(classified_at)',
     release_score_audits: 'MAX(scored_at)',
     release_commits: 'MAX(fetched_at)',
+    issue_comment_snapshots: 'MAX(fetched_at)',
     issue_closure_proofs: 'MAX(checked_at)',
     issue_closure_events: 'MAX(fetched_at)',
     issue_reopen_events: 'MAX(fetched_at)',
@@ -339,6 +341,10 @@ function freshnessSummary(db, tag, scoredAt, now) {
     ? `
     UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issues`
     : '';
+  const issueCommentFreshnessSql = tableHasColumns(db, 'issue_comment_snapshots', ['fetched_at'])
+    ? `
+    UNION ALL SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_comment_snapshots`
+    : '';
   const releaseRowsFreshnessSql = tableHasColumns(db, 'releases', [
     'release_metadata_fetched_at',
     'release_derived_fetched_at',
@@ -356,6 +362,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
   const sourceRows = db.prepare(`
     SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS nullCount, MAX(updated_at) AS maxAt FROM issues
     ${issueFetchFreshnessSql}
+    ${issueCommentFreshnessSql}
     UNION ALL SELECT 'classifications', COUNT(*), COALESCE(SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(classified_at) FROM classifications
     UNION ALL SELECT 'issue_label_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_events
     UNION ALL SELECT 'issue_label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_snapshots
@@ -490,6 +497,9 @@ function closureProofSummary(db, tag, gate) {
 }
 
 function closureProofIntegritySummary(db, tag) {
+  const issueCommentDependencySql = tableHasColumns(db, 'issue_comment_snapshots', ['fetched_at'])
+    ? `UNION ALL SELECT MAX(s.fetched_at) FROM issue_comment_snapshots s JOIN raw_closed c ON c.number=s.issue_number`
+    : '';
   const counts = db.prepare(`
     WITH target AS (
       SELECT
@@ -528,6 +538,7 @@ function closureProofIntegritySummary(db, tag) {
       SELECT MAX(i.updated_at) AS max_ts FROM issues i JOIN raw_closed c ON c.number=i.number
       UNION ALL SELECT MAX(i.fetched_at) FROM issues i JOIN raw_closed c ON c.number=i.number
       UNION ALL SELECT MAX(c.classified_at) FROM classifications c JOIN raw_closed r ON r.number=c.issue_number
+      ${issueCommentDependencySql}
       UNION ALL SELECT MAX(e.fetched_at) FROM issue_label_events e JOIN raw_closed c ON c.number=e.issue_number
       UNION ALL SELECT MAX(s.fetched_at) FROM issue_label_snapshots s JOIN raw_closed c ON c.number=s.issue_number
       UNION ALL SELECT MAX(e.fetched_at) FROM issue_closure_events e JOIN raw_closed c ON c.number=e.issue_number

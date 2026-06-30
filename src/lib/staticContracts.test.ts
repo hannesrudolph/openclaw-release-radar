@@ -261,9 +261,14 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:local'], 'npm run doctor -- --fail-on-warnings && npm run verify:score -- --all && npm run verify:release-audit -- --all');
     assert.equal(pkg.scripts['verify:live'], 'npm run doctor -- --fail-on-warnings --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.equal(pkg.scripts.doctor, 'tsx scripts/doctor.mjs');
+    assert.equal(pkg.scripts['backfill:issue-comment-snapshots'], 'tsx scripts/backfill-issue-comment-snapshots.mjs');
     const uiSmoke = readFileSync(join(root, 'scripts/ui-smoke.mjs'), 'utf8');
     const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
     const doctorHealth = readFileSync(join(root, 'scripts/lib/doctor-health.mjs'), 'utf8');
+    const commentSnapshotBackfill = readFileSync(join(root, 'scripts/backfill-issue-comment-snapshots.mjs'), 'utf8');
+    assert.match(commentSnapshotBackfill, /listIssueCommentsBatch/);
+    assert.match(commentSnapshotBackfill, /upsertIssueCommentSnapshot/);
+    assert.match(readme, /backfill:issue-comment-snapshots/);
     assert.match(doctor, /readOnly: true/);
     assert.match(doctor, /PRAGMA query_only = ON/);
     assert.match(doctor, /closure proof rows/);
@@ -640,6 +645,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /upsertIssueCommitReference/);
+    assert.match(refresh, /issueCommentSnapshot\(issue, comments\)/);
+    assert.match(refresh, /upsertIssueCommentSnapshot/);
     assert.match(refresh, /for \(const ref of evidence\.commitReferences\)/);
     assert.match(refresh, /runInWriteTransaction\(\(\) => \{[\s\S]*persistIssueStateEvidence\(stateEvidence\)/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('issue-page-write', pageEvidenceScope, error, pageEvidenceContext\)/);
@@ -817,6 +824,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /dataFreshness:\s+freshnessForRelease/);
     assert.match(db, /fetched_at TEXT/);
     assert.match(db, /'issue_fetches'/);
+    assert.match(db, /CREATE TABLE IF NOT EXISTS issue_comment_snapshots/);
+    assert.match(db, /upsertIssueCommentSnapshot/);
+    assert.match(db, /'issue_comments'/);
+    assert.match(verifier, /'issue_comments'/);
     assert.match(db, /MAX\(i\.fetched_at\)/);
     assert.match(db, /release_metadata_fetched_at TEXT/);
     assert.match(db, /release_derived_fetched_at TEXT/);

@@ -416,6 +416,14 @@ function freshDoctorDb() {
       gate_evidence_json TEXT NOT NULL
     );
     CREATE TABLE release_commits (tag TEXT PRIMARY KEY, fetched_at TEXT);
+    CREATE TABLE issue_comment_snapshots (
+      issue_number INTEGER PRIMARY KEY,
+      fetched_at TEXT NOT NULL,
+      comment_count INTEGER NOT NULL,
+      fetched_comment_count INTEGER NOT NULL,
+      latest_comment_updated_at TEXT,
+      comments_digest TEXT NOT NULL
+    );
     CREATE TABLE issue_closure_proofs (release_tag TEXT, issue_number INTEGER, status TEXT, checked_at TEXT);
     CREATE TABLE issue_closure_events (issue_number INTEGER, closed_at TEXT, fetched_at TEXT);
     CREATE TABLE issue_reopen_events (issue_number INTEGER, reopened_at TEXT, fetched_at TEXT);

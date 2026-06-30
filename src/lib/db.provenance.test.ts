@@ -273,6 +273,68 @@ describe('release fix provenance', () => {
     assert.ok(db.dataFreshnessCacheDigest().digest);
   });
 
+  it('tracks issue comment snapshot freshness for release issue universes', async () => {
+    const db = await freshDb('issue-comment-freshness');
+    seedRelease(db, 'v-comment-fresh', '2037-06-01T00:00:00Z');
+    seedIssue(db, 6201, null, '2037-06-01T12:00:00Z');
+    db.upsertIssueCommentSnapshot({
+      issue_number: 6201,
+      comment_count: 2,
+      fetched_comment_count: 2,
+      latest_comment_updated_at: '2037-06-01T12:30:00Z',
+      comments_digest: 'abc123',
+    });
+
+    const row = db.db.prepare(`SELECT * FROM issue_comment_snapshots WHERE issue_number=6201`).get() as any;
+    assert.equal(row.comment_count, 2);
+    assert.equal(row.fetched_comment_count, 2);
+    assert.equal(row.latest_comment_updated_at, '2037-06-01T12:30:00Z');
+    assert.equal(row.comments_digest, 'abc123');
+    assert.ok(Date.parse(String(row.fetched_at)));
+
+    const freshness = db.releaseDataFreshness('v-comment-fresh');
+    const issueComments = freshness.sources.find((source: any) => source.source === 'issue_comments');
+    assert.ok(issueComments);
+    assert.equal(issueComments.count, 1);
+    assert.equal(issueComments.nullCount, 0);
+    assert.equal(issueComments.maxAt, row.fetched_at);
+    assert.ok(db.dataFreshnessCacheDigest().digest);
+  });
+
+  it('preserves issue comment snapshot freshness when comment content is unchanged', async () => {
+    const db = await freshDb('issue-comment-freshness-noop');
+    db.upsertIssueCommentSnapshot({
+      issue_number: 6301,
+      comment_count: 1,
+      fetched_comment_count: 1,
+      latest_comment_updated_at: '2038-06-01T12:30:00Z',
+      comments_digest: 'same-digest',
+    });
+    const first = db.db.prepare(`SELECT fetched_at FROM issue_comment_snapshots WHERE issue_number=6301`).get() as any;
+
+    db.upsertIssueCommentSnapshot({
+      issue_number: 6301,
+      comment_count: 1,
+      fetched_comment_count: 1,
+      latest_comment_updated_at: '2038-06-01T12:30:00Z',
+      comments_digest: 'same-digest',
+    });
+    const unchanged = db.db.prepare(`SELECT fetched_at FROM issue_comment_snapshots WHERE issue_number=6301`).get() as any;
+    assert.equal(unchanged.fetched_at, first.fetched_at);
+
+    db.upsertIssueCommentSnapshot({
+      issue_number: 6301,
+      comment_count: 2,
+      fetched_comment_count: 2,
+      latest_comment_updated_at: '2038-06-01T12:45:00Z',
+      comments_digest: 'changed-digest',
+    });
+    const changed = db.db.prepare(`SELECT fetched_at, comment_count, comments_digest FROM issue_comment_snapshots WHERE issue_number=6301`).get() as any;
+    assert.equal(changed.comment_count, 2);
+    assert.equal(changed.comments_digest, 'changed-digest');
+    assert.ok(changed.fetched_at >= first.fetched_at);
+  });
+
   it('uses the next stable release, not prereleases, for issue attribution windows', async () => {
     const db = await freshDb('stable-attribution-window');
     seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
