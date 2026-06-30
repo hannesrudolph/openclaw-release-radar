@@ -355,6 +355,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /reachabilityEvidence/);
     assert.match(analysis, /external_repo_unchecked/);
     assert.match(analysis, /external_repository_not_checked_against_openclaw_release_tag/);
+    assert.match(analysis, /const item = \{\s*\.\.\.pr,/);
+    assert.match(analysis, /state,\s*merged: merged \? 1 : 0/);
   });
 
   it('GraphQL issue evidence batches recover from missing issue aliases', () => {

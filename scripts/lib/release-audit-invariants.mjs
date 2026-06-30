@@ -1082,6 +1082,7 @@ function verifyProofFreshness({ failures, tag, proofRows, audit, reader }) {
 }
 
 function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvidence }) {
+  verifyEmbeddedProofPrEvidenceShapes({ failures, tag, row, evidence });
   const prEvidenceByKey = new Map(prEvidence.map((pr) => [
     prKey(pr.pr_repository_name_with_owner, pr.pr_number),
     pr,
@@ -1141,6 +1142,39 @@ function verifyProofPrReachabilityEvidence({ failures, tag, row, evidence, prEvi
     expect(failures, tag, linkedMergedPrEvidence(evidence).some((linkedPr) =>
       matchingReachabilityPr(prEvidenceByKey, linkedPr, 'not_reachable')),
       `proof issue #${row.issue_number} hasNotReachableClosingPr must have a merged not-reachable PR row`);
+  }
+}
+
+function verifyEmbeddedProofPrEvidenceShapes({ failures, tag, row, evidence }) {
+  for (const [idx, pr] of (Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : []).entries()) {
+    verifyEmbeddedProofPr({ failures, tag, row, pr, label: `linkedPrs[${idx}]` });
+  }
+}
+
+function verifyEmbeddedProofPr({ failures, tag, row, pr, label }) {
+  expect(failures, tag, isObject(pr),
+    `proof issue #${row.issue_number} ${label} must be a PR evidence object`);
+  if (!isObject(pr)) return;
+  const repo = String(pr.repositoryNameWithOwner ?? '');
+  const number = Number(pr.number ?? 0);
+  const state = String(pr.state ?? '');
+  const merged = pr.merged;
+  const source = String(pr.source ?? '');
+  expect(failures, tag, Number.isInteger(number) && number > 0,
+    `proof issue #${row.issue_number} ${label} must include a positive PR number`);
+  expect(failures, tag, repo.includes('/'),
+    `proof issue #${row.issue_number} ${label} PR #${number || 'unknown'} must include repositoryNameWithOwner`);
+  expect(failures, tag, source.length > 0,
+    `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include source`);
+  expect(failures, tag, ['OPEN', 'CLOSED', 'MERGED'].includes(state),
+    `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include known state`);
+  expect(failures, tag, merged === 0 || merged === 1 || merged === false || merged === true,
+    `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include merged flag`);
+  if (merged === 1 || merged === true) {
+    expect(failures, tag, state === 'MERGED',
+      `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} merged PR must have MERGED state`);
+    expect(failures, tag, typeof pr.mergedAt === 'string' && Number.isFinite(Date.parse(pr.mergedAt)),
+      `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} merged PR must include mergedAt`);
   }
 }
 

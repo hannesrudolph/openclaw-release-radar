@@ -1777,9 +1777,12 @@ function relatedPrContextEvidence(
     if (seen.has(key)) continue;
     seen.add(key);
     const item = {
+      ...pr,
       number: prNumber,
       repositoryNameWithOwner: repo,
       source: pr.source ?? null,
+      state,
+      merged: merged ? 1 : 0,
       title: pr.title ?? null,
       url: pr.url ?? null,
       mergedAt: pr.mergedAt ?? null,

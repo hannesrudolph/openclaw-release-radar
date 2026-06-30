@@ -134,7 +134,9 @@ function reader(overrides: Partial<{
           repositoryNameWithOwner: 'openclaw/openclaw',
           source: 'closedByPullRequestsReferences',
           willCloseTarget: 1,
+          state: 'MERGED',
           merged: 1,
+          mergedAt: '2026-01-01T12:00:00Z',
           reachabilityStatus: 'reachable',
           reachabilityMethod: 'git-merge-base',
           reachabilityEvidence: 'merge_commit_in_release_history',
@@ -1386,6 +1388,38 @@ describe('verifyReleaseAudit', () => {
       }),
     });
     assert.ok(result.failures.some((failure) => /merged reachable PR row/.test(failure)));
+  });
+
+  it('fails when embedded linked PR proof is missing identity fields', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'fixed_in_release',
+          checked_at: proofCheckedAt,
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: true,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            linkedPrs: [{
+              number: 1,
+              merged: 1,
+              reachabilityStatus: 'reachable',
+              reachabilityEvidence: 'merge_commit_in_release_history',
+            }],
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*repositoryNameWithOwner/.test(failure)));
+    assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*must include source/.test(failure)));
+    assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*must include known state/.test(failure)));
   });
 
   it('fails when reachable linked PR proof is backed by a different PR row', async () => {
