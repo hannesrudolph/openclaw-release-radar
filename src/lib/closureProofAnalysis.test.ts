@@ -98,6 +98,45 @@ describe('closure proof canonical roll-up', () => {
     assert.equal((adjusted.evidence.reachableTrustedFixProofPrs as any[])[0].number, 95328);
   });
 
+  it('preserves trusted fix proof when the same PR has lower-priority mention evidence', () => {
+    const linkedPrs = [
+      {
+        number: 95328,
+        repositoryNameWithOwner: 'openclaw/openclaw',
+        source: 'ClosureComment.prMention',
+        title: 'related mention',
+        state: 'MERGED',
+        merged: 1,
+      },
+      {
+        number: 95328,
+        repositoryNameWithOwner: 'openclaw/openclaw',
+        source: 'ClosureComment.fixProof',
+        title: 'fix(sessions): reset stale origin fields',
+        state: 'MERGED',
+        merged: 1,
+      },
+    ];
+    const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
+      10,
+      result('duplicate_or_superseded', 'Closed as duplicate.'),
+      {
+        canonicalIssues: [20],
+        linkedPrs,
+        relatedPrContext: {
+          reachable: linkedPrs
+            .sort(__closureProofAnalysisTest.compareLinkedPrEvidencePriority)
+            .slice(0, 1),
+        },
+      },
+      new Map([[10, [20]]]),
+      new Map(),
+    );
+
+    assert.equal(adjusted.status, 'duplicate_with_release_fix_proof');
+    assert.equal((adjusted.evidence.reachableTrustedFixProofPrs as any[])[0].source, 'ClosureComment.fixProof');
+  });
+
   it('keeps self-only canonical references as cycle risk when no terminal exists', () => {
     const adjusted = __closureProofAnalysisTest.adjustCanonicalDuplicateStatus(
       10,

@@ -35,6 +35,15 @@ export interface ClosureProofAnalysisResult {
 
 const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
 const trackedPrRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
+const LINKED_PR_SOURCE_PRIORITY_SQL = `
+  CASE l2.source
+    WHEN 'closedByPullRequestsReferences' THEN 0
+    WHEN 'ClosedEvent.closer' THEN 1
+    WHEN 'ClosureComment.fixProof' THEN 2
+    WHEN 'ClosureComment.prMention' THEN 3
+    ELSE 4
+  END
+`;
 
 const closedIssueRowsStmt = db.prepare(`
 WITH target AS (
@@ -184,7 +193,11 @@ SELECT
       FROM issue_pr_links l2
         LEFT JOIN pull_request_fixes p2 ON p2.pr_repository_name_with_owner=l2.pr_repository_name_with_owner AND p2.pr_number=l2.pr_number
       WHERE l2.issue_number=i.number
-        ORDER BY CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END, l2.pr_repository_name_with_owner, l2.pr_number
+        ORDER BY
+          CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END,
+          l2.pr_repository_name_with_owner,
+          l2.pr_number,
+          ${LINKED_PR_SOURCE_PRIORITY_SQL}
     ) linked
   ) AS linked_prs_json
 FROM selected
@@ -1700,7 +1713,9 @@ function relatedPrContextEvidence(
   releaseTag: string,
   evidence: Record<string, unknown>,
 ): RelatedPrContext {
-  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  const linkedPrs = Array.isArray(evidence.linkedPrs)
+    ? [...evidence.linkedPrs as Array<Record<string, unknown>>].sort(compareLinkedPrEvidencePriority)
+    : [];
   const context = emptyRelatedPrContext();
   const seen = new Set<string>();
   for (const pr of linkedPrs) {
@@ -1763,6 +1778,29 @@ function relatedPrContextEvidence(
   };
 }
 
+function compareLinkedPrEvidencePriority(left: Record<string, unknown>, right: Record<string, unknown>): number {
+  const leftOpen = String(left.state ?? '').toUpperCase() === 'OPEN' && Number(left.merged ?? 0) !== 1 ? 0 : 1;
+  const rightOpen = String(right.state ?? '').toUpperCase() === 'OPEN' && Number(right.merged ?? 0) !== 1 ? 0 : 1;
+  if (leftOpen !== rightOpen) return leftOpen - rightOpen;
+  const leftRepo = String(left.repositoryNameWithOwner ?? '');
+  const rightRepo = String(right.repositoryNameWithOwner ?? '');
+  if (leftRepo !== rightRepo) return leftRepo.localeCompare(rightRepo);
+  const leftNumber = Number(left.number ?? 0);
+  const rightNumber = Number(right.number ?? 0);
+  if (leftNumber !== rightNumber) return leftNumber - rightNumber;
+  return linkedPrSourcePriority(left.source) - linkedPrSourcePriority(right.source);
+}
+
+function linkedPrSourcePriority(source: unknown): number {
+  switch (String(source ?? '')) {
+    case 'closedByPullRequestsReferences': return 0;
+    case 'ClosedEvent.closer': return 1;
+    case 'ClosureComment.fixProof': return 2;
+    case 'ClosureComment.prMention': return 3;
+    default: return 4;
+  }
+}
+
 function canonicalResolution(
   sourceIssueNumber: number,
   graph: Map<number, number[]>,
@@ -1809,6 +1847,7 @@ export const __closureProofAnalysisTest = {
   effectiveClosureProofClassification,
   enrichLinkedPrReachability,
   commitReferenceMentionsFromRows,
+  compareLinkedPrEvidencePriority,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
   terminalCanonicalIssuesNeedingEvidence,
