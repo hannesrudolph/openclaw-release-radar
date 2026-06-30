@@ -316,7 +316,7 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
   | jq '{score: .local.score, explanation: .local.components.explanation, fix: .local.gateEvidence.fixProvenance.releaseFixCredit}'
 ```
 
-`/api/public` exposes top-level `schemaVersion` for the public payload contract. Current value: `3`.
+`/api/public` exposes top-level `schemaVersion` for the public payload contract. Current value: `4`.
 
 `components.explanation` is the stable "Why not 10?" contract:
 
@@ -337,7 +337,7 @@ The internal `/api/comparison` payload, upstream row, and delta objects also exp
 Comparison snapshots are internal calibration artifacts. They are validated before insertion, stored outside local score/audit rows, and must not be used as local audit-backed score evidence.
 The `/api/status` and `/api/config` payloads also expose `schemaVersion`. Current value: `1`.
 The `/api/releases/history` rows expose `schemaVersion`. Current value: `2`.
-The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `3`.
+The `/api/public` payload and `/api/public` release rows expose `schemaVersion`. Current value: `4`. Public release `profileEvidence.schemaVersion` current value: `1`; it is derived from audited issue-evidence rows, not from capped public issue summaries. `/api/releases` rows expose `schemaVersion`. Current value: `2`.
 
 ## Validation Commands
 

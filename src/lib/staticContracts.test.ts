@@ -64,6 +64,9 @@ describe('static scoring/UI contracts', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /Array\.isArray\(detail\?\.watchIssues\) && detail\.watchIssues\.length/);
     assert.doesNotMatch(html, /if \(Array\.isArray\(detail\?\.watchIssues\)\) return detail\.watchIssues/);
+    const myInstallScore = html.match(/function myInstallScore\(r\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    assert.match(myInstallScore, /profileEvidenceSurfaces\(detail\)/);
+    assert.doesNotMatch(myInstallScore, /watchIssues|evidenceIssuesForRelease|profileIssueWeight/);
   });
 
   it('score explanation prefers backend audit text', () => {
@@ -702,14 +705,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /releaseClosureProofIntegrity/);
     assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
-    assert.match(readme, /public payload contract version\. Current value: `3`/);
+    assert.match(readme, /public payload contract version\. Current value: `4`/);
     assert.match(readme, /mandatory canonical `label`/);
     assert.match(scoringDoc, /ledger row keys, labels, order, cap keys, and cap order/);
     assert.match(scoringDoc, /mandatory canonical `label`/);
     assert.match(readme, /score_persistence_last_run/);
     assert.match(readme, /Current value: `1`/);
     assert.match(readme, /releaseChecks` object exposes `schemaVersion`\. Current value: `2`/);
-    assert.match(readme, /Current value: `3`/);
+    assert.match(readme, /\/api\/public` payload and `\/api\/public` release rows expose `schemaVersion`\. Current value: `4`/);
+    assert.match(readme, /profileEvidence\.schemaVersion` current value: `1`; it is derived from audited issue-evidence rows/);
     assert.match(readme, /stable reason `code`/);
   });
 
@@ -735,7 +739,7 @@ describe('static scoring/UI contracts', () => {
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
-    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 3/);
+    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 4/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
     assert.match(api, /COMPARISON_PAYLOAD_SCHEMA_VERSION = 1/);
@@ -760,7 +764,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /CONFIG_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 2/);
     assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 2/);
-    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 3/);
+    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 4/);
+    assert.match(api, /profileEvidence:\s+profileEvidenceForRelease\(r\.tag\)/);
+    assert.match(verifier, /verifyPublicProfileEvidence/);
     assert.match(api, /function releaseAuditLinks/);
     assert.match(api, /auditLinks:\s+releaseAuditLinks/);
     assert.match(api, /api\.get\('\/releases\/history'/);

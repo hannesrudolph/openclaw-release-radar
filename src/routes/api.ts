@@ -34,6 +34,7 @@ import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versio
 import { bandFor, type InstallStatus } from '../lib/score';
 import { SCORE_HISTORY_CHART_LIMIT } from '../lib/historyWindow';
 import { PUBLIC_ISSUES_PER_RELEASE, publicIssueSummariesForRelease } from '../lib/publicIssueSummary';
+import { surfaceOf } from '../lib/surfaces';
 import {
   RELEASE_ISSUE_EVIDENCE_IMPACT_CLASSES,
   RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
@@ -629,6 +630,7 @@ const STATUS_PAYLOAD_SCHEMA_VERSION = 1;
 const CONFIG_PAYLOAD_SCHEMA_VERSION = 1;
 const RELEASE_ROW_SCHEMA_VERSION = 2;
 const RELEASE_HISTORY_ROW_SCHEMA_VERSION = 2;
+const PROFILE_EVIDENCE_SCHEMA_VERSION = 1;
 
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   if (!audit) return null;
@@ -677,6 +679,92 @@ function releaseAuditLinks(tag: string) {
 function releaseAuditRawRows(tag: string) {
   const { issues, closureProofs, reachability } = releaseAuditLinks(tag);
   return { issues, closureProofs, reachability };
+}
+
+function profileEvidenceForRelease(tag: string) {
+  const evidence = releaseIssueEvidenceRows(tag);
+  const bySurface = new Map<string, {
+    label: string;
+    icon: string;
+    count: number;
+    weight: number;
+    tiers: Record<string, number>;
+    weightByTier: Record<string, number>;
+  }>();
+  let issueCount = 0;
+  let weightedIssueCount = 0;
+  let surfaceIssueCount = 0;
+  let surfaceWeight = 0;
+  for (const row of evidence?.rows ?? []) {
+    const issue = row.issue;
+    if (!issue || 'missing' in issue && issue.missing === true) continue;
+    if (!PROFILE_EVIDENCE_TIERS.has(row.tier)) continue;
+    const classification = 'classification' in issue && issue.classification ? issue.classification : null;
+    if (!classification || classification.sentiment !== 'negative') continue;
+    const surface = surfaceOf(issue.title);
+    if (!surface) continue;
+    const weight = profileEvidenceWeight(row, classification, String(issue.state ?? ''));
+    if (weight <= 0) continue;
+    issueCount++;
+    weightedIssueCount++;
+    surfaceIssueCount++;
+    surfaceWeight += weight;
+    const current = bySurface.get(surface.label) ?? {
+      label: surface.label,
+      icon: surface.icon,
+      count: 0,
+      weight: 0,
+      tiers: {},
+      weightByTier: {},
+    };
+    current.count += 1;
+    current.weight += weight;
+    current.tiers[row.tier] = (current.tiers[row.tier] ?? 0) + 1;
+    current.weightByTier[row.tier] = (current.weightByTier[row.tier] ?? 0) + weight;
+    bySurface.set(surface.label, current);
+  }
+  const surfaces = [...bySurface.values()]
+    .map((surface) => ({
+      ...surface,
+      weight: roundMetric(surface.weight),
+      weightByTier: Object.fromEntries(Object.entries(surface.weightByTier)
+        .map(([tier, weight]) => [tier, roundMetric(weight)])),
+    }))
+    .sort((a, b) => b.weight - a.weight || a.label.localeCompare(b.label));
+  return {
+    schemaVersion: PROFILE_EVIDENCE_SCHEMA_VERSION,
+    sourceMode: 'audit_issue_evidence',
+    issueEvidenceSchemaVersion: evidence?.schemaVersion ?? null,
+    issueCount,
+    weightedIssueCount,
+    surfaceIssueCount,
+    surfaceWeight: roundMetric(surfaceWeight),
+    surfaces,
+  };
+}
+
+const PROFILE_EVIDENCE_TIERS = new Set([
+  'verifiedDebt',
+  'carryoverDebt',
+  'staleDebt',
+  'openedFeltSerious',
+  'unverifiedClosed',
+]);
+
+function profileEvidenceWeight(row: any, classification: any, state: string): number {
+  if (typeof row.weight === 'number' && Number.isFinite(row.weight) && row.weight > 0) {
+    return row.weight;
+  }
+  const severity = ({ critical: 2.2, high: 1.5, medium: 0.8, low: 0.35 } as Record<string, number>)[classification.severity] ?? 0.6;
+  const confidence = Math.max(0.5, Math.min(1.25, Number(classification.confidence ?? 1)));
+  const stateFactor = state.toLowerCase() === 'closed' ? 0.35 : 1;
+  const tierFactor = row.tier === 'unverifiedClosed' ? 0.85 : row.tier === 'openedFeltSerious' ? 1 : 0.7;
+  return severity * confidence * stateFactor * tierFactor;
+}
+
+function roundMetric(value: unknown): number {
+  const num = Number(value ?? 0);
+  return Number.isFinite(num) ? Math.round(num * 1000) / 1000 : 0;
 }
 
 function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshness: ReturnType<typeof freshnessForRelease>) {
@@ -1151,8 +1239,8 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
 // Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
 // the score was computed for this specific release.
 
-const PUBLIC_PAYLOAD_SCHEMA_VERSION = 3;
-const PUBLIC_RELEASE_SCHEMA_VERSION = 3;
+const PUBLIC_PAYLOAD_SCHEMA_VERSION = 4;
+const PUBLIC_RELEASE_SCHEMA_VERSION = 4;
 
 function publicCacheKey(
   freshness = releaseScoreAuditFreshness(),
@@ -1216,6 +1304,7 @@ function buildPublicPayload() {
       dataFreshness:     freshnessForRelease(r, audit),
       auditLinks:        releaseAuditLinks(r.tag),
       totalAttributedIssues: all.length,
+      profileEvidence:   profileEvidenceForRelease(r.tag),
       issues:            topIssues,
       watchIssues,
     };

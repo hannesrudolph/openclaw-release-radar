@@ -381,7 +381,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     ],
   };
   const publicRelease = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     tag: 'v1',
     score: 7.5,
     band: 'ok',
@@ -396,6 +396,23 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     dataFreshness,
     auditLinks,
     totalAttributedIssues: 1,
+    profileEvidence: {
+      schemaVersion: 1,
+      sourceMode: 'audit_issue_evidence',
+      issueEvidenceSchemaVersion: 1,
+      issueCount: 1,
+      weightedIssueCount: 1,
+      surfaceIssueCount: 1,
+      surfaceWeight: 2.5,
+      surfaces: [{
+        label: 'Discord',
+        icon: 'discord',
+        count: 1,
+        weight: 2.5,
+        tiers: { verifiedDebt: 1 },
+        weightByTier: { verifiedDebt: 2.5 },
+      }],
+    },
     issues: [{
       number: 1,
       title: 'issue 1',
@@ -783,7 +800,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (url.endsWith('/api/config')) return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
     if (url.endsWith('/api/public')) {
       return {
-        schemaVersion: 3,
+        schemaVersion: 4,
         repo: 'x/y',
         updatedAt: auditScoredAt,
         releases: [publicRelease],

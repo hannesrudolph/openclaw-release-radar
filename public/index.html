@@ -1183,9 +1183,10 @@ function renderProfileFilter(rows) {
   if (!filter) return;
 
   profileObservedLabels = rows.flatMap((r) =>
-    (Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [])
-      .map((s) => normalizeSurfaceLabel(s.label))
-      .filter(Boolean)
+    [
+      ...(Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : []),
+      ...(publicReleaseDetails.get(r.tag)?.profileEvidence?.surfaces ?? []),
+    ].map((s) => normalizeSurfaceLabel(s.label)).filter(Boolean)
   );
   const labels = [...new Set([...INSTALL_PROFILE_SURFACES, ...profileObservedLabels])];
   filter.hidden = labels.length === 0;
@@ -1316,6 +1317,18 @@ function issueMatchesSelectedProfile(issue) {
   return selectedProfileSurfaces.has(issueSurfaceLabel(issue));
 }
 
+function profileEvidenceSurfaces(detail) {
+  const surfaces = detail?.profileEvidence?.surfaces;
+  return Array.isArray(surfaces)
+    ? surfaces
+        .map((surface) => ({
+          label: normalizeSurfaceLabel(surface?.label),
+          weight: Math.max(0, Number(surface?.weight ?? 0)),
+        }))
+        .filter((surface) => surface.label && surface.weight > 0)
+    : [];
+}
+
 function selectedProfileGroups() {
   const groups = new Set();
   for (const label of selectedProfileSurfaces) {
@@ -1359,22 +1372,17 @@ const MY_INSTALL_MAX_TILT = 2;
 function myInstallScore(r) {
   if (!hasMeaningfulInstallProfile() || r.finalScore == null || r.status !== 'eligible') return null;
   const detail = publicReleaseDetails.get(r.tag);
-  const issues = evidenceIssuesForRelease(detail);
-  if (!issues.length) return null;
+  const surfaces = profileEvidenceSurfaces(detail);
+  if (!surfaces.length) return null;
 
-  // Only surface-attributed serious issues move your personal score. General/core
-  // issues hit everyone (already in the global score) — they stay neutral here.
-  let yoursLoad = 0;   // serious issues on surfaces you use
-  let othersLoad = 0;  // serious issues on surfaces you don't use
-  for (const issue of issues) {
-    const weight = profileIssueWeight(issue);
-    if (!weight || !issueHasInstallSurface(issue)) continue;
-    if (issueMatchesSelectedProfile(issue)) yoursLoad += weight;
-    else othersLoad += weight;
-  }
-
+  const yoursLoad = surfaces
+    .filter((surface) => selectedProfileSurfaces.has(surface.label))
+    .reduce((sum, surface) => sum + surface.weight, 0);
+  const othersLoad = surfaces
+    .filter((surface) => !selectedProfileSurfaces.has(surface.label))
+    .reduce((sum, surface) => sum + surface.weight, 0);
   const surfaceLoad = yoursLoad + othersLoad;
-  if (!surfaceLoad) return null; // nothing surface-specific → profile changes nothing, show global only
+  if (!surfaceLoad) return null; // nothing surface-specific in audit evidence → show global only
 
   // Of the surface-specific breakage, how much lands on YOUR setup? High share →
   // you eat most of it → tilt below global. Low share → you dodge it → tilt above,

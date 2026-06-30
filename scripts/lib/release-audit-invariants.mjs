@@ -97,7 +97,7 @@ const statusPayloadSchemaVersion = 1;
 const configPayloadSchemaVersion = 1;
 const releaseRowSchemaVersion = 2;
 const releaseHistoryRowSchemaVersion = 2;
-const publicReleaseSchemaVersion = 3;
+const publicReleaseSchemaVersion = 4;
 const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
 const closureProofSchemaVersion = 1;
 const closureProofAuditSchemaVersion = 1;
@@ -108,7 +108,7 @@ const labelTimelineSchemaVersion = LABEL_TIMELINE_SCHEMA_VERSION;
 const releaseChecksSchemaVersion = RELEASE_CHECKS_SCHEMA_VERSION;
 const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
 const scoreExplanationSchemaVersion = 1;
-const publicPayloadSchemaVersion = 3;
+const publicPayloadSchemaVersion = 4;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationLimitCodes = new Set(SCORE_EXPLANATION_LIMIT_CODES);
 const knownExplanationPositiveCodes = new Set(SCORE_EXPLANATION_POSITIVE_CODES);
@@ -214,6 +214,7 @@ const publicReleaseKeys = new Set([
   'issues',
   'negativeIssues',
   'positiveIssues',
+  'profileEvidence',
   'publishedAt',
   'reason',
   'recommended',
@@ -227,6 +228,17 @@ const publicReleaseKeys = new Set([
   'url',
   'watchIssues',
 ]);
+const publicProfileEvidenceKeys = new Set([
+  'schemaVersion',
+  'sourceMode',
+  'issueEvidenceSchemaVersion',
+  'issueCount',
+  'weightedIssueCount',
+  'surfaceIssueCount',
+  'surfaceWeight',
+  'surfaces',
+]);
+const publicProfileEvidenceSurfaceKeys = new Set(['label', 'icon', 'count', 'weight', 'tiers', 'weightByTier']);
 const publicIssueKeys = new Set([
   'affectedUsers',
   'closedAt',
@@ -1551,6 +1563,43 @@ function verifyPublicIssueSummaries({ failures, tag, publicRelease }) {
   }
 }
 
+function verifyPublicProfileEvidence({ failures, tag, publicRelease }) {
+  const evidence = publicRelease.profileEvidence;
+  verifyAllowedKeys({ failures, tag, label: 'public profileEvidence', value: evidence, allowed: publicProfileEvidenceKeys });
+  if (!isObject(evidence)) return;
+  expect(failures, tag, evidence.schemaVersion === 1,
+    `public profileEvidence schemaVersion (${evidence.schemaVersion}) must be 1`);
+  expect(failures, tag, evidence.sourceMode === 'audit_issue_evidence',
+    `public profileEvidence sourceMode (${evidence.sourceMode}) must be audit_issue_evidence`);
+  expect(failures, tag, evidence.issueEvidenceSchemaVersion === issueEvidenceSchemaVersion || evidence.issueEvidenceSchemaVersion == null,
+    `public profileEvidence issueEvidenceSchemaVersion (${evidence.issueEvidenceSchemaVersion}) must match issue evidence schema`);
+  for (const key of ['issueCount', 'weightedIssueCount', 'surfaceIssueCount']) {
+    expect(failures, tag, Number.isInteger(evidence[key]) && evidence[key] >= 0,
+      `public profileEvidence ${key} must be a non-negative integer`);
+  }
+  expect(failures, tag, typeof evidence.surfaceWeight === 'number' && Number.isFinite(evidence.surfaceWeight) && evidence.surfaceWeight >= 0,
+    'public profileEvidence surfaceWeight must be a non-negative number');
+  expect(failures, tag, Array.isArray(evidence.surfaces),
+    'public profileEvidence surfaces must be an array');
+  let surfaceWeight = 0;
+  for (const [index, surface] of (evidence.surfaces ?? []).entries()) {
+    verifyAllowedKeys({ failures, tag, label: `public profileEvidence surfaces[${index}]`, value: surface, allowed: publicProfileEvidenceSurfaceKeys });
+    expect(failures, tag, typeof surface.label === 'string' && surface.label.length > 0,
+      `public profileEvidence surfaces[${index}] label must be present`);
+    expect(failures, tag, typeof surface.icon === 'string' && surface.icon.length > 0,
+      `public profileEvidence surfaces[${index}] icon must be present`);
+    expect(failures, tag, Number.isInteger(surface.count) && surface.count > 0,
+      `public profileEvidence surfaces[${index}] count must be positive`);
+    expect(failures, tag, typeof surface.weight === 'number' && Number.isFinite(surface.weight) && surface.weight > 0,
+      `public profileEvidence surfaces[${index}] weight must be positive`);
+    expect(failures, tag, isObject(surface.tiers), `public profileEvidence surfaces[${index}] tiers must be an object`);
+    expect(failures, tag, isObject(surface.weightByTier), `public profileEvidence surfaces[${index}] weightByTier must be an object`);
+    surfaceWeight += Number(surface.weight ?? 0);
+  }
+  expect(failures, tag, Math.abs(Math.round(surfaceWeight * 1000) / 1000 - Number(evidence.surfaceWeight ?? 0)) <= 0.002,
+    `public profileEvidence surfaceWeight (${evidence.surfaceWeight}) must equal summed surface weights (${surfaceWeight})`);
+}
+
 function publicIssueSortKey(issue) {
   return [
     publicSentimentRank.get(issue.sentiment) ?? 9,
@@ -2159,6 +2208,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         expect(failures, release.tag, issueCount > 0,
           'public release with attributed issues must expose capped issue summaries');
       }
+      verifyPublicProfileEvidence({ failures, tag: release.tag, publicRelease });
       verifyPublicIssueSummaries({ failures, tag: release.tag, publicRelease });
       verifyScoreExplanation({
         failures,

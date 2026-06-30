@@ -160,7 +160,7 @@ Main public payload:
 curl http://127.0.0.1:8787/api/public
 ```
 
-Top-level `schemaVersion` is the public payload contract version. Current value: `3`.
+Top-level `schemaVersion` is the public payload contract version. Current value: `4`.
 
 Score review:
 
@@ -261,7 +261,7 @@ The `/api/releases/:tag/review` `local.gateEvidence.releaseChecks` object expose
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
 The `/api/status` and `/api/config` payloads also expose `schemaVersion`. Current value: `1`.
 The `/api/releases/history` rows expose `schemaVersion`. Current value: `2`.
-The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `3`.
+The `/api/public` payload and `/api/public` release rows expose `schemaVersion`. Current value: `4`. Public release `profileEvidence.schemaVersion` current value: `1`; it is derived from audited issue-evidence rows, not from capped public issue summaries. `/api/releases` rows expose `schemaVersion`. Current value: `2`.
 
 ## Development Commands
 
