@@ -651,6 +651,8 @@ describe('static scoring/UI contracts', () => {
   it('public issue summaries use effective scoring classifications', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
+    const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 2/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
@@ -659,6 +661,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /COMPARISON_DELTA_SCHEMA_VERSION = 1/);
     assert.match(api, /config\.comparison\.apiEnabled/);
     assert.match(api, /comparison api disabled/);
+    assert.match(db, /function validateComparisonSnapshotInput/);
+    assert.match(db, /comparison snapshot releases must be a non-empty array/);
+    assert.match(db, /comparison release tag .* appears more than once/);
+    assert.match(db, /runInWriteTransaction\(\(\) => \{[\s\S]*insertComparisonSnapshotStmt\.run/);
+    assert.match(readme, /stored separately from local model data after validating the rendered release rows/);
+    assert.match(scoringDoc, /Comparison snapshots are internal calibration artifacts/);
     assert.match(api, /function reviewSourceProvenance/);
     assert.match(api, /sourceMode: 'current_db'/);
     assert.match(api, /rawRows/);

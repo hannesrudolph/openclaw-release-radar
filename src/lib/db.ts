@@ -3444,6 +3444,8 @@ export interface ComparisonSnapshotInput {
   releases: ComparisonReleaseInput[];
 }
 
+type PreparedComparisonSnapshotInput = ComparisonSnapshotInput;
+
 const insertComparisonSnapshotStmt = db.prepare(`
 INSERT INTO comparison_snapshots (source_url, captured_at, page_title, page_text, raw_html)
 VALUES (:source_url, :captured_at, :page_title, :page_text, :raw_html)
@@ -3463,18 +3465,18 @@ VALUES (
 `);
 
 export function saveComparisonSnapshot(input: ComparisonSnapshotInput): number {
-  db.exec('BEGIN');
-  try {
+  const prepared = validateComparisonSnapshotInput(input);
+  return runInWriteTransaction(() => {
     const result = insertComparisonSnapshotStmt.run({
-      source_url: input.source_url,
-      captured_at: input.captured_at,
-      page_title: input.page_title,
-      page_text: input.page_text,
-      raw_html: input.raw_html,
+      source_url: prepared.source_url,
+      captured_at: prepared.captured_at,
+      page_title: prepared.page_title,
+      page_text: prepared.page_text,
+      raw_html: prepared.raw_html,
     });
     const snapshotId = Number(result.lastInsertRowid);
 
-    for (const release of input.releases) {
+    for (const release of prepared.releases) {
       insertComparisonReleaseStmt.run({
         snapshot_id: snapshotId,
         tag: release.tag,
@@ -3495,12 +3497,92 @@ export function saveComparisonSnapshot(input: ComparisonSnapshotInput): number {
       });
     }
 
-    db.exec('COMMIT');
     return snapshotId;
-  } catch (error) {
-    db.exec('ROLLBACK');
-    throw error;
+  });
+}
+
+function validateComparisonSnapshotInput(input: ComparisonSnapshotInput): PreparedComparisonSnapshotInput {
+  const sourceUrl = requiredHttpUrl(input.source_url, 'comparison snapshot source_url');
+  if (!Number.isFinite(Date.parse(input.captured_at))) {
+    throw new Error(`comparison snapshot captured_at must be a valid timestamp`);
   }
+  if (typeof input.page_title !== 'string') throw new Error('comparison snapshot page_title must be a string');
+  if (typeof input.page_text !== 'string') throw new Error('comparison snapshot page_text must be a string');
+  if (typeof input.raw_html !== 'string') throw new Error('comparison snapshot raw_html must be a string');
+  if (!Array.isArray(input.releases) || input.releases.length === 0) {
+    throw new Error('comparison snapshot releases must be a non-empty array');
+  }
+  const seenTags = new Set<string>();
+  const releases = input.releases.map((release, index) => validateComparisonReleaseInput(release, index, seenTags));
+  return {
+    ...input,
+    source_url: sourceUrl,
+    releases,
+  };
+}
+
+function validateComparisonReleaseInput(
+  release: ComparisonReleaseInput,
+  index: number,
+  seenTags: Set<string>,
+): ComparisonReleaseInput {
+  if (!release || typeof release !== 'object') throw new Error(`comparison release ${index} must be an object`);
+  const tag = requiredString(release.tag, `comparison release ${index} tag`);
+  if (seenTags.has(tag)) throw new Error(`comparison release tag ${tag} appears more than once`);
+  seenTags.add(tag);
+  return {
+    ...release,
+    tag,
+    name: nullableString(release.name, `comparison release ${tag} name`),
+    published_at: nullableTimestamp(release.published_at, `comparison release ${tag} published_at`),
+    html_url: requiredHttpUrl(release.html_url, `comparison release ${tag} html_url`),
+    displayed_date: nullableString(release.displayed_date, `comparison release ${tag} displayed_date`),
+    score: nullableFiniteNumber(release.score, `comparison release ${tag} score`),
+    band: nullableString(release.band, `comparison release ${tag} band`),
+    status: nullableString(release.status, `comparison release ${tag} status`),
+    recommended: release.recommended === true,
+    reason: nullableString(release.reason, `comparison release ${tag} reason`),
+    negative_issues: nullableFiniteNumber(release.negative_issues, `comparison release ${tag} negative_issues`),
+    positive_issues: nullableFiniteNumber(release.positive_issues, `comparison release ${tag} positive_issues`),
+    total_attributed_issues: nullableFiniteNumber(release.total_attributed_issues, `comparison release ${tag} total_attributed_issues`),
+    visible_issues: Array.isArray(release.visible_issues) ? release.visible_issues : [],
+    raw_card_text: typeof release.raw_card_text === 'string' ? release.raw_card_text : '',
+  };
+}
+
+function requiredString(value: unknown, label: string): string {
+  if (typeof value !== 'string' || value.trim() === '') throw new Error(`${label} must be a non-empty string`);
+  return value;
+}
+
+function nullableString(value: unknown, label: string): string | null {
+  if (value == null) return null;
+  if (typeof value !== 'string') throw new Error(`${label} must be null or string`);
+  return value;
+}
+
+function nullableTimestamp(value: unknown, label: string): string | null {
+  const text = nullableString(value, label);
+  if (text == null) return null;
+  if (!Number.isFinite(Date.parse(text))) throw new Error(`${label} must be a valid timestamp`);
+  return text;
+}
+
+function nullableFiniteNumber(value: unknown, label: string): number | null {
+  if (value == null) return null;
+  if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be null or finite number`);
+  return value;
+}
+
+function requiredHttpUrl(value: unknown, label: string): string {
+  const text = requiredString(value, label);
+  try {
+    const url = new URL(text);
+    if (url.protocol === 'http:' || url.protocol === 'https:') return url.href;
+  } catch {
+    // handled below
+  }
+  throw new Error(`${label} must be an http(s) URL`);
 }
 
 export function latestComparisonSnapshot(): {

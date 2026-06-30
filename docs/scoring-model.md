@@ -332,6 +332,7 @@ Each detail entry has a stable `code`, mandatory canonical `label`, matching `te
 `/api/releases/:tag/review` exposes `local.schemaVersion`; `/api/public` and `/api/releases` expose `scoreAudit.schemaVersion`. Current value: `1`.
 `/api/releases/:tag/review` also exposes `local.issueEvidence.schemaVersion`. Current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
+Comparison snapshots are internal calibration artifacts. They are validated before insertion, stored outside local score/audit rows, and must not be used as local audit-backed score evidence.
 The `/api/status`, `/api/config`, and `/api/releases/history` rows also expose `schemaVersion`. Current value: `1`.
 The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `2`.
 

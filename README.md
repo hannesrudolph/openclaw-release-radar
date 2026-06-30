@@ -109,7 +109,7 @@ During model calibration, you can capture an external rendered UI snapshot as a 
 npm run scrape:upstream
 ```
 
-The snapshot is stored separately from local model data. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores. `/api/comparison` is disabled unless `COMPARISON_API_ENABLED=true`.
+The snapshot is stored separately from local model data after validating the rendered release rows. It is for internal review only, is not shown in the product UI, and does not overwrite local release scores. `/api/comparison` is disabled unless `COMPARISON_API_ENABLED=true`.
 
 The older public JSON snapshot importer is still available as a one-off utility:
 

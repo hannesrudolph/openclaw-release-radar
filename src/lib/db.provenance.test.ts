@@ -736,6 +736,64 @@ describe('release fix provenance', () => {
     assert.notEqual(first.digest, second.digest);
   });
 
+  it('validates comparison snapshots before writing rows', async () => {
+    const db = await freshDb('comparison-snapshot-validation');
+    const validSnapshot = {
+      source_url: 'https://example.test/source',
+      captured_at: '2026-06-02T00:00:00Z',
+      page_title: 'Comparison source',
+      page_text: 'page text',
+      raw_html: '<html></html>',
+      releases: [{
+        tag: 'v1',
+        name: 'v1',
+        published_at: '2026-06-01T00:00:00Z',
+        html_url: 'https://example.test/releases/v1',
+        displayed_date: 'Jun 1',
+        score: 7.5,
+        band: 'ok',
+        status: 'eligible',
+        recommended: true,
+        reason: 'source reason',
+        negative_issues: 1,
+        positive_issues: 0,
+        total_attributed_issues: 3,
+        visible_issues: [{ number: 1, title: 'issue' }],
+        raw_card_text: 'card',
+      }],
+    };
+
+    const id = db.saveComparisonSnapshot(validSnapshot);
+    assert.equal(typeof id, 'number');
+    assert.equal(db.latestComparisonSnapshot()?.source_url, 'https://example.test/source');
+    assert.deepEqual(db.comparisonReleases(id).map((row: any) => row.tag), ['v1']);
+
+    assert.throws(
+      () => db.saveComparisonSnapshot({
+        ...validSnapshot,
+        releases: [
+          ...validSnapshot.releases,
+          { ...validSnapshot.releases[0], tag: 'v2', html_url: 'https://example.test/releases/v2', score: Number.NaN },
+        ],
+      }),
+      /comparison release v2 score must be null or finite number/,
+    );
+    assert.equal(db.latestComparisonSnapshot()?.id, id);
+    assert.deepEqual(db.comparisonReleases().map((row: any) => row.tag), ['v1']);
+
+    assert.throws(
+      () => db.saveComparisonSnapshot({
+        ...validSnapshot,
+        releases: [
+          validSnapshot.releases[0],
+          { ...validSnapshot.releases[0] },
+        ],
+      }),
+      /appears more than once/,
+    );
+    assert.equal(db.latestComparisonSnapshot()?.id, id);
+  });
+
   it('stores release check rollup evidence with the release commit', async () => {
     const db = await freshDb('release-checks');
     seedRelease(db, 'v1');
