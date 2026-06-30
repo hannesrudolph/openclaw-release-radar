@@ -203,6 +203,41 @@ try {
       await panel.locator('.score-review__item').filter({ hasText: 'Closed issue proof' }).getByText(expectedRisk).waitFor();
     }
   }
+  await assertVisualSmoke(page, 'desktop');
+
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } });
+  mobilePage.on('request', (req) => {
+    if (new URL(req.url()).pathname === '/api/comparison') badRequests.push(req.url());
+  });
+  try {
+    await mobilePage.goto(`${base}/#/openclaw`, { waitUntil: 'networkidle' });
+    await mobilePage.waitForSelector('#releases .release');
+    if (badRequests.length) throw new Error(`UI requested /api/comparison: ${badRequests.join(', ')}`);
+    const mobileText = await mobilePage.locator('body').innerText();
+    if (/\b(upstream|comparison)\b/i.test(mobileText)) {
+      throw new Error('Visible mobile UI leaked upstream/comparison wording');
+    }
+    const mobileRenderedCount = await mobilePage.locator('#releases .release').count();
+    if (mobileRenderedCount !== publicPayload.releases.length) {
+      throw new Error(`Mobile rendered release row count ${mobileRenderedCount} did not match public releases ${publicPayload.releases.length}`);
+    }
+
+    const mobileRecommendedPanel = await openScoreBreakdown(mobilePage, recommendedTag);
+    await mobileRecommendedPanel.locator('.update-cmd__code').filter({ hasText: expectedRecommendedCmd }).waitFor();
+    await mobileRecommendedPanel.locator(`.update-cmd__copy[data-cmd="${expectedRecommendedCmd}"]`).waitFor();
+    const mobileFixPanel = await openScoreBreakdown(mobilePage, fixCreditTag);
+    await mobileFixPanel.locator('.score-review').waitFor();
+    await mobilePage.locator(`.release[data-tag="${recommendedTag}"] .release__drivers`).first().waitFor();
+
+    await assertVisualSmoke(mobilePage, 'mobile');
+    await assertElementInViewport(mobilePage, mobilePage.locator('.topbar__nav').first(), 'mobile topbar nav');
+    await assertElementInViewport(mobilePage, mobileRecommendedPanel.locator('.update-cmd__code').first(), 'mobile update command');
+    await assertElementInViewport(mobilePage, mobileRecommendedPanel.locator('.update-cmd__copy').first(), 'mobile copy button');
+    await assertElementInViewport(mobilePage, mobileFixPanel.locator('.score-review').first(), 'mobile score review');
+    await assertElementInViewport(mobilePage, mobilePage.locator(`.release[data-tag="${recommendedTag}"] .release__drivers`).first(), 'mobile score drivers');
+  } finally {
+    await mobilePage.close();
+  }
 
   console.log(`UI smoke passed: fix credit ${fixCreditTag}; eligible non-recommended ${eligibleNonRecommended.tag}`);
 } finally {
@@ -228,6 +263,46 @@ async function json(path) {
   const res = await fetch(base + path);
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
+}
+
+async function assertVisualSmoke(page, label) {
+  await assertNoHorizontalOverflow(page, label);
+  const bodyText = await page.locator('body').innerText();
+  if (bodyText.trim().length < 100) throw new Error(`${label} page rendered too little text`);
+  const screenshot = await page.screenshot({ fullPage: false });
+  const uniqueByteCount = new Set(screenshot).size;
+  if (screenshot.length < 1500 || uniqueByteCount < 32) {
+    throw new Error(`${label} screenshot looked blank or invalid: ${screenshot.length} bytes, ${uniqueByteCount} unique bytes`);
+  }
+  await assertElementInViewport(page, page.locator('.topbar__nav').first(), `${label} topbar nav`);
+  await assertElementInViewport(page, page.locator('#releases .release').first(), `${label} release row`);
+}
+
+async function assertNoHorizontalOverflow(page, label) {
+  const metrics = await page.evaluate(() => ({
+    htmlScrollWidth: document.documentElement.scrollWidth,
+    bodyScrollWidth: document.body.scrollWidth,
+    innerWidth: window.innerWidth,
+  }));
+  const overflow = Math.max(metrics.htmlScrollWidth, metrics.bodyScrollWidth) - metrics.innerWidth;
+  if (overflow > 1) {
+    throw new Error(`${label} page has horizontal overflow ${overflow}px (${JSON.stringify(metrics)})`);
+  }
+}
+
+async function assertElementInViewport(page, locator, label) {
+  await locator.scrollIntoViewIfNeeded();
+  const box = await locator.boundingBox();
+  const viewport = page.viewportSize();
+  if (!box || !viewport || box.width <= 0 || box.height <= 0) {
+    throw new Error(`${label} is not visibly rendered`);
+  }
+  if (box.x < -1 || box.x + box.width > viewport.width + 1) {
+    throw new Error(`${label} is horizontally clipped: ${JSON.stringify({ box, viewport })}`);
+  }
+  if (box.y > viewport.height + 1 || box.y + box.height < -1) {
+    throw new Error(`${label} is outside the viewport: ${JSON.stringify({ box, viewport })}`);
+  }
 }
 
 async function openScoreBreakdown(page, tag) {

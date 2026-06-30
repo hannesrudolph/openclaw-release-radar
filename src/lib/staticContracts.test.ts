@@ -236,6 +236,7 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:local'], 'npm run doctor -- --fail-on-warnings && npm run verify:score -- --all && npm run verify:release-audit -- --all');
     assert.equal(pkg.scripts['verify:live'], 'npm run doctor -- --fail-on-warnings --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.equal(pkg.scripts.doctor, 'tsx scripts/doctor.mjs');
+    const uiSmoke = readFileSync(join(root, 'scripts/ui-smoke.mjs'), 'utf8');
     const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
     const doctorHealth = readFileSync(join(root, 'scripts/lib/doctor-health.mjs'), 'utf8');
     assert.match(doctor, /readOnly: true/);
@@ -274,6 +275,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:scripts/);
     assert.match(readme, /npm run verify:local/);
     assert.match(readme, /npm run verify:live/);
+    assert.match(readme, /desktop\/mobile browser layout smoke checks/);
+    assert.match(uiSmoke, /viewport: \{ width: 1440, height: 1000 \}/);
+    assert.match(uiSmoke, /viewport: \{ width: 390, height: 844 \}/);
+    assert.match(uiSmoke, /assertNoHorizontalOverflow/);
+    assert.match(uiSmoke, /page\.screenshot/);
+    assert.match(uiSmoke, /uniqueByteCount/);
+    assert.match(uiSmoke, /mobile score review/);
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
     assert.match(readme, /release-metadata\/artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);

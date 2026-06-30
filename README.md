@@ -286,7 +286,7 @@ npm start
 
 `npm run verify:local` requires the local SQLite DB, runs the health doctor in `--fail-on-warnings` mode, and checks persisted score/audit consistency for every scored stable release.
 
-`npm run verify:live` also requires the local server at `http://127.0.0.1:8787`, runs the health doctor against that server in `--fail-on-warnings` mode, and checks API/UI contracts for every scored stable release.
+`npm run verify:live` also requires the local server at `http://127.0.0.1:8787`, runs the health doctor against that server in `--fail-on-warnings` mode, checks API/UI contracts for every scored stable release, and runs desktop/mobile browser layout smoke checks.
 
 `npm run doctor` requires the local SQLite DB and emits a read-only JSON health report. Add `-- --api-base http://127.0.0.1:8787` when you want it to also verify the running server's recommendation and score timestamp match the DB; add `-- --fail-on-warnings` when warnings such as stale issue evidence should return a failing exit code.
 

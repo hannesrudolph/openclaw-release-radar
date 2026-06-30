@@ -266,7 +266,7 @@ npm run verify:release-audit
 npm run ui:smoke
 ```
 
-`verify:local` and `verify:live` run score and release-audit checks in `--all` mode, covering every scored stable release rather than only the newest display window.
+`verify:local` and `verify:live` run score and release-audit checks in `--all` mode, covering every scored stable release rather than only the newest display window. `verify:live` also runs browser smoke checks across desktop and mobile viewports so API-correct data cannot ship with an unreadable or horizontally overflowing UI.
 
 ## Release Checks
 
