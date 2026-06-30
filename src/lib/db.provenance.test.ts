@@ -706,6 +706,36 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.unverifiedClosedForRelease('v-reference').map((row: any) => row.number), [21]);
   });
 
+  it('deletes stale closure-comment PR links without removing GitHub closure links', async () => {
+    const db = await freshDb('stale-comment-pr-links');
+    seedRelease(db, 'v-stale-comment-link');
+    seedIssue(db, 61);
+
+    for (const [source, pr] of [
+      ['closedByPullRequestsReferences', 261],
+      ['ClosureComment.fixProof', 262],
+      ['ClosureComment.prMention', 263],
+    ] as const) {
+      db.upsertIssuePrLink({
+        issue_number: 61,
+        pr_number: pr,
+        source,
+        will_close_target: source === 'closedByPullRequestsReferences' ? 1 : null,
+        referenced_at: '2026-06-02T00:00:00Z',
+      });
+    }
+
+    db.deleteCommentIssuePrLinksForIssues([61]);
+
+    const remaining = db.db.prepare(`
+      SELECT source
+      FROM issue_pr_links
+      WHERE issue_number=61
+      ORDER BY source
+    `).all().map((row: any) => row.source);
+    assert.deepEqual(remaining, ['closedByPullRequestsReferences']);
+  });
+
   it('uses the final closure event for fix credit', async () => {
     const db = await freshDb('final-closure');
     seedRelease(db, 'v-final', '2026-09-01T00:00:00Z');

@@ -1873,6 +1873,17 @@ export function deleteIssuePrLinksForIssues(issueNumbers: number[]): void {
   deleteIssuePrLinksForIssuesStmt.run(JSON.stringify(issueNumbers));
 }
 
+const deleteCommentIssuePrLinksForIssuesStmt = db.prepare(`
+DELETE FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+  AND source IN ('ClosureComment.fixProof', 'ClosureComment.prMention')
+`);
+
+export function deleteCommentIssuePrLinksForIssues(issueNumbers: number[]): void {
+  if (!issueNumbers.length) return;
+  deleteCommentIssuePrLinksForIssuesStmt.run(JSON.stringify(issueNumbers));
+}
+
 export interface IssueCommitReferenceInput {
   issue_number: number;
   event_id: string;

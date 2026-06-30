@@ -1,5 +1,16 @@
 import { config } from '../config';
-import { db, deleteIssueClosureProofsForRelease, deleteIssuePrLinksForIssues, upsertIssueClosureEvent, upsertIssueClosureProof, upsertIssueCommitReference, upsertIssuePrLink, upsertIssueReopenEvent, upsertPullRequestFix } from './db';
+import {
+  db,
+  deleteCommentIssuePrLinksForIssues,
+  deleteIssueClosureProofsForRelease,
+  deleteIssuePrLinksForIssues,
+  upsertIssueClosureEvent,
+  upsertIssueClosureProof,
+  upsertIssueCommitReference,
+  upsertIssuePrLink,
+  upsertIssueReopenEvent,
+  upsertPullRequestFix,
+} from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { closureRiskDisposition } from './closureProofTaxonomy';
 import { creditedFixLinkSql } from './fixProvenance';
@@ -1999,6 +2010,7 @@ async function refreshClosureCommentPrMentionEvidence(
   issueNumbers: number[],
   commentsByIssue: Map<number, GhComment[]>,
 ): Promise<void> {
+  deleteCommentIssuePrLinksForIssues(issueNumbers);
   const commentMentions = issueNumbers.flatMap((issueNumber) =>
     closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
   );
