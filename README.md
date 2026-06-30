@@ -6,6 +6,8 @@ OpenClaw Release Radar is a small dashboard that answers:
 
 It watches `openclaw/openclaw`, pulls releases, issues, comments, and advisory data from GitHub GraphQL, classifies issue impact with OpenAI, stores the result in SQLite, and serves a local web UI plus JSON API.
 
+The score is a triage aid, not a guarantee. Inspect `/api/releases/:tag/review` before acting on a recommendation.
+
 ![OpenClaw Release Radar screenshot](docs/screenshot.png)
 
 ## Current Status
@@ -224,9 +226,9 @@ A healthy completed refresh also records `meta.issue_crawl_last_run`, which `npm
 | --- | --- |
 | `/api/health` | Basic process and target repo check |
 | `/api/status` | Refresh state and last error |
-| `/api/releases` | Dashboard release data |
+| `/api/releases` | Dashboard release data; each row includes `auditLinks` for review, issue evidence, closure proofs, and PR reachability |
 | `/api/releases/history` | Score history |
-| `/api/public` | Main install recommendation payload |
+| `/api/public` | Main install recommendation payload; each release row includes `auditLinks` for audit drill-down |
 | `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default; includes `local.sourceProvenance` with `sourceMode`, score/audit timestamp alignment, freshness sources, and raw-row links |
 | `/api/releases/:tag/review/issues` | Paginated current-DB issue-evidence rows for one release; supports comma-separated `tier`, `impact`, `state`, `sentiment`, `severity`, `functionality`, `scope`, `affectedUsers`, `fieldConfirmed`, `minWeight`, `maxWeight`, `sort`, `direction`, `summaryOnly`, plus `limit` and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, `tierInfo`, `summaryByTier`, `filteredSummary`, `filteredCountsByTier`, `filteredSummaryByTier`, and `totals` |
 | `/api/releases/:tag/review/closure-proofs` | Paginated current-DB closure-proof rows for one release; supports validated `status`, audit enum `riskDisposition`, `limit`, and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, human-readable risk labels, filtered/unfiltered status counts, and filtered/unfiltered risk-disposition counts |

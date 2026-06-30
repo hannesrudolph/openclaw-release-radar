@@ -939,7 +939,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   if (recommended) {
     addPositive('release_recommended', 'The release is eligible and recommended.');
   } else if (result.conf.status === 'eligible') {
-    addPositive('hard_gates_passed', 'The release passed hard install gates.');
+    addPositive('hard_gates_passed', 'The release passed install eligibility checks.');
   }
 
   return {
@@ -1496,15 +1496,15 @@ function roundMetric(value: unknown): number {
 
 function installVerdictText(status: string, recommended: boolean): string {
   if (recommended) {
-    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
+    return 'This means the release is the current recommended install target under the audit and recommendation gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
   }
   if (status === 'eligible') {
-    return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';
+    return 'This means the release passed install eligibility checks, but the audit does not support treating it as the recommended install target.';
   }
   if (status === 'wait') {
     return 'This release is not scored yet because it has not had enough time to settle.';
   }
-  return 'This release is not recommended to install because a hard safety gate is active.';
+  return 'This release is not recommended to install because an install or recommendation gate is active.';
 }
 
 function closureProofSummaryText(closureProof: any): string {

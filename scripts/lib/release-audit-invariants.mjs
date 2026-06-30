@@ -90,9 +90,9 @@ const comparisonUpstreamSchemaVersion = 1;
 const comparisonDeltaSchemaVersion = 1;
 const statusPayloadSchemaVersion = 1;
 const configPayloadSchemaVersion = 1;
-const releaseRowSchemaVersion = 1;
+const releaseRowSchemaVersion = 2;
 const releaseHistoryRowSchemaVersion = 1;
-const publicReleaseSchemaVersion = 1;
+const publicReleaseSchemaVersion = 2;
 const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
 const closureProofSchemaVersion = 1;
 const closureProofAuditSchemaVersion = 1;
@@ -103,7 +103,7 @@ const labelTimelineSchemaVersion = LABEL_TIMELINE_SCHEMA_VERSION;
 const releaseChecksSchemaVersion = RELEASE_CHECKS_SCHEMA_VERSION;
 const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
 const scoreExplanationSchemaVersion = 1;
-const publicPayloadSchemaVersion = 1;
+const publicPayloadSchemaVersion = 2;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationCodes = new Set([
   'field_visible_reports_opened',
@@ -124,6 +124,7 @@ const knownExplanationCodes = new Set([
 const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
 const releaseRowKeys = new Set([
   'advisories',
+  'auditLinks',
   'band',
   'brokenSurfaces',
   'closedSeriousFixed',
@@ -147,6 +148,7 @@ const releaseRowKeys = new Set([
 ]);
 const releaseHistoryRowKeys = new Set(['schemaVersion', 'tag', 'publishedAt', 'finalScore']);
 const publicReleaseKeys = new Set([
+  'auditLinks',
   'band',
   'dataFreshness',
   'explanation',
@@ -370,6 +372,7 @@ const reachabilityAuditKeys = new Set([
 ]);
 const reachabilityAuditFilterKeys = new Set(['status', 'pr']);
 const reachabilityAuditTotalsKeys = new Set(['unfilteredRows', 'filteredRows', 'unfilteredPullRequests', 'filteredPullRequests']);
+const auditLinkKeys = new Set(['review', 'issues', 'closureProofs', 'reachability']);
 const reachabilityAuditRowKeys = new Set([
   'repositoryNameWithOwner',
   'number',
@@ -1333,6 +1336,23 @@ function verifyReviewSourceProvenance({ failures, tag, sourceProvenance, dataFre
     sourceProvenance.rawRows, expectedRawRows);
 }
 
+function expectedAuditLinks(tag) {
+  const encodedTag = encodeURIComponent(tag);
+  return {
+    review: `/api/releases/${encodedTag}/review`,
+    issues: `/api/releases/${encodedTag}/review/issues`,
+    closureProofs: `/api/releases/${encodedTag}/review/closure-proofs`,
+    reachability: `/api/releases/${encodedTag}/review/reachability`,
+  };
+}
+
+function verifyAuditLinks({ failures, tag, label, auditLinks }) {
+  verifyAllowedKeys({ failures, tag, label, value: auditLinks, allowed: auditLinkKeys });
+  if (!isObject(auditLinks)) return;
+  expectJsonEqual(failures, tag, `${label} must point at release audit endpoints`,
+    auditLinks, expectedAuditLinks(tag));
+}
+
 function ageHoursAtScore(sourceAt, scoredAt) {
   if (!sourceAt || !scoredAt) return null;
   const sourceMs = Date.parse(sourceAt);
@@ -1852,6 +1872,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     verifyNoForbiddenPublicKeys({ failures, tag: release.tag ?? 'api/public', value: release });
     expect(failures, release.tag ?? 'api/public', release.schemaVersion === publicReleaseSchemaVersion,
       `public release schemaVersion must be ${publicReleaseSchemaVersion}, got ${JSON.stringify(release.schemaVersion)}`);
+    verifyAuditLinks({ failures, tag: release.tag ?? 'api/public', label: 'public release auditLinks', auditLinks: release.auditLinks });
   }
   const comparisonPayload = await fetchOptionalComparisonPayload({ apiBase, fetchJson, failures });
   if (comparisonPayload) {
@@ -1868,6 +1889,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       verifyAllowedKeys({ failures, tag: release.tag, label: 'releases row', value: releaseApi, allowed: releaseRowKeys });
       expect(failures, release.tag, releaseApi.schemaVersion === releaseRowSchemaVersion,
         `releases row schemaVersion must be ${releaseRowSchemaVersion}, got ${JSON.stringify(releaseApi.schemaVersion)}`);
+      verifyAuditLinks({ failures, tag: release.tag, label: 'releases row auditLinks', auditLinks: releaseApi.auditLinks });
       expect(failures, release.tag, releaseApi.finalScore === release.final_score,
         `releases finalScore (${releaseApi.finalScore}) must match DB final_score (${release.final_score})`);
       expect(failures, release.tag, releaseApi.status === release.state,

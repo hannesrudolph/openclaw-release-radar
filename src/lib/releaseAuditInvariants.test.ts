@@ -339,7 +339,7 @@ function scoreExplanationFixture() {
       metrics: { notCountedClosedCount: 1 },
       issueRefs: [{ number: 1, title: 'issue 1', url: 'https://github.com/x/y/issues/1' }],
     }],
-    verdict: 'This means the release is the current recommended install candidate under the audit gates, but the audit still contains evidence.',
+    verdict: 'This means the release is the current recommended install target under the audit and recommendation gates, but the audit still contains evidence.',
   };
 }
 
@@ -353,6 +353,12 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     classifiedIssueCount: 1,
   };
   const explanation = scoreExplanationFixture();
+  const auditLinks = {
+    review: '/api/releases/v1/review',
+    issues: '/api/releases/v1/review/issues',
+    closureProofs: '/api/releases/v1/review/closure-proofs',
+    reachability: '/api/releases/v1/review/reachability',
+  };
   const dataFreshness = {
     schemaVersion: 1,
     tag: 'v1',
@@ -370,7 +376,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     ],
   };
   const publicRelease = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     tag: 'v1',
     score: 7.5,
     band: 'ok',
@@ -383,6 +389,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     scoreAudit,
     explanation,
     dataFreshness,
+    auditLinks,
     totalAttributedIssues: 1,
     issues: [{
       number: 1,
@@ -771,7 +778,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (url.endsWith('/api/config')) return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
     if (url.endsWith('/api/public')) {
       return {
-        schemaVersion: 1,
+        schemaVersion: 2,
         repo: 'x/y',
         updatedAt: auditScoredAt,
         releases: [publicRelease],
@@ -779,7 +786,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     }
     if (url.endsWith('/api/releases')) {
       return [{
-        schemaVersion: 1,
+        schemaVersion: 2,
         tag: 'v1',
         finalScore: 7.5,
         band: 'ok',
@@ -792,6 +799,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         scoreAudit,
         explanation,
         dataFreshness,
+        auditLinks,
       }];
     }
     if (url.endsWith('/api/releases/history')) {
@@ -921,6 +929,35 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /releases row must not expose unknown keys: unexpectedDebugField/.test(failure)));
+  });
+
+  it('fails when summary release audit links drift from canonical endpoints', async () => {
+    const fetchJson = apiFixtureFetchJson((_, publicRelease) => {
+      publicRelease.auditLinks = {
+        ...publicRelease.auditLinks,
+        review: '/wrong/review',
+      };
+    });
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/releases')) {
+          return [{
+            ...payload[0],
+            auditLinks: {
+              ...payload[0].auditLinks,
+              issues: '/wrong/issues',
+            },
+          }];
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /public release auditLinks must point at release audit endpoints/.test(failure)));
+    assert.ok(result.failures.some((failure) => /releases row auditLinks must point at release audit endpoints/.test(failure)));
   });
 
   it('fails when dynamic audit endpoint payloads expose unexpected keys', async () => {

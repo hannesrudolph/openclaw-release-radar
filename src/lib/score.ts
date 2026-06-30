@@ -2,7 +2,7 @@ import type { IssueClassification } from './llm';
 
 // Evidence-based Install Confidence.
 //
-// This model answers "should I install this stable?" using hard safety gates
+// This model answers "should I install this stable?" using install/recommendation gates
 // plus explicit evidence tiers. Release-local blockers and regressions matter
 // most. Historical unresolved backlog is shown, but capped so the latest release
 // is not buried just because old issues remain open.

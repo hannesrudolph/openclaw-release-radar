@@ -638,6 +638,17 @@ details[open] > .surf-more{display:none}
   color:var(--ok);
   background:color-mix(in srgb,var(--ok) 12%,var(--surface));
 }
+.install-state{
+  display:flex;flex-direction:column;gap:var(--space-2);
+  padding:var(--space-4) var(--space-5);
+  border:1px solid var(--border-soft);
+  border-radius:var(--radius-md);
+  background:color-mix(in srgb,var(--text) 3%,transparent);
+  color:var(--muted);
+  font-size:var(--text-sm);
+}
+.install-state__title{font-weight:650;color:var(--text)}
+.install-state__meta{font-size:var(--text-xs);line-height:1.5}
 
 .evidence{
   margin-top:var(--space-7);display:flex;flex-direction:column;gap:var(--space-4);
@@ -815,7 +826,7 @@ footer a:hover{color:var(--text)}
           <summary class="help-button" title="Explain the score" aria-label="Explain the score">?</summary>
           <div class="score-explain">
             <div class="score-explain__title">What this score means</div>
-            <p><strong>Global score</strong> estimates whether this stable release is a recommended install candidate under the current audit gates. It combines hard gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
+            <p><strong>Global score</strong> estimates whether this stable release is a recommended install candidate under the current audit and recommendation gates. It combines install gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
             <p><strong>My install</strong> appears after you select a meaningful profile. It is a capped local estimate layered on the global audited score: global/core issues still count, selected surfaces stay visible, and unrelated surfaced issues are filtered out of the personal view.</p>
             <p>The score is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
           </div>
@@ -1101,8 +1112,8 @@ function installSummaryHtml() {
         + `<details class="help-popover"><summary class="help-button" title="How this works" aria-label="How this works">?</summary>`
           + `<div class="score-explain"><div class="score-explain__title">How does this work?</div><ul>`
             + `<li>Tell us your computer, the apps you chat through, and the AI you use.</li>`
-            + `<li>We then count only the problems that could affect <strong>you</strong> — and ignore the ones that can't.</li>`
-            + `<li>Serious security problems are always shown, no matter your setup.</li>`
+            + `<li>We show a capped local estimate beside the audited global score.</li>`
+            + `<li>We de-emphasize issues not mapped to your selected surfaces; core/security issues still stay visible.</li>`
           + `</ul></div></details></div>`
       + `<span class="install-summary__sub">${esc(installSummarySubText())}</span>`
     + `</div>`
@@ -1254,7 +1265,7 @@ function affectedAreasHtml(surfaces) {
   }
   const relevant = surfaces.filter((s) => selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
   const other = surfaces.filter((s) => !selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
-  return `<div class="surfaces" title="Reported affected areas split by your install profile">`
+  return `<div class="surfaces" title="Reported affected areas shown with your install profile in mind">`
     + surfaceGroup('Relevant watch areas:', relevant)
     + collapsedSurfaceGroup('Show other reported areas', other)
     + `</div>`;
@@ -1328,7 +1339,7 @@ function hasMeaningfulInstallProfile() {
 function installProfileStatusText() {
   if (selectedProfileSurfaces.size === 0) return '';
   const missing = missingInstallProfileRequirements();
-  if (!missing.length) return 'Profile estimate is active. Issue evidence and trend are filtered for this profile; the audited global score remains the source of truth.';
+  if (!missing.length) return 'Profile estimate is active. Issue evidence and trend are filtered for this profile; the audited global score remains the baseline.';
   return `Filtering issue evidence only. Select ${missing.join(' + ')} to show a profile-adjusted estimate.`;
 }
 
@@ -1554,6 +1565,21 @@ function updateCommandBlockHtml(tag, opts = {}) {
     + `<code class="update-cmd__code">${esc(cmd)}</code>`
     + `<button type="button" class="update-cmd__copy" data-cmd="${esc(cmd)}">Copy</button>`
     + `</div></div>`;
+}
+
+function nonRecommendedInstallStateHtml(r) {
+  const status = r?.status ?? 'unknown';
+  const meta = status === 'eligible'
+    ? 'Passed install eligibility checks, but the audit does not support treating it as the recommended install target.'
+    : 'Open the evidence below before using this release; no copyable update command is shown for non-recommended targets.';
+  return `<div class="install-state install-state--not-recommended">`
+    + `<span class="install-state__title">Not the recommended install target</span>`
+    + `<span class="install-state__meta">${esc(meta)}</span>`
+    + `</div>`;
+}
+
+function installActionHtml(r) {
+  return r?.recommended ? updateCommandBlockHtml(r.tag) : nonRecommendedInstallStateHtml(r);
 }
 
 function evidenceSectionHtml(title, itemsHtml, note = '') {
@@ -2305,15 +2331,15 @@ function closureProofHtml(closureProof) {
 
 function installVerdictText(local) {
   if (local?.recommended) {
-    return 'This means the release is the current recommended install candidate under the audit gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
+    return 'This means the release is the current recommended install target under the audit and recommendation gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
   }
   if (local?.status === 'eligible') {
-    return 'This means the release passed hard install gates, but the audit does not support treating it as the recommended install target.';
+    return 'This means the release passed install eligibility checks, but the audit does not support treating it as the recommended install target.';
   }
   if (local?.status === 'wait') {
     return 'This release is not scored yet because it has not had enough time to settle.';
   }
-  return 'This release is not recommended to install because a hard safety gate is active.';
+  return 'This release is not recommended to install because an install or recommendation gate is active.';
 }
 
 function whyNotTenHtml(local) {
@@ -2405,7 +2431,7 @@ function whyNotTenHtml(local) {
     ? 'The npm package integrity, tarball, and release SHA match.'
     : 'The npm package integrity and tarball metadata are verified.');
   if (local?.recommended) positives.push('The release is eligible and recommended.');
-  else if (local?.status === 'eligible') positives.push('The release passed hard install gates.');
+  else if (local?.status === 'eligible') positives.push('The release passed install eligibility checks.');
 
   return '<div class="score-explain">'
     + '<div class="score-explain__title">Why not 10?</div>'
@@ -2502,7 +2528,7 @@ function installPanelHtml(r) {
   const advCount = (r.advisories?.affected?.items ?? []).length;
   const scoreLabel = formatScore10(r.finalScore);
   return `<div class="details__inner">`
-    + updateCommandBlockHtml(r.tag)
+    + installActionHtml(r)
     + collapsibleEvidence(scoreLabel ? `Why ${scoreLabel}/10?` : 'Show score breakdown', scoreReviewHtml(r))
     + collapsibleEvidence(advCount === 1 ? 'Show known advisory' : 'Show known advisories', advisoryEvidenceHtml(r))
     + collapsibleEvidence('Show related issues', issueEvidenceHtml(r))

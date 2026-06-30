@@ -105,6 +105,10 @@ try {
   if (/raw\/classified|attributed issues/i.test(recommendedDriverText)) {
     throw new Error(`recommended row score drivers looked issue-volume based: ${recommendedDriverText}`);
   }
+  const recommendedPanel = await openScoreBreakdown(page, recommendedTag);
+  const expectedRecommendedCmd = `openclaw update --tag ${recommendedTag.replace(/^v/i, '')}`;
+  await recommendedPanel.locator('.update-cmd__code').filter({ hasText: expectedRecommendedCmd }).waitFor();
+  await recommendedPanel.locator(`.update-cmd__copy[data-cmd="${expectedRecommendedCmd}"]`).waitFor();
 
   const fixPanel = await openScoreBreakdown(page, fixCreditTag);
   await fixPanel.getByText('Model', { exact: true }).waitFor();
@@ -154,13 +158,26 @@ try {
     if (!drivers.startsWith('Score drivers:')) throw new Error('eligible non-recommended row is missing score drivers');
   });
   const normalPanel = await openScoreBreakdown(page, eligibleNonRecommended.tag);
-  await normalPanel.getByText('The release passed hard install gates.').waitFor();
+  await normalPanel.locator('.install-state--not-recommended').waitFor();
+  await normalPanel.locator('.install-state__meta').filter({ hasText: 'Passed install eligibility checks' }).waitFor();
   const normalText = await normalPanel.innerText();
+  if (await normalPanel.locator('.update-cmd__copy').count()) {
+    throw new Error('eligible non-recommended panel showed a copy button');
+  }
+  if (await normalPanel.locator('.update-cmd__code').count()) {
+    throw new Error('eligible non-recommended panel showed command code');
+  }
+  if (normalText.includes(`openclaw update --tag ${eligibleNonRecommended.tag.replace(/^v/i, '')}`)) {
+    throw new Error('eligible non-recommended panel showed install command text');
+  }
   if (normalText.includes('The release is eligible and recommended.')) {
     throw new Error('eligible non-recommended breakdown used recommended wording');
   }
   if (normalText.includes('release looks safe to install')) {
     throw new Error('eligible non-recommended breakdown used safe-to-install wording');
+  }
+  if (/hard (install|safety) gate/i.test(normalText)) {
+    throw new Error('eligible non-recommended breakdown used hard gate wording');
   }
 
   for (const release of publicPayload.releases) {

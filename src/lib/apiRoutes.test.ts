@@ -115,6 +115,23 @@ after(async () => {
 });
 
 describe('audit API routes', () => {
+  it('exposes compact audit links on release summary rows', async () => {
+    const expected = {
+      review: '/api/releases/v-test/review',
+      issues: '/api/releases/v-test/review/issues',
+      closureProofs: '/api/releases/v-test/review/closure-proofs',
+      reachability: '/api/releases/v-test/review/reachability',
+    };
+
+    const releases = await getJson('/api/releases');
+    assert.equal(releases.status, 200);
+    assert.deepEqual(releases.body.find((row: any) => row.tag === 'v-test')?.auditLinks, expected);
+
+    const publicPayload = await getJson('/api/public');
+    assert.equal(publicPayload.status, 200);
+    assert.deepEqual(publicPayload.body.releases.find((row: any) => row.tag === 'v-test')?.auditLinks, expected);
+  });
+
   it('exposes parent review source provenance and raw row links', async () => {
     const response = await getJson('/api/releases/v-test/review');
 

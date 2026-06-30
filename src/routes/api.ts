@@ -625,7 +625,7 @@ const COMPARISON_UPSTREAM_SCHEMA_VERSION = 1;
 const COMPARISON_DELTA_SCHEMA_VERSION = 1;
 const STATUS_PAYLOAD_SCHEMA_VERSION = 1;
 const CONFIG_PAYLOAD_SCHEMA_VERSION = 1;
-const RELEASE_ROW_SCHEMA_VERSION = 1;
+const RELEASE_ROW_SCHEMA_VERSION = 2;
 const RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1;
 
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
@@ -662,8 +662,22 @@ function freshnessForRelease(
   };
 }
 
-function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshness: ReturnType<typeof freshnessForRelease>) {
+function releaseAuditLinks(tag: string) {
   const encodedTag = encodeURIComponent(tag);
+  return {
+    review: `/api/releases/${encodedTag}/review`,
+    issues: `/api/releases/${encodedTag}/review/issues`,
+    closureProofs: `/api/releases/${encodedTag}/review/closure-proofs`,
+    reachability: `/api/releases/${encodedTag}/review/reachability`,
+  };
+}
+
+function releaseAuditRawRows(tag: string) {
+  const { issues, closureProofs, reachability } = releaseAuditLinks(tag);
+  return { issues, closureProofs, reachability };
+}
+
+function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshness: ReturnType<typeof freshnessForRelease>) {
   return {
     sourceMode: 'current_db',
     scoreTable: 'release_score_audits',
@@ -671,11 +685,7 @@ function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshn
     dataFreshnessScoredAt: dataFreshness.scoredAt,
     scoreTimestampAligned: scoredAt === dataFreshness.scoredAt,
     sources: dataFreshness.sources,
-    rawRows: {
-      issues: `/api/releases/${encodedTag}/review/issues`,
-      closureProofs: `/api/releases/${encodedTag}/review/closure-proofs`,
-      reachability: `/api/releases/${encodedTag}/review/reachability`,
-    },
+    rawRows: releaseAuditRawRows(tag),
   };
 }
 
@@ -707,6 +717,7 @@ api.get('/releases', (_req, res) => {
         scoreAudit: scoreAuditSummary(audit),
         explanation: scoreExplanation(audit),
         dataFreshness: freshnessForRelease(r, audit),
+        auditLinks: releaseAuditLinks(r.tag),
         advisories: {
           affected: summarizeAdvisories(status.affected),
           patched: summarizeAdvisories(status.patched),
@@ -1135,8 +1146,8 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
 // Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
 // the score was computed for this specific release.
 
-const PUBLIC_PAYLOAD_SCHEMA_VERSION = 1;
-const PUBLIC_RELEASE_SCHEMA_VERSION = 1;
+const PUBLIC_PAYLOAD_SCHEMA_VERSION = 2;
+const PUBLIC_RELEASE_SCHEMA_VERSION = 2;
 
 function publicCacheKey(
   freshness = releaseScoreAuditFreshness(),
@@ -1198,6 +1209,7 @@ function buildPublicPayload() {
       scoreAudit:        auditSummary,
       explanation:       scoreExplanation(audit),
       dataFreshness:     freshnessForRelease(r, audit),
+      auditLinks:        releaseAuditLinks(r.tag),
       totalAttributedIssues: all.length,
       issues:            topIssues,
       watchIssues,

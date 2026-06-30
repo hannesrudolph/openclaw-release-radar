@@ -35,14 +35,29 @@ describe('static scoring/UI contracts', () => {
 
   it('install wording does not overclaim safety', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     assert.doesNotMatch(html, /release looks safe to install|No safe target|broadly safe/i);
-    assert.match(html, /if \(local\?\.recommended\)[\s\S]*recommended install candidate under the audit gates/);
-    assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed hard install gates/);
+    assert.doesNotMatch(html, /\bhard safety gate\b|\bhard install gates\b/i);
+    assert.doesNotMatch(scorer, /\bhard safety gate\b|\bhard install gates\b/i);
+    assert.match(html, /if \(local\?\.recommended\)[\s\S]*recommended install target under the audit and recommendation gates/);
+    assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed install eligibility checks/);
     assert.doesNotMatch(html, /Each update is now scored for the way you use it/);
     assert.doesNotMatch(html, /My install score is active/);
     assert.match(html, /profile-adjusted estimate beside the audited global score/);
-    assert.match(html, /audited global score remains the source of truth/);
+    assert.match(html, /audited global score remains the baseline/);
     assert.match(html, /capped local estimate layered on the global audited score/);
+    assert.match(html, /We show a capped local estimate beside the audited global score/);
+    assert.match(html, /core\/security issues still stay visible/);
+    assert.doesNotMatch(html, /ignore the ones that can't/i);
+  });
+
+  it('release detail install panel only shows update commands for recommended releases', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    const installPanel = html.match(/function installPanelHtml\(r\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    assert.match(html, /function installActionHtml\(r\) \{[\s\S]*r\?\.recommended \? updateCommandBlockHtml\(r\.tag\) : nonRecommendedInstallStateHtml\(r\)/);
+    assert.match(html, /install-state--not-recommended/);
+    assert.match(installPanel, /installActionHtml\(r\)/);
+    assert.doesNotMatch(installPanel, /updateCommandBlockHtml\(r\.tag\)/);
   });
 
   it('empty watchIssues does not hide capped issue evidence', () => {
@@ -578,7 +593,7 @@ describe('static scoring/UI contracts', () => {
   it('public issue summaries use effective scoring classifications', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
-    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 1/);
+    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 2/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
     assert.match(api, /COMPARISON_PAYLOAD_SCHEMA_VERSION = 1/);
@@ -591,9 +606,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /rawRows/);
     assert.match(api, /STATUS_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /CONFIG_PAYLOAD_SCHEMA_VERSION = 1/);
-    assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 1/);
+    assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 2/);
     assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1/);
-    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 1/);
+    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 2/);
+    assert.match(api, /function releaseAuditLinks/);
+    assert.match(api, /auditLinks:\s+releaseAuditLinks/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /dataFreshnessCacheDigest/);
