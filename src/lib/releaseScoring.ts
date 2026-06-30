@@ -29,7 +29,9 @@ import {
   listAdvisories,
   listReleasesDb,
   openedDuringReign,
+  formatReleaseClosureProofIntegrityFailure,
   formatReleasePrReachabilityIntegrityFailure,
+  releaseClosureProofIntegrity,
   releasePrReachabilityIntegrity,
   unclassifiedIssuesForVersion,
   updateReleaseScore,
@@ -308,6 +310,10 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
     failures.push(`incomplete classification coverage: ${examples}${suffix}`);
   }
   for (const result of run.scored) {
+    const closureProofFailure = formatReleaseClosureProofIntegrityFailure(
+      releaseClosureProofIntegrity(result.rel.tag, 3),
+    );
+    if (closureProofFailure) failures.push(closureProofFailure);
     const reachabilityFailure = formatReleasePrReachabilityIntegrityFailure(
       releasePrReachabilityIntegrity(result.rel.tag, 3),
     );

@@ -2412,6 +2412,176 @@ export function formatReleasePrReachabilityIntegrityFailure(report: ReleasePrRea
     `extra=${report.extraCount}, stale=${report.staleCount}, mismatched=${report.mismatchedCount})${suffix}`;
 }
 
+export interface ReleaseClosureProofIntegrity {
+  tag: string;
+  rawClosedCount: number;
+  proofRowCount: number;
+  missingCount: number;
+  extraCount: number;
+  staleCount: number;
+  dependencyMaxAt: string | null;
+  minProofCheckedAt: string | null;
+  examples: Array<{
+    kind: 'missing' | 'extra' | 'stale';
+    issueNumber: number;
+    checkedAt: string | null;
+    dependencyMaxAt: string | null;
+    detail: string;
+  }>;
+}
+
+const closureProofIntegrityBaseSql = `
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+raw_closed AS (
+  SELECT i.number
+  FROM issues i
+  JOIN target
+  WHERE target.start_at IS NOT NULL
+    AND i.closed_at IS NOT NULL
+    AND i.closed_at >= target.start_at
+    AND i.closed_at < target.end_at
+),
+proofs AS (
+  SELECT issue_number, checked_at
+  FROM issue_closure_proofs
+  WHERE release_tag=?
+),
+linked_prs AS (
+  SELECT DISTINCT l.pr_repository_name_with_owner, l.pr_number
+  FROM issue_pr_links l
+  JOIN raw_closed c ON c.number=l.issue_number
+),
+dependency_sources AS (
+  SELECT MAX(i.updated_at) AS max_ts FROM issues i JOIN raw_closed c ON c.number=i.number
+  UNION ALL SELECT MAX(i.fetched_at) FROM issues i JOIN raw_closed c ON c.number=i.number
+  UNION ALL SELECT MAX(c.classified_at) FROM classifications c JOIN raw_closed r ON r.number=c.issue_number
+  UNION ALL SELECT MAX(e.fetched_at) FROM issue_label_events e JOIN raw_closed c ON c.number=e.issue_number
+  UNION ALL SELECT MAX(s.fetched_at) FROM issue_label_snapshots s JOIN raw_closed c ON c.number=s.issue_number
+  UNION ALL SELECT MAX(e.fetched_at) FROM issue_closure_events e JOIN raw_closed c ON c.number=e.issue_number
+  UNION ALL SELECT MAX(r.fetched_at) FROM issue_reopen_events r JOIN raw_closed c ON c.number=r.issue_number
+  UNION ALL SELECT MAX(l.fetched_at) FROM issue_pr_links l JOIN raw_closed c ON c.number=l.issue_number
+  UNION ALL SELECT MAX(c.fetched_at) FROM issue_commit_references c JOIN raw_closed r ON r.number=c.issue_number
+  UNION ALL SELECT MAX(p.fetched_at)
+    FROM pull_request_fixes p
+    JOIN linked_prs u
+      ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner
+     AND u.pr_number=p.pr_number
+  UNION ALL SELECT MAX(r.checked_at)
+    FROM release_pr_reachability r
+    JOIN linked_prs u
+      ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+     AND u.pr_number=r.pr_number
+    WHERE r.tag=?
+),
+dependency AS (
+  SELECT MAX(max_ts) AS max_ts FROM dependency_sources
+)
+`;
+
+const closureProofIntegrityCountsStmt = db.prepare(`
+${closureProofIntegrityBaseSql}
+SELECT
+  (SELECT COUNT(*) FROM raw_closed) AS rawClosedCount,
+  (SELECT COUNT(*) FROM proofs) AS proofRowCount,
+  (SELECT COUNT(*) FROM raw_closed c LEFT JOIN proofs p ON p.issue_number=c.number WHERE p.issue_number IS NULL) AS missingCount,
+  (SELECT COUNT(*) FROM proofs p LEFT JOIN raw_closed c ON c.number=p.issue_number WHERE c.number IS NULL) AS extraCount,
+  (SELECT COUNT(*) FROM proofs p JOIN dependency d WHERE d.max_ts IS NOT NULL AND unixepoch(p.checked_at) < unixepoch(d.max_ts)) AS staleCount,
+  (SELECT max_ts FROM dependency) AS dependencyMaxAt,
+  (SELECT MIN(checked_at) FROM proofs) AS minProofCheckedAt
+`);
+
+const closureProofIntegrityExamplesStmt = db.prepare(`
+${closureProofIntegrityBaseSql}
+SELECT *
+FROM (
+  SELECT
+    'missing' AS kind,
+    c.number AS issueNumber,
+    NULL AS checkedAt,
+    (SELECT max_ts FROM dependency) AS dependencyMaxAt,
+    'raw closed release-window issue is missing a closure proof row' AS detail
+  FROM raw_closed c
+  LEFT JOIN proofs p ON p.issue_number=c.number
+  WHERE p.issue_number IS NULL
+
+  UNION ALL
+
+  SELECT
+    'extra' AS kind,
+    p.issue_number AS issueNumber,
+    p.checked_at AS checkedAt,
+    (SELECT max_ts FROM dependency) AS dependencyMaxAt,
+    'closure proof row is outside the raw closed release window' AS detail
+  FROM proofs p
+  LEFT JOIN raw_closed c ON c.number=p.issue_number
+  WHERE c.number IS NULL
+
+  UNION ALL
+
+  SELECT
+    'stale' AS kind,
+    p.issue_number AS issueNumber,
+    p.checked_at AS checkedAt,
+    d.max_ts AS dependencyMaxAt,
+    'closure proof row predates release proof dependency evidence' AS detail
+  FROM proofs p
+  JOIN dependency d
+  WHERE d.max_ts IS NOT NULL
+    AND unixepoch(p.checked_at) < unixepoch(d.max_ts)
+)
+ORDER BY kind, issueNumber
+LIMIT ?
+`);
+
+export function releaseClosureProofIntegrity(tag: string, exampleLimit = 10): ReleaseClosureProofIntegrity {
+  const counts = closureProofIntegrityCountsStmt.get(tag, tag, tag) as Record<string, unknown> | undefined;
+  const examples = closureProofIntegrityExamplesStmt.all(tag, tag, tag, Math.max(0, Math.floor(exampleLimit))) as ReleaseClosureProofIntegrity['examples'];
+  return {
+    tag,
+    rawClosedCount: Number(counts?.rawClosedCount ?? 0),
+    proofRowCount: Number(counts?.proofRowCount ?? 0),
+    missingCount: Number(counts?.missingCount ?? 0),
+    extraCount: Number(counts?.extraCount ?? 0),
+    staleCount: Number(counts?.staleCount ?? 0),
+    dependencyMaxAt: typeof counts?.dependencyMaxAt === 'string' ? counts.dependencyMaxAt : null,
+    minProofCheckedAt: typeof counts?.minProofCheckedAt === 'string' ? counts.minProofCheckedAt : null,
+    examples: examples.map((example) => ({
+      kind: example.kind,
+      issueNumber: Number(example.issueNumber),
+      checkedAt: example.checkedAt ?? null,
+      dependencyMaxAt: example.dependencyMaxAt ?? null,
+      detail: example.detail,
+    })),
+  };
+}
+
+export function formatReleaseClosureProofIntegrityFailure(report: ReleaseClosureProofIntegrity): string | null {
+  const failed = report.missingCount + report.extraCount + report.staleCount;
+  if (failed === 0) return null;
+  const examples = report.examples
+    .slice(0, 3)
+    .map((example) => `${example.kind} #${example.issueNumber}`)
+    .join(', ');
+  const suffix = examples ? `; examples: ${examples}` : '';
+  return `${report.tag}: closure proof evidence is not current for ${failed} row(s) ` +
+    `(rawClosed=${report.rawClosedCount}, proofRows=${report.proofRowCount}, missing=${report.missingCount}, ` +
+    `extra=${report.extraCount}, stale=${report.staleCount}, dependencyMaxAt=${report.dependencyMaxAt ?? 'none'}, ` +
+    `minProofCheckedAt=${report.minProofCheckedAt ?? 'none'})${suffix}`;
+}
+
 const releasePrReachabilityRowsStmt = db.prepare(`
 SELECT r.*,
        p.title,

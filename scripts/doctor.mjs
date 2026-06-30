@@ -133,6 +133,10 @@ export function buildDoctorReport({
     if (report.closureProof.rawClosedWindowCount !== report.closureProof.proofRowCount) {
       failures.push(`${latest.tag}: closure proof rows (${report.closureProof.proofRowCount}) do not cover raw closed release-window issues (${report.closureProof.rawClosedWindowCount})`);
     }
+    if (report.closureProof.integrity.failedCount > 0) {
+      failures.push(`${latest.tag}: closure proof evidence is stale or incomplete ` +
+        `(missing=${report.closureProof.integrity.missingCount}, extra=${report.closureProof.integrity.extraCount}, stale=${report.closureProof.integrity.staleCount})`);
+    }
     if (report.closureProof.auditAnalyzedClosedCount != null &&
       report.closureProof.auditAnalyzedClosedCount !== report.closureProof.proofRowCount) {
       failures.push(`${latest.tag}: audit analyzedClosedCount (${report.closureProof.auditAnalyzedClosedCount}) does not match proof rows (${report.closureProof.proofRowCount})`);
@@ -428,9 +432,89 @@ function closureProofSummary(db, tag, gate) {
     fixedInReleaseCount: byStatus.fixed_in_release ?? 0,
     notCreditedCount: proofRowCount - (byStatus.fixed_in_release ?? 0),
     byStatus,
+    integrity: closureProofIntegritySummary(db, tag),
     auditAnalyzedClosedCount: releaseFixCredit?.analyzedClosedCount ?? closureProof?.analyzedClosedCount ?? null,
     auditRiskSummary: closureProof?.riskSummary ?? null,
   };
+}
+
+function closureProofIntegritySummary(db, tag) {
+  const counts = db.prepare(`
+    WITH target AS (
+      SELECT
+        tag,
+        published_at AS start_at,
+        COALESCE(
+          (SELECT MIN(next.published_at)
+           FROM releases next
+           WHERE next.published_at > releases.published_at
+             AND next.prerelease = 0),
+          '9999-12-31T23:59:59Z'
+        ) AS end_at
+      FROM releases
+      WHERE tag=?
+    ),
+    raw_closed AS (
+      SELECT i.number
+      FROM issues i
+      JOIN target
+      WHERE target.start_at IS NOT NULL
+        AND i.closed_at IS NOT NULL
+        AND i.closed_at >= target.start_at
+        AND i.closed_at < target.end_at
+    ),
+    proofs AS (
+      SELECT issue_number, checked_at
+      FROM issue_closure_proofs
+      WHERE release_tag=?
+    ),
+    linked_prs AS (
+      SELECT DISTINCT l.pr_repository_name_with_owner, l.pr_number
+      FROM issue_pr_links l
+      JOIN raw_closed c ON c.number=l.issue_number
+    ),
+    dependency_sources AS (
+      SELECT MAX(i.updated_at) AS max_ts FROM issues i JOIN raw_closed c ON c.number=i.number
+      UNION ALL SELECT MAX(i.fetched_at) FROM issues i JOIN raw_closed c ON c.number=i.number
+      UNION ALL SELECT MAX(c.classified_at) FROM classifications c JOIN raw_closed r ON r.number=c.issue_number
+      UNION ALL SELECT MAX(e.fetched_at) FROM issue_label_events e JOIN raw_closed c ON c.number=e.issue_number
+      UNION ALL SELECT MAX(s.fetched_at) FROM issue_label_snapshots s JOIN raw_closed c ON c.number=s.issue_number
+      UNION ALL SELECT MAX(e.fetched_at) FROM issue_closure_events e JOIN raw_closed c ON c.number=e.issue_number
+      UNION ALL SELECT MAX(r.fetched_at) FROM issue_reopen_events r JOIN raw_closed c ON c.number=r.issue_number
+      UNION ALL SELECT MAX(l.fetched_at) FROM issue_pr_links l JOIN raw_closed c ON c.number=l.issue_number
+      UNION ALL SELECT MAX(c.fetched_at) FROM issue_commit_references c JOIN raw_closed r ON r.number=c.issue_number
+      UNION ALL SELECT MAX(p.fetched_at)
+        FROM pull_request_fixes p
+        JOIN linked_prs u
+          ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner
+         AND u.pr_number=p.pr_number
+      UNION ALL SELECT MAX(r.checked_at)
+        FROM release_pr_reachability r
+        JOIN linked_prs u
+          ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner
+         AND u.pr_number=r.pr_number
+        WHERE r.tag=?
+    ),
+    dependency AS (
+      SELECT MAX(max_ts) AS max_ts FROM dependency_sources
+    )
+    SELECT
+      (SELECT COUNT(*) FROM raw_closed c LEFT JOIN proofs p ON p.issue_number=c.number WHERE p.issue_number IS NULL) AS missingCount,
+      (SELECT COUNT(*) FROM proofs p LEFT JOIN raw_closed c ON c.number=p.issue_number WHERE c.number IS NULL) AS extraCount,
+      (SELECT COUNT(*) FROM proofs p JOIN dependency d WHERE d.max_ts IS NOT NULL AND unixepoch(p.checked_at) < unixepoch(d.max_ts)) AS staleCount,
+      (SELECT max_ts FROM dependency) AS dependencyMaxAt,
+      (SELECT MIN(checked_at) FROM proofs) AS minProofCheckedAt
+  `).get(tag, tag, tag);
+  const summary = {
+    missingCount: Number(counts?.missingCount ?? 0),
+    extraCount: Number(counts?.extraCount ?? 0),
+    staleCount: Number(counts?.staleCount ?? 0),
+    dependencyMaxAt: counts?.dependencyMaxAt ?? null,
+    minProofCheckedAt: counts?.minProofCheckedAt ?? null,
+    failedCount: 0,
+  };
+  summary.failedCount = summary.missingCount + summary.extraCount + summary.staleCount;
+  return summary;
 }
 
 function reachabilitySummary(db, tag) {

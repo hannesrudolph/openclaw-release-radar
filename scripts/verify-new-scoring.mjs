@@ -19,7 +19,9 @@ const {
   SCORE_MODEL_VERSION,
 } = await import('../src/lib/releaseScoring.ts');
 const {
+  formatReleaseClosureProofIntegrityFailure,
   formatReleasePrReachabilityIntegrityFailure,
+  releaseClosureProofIntegrity,
   releasePrReachabilityIntegrity,
 } = await import('../src/lib/db.ts');
 
@@ -137,6 +139,8 @@ function comparePersisted({ failures, result, audit, recommended }) {
   if (input.rawIssueCount !== input.classifiedIssueCount) {
     failures.push(`${tag}: scored release requires complete classification coverage (${input.classifiedIssueCount}/${input.rawIssueCount})`);
   }
+  const closureProofFailure = formatReleaseClosureProofIntegrityFailure(releaseClosureProofIntegrity(tag, 3));
+  if (closureProofFailure) failures.push(closureProofFailure);
   const reachabilityFailure = formatReleasePrReachabilityIntegrityFailure(releasePrReachabilityIntegrity(tag, 3));
   if (reachabilityFailure) failures.push(reachabilityFailure);
 

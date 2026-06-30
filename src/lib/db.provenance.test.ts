@@ -510,6 +510,48 @@ describe('release fix provenance', () => {
     assert.match(db.formatReleasePrReachabilityIntegrityFailure(report) ?? '', /missing=1/);
   });
 
+  it('reports stale or missing closure proof evidence', async () => {
+    const db = await freshDb('closure-proof-integrity');
+    seedRelease(db, 'v-proof-integrity', '2030-01-01T00:00:00Z');
+    seedIssue(db, 9501, '2030-01-02T00:00:00Z', '2030-01-01T12:00:00Z');
+    seedClosure(db, 9501, 'COMPLETED', '2030-01-02T00:00:00Z');
+    db.upsertIssueClosureProof({
+      release_tag: 'v-proof-integrity',
+      issue_number: 9501,
+      status: 'fixed_in_release',
+      summary: 'Fixed in release.',
+      evidence_json: '{}',
+    });
+    db.db.prepare(`
+      UPDATE issue_closure_proofs
+      SET checked_at='2030-01-03T00:00:00Z'
+      WHERE release_tag='v-proof-integrity'
+        AND issue_number=9501
+    `).run();
+
+    let report = db.releaseClosureProofIntegrity('v-proof-integrity');
+    assert.equal(db.formatReleaseClosureProofIntegrityFailure(report), null);
+
+    db.db.prepare(`
+      UPDATE issue_closure_proofs
+      SET checked_at='2000-01-01T00:00:00Z'
+      WHERE release_tag='v-proof-integrity'
+        AND issue_number=9501
+    `).run();
+    report = db.releaseClosureProofIntegrity('v-proof-integrity');
+    assert.equal(report.staleCount, 1);
+    assert.match(db.formatReleaseClosureProofIntegrityFailure(report) ?? '', /stale=1/);
+
+    db.db.prepare(`
+      DELETE FROM issue_closure_proofs
+      WHERE release_tag='v-proof-integrity'
+        AND issue_number=9501
+    `).run();
+    report = db.releaseClosureProofIntegrity('v-proof-integrity');
+    assert.equal(report.missingCount, 1);
+    assert.match(db.formatReleaseClosureProofIntegrityFailure(report) ?? '', /missing=1/);
+  });
+
   it('preserves pull request freshness when metadata is unchanged', async () => {
     const db = await freshDb('pr-freshness-preserve');
     seedPr(db, 9401, true);

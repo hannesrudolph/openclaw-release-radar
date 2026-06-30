@@ -311,6 +311,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /isRangeParseable/);
     assert.match(scorer, /complete classification coverage/);
     assert.match(scorer, /runInWriteTransaction/);
+    assert.match(scorer, /releaseClosureProofIntegrity/);
+    assert.match(scorer, /formatReleaseClosureProofIntegrityFailure/);
     assert.match(scorer, /releasePrReachabilityIntegrity/);
     assert.match(scorer, /formatReleasePrReachabilityIntegrityFailure/);
     assert.match(bridgeTest, /FOREIGN KEY constraint failed/);
@@ -536,8 +538,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(scoringDoc, /PR reachability evidence must cover the current merged linked-PR candidate set/);
+    assert.match(scoringDoc, /Closure proof evidence must cover every raw closed issue in the release window/);
     assert.match(doctor, /reachabilityIntegritySummary/);
     assert.match(doctor, /PR reachability evidence is stale or incomplete/);
+    assert.match(doctor, /closureProofIntegritySummary/);
+    assert.match(doctor, /closure proof evidence is stale or incomplete/);
+    assert.match(verifier, /releaseClosureProofIntegrity/);
     assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
     assert.match(readme, /Current value: `1`/);
