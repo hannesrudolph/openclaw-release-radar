@@ -124,6 +124,14 @@ describe('static scoring/UI contracts', () => {
   it('release audit verifier uses shared closure proof taxonomy', () => {
     const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
     assert.match(verifier, /closureProofTaxonomy\.ts/);
+    assert.match(verifier, /releaseScoring\.ts/);
+    assert.match(verifier, /SCORE_INPUT_SCHEMA_VERSION/);
+    assert.match(verifier, /SCORE_COMPONENTS_SCHEMA_VERSION/);
+    assert.match(verifier, /GATE_EVIDENCE_SCHEMA_VERSION/);
+    assert.match(verifier, /ISSUE_EVIDENCE_SCHEMA_VERSION/);
+    assert.match(verifier, /LABEL_TIMELINE_SCHEMA_VERSION/);
+    assert.match(verifier, /RELEASE_CHECKS_SCHEMA_VERSION/);
+    assert.match(verifier, /ARTIFACT_VERIFICATION_SCHEMA_VERSION/);
     assert.match(verifier, /new Set\(CLOSURE_PROOF_STATUSES\)/);
     assert.match(verifier, /Object\.entries\(CLOSURE_RISK_DISPOSITION_BY_STATUS\)/);
     assert.match(verifier, /expectFetchJsonStatus/);

@@ -16,6 +16,15 @@ import {
   CLOSURE_RISK_DISPOSITION_BY_STATUS,
   CLOSURE_RISK_DISPOSITION_WEIGHT,
 } from '../../src/lib/closureProofTaxonomy.ts';
+import {
+  ARTIFACT_VERIFICATION_SCHEMA_VERSION,
+  GATE_EVIDENCE_SCHEMA_VERSION,
+  ISSUE_EVIDENCE_SCHEMA_VERSION,
+  LABEL_TIMELINE_SCHEMA_VERSION,
+  RELEASE_CHECKS_SCHEMA_VERSION,
+  SCORE_COMPONENTS_SCHEMA_VERSION,
+  SCORE_INPUT_SCHEMA_VERSION,
+} from '../../src/lib/releaseScoring.ts';
 
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
 
@@ -49,8 +58,8 @@ const affectedUserRiskWeights = new Map([
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
-const scoreInputSchemaVersion = 1;
-const scoreComponentsSchemaVersion = 1;
+const scoreInputSchemaVersion = SCORE_INPUT_SCHEMA_VERSION;
+const scoreComponentsSchemaVersion = SCORE_COMPONENTS_SCHEMA_VERSION;
 const scoreAuditSummarySchemaVersion = 1;
 const localAuditSchemaVersion = 1;
 const comparisonPayloadSchemaVersion = 1;
@@ -61,15 +70,15 @@ const configPayloadSchemaVersion = 1;
 const releaseRowSchemaVersion = 1;
 const releaseHistoryRowSchemaVersion = 1;
 const publicReleaseSchemaVersion = 1;
-const gateEvidenceSchemaVersion = 1;
+const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
 const closureProofSchemaVersion = 1;
 const closureProofAuditSchemaVersion = 1;
 const releaseFixCreditSchemaVersion = 1;
-const issueEvidenceSchemaVersion = 1;
+const issueEvidenceSchemaVersion = ISSUE_EVIDENCE_SCHEMA_VERSION;
 const issueEvidenceAuditSchemaVersion = RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION;
-const labelTimelineSchemaVersion = 1;
-const releaseChecksSchemaVersion = 1;
-const artifactVerificationSchemaVersion = 1;
+const labelTimelineSchemaVersion = LABEL_TIMELINE_SCHEMA_VERSION;
+const releaseChecksSchemaVersion = RELEASE_CHECKS_SCHEMA_VERSION;
+const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
 const scoreExplanationSchemaVersion = 1;
 const publicPayloadSchemaVersion = 1;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
