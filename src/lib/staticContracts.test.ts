@@ -323,6 +323,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /refreshClosureEvidenceForRelease/);
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
+    assert.match(script, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
+    assert.match(script, /getMeta\('issue_crawl_last_run'\)/);
+    assert.match(script, /ingestionEvidenceFailuresAfter/);
     assert.match(script, /persistReleaseScoreRun/);
     assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
     assert.match(analysis, /missingClassificationClosureProof/);
@@ -412,6 +415,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
+    assert.match(scoringDoc, /Before writing scores, the script refuses dirty ingestion metadata/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(readme, /structured `explanation` object/);
