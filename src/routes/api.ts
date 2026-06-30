@@ -335,6 +335,8 @@ function parseIssueEvidenceTierFilter(raw: unknown): ReleaseIssueEvidenceTier[] 
   if (!tiers.length) return null;
   const aliases: Record<string, ReleaseIssueEvidenceTier> = {
     openUnconfirmedRisk: 'carryoverDebt',
+    weakOrStaleEvidence: 'staleDebt',
+    weakOrStaleRisk: 'staleDebt',
   };
   const normalized = tiers.map((tier) => aliases[tier] ?? tier);
   if (normalized.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) return [];

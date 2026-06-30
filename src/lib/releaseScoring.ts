@@ -1000,7 +1000,7 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'staleDebt',
-      label: 'Stale/low-confidence risk',
+      label: 'Weak or stale evidence',
       points: roundMetric(components.staleDebt),
       kind: scoreLedgerKind(components.staleDebt),
       metric: roundMetric(input.staleDebtWeight),
@@ -1008,7 +1008,7 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'closureRisk',
-      label: 'Closed-release risk',
+      label: 'Closed issue proof risk',
       points: roundMetric(components.closureRisk),
       kind: scoreLedgerKind(components.closureRisk),
       metric: roundMetric(input.unresolvedClosureRiskWeight),
@@ -1148,7 +1148,7 @@ function scoreLedgerCaps(result: ReleaseScoreResult, subtotalBeforeCaps: number)
     const after = roundMetric(Math.min(scoreAfterCaps, components.closureRiskCeiling));
     caps.push({
       key: 'closureRiskCeiling',
-      label: 'Heavy closure-risk ceiling',
+      label: 'Closed issue proof ceiling',
       ceiling: roundMetric(components.closureRiskCeiling),
       applied: scoreAfterCaps > components.closureRiskCeiling,
       before: scoreAfterCaps,

@@ -115,7 +115,7 @@ try {
   await fixPanel.getByText('Evidence coverage', { exact: true }).waitFor();
   await fixPanel.locator('.score-review__label').filter({ hasText: 'Release fix credit' }).first().waitFor();
   await fixPanel.getByText(fixCreditText).waitFor();
-  await fixPanel.locator('.score-review__label').filter({ hasText: 'Closure risk' }).first().waitFor();
+  await fixPanel.locator('.score-review__label').filter({ hasText: 'Closed issue proof' }).first().waitFor();
   await fixPanel.getByText(closureRiskText).waitFor();
   await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedCheckLinkText }).first().waitFor();
   await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedArtifactLinkText }).first().waitFor();
@@ -124,7 +124,7 @@ try {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
   }
   await fixPanel.locator('.score-ledger').filter({ hasText: 'Score math' }).first().waitFor();
-  await fixPanel.locator('.score-ledger__row').filter({ hasText: 'Closed-release risk' }).first().waitFor();
+  await fixPanel.locator('.score-ledger__row').filter({ hasText: 'Closed issue proof risk' }).first().waitFor();
   await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();
@@ -138,8 +138,8 @@ try {
   await fixPanel.locator('a').filter({ hasText: 'open unconfirmed issue risk' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'field-confirmed unconfirmed risk' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'critical core unconfirmed risk' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'stale evidence' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'high-weight stale evidence' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'weak or stale issue evidence' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'high-weight weak/stale evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'opened reports' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open closure proof rows' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open PR reachability rows' }).first().waitFor();
@@ -191,8 +191,8 @@ try {
     const freshness = review.local?.dataFreshness;
     if (!freshness?.issueUpdatedAtMax || !freshness?.scoredAt) throw new Error(`Missing data freshness for ${release.tag}`);
     await panel.locator('.score-review__item').filter({ hasText: 'Source freshness' }).getByText('issue lag').waitFor();
-    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Open unconfirmed ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
-    await panel.locator('.score-review__item').filter({ hasText: 'Risk weights' }).getByText(expectedRiskWeights).waitFor();
+    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Open unconfirmed ${Math.round(input.carryoverDebtWeight ?? 0)} · Weak/stale ${Math.round(input.staleDebtWeight ?? 0)} · Closed issue proof ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
+    await panel.locator('.score-review__item').filter({ hasText: 'Audit weights' }).getByText(expectedRiskWeights).waitFor();
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (credit) {
       const expectedCredit = `${credit.countedClosedCount} counted · ${credit.notCountedClosedCount} not counted · ${credit.analyzedClosedCount} analyzed`;
@@ -200,7 +200,7 @@ try {
       const risk = review.local?.gateEvidence?.fixProvenance?.closureProof?.riskSummary;
       if (!risk) throw new Error(`Missing closure risk summary for ${release.tag}`);
       const expectedRisk = `${risk.unresolvedForReleaseCount ?? 0} unresolved · ${risk.knownNotInReleaseCount ?? 0} known not in tag · ${risk.neutralOrNonActionableCount ?? 0} not scored`;
-      await panel.locator('.score-review__item').filter({ hasText: 'Closure risk' }).getByText(expectedRisk).waitFor();
+      await panel.locator('.score-review__item').filter({ hasText: 'Closed issue proof' }).getByText(expectedRisk).waitFor();
     }
   }
 

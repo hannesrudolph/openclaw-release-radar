@@ -389,8 +389,8 @@ const componentLedgerRows = [
   ['base', 'Base'],
   ['verifiedDebt', 'Field blocker debt'],
   ['carryoverDebt', 'Open unconfirmed issue risk'],
-  ['staleDebt', 'Stale/low-confidence risk'],
-  ['closureRisk', 'Closed-release risk'],
+  ['staleDebt', 'Weak or stale evidence'],
+  ['closureRisk', 'Closed issue proof risk'],
   ['coverage', 'Classification coverage'],
   ['survival', 'Stable survival'],
   ['shakeout', 'Beta shakeout'],
@@ -408,7 +408,7 @@ const optionalLedgerLabels = new Map([
   ['precisionAdjustment', 'Unrounded model adjustment'],
 ]);
 const ledgerCapLabels = new Map([
-  ['closureRiskCeiling', 'Heavy closure-risk ceiling'],
+  ['closureRiskCeiling', 'Closed issue proof ceiling'],
   ['hotfixCeiling', 'Hotfix successor ceiling'],
 ]);
 const ledgerKeys = new Set(['schemaVersion', 'finalScore', 'status', 'band', 'subtotalBeforeCaps', 'scoreAfterCaps', 'rows', 'caps']);

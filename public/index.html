@@ -1808,8 +1808,8 @@ function issueEvidenceApiLinksHtml(tag) {
     ['open unconfirmed issue risk', `${base}?tier=openUnconfirmedRisk&sort=weight&direction=desc`],
     ['field-confirmed unconfirmed risk', `${base}?tier=openUnconfirmedRisk&fieldConfirmed=true&minWeight=5&sort=weight&direction=desc`],
     ['critical core unconfirmed risk', `${base}?tier=openUnconfirmedRisk&sentiment=negative&severity=critical&functionality=core&sort=weight&direction=desc`],
-    ['stale evidence', `${base}?tier=staleDebt&sort=weight&direction=desc`],
-    ['high-weight stale evidence', `${base}?tier=staleDebt&minWeight=5&sort=weight&direction=desc`],
+    ['weak or stale issue evidence', `${base}?tier=weakOrStaleEvidence&sort=weight&direction=desc`],
+    ['high-weight weak/stale evidence', `${base}?tier=weakOrStaleEvidence&minWeight=5&sort=weight&direction=desc`],
     ['opened reports', `${base}?tier=openedFeltSerious`],
     ['verified fixes', `${base}?tier=verifiedFixed`],
     ['unverified closures', `${base}?tier=unverifiedClosed`],
@@ -2033,8 +2033,8 @@ function componentLabel(key) {
     base: 'Base',
     verifiedDebt: 'Field blocker debt',
     carryoverDebt: 'Open unconfirmed issue risk',
-    staleDebt: 'Stale or weak evidence',
-    closureRisk: 'Closure risk',
+    staleDebt: 'Weak or stale evidence',
+    closureRisk: 'Closed issue proof risk',
     coverage: 'Classification coverage',
     survival: 'Release survival',
     shakeout: 'Prerelease bake time',
@@ -2042,7 +2042,7 @@ function componentLabel(key) {
     breaking: 'Breaking-change signal',
     releaseVerification: 'Release check verification',
     artifactVerification: 'Artifact verification',
-    closureRiskCeiling: 'Closure risk ceiling',
+    closureRiskCeiling: 'Closed issue proof ceiling',
   };
   return labels[key] ?? key;
 }
@@ -2086,7 +2086,7 @@ function scoreDetailIssueProofHtml(issue) {
 function scoreExplanationDetailsHtml(details, fallbackText) {
   if (Array.isArray(details) && details.length) {
     return details.map((detail) =>
-      `<li class="score-explain__detail"><span>${esc(detail.text ?? '')}</span>`
+      `<li class="score-explain__detail">${detail.label ? `<strong>${esc(detail.label)}:</strong> ` : ''}<span>${esc(detail.text ?? '')}</span>`
       + scoreDetailMetricsHtml(detail.metrics)
       + scoreDetailBucketsHtml(detail)
       + scoreDetailIssueRefsHtml(detail.issueRefs)
@@ -2482,9 +2482,9 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + (dataFreshnessLine ? `<div class="score-review__item"><span class="score-review__label">Source freshness</span><span class="score-review__value">${dataFreshnessLine}</span></div>` : '')
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Risk weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Open unconfirmed ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closure ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Audit weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Open unconfirmed ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Weak/stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closed issue proof ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
-    + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closure risk</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
+    + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closed issue proof</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
     + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
     + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending</span></div>` : '')
     + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.releaseValidationVerified ? ' · validation run verified' : ''}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}${artifact.releaseValidationMismatch ? ` · ${esc(artifact.releaseValidationMismatch)}` : ''}</span></div>` : '')

@@ -222,6 +222,11 @@ describe('audit API routes', () => {
     assert.equal(openUnconfirmedAlias.body.filters.tier, 'carryoverDebt');
     assert.deepEqual(openUnconfirmedAlias.body.filters.tiers, ['carryoverDebt']);
 
+    const weakStaleAlias = await getJson('/api/releases/v-test/review/issues?tier=weakOrStaleEvidence&summaryOnly=true');
+    assert.equal(weakStaleAlias.status, 200);
+    assert.equal(weakStaleAlias.body.filters.tier, 'staleDebt');
+    assert.deepEqual(weakStaleAlias.body.filters.tiers, ['staleDebt']);
+
     const fieldConfirmed = await getJson('/api/releases/v-test/review/issues?tier=verifiedDebt&fieldConfirmed=true');
     assert.equal(fieldConfirmed.status, 200);
     assert.equal(fieldConfirmed.body.filters.fieldConfirmed, true);
