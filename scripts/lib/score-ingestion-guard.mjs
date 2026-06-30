@@ -1,6 +1,7 @@
 import {
   getMeta,
   ingestionEvidenceFailuresAfter,
+  listRecentIngestionEvidenceFailures,
 } from '../../src/lib/db.ts';
 
 export function assertCleanIngestionMetadataBeforeScore(releases) {
@@ -36,6 +37,12 @@ export function assertCleanIngestionMetadataBeforeScore(releases) {
     const durableFailures = ingestionEvidenceFailuresAfter(latestScoredAt, 5);
     if (durableFailures.length > 0) {
       failures.push(`${durableFailures.length} durable ingestion evidence failure(s) recorded after latest score`);
+    }
+  } else {
+    const durableFailures = listRecentIngestionEvidenceFailures(5)
+      .filter((failure) => Number(failure.scoring_blocking ?? 0) === 1);
+    if (durableFailures.length > 0) {
+      failures.push(`${durableFailures.length} durable ingestion evidence failure(s) recorded before first score`);
     }
   }
   if (failures.length > 0) {

@@ -342,6 +342,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
     assert.match(guard, /getMeta\('issue_crawl_last_run'\)/);
     assert.match(guard, /ingestionEvidenceFailuresAfter/);
+    assert.match(guard, /listRecentIngestionEvidenceFailures/);
+    assert.match(guard, /recorded before first score/);
     assert.match(script, /persistReleaseScoreRun/);
     assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
     assert.match(analysis, /missingClassificationClosureProof/);

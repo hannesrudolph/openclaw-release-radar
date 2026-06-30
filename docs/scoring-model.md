@@ -238,7 +238,7 @@ GitHub partial responses for missing issue aliases are recovered only when a cal
 
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
-For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence. Manual score writers share the same clean-ingestion guard: before writing scores, they refuse dirty ingestion metadata such as missing/malformed `issue_crawl_last_run`, page-cap or evidence-failure stop reasons, recorded evidence/classification failures, or durable ingestion failure rows newer than the latest score.
+For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence. Manual score writers share the same clean-ingestion guard: before writing scores, they refuse dirty ingestion metadata such as missing/malformed `issue_crawl_last_run`, page-cap or evidence-failure stop reasons, recorded evidence/classification failures, durable ingestion failure rows newer than the latest score, or any durable score-blocking ingestion failure before the first score.
 
 The release audit verifier checks both aggregate counts and proof shape, including full 40-character commit IDs, reachable/not-reachable commit arrays, and consistency between commit proof rows and their summary booleans.
 
