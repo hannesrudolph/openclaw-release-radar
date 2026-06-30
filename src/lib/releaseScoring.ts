@@ -364,6 +364,11 @@ function scoreRelease(args: {
   const releaseCommit = getReleaseCommit(rel.tag);
   const closureProof = closureProofPayload(rel.tag, labelCutoff);
   const unresolvedClosureRiskWeight = closureRiskWeight(closureProof?.riskSummary);
+  const debtSummary = {
+    verified: debtTierSummary(activeDebt.evidence, 'verified'),
+    carryover: debtTierSummary(activeDebt.evidence, 'carryover'),
+    stale: debtTierSummary(activeDebt.evidence, 'stale'),
+  };
   const input: InstallInput = {
     schemaVersion: SCORE_INPUT_SCHEMA_VERSION,
     publishedAt: rel.published_at,
@@ -377,7 +382,11 @@ function scoreRelease(args: {
     verifiedDebtWeight: activeDebt.loads.verified,
     carryoverDebtWeight: activeDebt.loads.carryover,
     staleDebtWeight: activeDebt.loads.stale,
+    verifiedDebtIssueCount: debtSummary.verified.count,
+    carryoverDebtIssueCount: debtSummary.carryover.count,
+    staleDebtIssueCount: debtSummary.stale.count,
     unresolvedClosureRiskWeight,
+    unresolvedClosureIssueCount: Number(closureProof?.riskSummary?.unresolvedForReleaseCount ?? 0),
     rawIssueCount: issueCountForVersion(rel.tag),
     classifiedIssueCount: attributed.length,
     cveAffected: cve.affected,
@@ -433,11 +442,7 @@ function scoreRelease(args: {
 
   const debtEvidence = {
     schemaVersion: ISSUE_EVIDENCE_SCHEMA_VERSION,
-    debtSummary: {
-      verified: debtTierSummary(activeDebt.evidence, 'verified'),
-      carryover: debtTierSummary(activeDebt.evidence, 'carryover'),
-      stale: debtTierSummary(activeDebt.evidence, 'stale'),
-    },
+    debtSummary,
     verifiedDebt: activeDebt.evidence
       .filter((item) => item.tier === 'verified')
       .slice(0, 25)

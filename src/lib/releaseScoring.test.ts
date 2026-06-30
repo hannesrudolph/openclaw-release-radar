@@ -100,6 +100,10 @@ describe('release score explanations', () => {
     assert.equal(typeof closure.metrics?.neutralBugShapedCount, 'number');
     assert.ok(Object.keys(closure.buckets ?? {}).length > 0);
     assert.ok(Object.keys(closure.riskBuckets ?? {}).length > 0);
+    const unresolvedClosureCount = Number(closure.metrics?.unresolvedForReleaseCount ?? 0);
+    assert.ok(unresolvedClosureCount > 0);
+    assert.equal(run.scored[0].input.unresolvedClosureIssueCount, unresolvedClosureCount);
+    assert.match(run.scored[0].conf.reason, new RegExp(`${unresolvedClosureCount} unresolved closed-release issues`));
     assert.ok((closure.issueRefs?.length ?? 0) >= 3);
     const closureProof = (run.scored[0].gateEvidence as any).fixProvenance?.closureProof ?? {};
     const releaseChecks = (run.scored[0].gateEvidence as any).releaseChecks;
@@ -148,6 +152,8 @@ describe('release score explanations', () => {
     const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
     assert.ok(carryover);
     assert.ok((carryover.metrics?.count ?? 0) > 0);
+    assert.equal(run.scored[0].input.carryoverDebtIssueCount, carryover.metrics?.count);
+    assert.match(run.scored[0].conf.reason, new RegExp(`${carryover.metrics?.count} open non-verified issues`));
     assert.equal(typeof carryover.metrics?.maxPenalty, 'number');
     assert.equal(typeof carryover.metrics?.capApplied, 'boolean');
     assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);
@@ -163,6 +169,7 @@ describe('release score explanations', () => {
     const stale = explanation.limitDetails.find((detail) => detail.code === 'stale_low_confidence_evidence');
     assert.ok(stale);
     assert.ok((stale.metrics?.count ?? 0) > 0);
+    assert.equal(run.scored[0].input.staleDebtIssueCount, stale.metrics?.count);
     assert.equal(typeof stale.metrics?.maxPenalty, 'number');
     assert.equal(typeof stale.metrics?.capApplied, 'boolean');
     assert.equal(stale.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).staleDebt.length);

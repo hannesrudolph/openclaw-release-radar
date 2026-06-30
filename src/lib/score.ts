@@ -86,7 +86,11 @@ export interface InstallInput {
   verifiedDebtWeight: number;
   carryoverDebtWeight: number;
   staleDebtWeight: number;
+  verifiedDebtIssueCount?: number;
+  carryoverDebtIssueCount?: number;
+  staleDebtIssueCount?: number;
   unresolvedClosureRiskWeight: number;
+  unresolvedClosureIssueCount?: number;
   rawIssueCount: number;
   classifiedIssueCount: number;
   cveAffected: boolean;
@@ -648,9 +652,24 @@ function reasonFor(
       ? `${(input.hoursToNextStable / 24).toFixed(1)}d`
       : `${Math.round(input.hoursToNextStable)}h`} as current stable`);
   }
-  if (debt.verified > 2) bits.push(`${Math.round(debt.verified)} field-confirmed blocker risk`);
-  if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} non-verified open-risk weight`);
-  if (input.unresolvedClosureRiskWeight > 0) bits.push(`${Math.round(input.unresolvedClosureRiskWeight)} unresolved closed-release risk`);
+  if (debt.verified > 2) {
+    const count = positiveInteger(input.verifiedDebtIssueCount);
+    bits.push(count == null
+      ? `${Math.round(debt.verified)} field-confirmed blocker risk`
+      : `${count} field-confirmed blocker ${plural(count, 'issue', 'issues')} (risk weight ${Math.round(debt.verified)})`);
+  }
+  if (debt.carryover > 8) {
+    const count = positiveInteger(input.carryoverDebtIssueCount);
+    bits.push(count == null
+      ? `${Math.round(debt.carryover)} non-verified open-risk weight`
+      : `${count} open non-verified ${plural(count, 'issue', 'issues')} (risk weight ${Math.round(debt.carryover)})`);
+  }
+  if (input.unresolvedClosureRiskWeight > 0) {
+    const count = positiveInteger(input.unresolvedClosureIssueCount);
+    bits.push(count == null
+      ? `${Math.round(input.unresolvedClosureRiskWeight)} unresolved closed-release risk`
+      : `${count} unresolved closed-release ${plural(count, 'issue', 'issues')} (risk weight ${Math.round(input.unresolvedClosureRiskWeight)})`);
+  }
   if (input.feltClosedWeight > input.feltOpenedWeight && input.feltClosedWeight > 2) {
     bits.push('net-fixing field-visible bugs');
   } else if (input.feltOpenedWeight > input.feltClosedWeight && input.feltOpenedWeight > 2) {
@@ -673,6 +692,16 @@ function reasonFor(
   if (input.breakingCount > 0) bits.push(`${input.breakingCount} breaking`);
   if (coverage < 0.95) bits.push(`${Math.round(coverage * 100)}% evidence coverage`);
   return bits.join(', ') || 'no adverse signal';
+}
+
+function positiveInteger(value: number | undefined): number | null {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return null;
+  const rounded = Math.round(value);
+  return rounded > 0 ? rounded : null;
+}
+
+function plural(count: number, singular: string, pluralText: string): string {
+  return count === 1 ? singular : pluralText;
 }
 
 export function installConfidence(input: InstallInput, now: number = Date.now()): InstallConfidence {

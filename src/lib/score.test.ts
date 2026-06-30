@@ -186,6 +186,20 @@ describe('installConfidence — graded signals', () => {
     assert.ok(stale > verified);
   });
 
+  it('short reason uses issue counts beside risk weights when available', () => {
+    const result = installConfidence(mk({
+      isLatest: true,
+      carryoverDebtWeight: 506.12,
+      carryoverDebtIssueCount: 228,
+      unresolvedClosureRiskWeight: 93.35,
+      unresolvedClosureIssueCount: 118,
+    }), NOW);
+
+    assert.match(result.reason, /228 open non-verified issues \(risk weight 506\)/);
+    assert.match(result.reason, /118 unresolved closed-release issues \(risk weight 93\)/);
+    assert.doesNotMatch(result.reason, /506 non-verified open-risk weight/);
+  });
+
   it('unresolved closed-release risk lowers confidence but stays capped', () => {
     const base = installConfidence(mk(), NOW);
     const some = installConfidence(mk({ unresolvedClosureRiskWeight: 8 }), NOW);
