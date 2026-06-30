@@ -146,7 +146,7 @@ export const CLOSURE_RISK_DISPOSITION_BY_STATUS: Record<ClosureProofStatus, Clos
   linked_closing_pr_open: 'open_canonical_risk',
   linked_closing_pr_closed_unmerged: 'unsupported_closure_claim',
   external_repo_closing_pr_unscored: 'unsupported_closure_claim',
-  related_open_pr_context: 'unsupported_closure_claim',
+  related_open_pr_context: 'open_canonical_risk',
   related_closed_unmerged_pr_context: 'unsupported_closure_claim',
   related_merged_pr_not_reachable_context: 'unsupported_closure_claim',
   related_merged_pr_reachable_context_without_fix_credit: 'unsupported_closure_claim',

@@ -113,6 +113,29 @@ describe('closure proof risk weighting', () => {
     assert.ok(closureRiskWeightForRow({ ...base, status: 'not_planned_with_open_pr_context' }) > 0);
   });
 
+  it('maps open PR and open canonical proof shapes to open canonical risk', () => {
+    const base = {
+      sentiment: 'negative',
+      severity: 'high',
+      functionality: 'core',
+      scope: 'moderate',
+      affected_users: 'some',
+    };
+    const referenceWeight = closureRiskWeightForRow({ ...base, status: 'duplicate_to_open_canonical' });
+    for (const status of [
+      'duplicate_to_open_canonical',
+      'duplicate_to_open_pr_canonical',
+      'superseded_to_open_pr',
+      'duplicate_with_open_pr_context',
+      'not_planned_with_open_pr_context',
+      'linked_closing_pr_open',
+      'related_open_pr_context',
+    ]) {
+      assert.equal(closureRiskDisposition(status), 'open_canonical_risk', `${status} should be open canonical risk`);
+      assert.equal(closureRiskWeightForRow({ ...base, status }), referenceWeight, `${status} should use open-risk weight`);
+    }
+  });
+
   it('excludes credited fixes and neutral closures from unresolved closure risk', () => {
     const base = {
       sentiment: 'negative',

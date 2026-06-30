@@ -399,12 +399,15 @@ function issueEvidenceState(row: { issue?: { state?: unknown; missing?: unknown 
   return state === 'open' || state === 'closed' ? state : 'other';
 }
 
-function issueClassificationField(row: { issue?: unknown }, field: string): string | null {
+function issueClassificationField(row: { issue?: unknown; debtClassification?: unknown }, field: string): string | null {
+  const debtClassification = row.debtClassification && typeof row.debtClassification === 'object'
+    ? row.debtClassification as Record<string, unknown>
+    : null;
   const issue = row.issue && typeof row.issue === 'object' ? row.issue as Record<string, unknown> : null;
   const classification = issue?.classification && typeof issue.classification === 'object'
     ? issue.classification as Record<string, unknown>
     : null;
-  const value = classification?.[field];
+  const value = debtClassification?.[field] ?? classification?.[field];
   return typeof value === 'string' ? value : null;
 }
 

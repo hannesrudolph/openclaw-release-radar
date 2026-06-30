@@ -161,6 +161,37 @@ describe('release scoring DB bridge', () => {
         classification: null,
       });
 
+      seedIssue(db, {
+        number: 9105,
+        title: 'messages silently dropped after provider timeout',
+        state: 'open',
+        createdAt: '2026-06-01T16:00:00Z',
+        labels: ['stale', 'clawsweeper:source-repro', 'impact:message-loss'],
+        classification: classification({
+          sentiment: 'neutral',
+          severity: 'high',
+          functionality: 'integration',
+          scope: 'moderate',
+          affectedUsers: 'some',
+          confidence: 0.8,
+        }),
+      });
+      seedIssue(db, {
+        number: 9106,
+        title: 'old product question',
+        state: 'open',
+        createdAt: '2026-06-01T17:00:00Z',
+        labels: ['stale'],
+        classification: classification({
+          sentiment: 'neutral',
+          severity: 'high',
+          functionality: 'integration',
+          scope: 'moderate',
+          affectedUsers: 'some',
+          confidence: 0.8,
+        }),
+      });
+
       const release = db.getRelease('v1');
       const run = scoring.buildReleaseScoreRun({
         releases: [release],
@@ -169,17 +200,23 @@ describe('release scoring DB bridge', () => {
         nowForRelease: () => Date.parse('2026-06-11T00:00:00Z'),
       });
       const scored = run.scored[0];
+      const staleDebt = scored.debtEvidence.staleDebt as any[];
 
-      assert.ok(scored.input.feltClosedWeight > 0);
       assert.ok(scored.input.verifiedDebtWeight > 0);
-      assert.ok(scored.input.unresolvedClosureRiskWeight > 0);
+      assert.ok(scored.input.staleDebtWeight > 0);
       const riskSummary = scored.gateEvidence.fixProvenance.closureProof.riskSummary;
       assert.equal(scored.input.unresolvedClosureRiskWeight, riskSummary.unresolvedWeightedRisk);
       assert.ok(scored.debtEvidence.unverifiedClosed.some((issue: any) => issue.number === 9102));
-      assert.equal(scored.input.rawIssueCount, 4);
-      assert.equal(scored.input.classifiedIssueCount, 3);
+      assert.equal(scored.input.rawIssueCount, 6);
+      assert.equal(scored.input.classifiedIssueCount, 5);
       assert.ok((scored.conf.components?.closureRisk ?? 0) < 0);
       assert.ok((scored.conf.components?.coverage ?? 0) < 0);
+      assert.ok(staleDebt.some((item) => item.issue?.number === 9105));
+      assert.ok(!staleDebt.some((item) => item.issue?.number === 9106));
+      const rescued = staleDebt.find((item) => item.issue?.number === 9105);
+      assert.equal(rescued.debtClassification.sentiment, 'negative');
+      assert.deepEqual(rescued.debtClassificationDiff.sentiment, { raw: 'neutral', effective: 'negative' });
+      assert.equal(rescued.issue.classification.sentiment, 'neutral');
     } finally {
       try { db.db.close(); } catch { /* already closed */ }
       rmSync(dir, { recursive: true, force: true });

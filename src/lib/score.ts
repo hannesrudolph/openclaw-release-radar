@@ -1,3 +1,5 @@
+import type { IssueClassification } from './llm';
+
 // Evidence-based Install Confidence.
 //
 // This model answers "should I install this stable?" using hard safety gates
@@ -180,6 +182,8 @@ export interface DebtClassification extends FeltClassification {
   affectsVersion?: string | null;
   releaseLocal?: boolean;
   labels?: string[];
+  debtClassification?: IssueClassification;
+  debtClassificationDiff?: Record<string, { raw: unknown; effective: unknown }>;
 }
 
 export interface DebtLoads {
@@ -205,6 +209,8 @@ export interface DebtEvidenceItem {
   installImpactClass?: string;
   installImpactMultiplier?: number;
   clusterReleaseLocal?: boolean;
+  debtClassification?: IssueClassification;
+  debtClassificationDiff?: Record<string, { raw: unknown; effective: unknown }>;
 }
 
 export interface DebtExplanation {
@@ -473,6 +479,8 @@ export function explainOpenDebtLoad(items: DebtClassification[]): DebtExplanatio
         installImpactClass: installImpactClass(item),
         installImpactMultiplier: installImpactMultiplier(item),
         clusterReleaseLocal: item.clusterReleaseLocal,
+        debtClassification: item.debtClassification,
+        debtClassificationDiff: item.debtClassificationDiff,
       });
     }
   }

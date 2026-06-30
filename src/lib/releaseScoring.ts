@@ -1,5 +1,5 @@
 import { PROMPT_VERSION, type IssueClassification } from './llm';
-import { applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
+import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
 import { releaseLabelCutoff } from './labelCutoff';
 import {
   cveDecayLoad,
@@ -317,6 +317,8 @@ function scoreRelease(args: {
   const effectiveLabels = (row: JoinedIssue): string[] => labelInfo(row).labels;
   const classify = (row: JoinedIssue): IssueClassification =>
     classifyIssueRowWithLabels(row, effectiveLabels(row));
+  const classifyDebt = (row: JoinedIssue): IssueClassification =>
+    classifyIssueRowForOpenDebtWithLabels(row, effectiveLabels(row));
   const countCoreSerious = (rows: JoinedIssue[]): number =>
     rows.reduce((n, r) => (isCoreSerious(classify(r)) ? n + 1 : n), 0);
 
@@ -356,15 +358,24 @@ function scoreRelease(args: {
     labels: effectiveLabels(row),
   });
 
-  const debtInputs = attributed.map((row) => ({
-    ...feltInput(row),
-    issueNumber: row.number,
-    state: scoreStateForIssue(row),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    affectsVersion: row.affects_version,
-    releaseLocal: rel.published_at ? Date.parse(row.created_at) >= Date.parse(rel.published_at) : false,
-  }));
+  const debtInputs = attributed.map((row) => {
+    const baseClassification = classify(row);
+    const debtClassification = classifyDebt(row);
+    const debtClassificationDiff = classificationDiff(baseClassification, debtClassification);
+    return {
+      ...feltInput(row),
+      ...debtClassification,
+      issueNumber: row.number,
+      state: scoreStateForIssue(row),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      affectsVersion: row.affects_version,
+      releaseLocal: rel.published_at ? Date.parse(row.created_at) >= Date.parse(rel.published_at) : false,
+      ...(Object.keys(debtClassificationDiff).length
+        ? { debtClassification, debtClassificationDiff }
+        : {}),
+    };
+  });
   const activeDebt = explainOpenDebtLoad(debtInputs);
   const openedSerious = countCoreSerious(openedReign);
   const closedSerious = countCoreSerious(verifiedFixed);
@@ -1179,9 +1190,11 @@ const CLOSURE_EXPLANATION_DISPOSITION_ORDER = [
 const CLOSURE_EXPLANATION_STATUS_PREFERENCE: Record<string, string[]> = {
   open_canonical_risk: [
     'duplicate_to_open_canonical',
+    'duplicate_to_open_pr_canonical',
     'superseded_to_open_pr',
     'duplicate_with_open_pr_context',
     'not_planned_with_open_pr_context',
+    'linked_closing_pr_open',
     'related_open_pr_context',
   ],
   known_not_in_release: [
@@ -1198,7 +1211,6 @@ const CLOSURE_EXPLANATION_STATUS_PREFERENCE: Record<string, string[]> = {
     'already_present_claim',
     'closed_without_release_fix_proof',
     'no_code_proof',
-    'duplicate_to_closed_canonical_missing_proof',
     'duplicate_or_superseded',
     'repro_requested',
     'insufficient_info',
@@ -1645,6 +1657,14 @@ export function classifyIssueRowWithLabels(row: JoinedIssue, labels: string[]): 
       applyTitleFunctionalityHint(rowToClassification(row), row.title),
       labels,
     ),
+    row.title,
+    labels,
+  );
+}
+
+export function classifyIssueRowForOpenDebtWithLabels(row: JoinedIssue, labels: string[]): IssueClassification {
+  return applyClosureRiskSentimentHint(
+    classifyIssueRowWithLabels(row, labels),
     row.title,
     labels,
   );

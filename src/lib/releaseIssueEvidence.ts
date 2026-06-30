@@ -6,6 +6,7 @@ import {
   type DebtEvidenceItem,
 } from './score';
 import {
+  classifyIssueRowForOpenDebtWithLabels,
   classifyIssueRowWithLabels,
   safeParseLabels,
 } from './releaseScoring';
@@ -153,6 +154,8 @@ export interface ReleaseIssueEvidenceRow {
   installImpactClass?: string | null;
   installImpactMultiplier?: number | null;
   clusterReleaseLocal?: boolean | null;
+  debtClassification?: IssueClassification | null;
+  debtClassificationDiff?: Record<string, { raw: unknown; effective: unknown }> | null;
 }
 
 export interface ReleaseIssueEvidenceTierSummary {
@@ -206,6 +209,8 @@ export function releaseIssueEvidenceRows(tag: string): ReleaseIssueEvidenceResul
   };
   const classify = (row: JoinedIssue): IssueClassification =>
     classifyIssueRowWithLabels(row, labelInfo(row).labels);
+  const classifyDebt = (row: JoinedIssue): IssueClassification =>
+    classifyIssueRowForOpenDebtWithLabels(row, labelInfo(row).labels);
   const feltInput = (row: JoinedIssue) => ({
     ...classify(row),
     issueNumber: row.number,
@@ -238,15 +243,24 @@ export function releaseIssueEvidenceRows(tag: string): ReleaseIssueEvidenceResul
   const verifiedFixedNumbers = new Set(verifiedFixed.map((row) => row.number));
   const scoreStateForIssue = (row: JoinedIssue): string =>
     verifiedFixedNumbers.has(row.number) ? 'closed' : row.state === 'open' ? 'open' : 'closed-unverified';
-  const debtInputs = attributed.map((row) => ({
-    ...feltInput(row),
-    issueNumber: row.number,
-    state: scoreStateForIssue(row),
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
-    affectsVersion: row.affects_version,
-    releaseLocal: release.published_at ? Date.parse(row.created_at) >= Date.parse(release.published_at) : false,
-  }));
+  const debtInputs = attributed.map((row) => {
+    const baseClassification = classify(row);
+    const debtClassification = classifyDebt(row);
+    const debtClassificationDiff = classificationDiff(baseClassification, debtClassification);
+    return {
+      ...feltInput(row),
+      ...debtClassification,
+      issueNumber: row.number,
+      state: scoreStateForIssue(row),
+      createdAt: row.created_at,
+      updatedAt: row.updated_at,
+      affectsVersion: row.affects_version,
+      releaseLocal: release.published_at ? Date.parse(row.created_at) >= Date.parse(release.published_at) : false,
+      ...(Object.keys(debtClassificationDiff).length
+        ? { debtClassification, debtClassificationDiff }
+        : {}),
+    };
+  });
   const debt = explainOpenDebtLoad(debtInputs);
   const openedMask = feltSignalMask(opened.map(feltInput));
   const openedFeltRows = opened.filter((_, index) => openedMask[index]);
@@ -315,6 +329,8 @@ function debtEvidenceRow(
     installImpactClass: item.installImpactClass ?? null,
     installImpactMultiplier: item.installImpactMultiplier ?? null,
     clusterReleaseLocal: item.clusterReleaseLocal ?? null,
+    debtClassification: item.debtClassification ?? null,
+    debtClassificationDiff: item.debtClassificationDiff ?? null,
   };
 }
 

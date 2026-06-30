@@ -227,6 +227,8 @@ const issueEvidenceAuditRowKeys = new Set([
   'installImpactClass',
   'installImpactMultiplier',
   'clusterReleaseLocal',
+  'debtClassification',
+  'debtClassificationDiff',
 ]);
 const issueEvidenceIssueKeys = new Set([
   'number',
@@ -2198,6 +2200,14 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
         `issue evidence audit debt row #${row.issue?.number} must expose numeric weight`);
       expect(failures, tag, typeof row.installImpactClass === 'string' && row.installImpactClass.length > 0,
         `issue evidence audit debt row #${row.issue?.number} must expose installImpactClass`);
+      if (row.debtClassification != null) {
+        expect(failures, tag, isObject(row.debtClassification),
+          `issue evidence audit debt row #${row.issue?.number} debtClassification must be an object`);
+      }
+      if (row.debtClassificationDiff != null) {
+        expect(failures, tag, isObject(row.debtClassificationDiff),
+          `issue evidence audit debt row #${row.issue?.number} debtClassificationDiff must be an object`);
+      }
     }
   }
 

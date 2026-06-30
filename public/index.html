@@ -1649,7 +1649,7 @@ function closureProofForIssue(tag, issueNumber) {
 }
 
 function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
-  const classification = evidenceRow?.issue?.classification ?? issue;
+  const classification = evidenceRow?.debtClassification ?? evidenceRow?.issue?.classification ?? issue;
   const tier = evidenceRow?.tierLabel ?? evidenceRow?.tier ?? 'public issue';
   const severity = classification?.severity ?? issue?.severity;
   const functionality = classification?.functionality ?? null;
@@ -1674,7 +1674,17 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
   const proofLine = proofRow
     ? `${proofRow.riskDisposition ? closureRiskDispositionLabel(proofRow.riskDisposition) + ' · ' : ''}${closureStatusLabel(proofRow.status)}: ${proofRow.summary ?? ''}`.trim()
     : '';
+  const debtDiffKeys = evidenceRow?.debtClassificationDiff && typeof evidenceRow.debtClassificationDiff === 'object'
+    ? Object.keys(evidenceRow.debtClassificationDiff)
+    : [];
+  const debtDiffLine = debtDiffKeys.length
+    ? `Debt scoring overrides: ${debtDiffKeys.map((key) => {
+        const diff = evidenceRow.debtClassificationDiff[key];
+        return `${key} ${diff?.raw ?? 'unknown'} -> ${diff?.effective ?? 'unknown'}`;
+      }).join('; ')}`
+    : '';
   return `<span class="evidence__meta">${esc(scoreLine)}</span>`
+    + (debtDiffLine ? `<span class="evidence__meta">${esc(debtDiffLine)}</span>` : '')
     + (proofLine ? `<span class="evidence__meta">${esc(proofLine)}</span>` : '');
 }
 
