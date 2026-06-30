@@ -452,6 +452,34 @@ describe('GitHub GraphQL mapping', () => {
     assert.deepEqual([...done], [200]);
   });
 
+  it('classifies transient GraphQL errors as retryable without retrying missing aliases', () => {
+    assert.equal(__githubTest.shouldRetryGraphqlErrors([{
+      type: 'RATE_LIMITED',
+      message: 'You have exceeded a secondary rate limit. Please wait a few minutes before you try again.',
+      path: ['repository', 'issues'],
+    }]), true);
+    assert.equal(__githubTest.shouldRetryGraphqlErrors([{
+      type: 'INTERNAL',
+      message: 'Something went wrong while executing your query. Please retry.',
+    }]), true);
+    assert.equal(__githubTest.shouldRetryGraphqlErrors([{
+      type: 'NOT_FOUND',
+      message: 'Could not resolve to an Issue with the number of 95854.',
+      path: ['repository', 'issue1'],
+    }]), false);
+    assert.equal(__githubTest.shouldRetryGraphqlErrors([
+      {
+        type: 'RATE_LIMITED',
+        message: 'You have exceeded a secondary rate limit.',
+      },
+      {
+        type: 'NOT_FOUND',
+        message: 'Could not resolve to an Issue with the number of 95854.',
+        path: ['repository', 'issue1'],
+      },
+    ]), false);
+  });
+
   it('builds one GraphQL query with aliased pull request fix lookups', () => {
     const query = __githubTest.buildPullRequestFixesBatchQuery(2);
 

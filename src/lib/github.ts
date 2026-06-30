@@ -48,9 +48,15 @@ export interface GhComment {
   updated_at?: string | null;
 }
 
+interface GraphqlError {
+  message: string;
+  type?: string;
+  path?: Array<string | number>;
+}
+
 interface GraphqlResponse<T> {
   data?: T;
-  errors?: Array<{ message: string; type?: string; path?: Array<string | number> }>;
+  errors?: GraphqlError[];
 }
 
 interface PageInfo {
@@ -378,6 +384,33 @@ function retryDelayMs(attempt: number, res?: Response): number {
   return Math.min(300_000, 15_000 * Math.pow(2, attempt));
 }
 
+function graphqlErrorDetails(errors: GraphqlError[]): string {
+  return errors
+    .map((e) => [e.type, e.path?.join('.'), e.message].filter(Boolean).join(' '))
+    .join('; ');
+}
+
+function isRetryableGraphqlError(error: GraphqlError): boolean {
+  const type = (error.type ?? '').toUpperCase();
+  const message = (error.message ?? '').toLowerCase();
+  if (['RATE_LIMITED', 'TIMEOUT', 'INTERNAL', 'SERVER_ERROR', 'SERVICE_UNAVAILABLE'].includes(type)) return true;
+  return [
+    'secondary rate limit',
+    'rate limit',
+    'abuse detection',
+    'try again',
+    'please retry',
+    'timed out',
+    'timeout',
+    'temporarily unavailable',
+    'something went wrong',
+  ].some((needle) => message.includes(needle));
+}
+
+function shouldRetryGraphqlErrors(errors: GraphqlError[]): boolean {
+  return errors.length > 0 && errors.every(isRetryableGraphqlError);
+}
+
 async function gh<T>(query: string, variables: Record<string, unknown> = {}): Promise<T> {
   for (let attempt = 0; ; attempt++) {
     let res: Response;
@@ -416,9 +449,13 @@ async function gh<T>(query: string, variables: Record<string, unknown> = {}): Pr
     }
 
     if (parsed.errors?.length) {
-      const details = parsed.errors
-        .map((e) => [e.type, e.path?.join('.'), e.message].filter(Boolean).join(' '))
-        .join('; ');
+      const details = graphqlErrorDetails(parsed.errors);
+      if (shouldRetryGraphqlErrors(parsed.errors) && attempt < 8) {
+        const delay = retryDelayMs(attempt, res);
+        console.warn(`[github] GraphQL transient error; retrying in ${Math.round(delay / 1000)}s: ${details}`);
+        await sleep(delay);
+        continue;
+      }
       throw new Error(`GitHub GraphQL error: ${details}`);
     }
     if (!parsed.data) throw new Error('GitHub GraphQL response did not include data');
@@ -1791,7 +1828,10 @@ export const __githubTest = {
   closureCommentCommitMentions,
   closureCommentPrMentions,
   buildIssueCommentsBatchQuery,
+  graphqlErrorDetails,
+  isRetryableGraphqlError,
   missingIssueIndexesFromGraphqlError,
+  shouldRetryGraphqlErrors,
   skipMissingIssueAliases,
   buildIssueLabelEventsBatchQuery,
   mapComment,
