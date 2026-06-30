@@ -379,6 +379,20 @@ describe('static scoring/UI contracts', () => {
     assert.match(analysis, /missingClassificationClosureProof/);
   });
 
+  it('closure evidence refresh fetches PR mention evidence before replacing links', () => {
+    const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const rawMentionFetch = analysis.indexOf('const mentionedPrs = await listPullRequestFixesBatch');
+    const rawDelete = analysis.indexOf('deleteIssuePrLinksForIssues(chunk)');
+    const commentMentionFetch = analysis.lastIndexOf('const mentionedPrs = await listPullRequestFixesBatch');
+    const commentDelete = analysis.lastIndexOf('deleteCommentIssuePrLinksForIssues(issueNumbers)');
+    assert.ok(rawMentionFetch !== -1 && rawDelete !== -1 && rawMentionFetch < rawDelete,
+      'raw closure evidence must fetch comment PR details before replacing issue PR links');
+    assert.ok(commentMentionFetch !== -1 && commentDelete !== -1 && commentMentionFetch < commentDelete,
+      'comment-derived PR refresh must fetch replacement PR details before deleting old comment links');
+    assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssuePrLinksForIssues\(chunk\);/);
+    assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteCommentIssuePrLinksForIssues\(issueNumbers\);/);
+  });
+
   it('closure proof analysis checks direct commit closers for release reachability', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');

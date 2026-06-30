@@ -8,6 +8,7 @@ import {
   issueLabelEventCount,
   issueLabelSnapshotCountAt,
   labelsForIssueAt,
+  runInWriteTransaction,
   upsertIssueClosureEvent,
   upsertIssueClosureProof,
   upsertIssueCommitReference,
@@ -1981,63 +1982,103 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       listIssueFixEvidenceBatch(chunk),
       listIssueCommentsBatch(chunk),
     ]);
-    deleteIssuePrLinksForIssues(chunk);
-    for (const item of evidence.values()) {
-      for (const event of item.closureEvents) {
-        upsertIssueClosureEvent({
-          issue_number: event.issueNumber,
-          event_id: event.eventId,
-          closed_at: event.closedAt,
-          actor_login: event.actorLogin,
-          state_reason: event.stateReason,
-          closer_type: event.closerType,
-          closer_number: event.closerNumber,
-          closer_oid: event.closerOid,
-          raw_json: JSON.stringify(event.raw),
-        });
-        closureEvents++;
+    const commentMentions = chunk.flatMap((issueNumber) =>
+      closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+    );
+    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
+      prNumber: mention.prNumber,
+      prRepositoryOwner: mention.prRepositoryOwner,
+      prRepositoryName: mention.prRepositoryName,
+      prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+    })));
+    runInWriteTransaction(() => {
+      deleteIssuePrLinksForIssues(chunk);
+      for (const item of evidence.values()) {
+        for (const event of item.closureEvents) {
+          upsertIssueClosureEvent({
+            issue_number: event.issueNumber,
+            event_id: event.eventId,
+            closed_at: event.closedAt,
+            actor_login: event.actorLogin,
+            state_reason: event.stateReason,
+            closer_type: event.closerType,
+            closer_number: event.closerNumber,
+            closer_oid: event.closerOid,
+            raw_json: JSON.stringify(event.raw),
+          });
+          closureEvents++;
+        }
+        for (const event of item.reopenEvents) {
+          upsertIssueReopenEvent({
+            issue_number: event.issueNumber,
+            event_id: event.eventId,
+            reopened_at: event.reopenedAt,
+            actor_login: event.actorLogin,
+            raw_json: JSON.stringify(event.raw),
+          });
+          reopenEvents++;
+        }
+        for (const link of item.prLinks) {
+          upsertIssuePrLink({
+            issue_number: link.issueNumber,
+            pr_repository_owner: link.prRepositoryOwner,
+            pr_repository_name: link.prRepositoryName,
+            pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
+            pr_number: link.prNumber,
+            source: link.source,
+            will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
+            referenced_at: link.referencedAt,
+          });
+          prLinks++;
+        }
+        for (const ref of item.commitReferences) {
+          upsertIssueCommitReference({
+            issue_number: ref.issueNumber,
+            event_id: ref.eventId,
+            commit_oid: ref.commitOid,
+            commit_message_headline: ref.commitMessageHeadline,
+            commit_repository_owner: ref.commitRepositoryOwner,
+            commit_repository_name: ref.commitRepositoryName,
+            commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
+            is_cross_repository: ref.isCrossRepository ? 1 : 0,
+            is_direct_reference: ref.isDirectReference ? 1 : 0,
+            referenced_at: ref.referencedAt,
+            actor_login: ref.actorLogin,
+            raw_json: JSON.stringify(ref.raw),
+          });
+          commitReferences++;
+        }
+        for (const pr of item.pullRequests) {
+          upsertPullRequestFix({
+            pr_repository_owner: pr.repositoryOwner,
+            pr_repository_name: pr.repositoryName,
+            pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+            pr_number: pr.number,
+            title: pr.title,
+            url: pr.url,
+            state: pr.state,
+            merged: pr.merged ? 1 : 0,
+            merged_at: pr.mergedAt,
+            merge_commit_oid: pr.mergeCommitOid,
+            base_ref_name: pr.baseRefName,
+          });
+          pullRequests++;
+        }
       }
-      for (const event of item.reopenEvents) {
-        upsertIssueReopenEvent({
-          issue_number: event.issueNumber,
-          event_id: event.eventId,
-          reopened_at: event.reopenedAt,
-          actor_login: event.actorLogin,
-          raw_json: JSON.stringify(event.raw),
-        });
-        reopenEvents++;
-      }
-      for (const link of item.prLinks) {
+      for (const mention of commentMentions) {
+        const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
+        if (!pr) continue;
         upsertIssuePrLink({
-          issue_number: link.issueNumber,
-          pr_repository_owner: link.prRepositoryOwner,
-          pr_repository_name: link.prRepositoryName,
-          pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
-          pr_number: link.prNumber,
-          source: link.source,
-          will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
-          referenced_at: link.referencedAt,
+          issue_number: mention.issueNumber,
+          pr_repository_owner: mention.prRepositoryOwner,
+          pr_repository_name: mention.prRepositoryName,
+          pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
+          pr_number: mention.prNumber,
+          source: mention.source,
+          will_close_target: null,
+          referenced_at: mention.referencedAt,
         });
         prLinks++;
-      }
-      for (const ref of item.commitReferences) {
-        upsertIssueCommitReference({
-          issue_number: ref.issueNumber,
-          event_id: ref.eventId,
-          commit_oid: ref.commitOid,
-          commit_message_headline: ref.commitMessageHeadline,
-          commit_repository_owner: ref.commitRepositoryOwner,
-          commit_repository_name: ref.commitRepositoryName,
-          commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
-          is_cross_repository: ref.isCrossRepository ? 1 : 0,
-          is_direct_reference: ref.isDirectReference ? 1 : 0,
-          referenced_at: ref.referencedAt,
-          actor_login: ref.actorLogin,
-          raw_json: JSON.stringify(ref.raw),
-        });
-        commitReferences++;
-      }
-      for (const pr of item.pullRequests) {
         upsertPullRequestFix({
           pr_repository_owner: pr.repositoryOwner,
           pr_repository_name: pr.repositoryName,
@@ -2053,16 +2094,26 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         });
         pullRequests++;
       }
-    }
-    const commentMentions = chunk.flatMap((issueNumber) =>
-      closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
-    );
-    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
-      prNumber: mention.prNumber,
-      prRepositoryOwner: mention.prRepositoryOwner,
-      prRepositoryName: mention.prRepositoryName,
-      prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
-    })));
+    });
+  }
+  return { closureEvents, reopenEvents, prLinks, pullRequests, commitReferences };
+}
+
+async function refreshClosureCommentPrMentionEvidence(
+  issueNumbers: number[],
+  commentsByIssue: Map<number, GhComment[]>,
+): Promise<void> {
+  const commentMentions = issueNumbers.flatMap((issueNumber) =>
+    closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+  );
+  const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
+    prNumber: mention.prNumber,
+    prRepositoryOwner: mention.prRepositoryOwner,
+    prRepositoryName: mention.prRepositoryName,
+    prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+  })));
+  runInWriteTransaction(() => {
+    deleteCommentIssuePrLinksForIssues(issueNumbers);
     for (const mention of commentMentions) {
       const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
       if (!pr) continue;
@@ -2076,7 +2127,6 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         will_close_target: null,
         referenced_at: mention.referencedAt,
       });
-      prLinks++;
       upsertPullRequestFix({
         pr_repository_owner: pr.repositoryOwner,
         pr_repository_name: pr.repositoryName,
@@ -2090,54 +2140,8 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
         merge_commit_oid: pr.mergeCommitOid,
         base_ref_name: pr.baseRefName,
       });
-      pullRequests++;
     }
-  }
-  return { closureEvents, reopenEvents, prLinks, pullRequests, commitReferences };
-}
-
-async function refreshClosureCommentPrMentionEvidence(
-  issueNumbers: number[],
-  commentsByIssue: Map<number, GhComment[]>,
-): Promise<void> {
-  deleteCommentIssuePrLinksForIssues(issueNumbers);
-  const commentMentions = issueNumbers.flatMap((issueNumber) =>
-    closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
-  );
-  if (!commentMentions.length) return;
-  const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
-    prNumber: mention.prNumber,
-    prRepositoryOwner: mention.prRepositoryOwner,
-    prRepositoryName: mention.prRepositoryName,
-    prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
-  })));
-  for (const mention of commentMentions) {
-    const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
-    if (!pr) continue;
-    upsertIssuePrLink({
-      issue_number: mention.issueNumber,
-      pr_repository_owner: mention.prRepositoryOwner,
-      pr_repository_name: mention.prRepositoryName,
-      pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
-      pr_number: mention.prNumber,
-      source: mention.source,
-      will_close_target: null,
-      referenced_at: mention.referencedAt,
-    });
-    upsertPullRequestFix({
-      pr_repository_owner: pr.repositoryOwner,
-      pr_repository_name: pr.repositoryName,
-      pr_repository_name_with_owner: pr.repositoryNameWithOwner,
-      pr_number: pr.number,
-      title: pr.title,
-      url: pr.url,
-      state: pr.state,
-      merged: pr.merged ? 1 : 0,
-      merged_at: pr.mergedAt,
-      merge_commit_oid: pr.mergeCommitOid,
-      base_ref_name: pr.baseRefName,
-    });
-  }
+  });
 }
 
 function splitCsv(value: unknown): string[] {
