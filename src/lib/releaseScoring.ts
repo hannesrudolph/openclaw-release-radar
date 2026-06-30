@@ -620,7 +620,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
     const example = issueListText(carryover, 3);
     addLimit(
       'source_carryover_risk',
-      `There is open inherited/source risk: open negative issues attributed to this release that are not proven release-local field blockers. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
+      `There is open non-verified risk: open negative issues overlapping this release are inherited, source-derived, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -848,11 +848,11 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'carryoverDebt',
-      label: 'Open inherited/source risk',
+      label: 'Open non-verified risk',
       points: roundMetric(components.carryoverDebt),
       kind: scoreLedgerKind(components.carryoverDebt),
       metric: roundMetric(input.carryoverDebtWeight),
-      note: 'Open negative issue debt attributed to this release, but not proven release-local field-blocker evidence.',
+      note: 'Open negative issue debt overlapping this release that is inherited, source-derived, or otherwise not proven release-local field-blocker evidence.',
     },
     {
       key: 'staleDebt',

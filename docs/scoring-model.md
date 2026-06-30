@@ -23,7 +23,7 @@ These override the normal 0-10 score:
 The normal score starts from a base value, then applies bounded components:
 
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
-- `carryoverDebt`: open inherited/source risk: open negative issue debt attributed to the release, but not proven release-local field-blocker evidence. This is capped.
+- `carryoverDebt`: open non-verified risk: open negative issue debt overlapping the release that is inherited, source-derived, or otherwise not proven release-local field-blocker evidence. This is capped.
 - `staleDebt`: low-confidence, stale, needs-info, or weak evidence risk. This is heavily capped.
 - `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and does not score non-bug, reporter-withdrawn, or concretely non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
@@ -54,7 +54,7 @@ Issue evidence is cluster-aware:
 The model deliberately separates:
 
 - field-confirmed breakage
-- open inherited/source risk
+- open non-verified risk
 - weak or stale issue evidence
 - incomplete classification coverage
 - unresolved closed issues not counted for this release

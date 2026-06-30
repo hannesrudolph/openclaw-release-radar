@@ -649,7 +649,7 @@ function reasonFor(
       : `${Math.round(input.hoursToNextStable)}h`} as current stable`);
   }
   if (debt.verified > 2) bits.push(`${Math.round(debt.verified)} field-confirmed blocker risk`);
-  if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} inherited/source risk`);
+  if (debt.carryover > 8) bits.push(`${Math.round(debt.carryover)} non-verified open-risk weight`);
   if (input.unresolvedClosureRiskWeight > 0) bits.push(`${Math.round(input.unresolvedClosureRiskWeight)} unresolved closed-release risk`);
   if (input.feltClosedWeight > input.feltOpenedWeight && input.feltClosedWeight > 2) {
     bits.push('net-fixing field-visible bugs');

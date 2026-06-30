@@ -57,8 +57,8 @@ export const RELEASE_ISSUE_EVIDENCE_TIER_INFO: Record<ReleaseIssueEvidenceTier, 
     description: 'Release-local field/community-confirmed blocker evidence that counts as hard open debt.',
   },
   carryoverDebt: {
-    label: 'Open inherited/source risk',
-    description: 'Open negative issues attributed to this release, but not proven release-local field blockers.',
+    label: 'Open non-verified risk',
+    description: 'Open negative issues overlapping this release that are inherited, source-derived, or otherwise not proven release-local field blockers.',
   },
   staleDebt: {
     label: 'Stale or weak evidence',

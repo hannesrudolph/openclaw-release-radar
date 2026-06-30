@@ -66,13 +66,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /tier=staleDebt/);
     assert.match(html, /high-weight stale evidence/);
     assert.match(html, /tier=openedFeltSerious/);
-    assert.match(html, /Inherited\/source/);
-    assert.match(html, /Inherited\/source risk means open negative issues/);
+    assert.match(html, /Non-verified/);
+    assert.match(html, /Non-verified open risk means open negative issues/);
     const issueEvidence = readFileSync(join(root, 'src/lib/releaseIssueEvidence.ts'), 'utf8');
     assert.match(issueEvidence, /RELEASE_ISSUE_EVIDENCE_TIER_INFO/);
     assert.match(issueEvidence, /summaryByTier/);
     assert.match(issueEvidence, /summarizeIssueEvidenceRows/);
-    assert.match(issueEvidence, /Open inherited\/source risk/);
+    assert.match(issueEvidence, /Open non-verified risk/);
     assert.match(issueEvidence, /not proven release-local field blockers/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated issue-evidence rows/);

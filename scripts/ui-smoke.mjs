@@ -121,9 +121,9 @@ try {
     .waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open review JSON' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open issue evidence rows' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'inherited/source risk' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'field-confirmed source risk' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'critical core source risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'non-verified open risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'field-confirmed non-verified risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'critical core non-verified risk' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'stale evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'high-weight stale evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'opened reports' }).first().waitFor();
@@ -162,7 +162,7 @@ try {
     const freshness = review.local?.dataFreshness;
     if (!freshness?.issueUpdatedAtMax || !freshness?.scoredAt) throw new Error(`Missing data freshness for ${release.tag}`);
     await panel.locator('.score-review__item').filter({ hasText: 'Source freshness' }).getByText('issue lag').waitFor();
-    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Inherited/source ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
+    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Non-verified ${Math.round(input.carryoverDebtWeight ?? 0)} · Stale ${Math.round(input.staleDebtWeight ?? 0)} · Closure ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
     await panel.locator('.score-review__item').filter({ hasText: 'Risk weights' }).getByText(expectedRiskWeights).waitFor();
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (credit) {
