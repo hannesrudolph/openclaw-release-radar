@@ -1699,8 +1699,11 @@ function issueEvidenceApiLinksHtml(tag) {
   const base = `/api/releases/${encodeURIComponent(tag)}/review/issues`;
   const links = [
     ['Open issue evidence rows', base],
-    ['source debt', `${base}?tier=carryoverDebt`],
-    ['stale evidence', `${base}?tier=staleDebt`],
+    ['inherited/source risk', `${base}?tier=carryoverDebt&sort=weight&direction=desc`],
+    ['field-confirmed source risk', `${base}?tier=carryoverDebt&fieldConfirmed=true&minWeight=5&sort=weight&direction=desc`],
+    ['critical core source risk', `${base}?tier=carryoverDebt&sentiment=negative&severity=critical&functionality=core&sort=weight&direction=desc`],
+    ['stale evidence', `${base}?tier=staleDebt&sort=weight&direction=desc`],
+    ['high-weight stale evidence', `${base}?tier=staleDebt&minWeight=5&sort=weight&direction=desc`],
     ['opened reports', `${base}?tier=openedFeltSerious`],
     ['verified fixes', `${base}?tier=verifiedFixed`],
     ['unverified closures', `${base}?tier=unverifiedClosed`],

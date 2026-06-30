@@ -121,8 +121,11 @@ try {
     .waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open review JSON' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open issue evidence rows' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'source debt' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'inherited/source risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'field-confirmed source risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'critical core source risk' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'stale evidence' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'high-weight stale evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'opened reports' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open closure proof rows' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open PR reachability rows' }).first().waitFor();
