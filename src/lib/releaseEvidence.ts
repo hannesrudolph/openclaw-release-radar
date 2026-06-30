@@ -217,6 +217,7 @@ async function verifyFallbackManifest(
   artifacts: Array<{ archive_download_url?: string }>,
   options: EvidenceReportVerificationOptions,
 ): Promise<{ verified: boolean; mismatch: string | null }> {
+  let firstMismatch: string | null = null;
   for (const artifact of artifacts) {
     if (!artifact.archive_download_url) continue;
     const response = await fetch(artifact.archive_download_url, { headers: githubHeaders() });
@@ -227,10 +228,10 @@ async function verifyFallbackManifest(
       if (!manifest) continue;
       const mismatch = validationManifestMismatch(manifest, options);
       if (!mismatch) return { verified: true, mismatch: null };
-      return { verified: false, mismatch };
+      firstMismatch ??= mismatch;
     }
   }
-  return { verified: false, mismatch: 'fallback action manifest not found' };
+  return { verified: false, mismatch: firstMismatch ?? 'fallback action manifest not found' };
 }
 
 function parseManifest(jsonText: string): { targetRef?: string; targetSha?: string } | null {

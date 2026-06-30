@@ -134,6 +134,68 @@ describe('release evidence report verification', () => {
     }
   });
 
+  it('continues scanning fallback artifacts after a manifest mismatch', async () => {
+    const previousFetch = globalThis.fetch;
+    const calls: string[] = [];
+    globalThis.fetch = (async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url === 'https://example.test/missing.md') return new Response('not found', { status: 404 });
+      if (url === 'https://api.github.com/repos/openclaw/openclaw/actions/runs/1') {
+        return Response.json({ status: 'completed', conclusion: 'success' });
+      }
+      if (url === 'https://api.github.com/repos/openclaw/openclaw/actions/runs/1/artifacts') {
+        return Response.json({
+          artifacts: [
+            {
+              expired: false,
+              size_in_bytes: 100,
+              archive_download_url: 'https://api.github.com/wrong-artifact.zip',
+            },
+            {
+              expired: false,
+              size_in_bytes: 100,
+              archive_download_url: 'https://api.github.com/matching-artifact.zip',
+            },
+          ],
+        });
+      }
+      if (url === 'https://api.github.com/wrong-artifact.zip') {
+        return new Response(storedZip(
+          'full-release-validation-manifest.json',
+          JSON.stringify({ targetRef: 'release/2026.6.9', targetSha: 'wrong' }),
+        ));
+      }
+      if (url === 'https://api.github.com/matching-artifact.zip') {
+        return new Response(storedZip(
+          'full-release-validation-manifest.json',
+          JSON.stringify({
+            targetRef: 'release/2026.6.10',
+            targetSha: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+          }),
+        ));
+      }
+      throw new Error(`unexpected fetch ${url}`);
+    }) as typeof fetch;
+    try {
+      const result = await verifyEvidenceReportUrl(
+        'https://example.test/missing.md',
+        'https://github.com/openclaw/openclaw/actions/runs/1',
+        {
+          expectedReleaseTag: 'v2026.6.10',
+          expectedReleaseSha: 'aa69b12d0086b631b139c1435c9621a5783e3a40',
+        },
+      );
+      assert.equal(result.verified, true);
+      assert.equal(result.mismatch, null);
+      assert.equal(result.fallbackArtifactCount, 2);
+      assert.ok(calls.includes('https://api.github.com/wrong-artifact.zip'));
+      assert.ok(calls.includes('https://api.github.com/matching-artifact.zip'));
+    } finally {
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   it('does not verify fallback actions without artifacts', async () => {
     const previousFetch = globalThis.fetch;
     globalThis.fetch = (async (input) => {
