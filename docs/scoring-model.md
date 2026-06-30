@@ -18,7 +18,7 @@ These override the normal 0-10 score:
 - `skip-cve`: medium-or-higher advisory affects the release.
 - `skip-hotfix`: release was superseded quickly or by a hotfix successor.
 
-Advisory version ranges are score-critical. Score writers refuse malformed or unsupported `vulnerable_version_range` strings instead of treating them as non-matches, because a false non-match could hide a `skip-cve` gate.
+Advisory version ranges are score-critical. Score writers refuse malformed or unsupported `vulnerable_version_range` strings instead of treating them as non-matches, because a false non-match could hide a `skip-cve` gate. A single GHSA can contain multiple vulnerable package ranges; refresh stores each vulnerability range as its own advisory row keyed by GHSA, package, ecosystem, and range so every range participates in skip/CVE scoring and advisory display.
 
 ## Score Components
 

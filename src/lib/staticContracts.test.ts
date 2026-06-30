@@ -646,6 +646,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /recordEvidenceRefreshFailure\('issue-comments-truncated', null, error/);
     assert.match(refresh, /refusing score persistence until issue comments are fully scanned/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('release-checks', r\.tag_name, e/);
+    assert.match(refresh, /replaceAdvisories\(flattenAdvisoryVulnerabilityRows\(advisories\)\)/);
+    assert.match(refresh, /function flattenAdvisoryVulnerabilityRows/);
+    assert.match(refresh, /advisoryVulnerabilityKey/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('advisories', advisoryScope, e/);
     assert.match(refresh, /Promise\.allSettled/);
     assert.match(refresh, /issuePaginationStopReason = 'evidence_failure'/);
@@ -672,6 +675,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /components\.explanation/);
     assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /Score writers refuse malformed or unsupported `vulnerable_version_range`/);
+    assert.match(scoringDoc, /A single GHSA can contain multiple vulnerable package ranges/);
+    assert.match(scoringDoc, /each vulnerability range as its own advisory row/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
     assert.match(scoringDoc, /release-metadata\/artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);

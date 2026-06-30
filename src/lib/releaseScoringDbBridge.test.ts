@@ -260,12 +260,15 @@ describe('release scoring DB bridge', () => {
       assert.equal(db.getMeta('last_scored_at'), txRun.scored[0].scoredAt);
 
       db.upsertAdvisory({
+        advisory_key: 'GHSA-malformed:npm:openclaw:^2026.6.0',
         ghsa_id: 'GHSA-malformed',
         cve_id: 'CVE-2026-9999',
         summary: 'Malformed advisory range',
         severity: 'medium',
         html_url: 'https://example.test/advisory',
         published_at: '2026-06-01T00:00:00Z',
+        package_ecosystem: 'npm',
+        package_name: 'openclaw',
         vulnerable_version_range: '^2026.6.0',
         patched_versions: '2026.6.10',
       });

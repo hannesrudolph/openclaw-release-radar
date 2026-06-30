@@ -223,16 +223,21 @@ CREATE TABLE IF NOT EXISTS meta (
 -- vulnerable_version_range / patched_versions are stored verbatim as GitHub
 -- returns them; the matching logic lives in lib/versionMatch.ts.
 CREATE TABLE IF NOT EXISTS advisories (
-  ghsa_id TEXT PRIMARY KEY,
+  advisory_key TEXT PRIMARY KEY,
+  ghsa_id TEXT NOT NULL,
   cve_id TEXT,
   summary TEXT NOT NULL,
   severity TEXT NOT NULL,
   html_url TEXT NOT NULL,
   published_at TEXT,
+  package_ecosystem TEXT,
+  package_name TEXT,
   vulnerable_version_range TEXT,
   patched_versions TEXT,
   fetched_at TEXT NOT NULL
 );
+
+CREATE INDEX IF NOT EXISTS idx_advisories_ghsa ON advisories(ghsa_id);
 
 -- Rendered upstream web UI snapshots used for side-by-side model comparison.
 -- These are deliberately separate from radar data so clearing/rebuilding the
@@ -723,6 +728,69 @@ try {
     db.exec(`DROP TABLE release_pr_reachability`);
     db.exec(`ALTER TABLE release_pr_reachability_next RENAME TO release_pr_reachability`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag)`);
+  }
+
+  const advisoryCols = tableColumns('advisories');
+  const advisoryKeyCol = advisoryCols.find((col) => col.name === 'advisory_key');
+  if (!advisoryKeyCol || advisoryKeyCol.pk === 0) {
+    const rows = db.prepare(`
+      SELECT
+        ghsa_id,
+        cve_id,
+        summary,
+        severity,
+        html_url,
+        published_at,
+        vulnerable_version_range,
+        patched_versions,
+        fetched_at
+      FROM advisories
+    `).all() as Array<any>;
+    db.exec(`DROP TABLE IF EXISTS advisories_next`);
+    db.exec(`
+    CREATE TABLE advisories_next (
+      advisory_key TEXT PRIMARY KEY,
+      ghsa_id TEXT NOT NULL,
+      cve_id TEXT,
+      summary TEXT NOT NULL,
+      severity TEXT NOT NULL,
+      html_url TEXT NOT NULL,
+      published_at TEXT,
+      package_ecosystem TEXT,
+      package_name TEXT,
+      vulnerable_version_range TEXT,
+      patched_versions TEXT,
+      fetched_at TEXT NOT NULL
+    )`);
+    const insert = db.prepare(`
+      INSERT OR REPLACE INTO advisories_next (
+        advisory_key, ghsa_id, cve_id, summary, severity, html_url, published_at,
+        package_ecosystem, package_name, vulnerable_version_range, patched_versions, fetched_at
+      )
+      VALUES (
+        :advisory_key, :ghsa_id, :cve_id, :summary, :severity, :html_url, :published_at,
+        :package_ecosystem, :package_name, :vulnerable_version_range, :patched_versions, :fetched_at
+      )
+    `);
+    for (const row of rows) {
+      insert.run({
+        advisory_key: row.ghsa_id,
+        ghsa_id: row.ghsa_id,
+        cve_id: row.cve_id ?? null,
+        summary: row.summary,
+        severity: row.severity,
+        html_url: row.html_url,
+        published_at: row.published_at ?? null,
+        package_ecosystem: null,
+        package_name: null,
+        vulnerable_version_range: row.vulnerable_version_range ?? null,
+        patched_versions: row.patched_versions ?? null,
+        fetched_at: row.fetched_at ?? new Date().toISOString(),
+      });
+    }
+    db.exec(`DROP TABLE advisories`);
+    db.exec(`ALTER TABLE advisories_next RENAME TO advisories`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_advisories_ghsa ON advisories(ghsa_id)`);
   }
 } catch {
   // The main CREATE TABLE block handles first-run setup; this only repairs old local schemas.
@@ -3562,28 +3630,34 @@ export function deleteStaleClassifications(currentPromptVersion: number): number
 
 // ---------- advisories ----------
 export interface AdvisoryRow {
+  advisory_key: string;
   ghsa_id: string;
   cve_id: string | null;
   summary: string;
   severity: string;
   html_url: string;
   published_at: string | null;
+  package_ecosystem: string | null;
+  package_name: string | null;
   vulnerable_version_range: string | null;
   patched_versions: string | null;
   fetched_at: string;
 }
 
 const upsertAdvisoryStmt = db.prepare(`
-INSERT INTO advisories (ghsa_id, cve_id, summary, severity, html_url, published_at,
-  vulnerable_version_range, patched_versions, fetched_at)
-VALUES (:ghsa_id, :cve_id, :summary, :severity, :html_url, :published_at,
-  :vulnerable_version_range, :patched_versions, :fetched_at)
-ON CONFLICT(ghsa_id) DO UPDATE SET
+INSERT INTO advisories (advisory_key, ghsa_id, cve_id, summary, severity, html_url, published_at,
+  package_ecosystem, package_name, vulnerable_version_range, patched_versions, fetched_at)
+VALUES (:advisory_key, :ghsa_id, :cve_id, :summary, :severity, :html_url, :published_at,
+  :package_ecosystem, :package_name, :vulnerable_version_range, :patched_versions, :fetched_at)
+ON CONFLICT(advisory_key) DO UPDATE SET
+  ghsa_id=excluded.ghsa_id,
   cve_id=excluded.cve_id,
   summary=excluded.summary,
   severity=excluded.severity,
   html_url=excluded.html_url,
   published_at=excluded.published_at,
+  package_ecosystem=excluded.package_ecosystem,
+  package_name=excluded.package_name,
   vulnerable_version_range=excluded.vulnerable_version_range,
   patched_versions=excluded.patched_versions,
   fetched_at=excluded.fetched_at
@@ -3591,6 +3665,14 @@ ON CONFLICT(ghsa_id) DO UPDATE SET
 
 export function upsertAdvisory(a: Omit<AdvisoryRow, 'fetched_at'>): void {
   upsertAdvisoryStmt.run({ ...a, fetched_at: new Date().toISOString() });
+}
+
+const deleteAdvisoriesStmt = db.prepare(`DELETE FROM advisories`);
+export function replaceAdvisories(rows: Array<Omit<AdvisoryRow, 'fetched_at'>>): void {
+  runInWriteTransaction(() => {
+    deleteAdvisoriesStmt.run();
+    for (const row of rows) upsertAdvisory(row);
+  });
 }
 
 const listAdvisoriesStmt = db.prepare(`SELECT * FROM advisories ORDER BY published_at DESC NULLS LAST`);

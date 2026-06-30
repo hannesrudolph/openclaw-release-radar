@@ -62,11 +62,11 @@ import {
   issuesForVersion,
   listReleasesDb,
   openedDuringReign,
+  replaceAdvisories,
   runInWriteTransaction,
   setMeta,
   updateReleaseDerivedStats,
   updateReleaseArtifactVerification,
-  upsertAdvisory,
   upsertClassification,
   upsertIssue,
   upsertIssueClosureEvent,
@@ -174,6 +174,42 @@ let lastError: string | null = null;
 
 export function getRefreshState() {
   return { refreshing, processLastRefreshAt, lastError };
+}
+
+function advisoryVulnerabilityKey(
+  ghsaId: string,
+  ecosystem: string | null,
+  packageName: string | null,
+  vulnerableVersionRange: string | null,
+): string {
+  return [
+    ghsaId,
+    String(ecosystem ?? '').toLowerCase(),
+    String(packageName ?? '').toLowerCase(),
+    String(vulnerableVersionRange ?? ''),
+  ].map((part) => encodeURIComponent(part)).join(':');
+}
+
+function flattenAdvisoryVulnerabilityRows(advisories: Awaited<ReturnType<typeof listSecurityAdvisories>>) {
+  return advisories.flatMap((adv) =>
+    adv.vulnerabilities.map((v) => {
+      if (!v.package?.ecosystem || !v.package?.name) {
+        throw new Error(`GitHub advisory ${adv.ghsa_id} vulnerability is missing package identity`);
+      }
+      return {
+        advisory_key: advisoryVulnerabilityKey(adv.ghsa_id, v.package.ecosystem, v.package.name, v.vulnerable_version_range),
+        ghsa_id: adv.ghsa_id,
+        cve_id: adv.cve_id,
+        summary: adv.summary,
+        severity: adv.severity,
+        html_url: adv.html_url,
+        published_at: adv.published_at,
+        package_ecosystem: v.package.ecosystem,
+        package_name: v.package.name,
+        vulnerable_version_range: v.vulnerable_version_range,
+        patched_versions: v.patched_versions,
+      };
+    }));
 }
 
 export async function refresh(): Promise<{
@@ -404,22 +440,7 @@ export async function refresh(): Promise<{
     // data changes skip-cve gates and CVE load.
     try {
       const advisories = await listSecurityAdvisories();
-      for (const adv of advisories) {
-        // Take the first vulnerability entry referring to this repo's package.
-        // openclaw advisories all have exactly one; if a future one had multiple,
-        // we'd pick the one matching ecosystem === 'npm' (or fallback).
-        const v = adv.vulnerabilities[0];
-        upsertAdvisory({
-          ghsa_id: adv.ghsa_id,
-          cve_id: adv.cve_id,
-          summary: adv.summary,
-          severity: adv.severity,
-          html_url: adv.html_url,
-          published_at: adv.published_at,
-          vulnerable_version_range: v?.vulnerable_version_range ?? null,
-          patched_versions: v?.patched_versions ?? null,
-        });
-      }
+      replaceAdvisories(flattenAdvisoryVulnerabilityRows(advisories));
     } catch (e) {
       const advisoryScope = `npm:${config.github.repo}`;
       const message = recordEvidenceRefreshFailure('advisories', advisoryScope, e, {
