@@ -891,6 +891,12 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           fix.closureProof.byRiskDisposition, expectedRisk.counts);
         expectJsonEqual(failures, tag, 'persisted closureProof riskSummary must match proof row dispositions',
           fix.closureProof.riskSummary, expectedRisk.summary);
+        expect(failures, tag,
+          Number(scoreInput.unresolvedClosureIssueCount ?? 0) === Number(expectedRisk.summary.unresolvedForReleaseCount ?? 0),
+          `score input unresolvedClosureIssueCount (${scoreInput.unresolvedClosureIssueCount}) must match closureProof riskSummary unresolvedForReleaseCount (${expectedRisk.summary.unresolvedForReleaseCount})`);
+        expect(failures, tag,
+          roundMetric(Number(scoreInput.unresolvedClosureRiskWeight ?? 0)) === Number(expectedRisk.summary.unresolvedWeightedRisk ?? 0),
+          `score input unresolvedClosureRiskWeight (${scoreInput.unresolvedClosureRiskWeight}) must match closureProof riskSummary unresolvedWeightedRisk (${expectedRisk.summary.unresolvedWeightedRisk})`);
         for (const [disposition] of Object.entries(fix.closureProof.byRiskDisposition ?? {})) {
           expect(failures, tag, knownRiskDispositions.has(disposition),
             `closureProof byRiskDisposition contains unknown disposition ${disposition}`);

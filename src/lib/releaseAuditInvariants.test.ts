@@ -34,6 +34,13 @@ const artifactVerificationFixture = {
 };
 const proofCheckedAt = '2026-01-02T00:00:00Z';
 const auditScoredAt = '2026-01-02T00:00:01Z';
+const defaultScoreInput = {
+  schemaVersion: 1,
+  rawIssueCount: 1,
+  classifiedIssueCount: 1,
+  unresolvedClosureIssueCount: 0,
+  unresolvedClosureRiskWeight: 0,
+};
 
 function closureProofFixture(overrides: any = {}) {
   const proof = {
@@ -137,7 +144,7 @@ function reader(overrides: Partial<{
     audit: {
       prompt_version: 6,
       scored_at: auditScoredAt,
-      input_json: JSON.stringify({ schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 }),
+      input_json: JSON.stringify(defaultScoreInput),
       components_json: JSON.stringify({ schemaVersion: 1, components: {}, explanation: { schemaVersion: 1 } }),
       issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
       gate_evidence_json: JSON.stringify({
@@ -159,7 +166,7 @@ function reader(overrides: Partial<{
     data.audit = { ...data.audit, issue_evidence_json: JSON.stringify({ schemaVersion: 1 }) };
   }
   if (data.audit && data.audit.input_json === undefined) {
-    data.audit = { ...data.audit, input_json: JSON.stringify({ schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 }) };
+    data.audit = { ...data.audit, input_json: JSON.stringify(defaultScoreInput) };
   }
   if (data.audit && data.audit.components_json === undefined) {
     data.audit = { ...data.audit, components_json: JSON.stringify({ schemaVersion: 1, components: {}, explanation: { schemaVersion: 1 } }) };
@@ -1265,6 +1272,72 @@ describe('verifyReleaseAudit', () => {
       /persisted closureProof examplesByStatus must include at least one repro_requested example/.test(failure)));
   });
 
+  it('fails when score closure-risk input is stale against proof risk summary', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'duplicate_to_open_canonical',
+          risk_disposition: 'open_canonical_risk',
+          risk_weight: 3.188,
+          evidence_json: JSON.stringify({
+            canonicalIssue: 999,
+            canonicalResolution: { terminalIssue: { number: 999, state: 'open' } },
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          input_json: JSON.stringify({
+            ...defaultScoreInput,
+            unresolvedClosureIssueCount: 0,
+            unresolvedClosureRiskWeight: 0,
+          }),
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { duplicate_to_open_canonical: 1 },
+                byRiskDisposition: { open_canonical_risk: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 1,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 0,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 1,
+                  unresolvedWeightedRisk: 3.188,
+                  weightedRiskByDisposition: { open_canonical_risk: 3.188 },
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /unresolvedClosureIssueCount/.test(failure)));
+    assert.ok(result.failures.some((failure) => /unresolvedClosureRiskWeight/.test(failure)));
+  });
+
   it('fails when persisted closure proof schema version is missing', async () => {
     const closureProof = closureProofFixture();
     delete closureProof.schemaVersion;
@@ -1533,8 +1606,7 @@ describe('verifyReleaseAudit', () => {
         },
       }),
     });
-    assert.equal(result.failures.length, 1);
-    assert.match(result.failures[0], /open terminal/);
+    assert.ok(result.failures.some((failure) => /open terminal/.test(failure)));
   });
 
   it('fails when closed canonical proof should use a more specific status', async () => {

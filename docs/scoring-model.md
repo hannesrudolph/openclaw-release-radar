@@ -218,7 +218,7 @@ The API exposes a coherent `releaseFixCredit` object:
 
 The invariant is `countedClosedCount + notCountedClosedCount = analyzedClosedCount`.
 
-After closure proof analysis, the same `closureProof` and `releaseFixCredit` payload is persisted back into `release_score_audits.gate_evidence_json` and exposed through `/review` and `/comparison`.
+After closure proof analysis, the same `closureProof` and `releaseFixCredit` payload is persisted back into `release_score_audits.gate_evidence_json` and exposed through `/review` and `/comparison`. A scored audit must also have `input.unresolvedClosureIssueCount` and `input.unresolvedClosureRiskWeight` matching `closureProof.riskSummary`; if proof analysis changes closure risk, score persistence must run again before the audit is considered valid.
 
 Closure proof examples are selected after risk weighting and sorted by descending `riskWeight`. They expose raw classification, effective classification, classification diffs, effective labels, and per-issue risk weight so reviewers can see which deterministic overrides affected closure-risk scoring.
 
