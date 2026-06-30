@@ -891,6 +891,36 @@ describe('closure proof canonical roll-up', () => {
     assert.deepEqual(result.classificationDiff.sentiment, { raw: 'neutral', effective: 'negative' });
   });
 
+  it('marks missing classification rows without promoting closure proof credit', () => {
+    const classification = __closureProofAnalysisTest.effectiveClosureProofClassification({
+      title: '[Bug]: closed issue still needs classification',
+      labels: JSON.stringify(['bug']),
+      sentiment: null,
+      severity: null,
+      scope: null,
+      functionality: null,
+      affected_users: null,
+      has_workaround: null,
+      workaround_status: null,
+      duplicate_cluster: null,
+      affects_version: null,
+      confidence: null,
+      rationale: null,
+      classification_issue_number: null,
+      classification_prompt_version: null,
+    });
+    assert.equal((classification as any).missingClassification, true);
+    assert.equal(classification.classification.sentiment, 'neutral');
+    assert.equal(classification.classification.confidence, 0);
+
+    const proof = __closureProofAnalysisTest.missingClassificationClosureProof({
+      classification_issue_number: null,
+      classification_prompt_version: null,
+    });
+    assert.equal(proof.status, 'unknown');
+    assert.equal((proof.evidence as any).missingClassification, true);
+  });
+
   it('builds fallback commit proof from eligible referenced commits only', () => {
     const rows = [
       {

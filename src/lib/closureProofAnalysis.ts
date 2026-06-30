@@ -32,10 +32,8 @@ WITH target AS (
 SELECT DISTINCT
   i.number,
   i.title,
-  i.closed_at,
-  c.sentiment
+  i.closed_at
 FROM issues i
-JOIN classifications c ON c.issue_number=i.number
 JOIN target
 WHERE i.closed_at IS NOT NULL
   AND target.published_at IS NOT NULL
@@ -54,7 +52,6 @@ WITH target AS (
 )
 SELECT DISTINCT i.number
 FROM issues i
-JOIN classifications c ON c.issue_number=i.number
 JOIN target
 WHERE i.closed_at IS NOT NULL
   AND target.published_at IS NOT NULL
@@ -84,6 +81,8 @@ SELECT
   i.author,
   i.labels,
   i.closed_at,
+  c.issue_number AS classification_issue_number,
+  c.prompt_version AS classification_prompt_version,
   c.sentiment,
   c.severity,
   c.scope,
@@ -385,24 +384,26 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
     const closureClassification = effectiveClosureProofClassification(row);
-    const result = classifyClosureProof({
-      issueNumber: row.number,
-      issueAuthor: row.author,
-      closedAt: row.closed_at,
-      sentiment: closureClassification.classification.sentiment,
-      stateReasons: splitCsv(row.state_reasons),
-      closureActors: splitCsv(row.closure_actors),
-      hasClosureEvent: Number(row.closure_events ?? 0) > 0,
-      hasClosingLink: Number(row.closing_links ?? 0) > 0,
-      hasMergedClosingPr: Number(row.merged_closing_prs ?? 0) > 0,
-      hasReachableClosingPr: Number(row.reachable_closing_prs ?? 0) > 0,
-      hasNotReachableClosingPr: Number(row.not_reachable_closing_prs ?? 0) > 0,
-      hasReachableFixCommit: reachableFixCommits.length > 0,
-      hasNotReachableFixCommit: notReachableFixCommits.length > 0,
-      reachableFixCommits,
-      notReachableFixCommits,
-      comments,
-    });
+    const result = closureClassification.missingClassification
+      ? missingClassificationClosureProof(row)
+      : classifyClosureProof({
+        issueNumber: row.number,
+        issueAuthor: row.author,
+        closedAt: row.closed_at,
+        sentiment: closureClassification.classification.sentiment,
+        stateReasons: splitCsv(row.state_reasons),
+        closureActors: splitCsv(row.closure_actors),
+        hasClosureEvent: Number(row.closure_events ?? 0) > 0,
+        hasClosingLink: Number(row.closing_links ?? 0) > 0,
+        hasMergedClosingPr: Number(row.merged_closing_prs ?? 0) > 0,
+        hasReachableClosingPr: Number(row.reachable_closing_prs ?? 0) > 0,
+        hasNotReachableClosingPr: Number(row.not_reachable_closing_prs ?? 0) > 0,
+        hasReachableFixCommit: reachableFixCommits.length > 0,
+        hasNotReachableFixCommit: notReachableFixCommits.length > 0,
+        reachableFixCommits,
+        notReachableFixCommits,
+        comments,
+      });
     const linkedPrs = enrichLinkedPrReachability(releaseTag, parseJsonArray(row.linked_prs_json));
     const evidence: Record<string, unknown> = {
       ...result.evidence,
@@ -534,8 +535,21 @@ function effectiveClosureProofClassification(row: any): {
   rawClassification: IssueClassification;
   classification: IssueClassification;
   classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
+  missingClassification: boolean;
+  promptVersion: number | null;
 } {
   const labels = parseJsonArray(row.labels).filter((label): label is string => typeof label === 'string');
+  if (!hasClassification(row)) {
+    const fallback = missingClassificationFallback(row);
+    return {
+      labels,
+      rawClassification: fallback,
+      classification: fallback,
+      classificationDiff: {},
+      missingClassification: true,
+      promptVersion: null,
+    };
+  }
   const rawClassification = rowToClassification(row);
   const classification = applyClosureRiskSentimentHint(
     applyTitleIssueShapeHint(
@@ -554,6 +568,43 @@ function effectiveClosureProofClassification(row: any): {
     rawClassification,
     classification,
     classificationDiff: classificationDiff(rawClassification, classification),
+    missingClassification: false,
+    promptVersion: typeof row.classification_prompt_version === 'number' ? row.classification_prompt_version : null,
+  };
+}
+
+function hasClassification(row: any): boolean {
+  return typeof row.sentiment === 'string' &&
+    typeof row.severity === 'string' &&
+    typeof row.scope === 'string' &&
+    typeof row.functionality === 'string' &&
+    typeof row.affected_users === 'string';
+}
+
+function missingClassificationFallback(row: any): IssueClassification {
+  return {
+    sentiment: 'neutral',
+    severity: 'low',
+    scope: 'niche',
+    functionality: 'docs',
+    affectedUsers: 'unknown',
+    workaroundStatus: 'unknown',
+    duplicateCluster: row.duplicate_cluster ?? null,
+    affectsVersion: row.affects_version ?? null,
+    confidence: 0,
+    rationale: 'missing classification evidence',
+  };
+}
+
+function missingClassificationClosureProof(row: any): ClosureProofResult {
+  return {
+    status: 'unknown',
+    summary: 'Closed issue lacks current classification evidence; release-fix credit is withheld until classification backfill succeeds.',
+    evidence: {
+      missingClassification: true,
+      classificationIssueNumber: row.classification_issue_number ?? null,
+      classificationPromptVersion: row.classification_prompt_version ?? null,
+    },
   };
 }
 
@@ -1750,6 +1801,7 @@ export const __closureProofAnalysisTest = {
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
   terminalCanonicalIssuesNeedingEvidence,
+  missingClassificationClosureProof,
 };
 
 function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {

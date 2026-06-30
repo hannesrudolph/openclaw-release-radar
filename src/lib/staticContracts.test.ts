@@ -233,6 +233,7 @@ describe('static scoring/UI contracts', () => {
   it('closed-window backfill classifies raw closed gaps and reruns proof pipeline', () => {
     const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
     const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
+    const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
     assert.equal(pkg.scripts['backfill:closed-windows'], 'tsx scripts/backfill-closed-windows.mjs');
     assert.match(script, /listIssuesBatch/);
     assert.match(script, /classifyIssue/);
@@ -240,6 +241,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
     assert.match(script, /persistReleaseScoreRun/);
+    assert.doesNotMatch(analysis, /FROM issues i\s+JOIN classifications c ON c\.issue_number=i\.number\s+JOIN target/);
+    assert.match(analysis, /missingClassificationClosureProof/);
   });
 
   it('closure proof analysis checks direct commit closers for release reachability', () => {
