@@ -29,6 +29,7 @@ import {
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_INPUT_SCHEMA_VERSION,
 } from '../../src/lib/releaseScoring.ts';
+import { verifyScoreAuditPayloadContracts } from './score-audit-contracts.mjs';
 
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
 
@@ -113,6 +114,61 @@ const knownExplanationLimitCodes = new Set(SCORE_EXPLANATION_LIMIT_CODES);
 const knownExplanationPositiveCodes = new Set(SCORE_EXPLANATION_POSITIVE_CODES);
 const expectedExplanationDetailLabels = new Map(Object.entries(SCORE_EXPLANATION_DETAIL_LABELS));
 const publicTopLevelKeys = new Set(['repo', 'releases', 'schemaVersion', 'updatedAt']);
+const reviewPayloadKeys = new Set(['tag', 'local']);
+const reviewLocalKeys = new Set([
+  'schemaVersion',
+  'score',
+  'band',
+  'status',
+  'recommended',
+  'reason',
+  'negativeIssues',
+  'positiveIssues',
+  'scoredAt',
+  'dataFreshness',
+  'sourceProvenance',
+  'modelVersion',
+  'promptVersion',
+  'input',
+  'components',
+  'issueEvidence',
+  'gateEvidence',
+]);
+const comparisonPayloadKeys = new Set(['schemaVersion', 'snapshot', 'releases']);
+const comparisonSnapshotKeys = new Set(['id', 'sourceUrl', 'capturedAt', 'pageTitle']);
+const comparisonReleaseKeys = new Set(['tag', 'local', 'upstream', 'delta']);
+const comparisonLocalKeys = new Set([
+  'schemaVersion',
+  'score',
+  'band',
+  'status',
+  'recommended',
+  'reason',
+  'negativeIssues',
+  'positiveIssues',
+  'scoredAt',
+  'dataFreshness',
+  'modelVersion',
+  'components',
+  'input',
+  'gateEvidence',
+]);
+const comparisonUpstreamKeys = new Set([
+  'schemaVersion',
+  'snapshotId',
+  'tag',
+  'score',
+  'band',
+  'status',
+  'recommended',
+  'reason',
+  'negativeIssues',
+  'positiveIssues',
+  'totalAttributedIssues',
+  'visibleIssues',
+  'rawCardText',
+]);
+const comparisonDeltaKeys = new Set(['schemaVersion', 'score', 'negativeIssues']);
 const releaseRowKeys = new Set([
   'advisories',
   'auditLinks',
@@ -932,6 +988,19 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
       const scoreComponents = parseJson(audit.components_json, {});
       const gate = parseJson(audit.gate_evidence_json, {});
       const issueEvidence = parseJson(audit.issue_evidence_json, {});
+      failures.push(...verifyScoreAuditPayloadContracts({
+        tag,
+        input: scoreInput,
+        components: scoreComponents,
+        issueEvidence,
+        gateEvidence: gate,
+        versions: {
+          scoreInput: scoreInputSchemaVersion,
+          scoreComponents: scoreComponentsSchemaVersion,
+          issueEvidence: issueEvidenceSchemaVersion,
+          gateEvidence: gateEvidenceSchemaVersion,
+        },
+      }));
       verifyPersistedAuditTuple({ failures, tag, release, audit, scoreInput, scoreComponents });
       expect(failures, tag, scoreInput.schemaVersion === scoreInputSchemaVersion,
         `persisted score input schemaVersion (${scoreInput.schemaVersion}) must equal ${scoreInputSchemaVersion}`);
@@ -1987,6 +2056,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
   }
   const comparisonPayload = await fetchOptionalComparisonPayload({ apiBase, fetchJson, failures });
   if (comparisonPayload) {
+    verifyAllowedKeys({ failures, tag: 'api/comparison', label: 'comparison payload', value: comparisonPayload, allowed: comparisonPayloadKeys });
     expect(failures, 'api/comparison', comparisonPayload.schemaVersion === comparisonPayloadSchemaVersion,
       `comparison schemaVersion must be ${comparisonPayloadSchemaVersion}, got ${JSON.stringify(comparisonPayload.schemaVersion)}`);
     verifyComparisonSnapshot({ failures, label: 'api/comparison', snapshot: comparisonPayload.snapshot });
@@ -2102,13 +2172,19 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
 
     const comparison = comparisonByTag.get(release.tag);
     if (comparisonPayload) {
+      verifyAllowedKeys({ failures, tag: release.tag, label: 'comparison release row', value: comparison, allowed: comparisonReleaseKeys });
       expect(failures, release.tag, !!comparison?.local && 'upstream' in comparison && !!comparison?.delta,
         'comparison payload must include local, upstream, and delta objects');
+      if (comparison?.local) {
+        verifyAllowedKeys({ failures, tag: release.tag, label: 'comparison local', value: comparison.local, allowed: comparisonLocalKeys });
+      }
       if (comparison?.upstream) {
+        verifyAllowedKeys({ failures, tag: release.tag, label: 'comparison upstream', value: comparison.upstream, allowed: comparisonUpstreamKeys });
         expect(failures, release.tag, comparison.upstream.schemaVersion === comparisonUpstreamSchemaVersion,
           `comparison upstream schemaVersion (${comparison.upstream.schemaVersion}) must equal ${comparisonUpstreamSchemaVersion}`);
       }
       if (comparison?.delta) {
+        verifyAllowedKeys({ failures, tag: release.tag, label: 'comparison delta', value: comparison.delta, allowed: comparisonDeltaKeys });
         expect(failures, release.tag, comparison.delta.schemaVersion === comparisonDeltaSchemaVersion,
           `comparison delta schemaVersion (${comparison.delta.schemaVersion}) must equal ${comparisonDeltaSchemaVersion}`);
       }
@@ -2127,6 +2203,10 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       path: 'review payload',
       forbidden: forbiddenReviewComparisonKeys,
     });
+    verifyAllowedKeys({ failures, tag: release.tag, label: 'review payload', value: review, allowed: reviewPayloadKeys });
+    verifyAllowedKeys({ failures, tag: release.tag, label: 'review local', value: review.local, allowed: reviewLocalKeys });
+    expect(failures, release.tag, review.tag === release.tag,
+      `review tag (${review.tag}) must match DB tag (${release.tag})`);
     expect(failures, release.tag, review.local?.schemaVersion === localAuditSchemaVersion,
       `review local schemaVersion (${review.local?.schemaVersion}) must equal ${localAuditSchemaVersion}`);
     expect(failures, release.tag, review.local?.score === release.final_score,
@@ -2994,6 +3074,7 @@ function countBy(rows, keyFn) {
 
 function verifyComparisonSnapshot({ failures, label, snapshot }) {
   if (snapshot == null) return;
+  verifyAllowedKeys({ failures, tag: label, label: 'comparison snapshot', value: snapshot, allowed: comparisonSnapshotKeys });
   expect(failures, label, typeof snapshot.id === 'number', 'comparison snapshot id must be numeric');
   expect(failures, label, typeof snapshot.sourceUrl === 'string' && snapshot.sourceUrl.length > 0,
     'comparison snapshot sourceUrl must be present');

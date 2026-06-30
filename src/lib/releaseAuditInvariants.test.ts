@@ -860,6 +860,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (url.includes('/api/releases/v1/review/issues')) return issueEvidencePage(url);
     if (url.endsWith('/api/releases/v1/review')) {
       return {
+        tag: 'v1',
         local: {
           schemaVersion: 1,
           score: 7.5,
@@ -981,6 +982,119 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /releases row must not expose unknown keys: unexpectedDebugField/.test(failure)));
+  });
+
+  it('fails when persisted score audit payloads expose unexpected top-level keys', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          input_json: JSON.stringify({ ...defaultScoreInput, debugInput: true }),
+          components_json: JSON.stringify({
+            schemaVersion: 1,
+            components: {},
+            evidenceCoverage: 1,
+            hotfix: false,
+            reason: 'test reason',
+            explanation: scoreExplanationFixture(),
+          }),
+          issue_evidence_json: JSON.stringify({ schemaVersion: 1, debugIssueEvidence: true }),
+          gate_evidence_json: JSON.stringify({
+            schemaVersion: 1,
+            labelTimeline: labelTimelineFixture,
+            releaseChecks: releaseChecksFixture,
+            artifactVerification: artifactVerificationFixture,
+            fixProvenance: {
+              verifiedFixedCount: 1,
+              unverifiedClosedCount: 0,
+              closureProof: closureProofFixture(),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 1, notCountedClosedCount: 0, analyzedClosedCount: 1 },
+            },
+            debugGate: true,
+          }),
+        },
+      }),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson(),
+    });
+
+    assert.ok(result.failures.some((failure) => /score input payload has unexpected top-level key debugInput/.test(failure)));
+    assert.ok(result.failures.some((failure) => /issue evidence payload has unexpected top-level key debugIssueEvidence/.test(failure)));
+    assert.ok(result.failures.some((failure) => /gate evidence payload has unexpected top-level key debugGate/.test(failure)));
+  });
+
+  it('fails when review payloads expose unexpected keys', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/releases/v1/review')) {
+          return {
+            ...payload,
+            debugReview: true,
+            local: {
+              ...payload.local,
+              debugLocal: true,
+            },
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /review payload must not expose unknown keys: debugReview/.test(failure)));
+    assert.ok(result.failures.some((failure) => /review local must not expose unknown keys: debugLocal/.test(failure)));
+  });
+
+  it('fails when comparison payloads expose unexpected keys', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/comparison')) {
+          return {
+            ...payload,
+            debugComparison: true,
+            snapshot: { ...payload.snapshot, debugSnapshot: true },
+            releases: [{
+              ...payload.releases[0],
+              debugComparisonRow: true,
+              local: { ...payload.releases[0].local, debugLocal: true },
+              upstream: {
+                schemaVersion: 1,
+                snapshotId: 1,
+                tag: 'v1',
+                score: 7.5,
+                band: 'ok',
+                status: 'eligible',
+                recommended: true,
+                reason: 'upstream',
+                negativeIssues: 1,
+                positiveIssues: 0,
+                totalAttributedIssues: 1,
+                visibleIssues: [],
+                rawCardText: 'card',
+                debugUpstream: true,
+              },
+              delta: { ...payload.releases[0].delta, debugDelta: true },
+            }],
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /comparison payload must not expose unknown keys: debugComparison/.test(failure)));
+    assert.ok(result.failures.some((failure) => /comparison snapshot must not expose unknown keys: debugSnapshot/.test(failure)));
+    assert.ok(result.failures.some((failure) => /comparison release row must not expose unknown keys: debugComparisonRow/.test(failure)));
+    assert.ok(result.failures.some((failure) => /comparison local must not expose unknown keys: debugLocal/.test(failure)));
+    assert.ok(result.failures.some((failure) => /comparison upstream must not expose unknown keys: debugUpstream/.test(failure)));
+    assert.ok(result.failures.some((failure) => /comparison delta must not expose unknown keys: debugDelta/.test(failure)));
   });
 
   it('fails when score ledger row identity drifts', async () => {
