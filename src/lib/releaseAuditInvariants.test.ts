@@ -427,8 +427,20 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         url: 'https://github.com/x/y/issues/1',
         state: 'closed',
         labels: [],
-        rawClassification: {},
-        classification: {},
+        rawClassification: {
+          sentiment: 'negative',
+          severity: 'high',
+          functionality: 'core',
+          scope: 'moderate',
+          affectedUsers: 'some',
+        },
+        classification: {
+          sentiment: 'negative',
+          severity: 'high',
+          functionality: 'core',
+          scope: 'moderate',
+          affectedUsers: 'some',
+        },
         classificationDiff: {},
       },
     };
@@ -438,6 +450,15 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const impacts = impactFilter ? impactFilter.split(',').map((impact) => impact.trim()).filter(Boolean) : [];
     const stateFilter = parsed.searchParams.get('state');
     const states = stateFilter ? stateFilter.split(',').map((state) => state.trim()).filter(Boolean) : [];
+    const enumFilter = (key: string) => {
+      const raw = parsed.searchParams.get(key);
+      return raw ? raw.split(',').map((value) => value.trim()).filter(Boolean) : [];
+    };
+    const sentiments = enumFilter('sentiment');
+    const severities = enumFilter('severity');
+    const functionalities = enumFilter('functionality');
+    const scopes = enumFilter('scope');
+    const affectedUsers = enumFilter('affectedUsers');
     const fieldConfirmedFilter = parsed.searchParams.get('fieldConfirmed');
     const fieldConfirmed = fieldConfirmedFilter == null ? null : ['1', 'true', 'yes'].includes(fieldConfirmedFilter.toLowerCase());
     const minWeight = parsed.searchParams.get('minWeight') == null ? null : Number(parsed.searchParams.get('minWeight'));
@@ -445,6 +466,11 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&
       (!states.length || states.includes(row.issue.state)) &&
+      (!sentiments.length || sentiments.includes(row.issue.classification.sentiment)) &&
+      (!severities.length || severities.includes(row.issue.classification.severity)) &&
+      (!functionalities.length || functionalities.includes(row.issue.classification.functionality)) &&
+      (!scopes.length || scopes.includes(row.issue.classification.scope)) &&
+      (!affectedUsers.length || affectedUsers.includes(row.issue.classification.affectedUsers)) &&
       (fieldConfirmed == null || row.fieldConfirmed === fieldConfirmed) &&
       (minWeight == null || row.weight >= minWeight) &&
       (maxWeight == null || row.weight <= maxWeight)
@@ -464,6 +490,16 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         impacts: impacts.length ? impacts : null,
         state: states.length === 1 ? states[0] : null,
         states: states.length ? states : null,
+        sentiment: sentiments.length === 1 ? sentiments[0] : null,
+        sentiments: sentiments.length ? sentiments : null,
+        severity: severities.length === 1 ? severities[0] : null,
+        severities: severities.length ? severities : null,
+        functionality: functionalities.length === 1 ? functionalities[0] : null,
+        functionalities: functionalities.length ? functionalities : null,
+        scope: scopes.length === 1 ? scopes[0] : null,
+        scopes: scopes.length ? scopes : null,
+        affectedUsers: affectedUsers.length === 1 ? affectedUsers[0] : null,
+        affectedUsersList: affectedUsers.length ? affectedUsers : null,
         fieldConfirmed,
         minWeight,
         maxWeight,

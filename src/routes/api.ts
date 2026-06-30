@@ -61,6 +61,11 @@ const ISSUE_EVIDENCE_AUDIT_MAX_LIMIT = 250;
 const PR_REACHABILITY_AUDIT_SCHEMA_VERSION = 1;
 const PR_REACHABILITY_AUDIT_DEFAULT_LIMIT = 100;
 const PR_REACHABILITY_AUDIT_MAX_LIMIT = 250;
+const ISSUE_EVIDENCE_SENTIMENTS = ['negative', 'positive', 'neutral'] as const;
+const ISSUE_EVIDENCE_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+const ISSUE_EVIDENCE_FUNCTIONALITIES = ['core', 'integration', 'provider', 'docs'] as const;
+const ISSUE_EVIDENCE_SCOPES = ['broad', 'moderate', 'niche'] as const;
+const ISSUE_EVIDENCE_AFFECTED_USERS = ['many', 'some', 'few', 'unknown'] as const;
 
 // Cross-reference each release tag against cached advisories. `affected` = CVEs in
 // this version's own window (see CVE_BADGE_WINDOW); `patched` = CVEs whose fix first
@@ -309,6 +314,13 @@ function parseIssueEvidenceStateFilter(raw: unknown): Array<'open' | 'closed' | 
   return states as Array<'open' | 'closed' | 'other'>;
 }
 
+function parseIssueEvidenceEnumFilter<T extends string>(raw: unknown, allowed: readonly T[]): T[] | null {
+  const values = parseCommaList(raw);
+  if (!values.length) return null;
+  if (values.some((value) => !allowed.includes(value as T))) return [];
+  return values as T[];
+}
+
 function parseBooleanFilter(raw: unknown): boolean | null | undefined {
   if (raw == null) return null;
   const value = Array.isArray(raw) ? raw[0] : raw;
@@ -336,6 +348,15 @@ function parseCommaList(raw: unknown): string[] {
 function issueEvidenceState(row: { issue?: { state?: unknown; missing?: unknown } }): 'open' | 'closed' | 'other' {
   const state = row.issue?.state;
   return state === 'open' || state === 'closed' ? state : 'other';
+}
+
+function issueClassificationField(row: { issue?: unknown }, field: string): string | null {
+  const issue = row.issue && typeof row.issue === 'object' ? row.issue as Record<string, unknown> : null;
+  const classification = issue?.classification && typeof issue.classification === 'object'
+    ? issue.classification as Record<string, unknown>
+    : null;
+  const value = classification?.[field];
+  return typeof value === 'string' ? value : null;
 }
 
 function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
@@ -649,6 +670,31 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(400).json({ error: 'invalid state', state: req.query.state });
     return;
   }
+  const sentimentFilter = parseIssueEvidenceEnumFilter(req.query.sentiment, ISSUE_EVIDENCE_SENTIMENTS);
+  if (sentimentFilter && sentimentFilter.length === 0) {
+    res.status(400).json({ error: 'invalid sentiment', sentiment: req.query.sentiment });
+    return;
+  }
+  const severityFilter = parseIssueEvidenceEnumFilter(req.query.severity, ISSUE_EVIDENCE_SEVERITIES);
+  if (severityFilter && severityFilter.length === 0) {
+    res.status(400).json({ error: 'invalid severity', severity: req.query.severity });
+    return;
+  }
+  const functionalityFilter = parseIssueEvidenceEnumFilter(req.query.functionality, ISSUE_EVIDENCE_FUNCTIONALITIES);
+  if (functionalityFilter && functionalityFilter.length === 0) {
+    res.status(400).json({ error: 'invalid functionality', functionality: req.query.functionality });
+    return;
+  }
+  const scopeFilter = parseIssueEvidenceEnumFilter(req.query.scope, ISSUE_EVIDENCE_SCOPES);
+  if (scopeFilter && scopeFilter.length === 0) {
+    res.status(400).json({ error: 'invalid scope', scope: req.query.scope });
+    return;
+  }
+  const affectedUsersFilter = parseIssueEvidenceEnumFilter(req.query.affectedUsers, ISSUE_EVIDENCE_AFFECTED_USERS);
+  if (affectedUsersFilter && affectedUsersFilter.length === 0) {
+    res.status(400).json({ error: 'invalid affectedUsers', affectedUsers: req.query.affectedUsers });
+    return;
+  }
   const fieldConfirmedFilter = parseBooleanFilter(req.query.fieldConfirmed);
   if (fieldConfirmedFilter === undefined) {
     res.status(400).json({ error: 'invalid fieldConfirmed', fieldConfirmed: req.query.fieldConfirmed });
@@ -678,10 +724,20 @@ api.get('/releases/:tag/review/issues', (req, res) => {
   const tierSet = tierFilter ? new Set(tierFilter) : null;
   const impactSet = impactFilter ? new Set(impactFilter) : null;
   const stateSet = stateFilter ? new Set(stateFilter) : null;
+  const sentimentSet = sentimentFilter ? new Set(sentimentFilter) : null;
+  const severitySet = severityFilter ? new Set(severityFilter) : null;
+  const functionalitySet = functionalityFilter ? new Set(functionalityFilter) : null;
+  const scopeSet = scopeFilter ? new Set(scopeFilter) : null;
+  const affectedUsersSet = affectedUsersFilter ? new Set(affectedUsersFilter) : null;
   const allRows = evidence.rows
     .filter((row) => !tierSet || tierSet.has(row.tier))
     .filter((row) => !impactSet || impactSet.has(row.installImpactClass as ReleaseIssueEvidenceImpactClass))
     .filter((row) => !stateSet || stateSet.has(issueEvidenceState(row)))
+    .filter((row) => !sentimentSet || sentimentSet.has(issueClassificationField(row, 'sentiment') as any))
+    .filter((row) => !severitySet || severitySet.has(issueClassificationField(row, 'severity') as any))
+    .filter((row) => !functionalitySet || functionalitySet.has(issueClassificationField(row, 'functionality') as any))
+    .filter((row) => !scopeSet || scopeSet.has(issueClassificationField(row, 'scope') as any))
+    .filter((row) => !affectedUsersSet || affectedUsersSet.has(issueClassificationField(row, 'affectedUsers') as any))
     .filter((row) => fieldConfirmedFilter == null || row.fieldConfirmed === fieldConfirmedFilter)
     .filter((row) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
     .filter((row) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
@@ -698,6 +754,16 @@ api.get('/releases/:tag/review/issues', (req, res) => {
       impacts: impactFilter ?? null,
       state: stateFilter?.length === 1 ? stateFilter[0] : null,
       states: stateFilter ?? null,
+      sentiment: sentimentFilter?.length === 1 ? sentimentFilter[0] : null,
+      sentiments: sentimentFilter ?? null,
+      severity: severityFilter?.length === 1 ? severityFilter[0] : null,
+      severities: severityFilter ?? null,
+      functionality: functionalityFilter?.length === 1 ? functionalityFilter[0] : null,
+      functionalities: functionalityFilter ?? null,
+      scope: scopeFilter?.length === 1 ? scopeFilter[0] : null,
+      scopes: scopeFilter ?? null,
+      affectedUsers: affectedUsersFilter?.length === 1 ? affectedUsersFilter[0] : null,
+      affectedUsersList: affectedUsersFilter ?? null,
       fieldConfirmed: fieldConfirmedFilter,
       minWeight,
       maxWeight,

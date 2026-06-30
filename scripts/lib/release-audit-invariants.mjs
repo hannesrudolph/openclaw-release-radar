@@ -1957,6 +1957,28 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     expect(failures, tag, (page.rows ?? []).every((row) => row.issue?.state === stateToProbe),
       `issue evidence audit state filter must return only ${stateToProbe} rows`);
   }
+  const classificationFilters = [
+    ['sentiment', 'sentiments'],
+    ['severity', 'severities'],
+    ['functionality', 'functionalities'],
+    ['scope', 'scopes'],
+    ['affectedUsers', 'affectedUsersList'],
+  ];
+  for (const [field, pluralField] of classificationFilters) {
+    const value = (firstPage.rows ?? [])
+      .map((row) => row.issue?.classification?.[field])
+      .find((candidate) => typeof candidate === 'string');
+    if (!value) continue;
+    const page = await fetchJson(`${base}?limit=5&${field}=${encodeURIComponent(value)}`);
+    expect(failures, tag, page.filters?.[field] === value,
+      `issue evidence audit ${field} filter echo (${page.filters?.[field]}) must equal ${value}`);
+    expect(failures, tag, Array.isArray(page.filters?.[pluralField]) && page.filters[pluralField].length === 1 && page.filters[pluralField][0] === value,
+      `issue evidence audit ${pluralField} filter echo must contain only ${value}`);
+    expect(failures, tag, page.filteredSummary?.count === page.total,
+      `issue evidence audit ${field} filteredSummary count (${page.filteredSummary?.count}) must match total (${page.total})`);
+    expect(failures, tag, (page.rows ?? []).every((row) => row.issue?.classification?.[field] === value),
+      `issue evidence audit ${field} filter must return only ${value} rows`);
+  }
   const fieldConfirmedProbe = (firstPage.rows ?? []).find((row) => row.fieldConfirmed === true || row.fieldConfirmed === false);
   if (fieldConfirmedProbe) {
     const value = fieldConfirmedProbe.fieldConfirmed === true ? 'true' : 'false';
