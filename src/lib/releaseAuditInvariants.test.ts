@@ -2653,6 +2653,237 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /hasReachableFixCommit/.test(failure)));
   });
 
+  it('fails when unknown direct fix commit proof omits unknown commit evidence', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'direct_fix_commit_reachability_unknown',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            hasUnknownFixCommit: false,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            unknownFixCommits: [],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+              source: 'ClosureComment.fixProof',
+              status: 'unknown',
+              tagCommitOid: null,
+              evidence: 'commit_unavailable',
+              snippet: 'Fix evidence commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+              trustedSource: true,
+              author: 'maintainer',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /must set hasUnknownFixCommit/.test(failure)));
+    assert.ok(result.failures.some((failure) => /must include unknownFixCommits/.test(failure)));
+    assert.ok(result.failures.some((failure) => /unknownFixCommits must equal/.test(failure)));
+  });
+
+  it('fails when admin not-planned proof hides unknown direct fix commit evidence', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          issue_number: 1,
+          status: 'admin_not_planned_unverified',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            hasUnknownFixCommit: true,
+            stateReasons: ['NOT_PLANNED'],
+            closureContextCommentCount: 1,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+              source: 'ClosureComment.fixProof',
+              status: 'unknown',
+              tagCommitOid: null,
+              evidence: 'commit_unavailable',
+              snippet: 'Fix evidence commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+              trustedSource: true,
+              author: 'maintainer',
+            }],
+          }),
+        }],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /admin_not_planned_unverified issue #1 must not have direct fix proof/.test(failure)));
+  });
+
+  it('accepts unknown direct fix commit proof with explicit unknown commit evidence', async () => {
+    const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        verified: [],
+        unverified: [{ number: 1, sentiment: 'negative', prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'direct_fix_commit_reachability_unknown',
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            hasUnknownFixCommit: true,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            unknownFixCommits: [commit],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: commit,
+              source: 'ClosureComment.fixProof',
+              status: 'unknown',
+              tagCommitOid: null,
+              evidence: 'commit_unavailable',
+              snippet: `Fix evidence commit ${commit}`,
+              trustedSource: true,
+              author: 'maintainer',
+            }],
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          input_json: JSON.stringify({
+            ...defaultScoreInput,
+            unresolvedClosureIssueCount: 1,
+            unresolvedClosureRiskWeight: 3.984,
+          }),
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { direct_fix_commit_reachability_unknown: 1 },
+                byRiskDisposition: { missing_evidence: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 0,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 1,
+                  unresolvedForReleaseCount: 1,
+                  unresolvedWeightedRisk: 3.984,
+                  weightedRiskByDisposition: { missing_evidence: 3.984 },
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.deepEqual(result.failures, []);
+  });
+
+  it('accepts neutral unknown direct fix commit proof as non-actionable audit evidence', async () => {
+    const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        verified: [],
+        unverified: [{ number: 1, sentiment: 'neutral', prompt_version: 6 }],
+        proofRows: [{
+          issue_number: 1,
+          status: 'non_bug_direct_fix_commit_reachability_unknown',
+          title: 'neutral source proof note',
+          sentiment: 'neutral',
+          severity: 'low',
+          functionality: 'docs',
+          scope: 'niche',
+          affected_users: 'few',
+          evidence_json: JSON.stringify({
+            closureClassification: {
+              classification: {
+                sentiment: 'neutral',
+                severity: 'low',
+                functionality: 'docs',
+                scope: 'niche',
+                affectedUsers: 'few',
+              },
+            },
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            hasUnknownFixCommit: true,
+            stateReasons: ['COMPLETED'],
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            unknownFixCommits: [commit],
+            fixCommitProof: [{
+              issueNumber: 1,
+              sourceIssueNumber: 1,
+              commitOid: commit,
+              source: 'ClosureComment.fixProof',
+              status: 'unknown',
+              tagCommitOid: null,
+              evidence: 'commit_unavailable',
+              snippet: `Fix evidence commit ${commit}`,
+              trustedSource: true,
+              author: 'maintainer',
+            }],
+          }),
+        }],
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          gate_evidence_json: JSON.stringify({
+            labelTimeline: labelTimelineFixture,
+            fixProvenance: {
+              verifiedFixedCount: 0,
+              unverifiedClosedCount: 1,
+              closureProof: closureProofFixture({
+                creditedCount: 0,
+                notCreditedCount: 1,
+                byStatus: { non_bug_direct_fix_commit_reachability_unknown: 1 },
+                byRiskDisposition: { neutral_or_non_actionable: 1 },
+                riskSummary: {
+                  creditedReleaseFixCount: 0,
+                  resolvedByCanonicalReleaseFixCount: 0,
+                  resolvedByReleaseFixProofCount: 0,
+                  knownNotInReleaseCount: 0,
+                  openCanonicalRiskCount: 0,
+                  unsupportedClosureClaimCount: 0,
+                  neutralOrNonActionableCount: 1,
+                  neutralHighImpactCount: 0,
+                  neutralBugShapedCount: 0,
+                  missingEvidenceCount: 0,
+                  unresolvedForReleaseCount: 0,
+                  unresolvedWeightedRisk: 0,
+                  weightedRiskByDisposition: {},
+                },
+              }),
+              releaseFixCredit: { schemaVersion: 1, countedClosedCount: 0, notCountedClosedCount: 1, analyzedClosedCount: 1 },
+            },
+          }),
+        },
+      }),
+    });
+    assert.deepEqual(result.failures, []);
+  });
+
   it('fails when reachable commit arrays do not match proof entry statuses', async () => {
     const commit = 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a';
     const result = await verifyReleaseAudit({

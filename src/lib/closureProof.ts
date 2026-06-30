@@ -15,8 +15,10 @@ export interface ClosureProofInput {
   hasNotReachableClosingPr: boolean;
   hasReachableFixCommit?: boolean;
   hasNotReachableFixCommit?: boolean;
+  hasUnknownFixCommit?: boolean;
   reachableFixCommits?: string[];
   notReachableFixCommits?: string[];
+  unknownFixCommits?: string[];
   comments: Array<{ author?: string | null; body?: string | null; createdAt?: string | null; updatedAt?: string | null }>;
 }
 
@@ -78,8 +80,10 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
     hasNotReachableClosingPr: input.hasNotReachableClosingPr,
     hasReachableFixCommit: input.hasReachableFixCommit === true,
     hasNotReachableFixCommit: input.hasNotReachableFixCommit === true,
+    hasUnknownFixCommit: input.hasUnknownFixCommit === true,
     reachableFixCommits: input.reachableFixCommits ?? [],
     notReachableFixCommits: input.notReachableFixCommits ?? [],
+    unknownFixCommits: input.unknownFixCommits ?? [],
     matchingComments: matchingCommentSnippets(closureContextComments),
     nonActionableRationaleComments: nonActionableRationaleSnippets(closureContextComments),
     canonicalIssues: canonicalIssueNumbers(combinedComments),
@@ -112,6 +116,13 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
         summary: input.hasNotReachableFixCommit
           ? 'Non-negative item has fix/source commit proof, but that commit is not reachable from this release tag.'
           : 'Non-negative item has merged PR proof, but that PR is not reachable from this release tag.',
+        evidence,
+      };
+    }
+    if (hasCompletedClosure && input.hasUnknownFixCommit) {
+      return {
+        status: 'non_bug_direct_fix_commit_reachability_unknown',
+        summary: 'Non-negative item has fix/source commit proof, but release-tag reachability is missing or unknown.',
         evidence,
       };
     }
@@ -159,6 +170,14 @@ export function classifyClosureProof(input: ClosureProofInput): ClosureProofResu
       summary: input.hasNotReachableFixCommit
         ? 'Closed by a fix/source commit, but that commit is not reachable from this release tag.'
         : 'Closed by a merged PR, but that PR is not reachable from this release tag.',
+      evidence,
+    };
+  }
+
+  if (hasCompletedClosure && input.hasUnknownFixCommit) {
+    return {
+      status: 'direct_fix_commit_reachability_unknown',
+      summary: 'A named fix/source commit proof exists, but release-tag reachability is missing or unknown.',
       evidence,
     };
   }

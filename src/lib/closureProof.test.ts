@@ -55,6 +55,15 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'fixed_after_release');
   });
 
+  it('classifies unknown direct fix commit reachability as missing evidence', () => {
+    const result = classifyClosureProof(input({
+      hasUnknownFixCommit: true,
+      unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+    }));
+    assert.equal(result.status, 'direct_fix_commit_reachability_unknown');
+    assert.deepEqual(result.evidence.unknownFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
+  });
+
   it('does not credit reachable PRs when the closure reason is not completed', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],
@@ -592,6 +601,16 @@ describe('classifyClosureProof', () => {
       hasNotReachableClosingPr: true,
     }));
     assert.equal(result.status, 'non_bug_fixed_after_release');
+  });
+
+  it('preserves unknown direct fix commit proof shape for neutral closed items', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasUnknownFixCommit: true,
+      unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+    }));
+    assert.equal(result.status, 'non_bug_direct_fix_commit_reachability_unknown');
+    assert.deepEqual(result.evidence.unknownFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
   });
 
   it('preserves unmerged linked PR shape for neutral closed items', () => {

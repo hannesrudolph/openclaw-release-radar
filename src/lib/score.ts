@@ -9,7 +9,7 @@ import type { IssueClassification } from './llm';
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v14-closure-risk-ceilings';
+export const SCORE_MODEL_VERSION = 'evidence-v15-direct-commit-proof';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;

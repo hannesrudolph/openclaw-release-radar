@@ -709,6 +709,20 @@ describe('closure proof canonical roll-up', () => {
     assert.equal(adjusted.status, 'not_planned_with_release_fix_proof');
   });
 
+  it('classifies not-planned closures with unknown direct fix commit proof separately', () => {
+    const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
+      result('admin_not_planned_unverified', 'No rationale.'),
+      {
+        stateReasons: ['NOT_PLANNED'],
+        hasUnknownFixCommit: true,
+        unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+        linkedPrs: [],
+      },
+    );
+
+    assert.equal(adjusted.status, 'not_planned_direct_fix_commit_reachability_unknown');
+  });
+
   it('classifies not-planned closures with trusted reachable closure-comment fix proof as release proof', () => {
     const adjusted = __closureProofAnalysisTest.adjustNotPlannedEvidenceStatus(
       result('admin_not_planned_unverified', 'No rationale.'),
@@ -1029,6 +1043,17 @@ describe('closure proof canonical roll-up', () => {
     });
     assert.equal(proof.status, 'unknown');
     assert.equal((proof.evidence as any).missingClassification, true);
+
+    const unknownCommitProof = __closureProofAnalysisTest.missingClassificationClosureProof({
+      classification_issue_number: null,
+      classification_prompt_version: null,
+    }, {
+      hasUnknownFixCommit: true,
+      unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+    });
+    assert.equal(unknownCommitProof.status, 'direct_fix_commit_reachability_unknown');
+    assert.equal((unknownCommitProof.evidence as any).hasUnknownFixCommit, true);
+    assert.deepEqual((unknownCommitProof.evidence as any).unknownFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
   });
 
   it('builds referenced commit context from eligible same-repo commit references only', () => {

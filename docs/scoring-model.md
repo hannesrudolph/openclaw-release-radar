@@ -1,6 +1,6 @@
 # Scoring Model
 
-Current model: `evidence-v14-closure-risk-ceilings`
+Current model: `evidence-v15-direct-commit-proof`
 
 The score answers one question:
 
@@ -153,6 +153,7 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `admin_not_planned_no_context`: a negative report was closed with GitHub `NOT_PLANNED`, but the audit found no trusted close-time rationale comment at all.
 - `not_planned_with_release_fix_proof`: a negative report was closed with GitHub `NOT_PLANNED`, but trusted release-reachable fix proof exists. It resolves closure risk without direct GitHub fix-credit.
 - `not_planned_fixed_after_release`: a negative report was closed with GitHub `NOT_PLANNED`, and trusted fix proof exists only after the scored release tag.
+- `not_planned_direct_fix_commit_reachability_unknown`: a negative report was closed with GitHub `NOT_PLANNED`, and trusted direct fix/source commit proof exists, but release-tag reachability for that commit is missing or unknown.
 - `not_planned_with_open_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` while related open PR context still exists.
 - `not_planned_linked_pr_not_merged`: a negative report was closed with GitHub `NOT_PLANNED` and a linked closing PR is not merged or has unknown merge state.
 - `not_planned_related_closed_unmerged_pr_context`: a negative report was closed with GitHub `NOT_PLANNED` and related PR context closed without merging.
@@ -177,10 +178,12 @@ The closure proof analyzer classifies every closed issue that is not counted as 
 - `related_merged_pr_reachable_context_without_fix_credit`: related PR work is reachable from the scored tag, but no trusted closing/fix proof is credited for the issue.
 - `related_merged_pr_reachability_unknown`: related merged PR work exists, but release-tag reachability is unknown.
 - `related_pr_without_release_fix`: related PR references exist, but none is linked as reachable release-fix proof for the scored tag.
+- `direct_fix_commit_reachability_unknown`: trusted direct fix/source commit proof exists, but release-tag reachability for that commit is missing or unknown.
 - `closed_without_release_fix_proof`: no linked PR or fix/source commit proof was found for the closure.
 - `no_timeline_event`: issue has `closed_at`, but no fetched GitHub close event.
 - `non_bug_fixed_in_release`: non-negative item has release-reachable fix proof; it remains audit-visible but is not scored as bug fix credit.
 - `non_bug_fixed_after_release`: non-negative item has fix proof that is not reachable from this release tag.
+- `non_bug_direct_fix_commit_reachability_unknown`: non-negative item has trusted direct fix/source commit proof, but release-tag reachability for that commit is missing or unknown.
 - `non_bug_fixed_in_later_release`: non-negative item has fix proof reachable from a later scored stable release.
 - `non_bug_fixed_not_in_scored_releases`: non-negative item has fix proof that is not reachable from any scored stable release.
 - `non_bug_fixed_after_latest_release`: non-negative item has fix proof after the latest scored stable release.

@@ -85,6 +85,45 @@ before(async () => {
   });
   seedClosure(104, '2026-06-04T00:00:00Z');
   seedClosureProof(104, 'fixed_after_release');
+  seedIssue({
+    number: 105,
+    state: 'closed',
+    title: 'neutral issue with unknown source commit proof',
+    createdAt: '2026-06-01T16:00:00Z',
+    updatedAt: '2026-06-05T00:00:00Z',
+    closedAt: '2026-06-05T00:00:00Z',
+    labels: ['question'],
+    classification: {
+      sentiment: 'neutral',
+      severity: 'low',
+      functionality: 'docs',
+      scope: 'niche',
+      affectedUsers: 'few',
+    },
+  });
+  seedClosure(105, '2026-06-05T00:00:00Z');
+  seedClosureProof(105, 'non_bug_direct_fix_commit_reachability_unknown', {
+    hasReachableClosingPr: false,
+    hasReachableFixCommit: false,
+    hasNotReachableFixCommit: false,
+    hasUnknownFixCommit: true,
+    stateReasons: ['COMPLETED'],
+    reachableFixCommits: [],
+    notReachableFixCommits: [],
+    unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+    fixCommitProof: [{
+      issueNumber: 105,
+      sourceIssueNumber: 105,
+      commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+      source: 'ClosureComment.fixProof',
+      status: 'unknown',
+      tagCommitOid: null,
+      evidence: 'commit_unavailable',
+      snippet: 'Fix evidence commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
+      trustedSource: true,
+      author: 'maintainer',
+    }],
+  });
   seedReachability({
     prNumber: 123,
     status: 'reachable',
@@ -348,6 +387,16 @@ describe('audit API routes', () => {
     assert.equal(filtered.body.rows[0].riskDispositionLabel, 'known not in this tag');
     assert.equal(typeof filtered.body.rows[0].riskWeightLabel, 'string');
 
+    const unknownCommit = await getJson('/api/releases/v-test/review/closure-proofs?status=non_bug_direct_fix_commit_reachability_unknown');
+    assert.equal(unknownCommit.status, 200);
+    assert.equal(unknownCommit.body.filters.status, 'non_bug_direct_fix_commit_reachability_unknown');
+    assert.equal(unknownCommit.body.total, 1);
+    assert.equal(unknownCommit.body.rows[0].issueNumber, 105);
+    assert.equal(unknownCommit.body.rows[0].riskDisposition, 'neutral_or_non_actionable');
+    assert.equal(unknownCommit.body.rows[0].evidence.hasUnknownFixCommit, true);
+    assert.deepEqual(unknownCommit.body.rows[0].evidence.unknownFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
+    assert.equal(unknownCommit.body.rows[0].evidence.fixCommitProof[0].status, 'unknown');
+
     const issueFiltered = await getJson('/api/releases/v-test/review/closure-proofs?issue=103');
     assert.equal(issueFiltered.status, 200);
     assert.equal(issueFiltered.body.filters.issue, 103);
@@ -459,13 +508,13 @@ function seedClosure(issueNumber: number, closedAt: string) {
   });
 }
 
-function seedClosureProof(issueNumber: number, status: string) {
+function seedClosureProof(issueNumber: number, status: string, evidence: Record<string, unknown> = { status }) {
   dbModule.upsertIssueClosureProof({
     release_tag: 'v-test',
     issue_number: issueNumber,
     status,
     summary: status,
-    evidence_json: JSON.stringify({ status }),
+    evidence_json: JSON.stringify(evidence),
   });
 }
 

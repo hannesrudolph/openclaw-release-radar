@@ -50,6 +50,10 @@ describe('closure proof risk weighting', () => {
     assert.ok(CLOSURE_PROOF_STATUS_RANK.duplicate_to_open_canonical < CLOSURE_PROOF_STATUS_RANK.fixed_in_release);
     assert.ok(CLOSURE_PROOF_STATUS_RANK.fixed_after_latest_release < CLOSURE_PROOF_STATUS_RANK.fixed_in_release);
     assert.ok(CLOSURE_PROOF_STATUS_RANK.unknown < CLOSURE_PROOF_STATUS_RANK.non_bug_neutral);
+    assert.ok(CLOSURE_PROOF_STATUS_RANK.not_planned_direct_fix_commit_reachability_unknown < CLOSURE_PROOF_STATUS_RANK.direct_fix_commit_reachability_unknown);
+    assert.equal(closureRiskDisposition('not_planned_direct_fix_commit_reachability_unknown'), 'missing_evidence');
+    assert.ok(CLOSURE_PROOF_STATUS_RANK.direct_fix_commit_reachability_unknown < CLOSURE_PROOF_STATUS_RANK.non_bug_direct_fix_commit_reachability_unknown);
+    assert.equal(closureRiskDisposition('non_bug_direct_fix_commit_reachability_unknown'), 'neutral_or_non_actionable');
   });
 
   it('weights unresolved closure risk by disposition and issue classification', () => {

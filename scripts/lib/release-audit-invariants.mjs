@@ -33,6 +33,11 @@ import { verifyScoreAuditPayloadContracts } from './score-audit-contracts.mjs';
 
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
 
+const directUnknownFixCommitStatuses = new Set([
+  'not_planned_direct_fix_commit_reachability_unknown',
+  'direct_fix_commit_reachability_unknown',
+  'non_bug_direct_fix_commit_reachability_unknown',
+]);
 const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
 const knownReachabilityEvidenceReasons = new Set([
   'merge_commit_in_release_history',
@@ -408,6 +413,7 @@ const closureProofAuditEvidenceKeys = new Set([
   'hasNotReachableClosingPr',
   'hasReachableFixCommit',
   'hasNotReachableFixCommit',
+  'hasUnknownFixCommit',
   'canonicalIssues',
   'canonicalIssueDetails',
   'canonicalResolution',
@@ -424,6 +430,7 @@ const closureProofAuditEvidenceKeys = new Set([
   'referencedCommitContext',
   'reachableFixCommits',
   'notReachableFixCommits',
+  'unknownFixCommits',
 ]);
 const reachabilityAuditKeys = new Set([
   'schemaVersion',
@@ -738,7 +745,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Number(evidence.closureContextCommentCount ?? 0) > 0,
           `admin_not_planned_unverified issue #${row.issue_number} must include close-time context; use admin_not_planned_no_context when none exists`);
         expect(failures, tag, evidence.hasReachableFixCommit !== true && evidence.hasReachableClosingPr !== true &&
-          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true,
+          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true &&
+          evidence.hasUnknownFixCommit !== true,
           `admin_not_planned_unverified issue #${row.issue_number} must not have direct fix proof; use a not_planned_* proof status`);
         expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
           `admin_not_planned_unverified issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
@@ -749,7 +757,8 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expect(failures, tag, Number(evidence.closureContextCommentCount ?? -1) === 0,
           `admin_not_planned_no_context issue #${row.issue_number} must have zero close-time rationale comments`);
         expect(failures, tag, evidence.hasReachableFixCommit !== true && evidence.hasReachableClosingPr !== true &&
-          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true,
+          evidence.hasNotReachableFixCommit !== true && evidence.hasNotReachableClosingPr !== true &&
+          evidence.hasUnknownFixCommit !== true,
           `admin_not_planned_no_context issue #${row.issue_number} must not have direct fix proof; use a not_planned_* proof status`);
         expect(failures, tag, !Array.isArray(evidence.linkedPrs) || evidence.linkedPrs.length === 0,
           `admin_not_planned_no_context issue #${row.issue_number} must not include linked PR context; use a not_planned_* proof status`);
@@ -770,6 +779,12 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
           `not_planned_fixed_after_release issue #${row.issue_number} must have NOT_PLANNED state reason`);
         expect(failures, tag, evidence.hasNotReachableFixCommit === true || evidence.hasNotReachableClosingPr === true,
           `not_planned_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+      }
+      if (row.status === 'not_planned_direct_fix_commit_reachability_unknown') {
+        expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
+          `not_planned_direct_fix_commit_reachability_unknown issue #${row.issue_number} must have NOT_PLANNED state reason`);
+        expect(failures, tag, evidence.hasUnknownFixCommit === true && Array.isArray(evidence.unknownFixCommits) && evidence.unknownFixCommits.length > 0,
+          `not_planned_direct_fix_commit_reachability_unknown issue #${row.issue_number} must include unknown direct fix commit evidence`);
       }
       if (row.status === 'not_planned_with_open_pr_context') {
         expect(failures, tag, Array.isArray(evidence.stateReasons) && evidence.stateReasons.includes('NOT_PLANNED'),
@@ -881,6 +896,11 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         expectNonNegativeProof({ failures, tag, row });
         expect(failures, tag, evidence.hasNotReachableClosingPr === true || evidence.hasNotReachableFixCommit === true,
           `non_bug_fixed_after_release issue #${row.issue_number} must have not-reachable PR or commit evidence`);
+      }
+      if (row.status === 'non_bug_direct_fix_commit_reachability_unknown') {
+        expectNonNegativeProof({ failures, tag, row });
+        expect(failures, tag, evidence.hasUnknownFixCommit === true && Array.isArray(evidence.unknownFixCommits) && evidence.unknownFixCommits.length > 0,
+          `non_bug_direct_fix_commit_reachability_unknown issue #${row.issue_number} must include unknown direct fix commit evidence`);
       }
       if (row.status === 'non_bug_fixed_in_later_release') {
         expectNonNegativeProof({ failures, tag, row });
@@ -1647,9 +1667,14 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     expect(failures, tag, typeof evidence[flag] === 'boolean',
       `proof issue #${row.issue_number} ${flag} must be boolean`);
   }
+  if ('hasUnknownFixCommit' in evidence) {
+    expect(failures, tag, typeof evidence.hasUnknownFixCommit === 'boolean',
+      `proof issue #${row.issue_number} hasUnknownFixCommit must be boolean when present`);
+  }
 
   const reachableFixCommits = normalizeStringArray(evidence.reachableFixCommits);
   const notReachableFixCommits = normalizeStringArray(evidence.notReachableFixCommits);
+  const unknownFixCommits = normalizeStringArray(evidence.unknownFixCommits);
   const fixCommitProof = Array.isArray(evidence.fixCommitProof) ? evidence.fixCommitProof : [];
   const canonicalCommitProof = canonicalFixCommitProof(evidence);
 
@@ -1657,6 +1682,16 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     `proof issue #${row.issue_number} reachableFixCommits must be an array`);
   expect(failures, tag, Array.isArray(evidence.notReachableFixCommits),
     `proof issue #${row.issue_number} notReachableFixCommits must be an array`);
+  if ('unknownFixCommits' in evidence) {
+    expect(failures, tag, Array.isArray(evidence.unknownFixCommits),
+      `proof issue #${row.issue_number} unknownFixCommits must be an array when present`);
+  }
+  if (directUnknownFixCommitStatuses.has(row.status)) {
+    expect(failures, tag, evidence.hasUnknownFixCommit === true,
+      `proof issue #${row.issue_number} ${row.status} must set hasUnknownFixCommit`);
+    expect(failures, tag, unknownFixCommits.length > 0,
+      `proof issue #${row.issue_number} ${row.status} must include unknownFixCommits`);
+  }
   expect(failures, tag, Array.isArray(evidence.fixCommitProof),
     `proof issue #${row.issue_number} fixCommitProof must be an array`);
   if ('canonicalFixCommitProof' in evidence) {
@@ -1670,11 +1705,16 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
 
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'reachableFixCommits', commits: reachableFixCommits });
   verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'notReachableFixCommits', commits: notReachableFixCommits });
+  verifyCommitArray({ failures, tag, issueNumber: row.issue_number, name: 'unknownFixCommits', commits: unknownFixCommits });
   expect(failures, tag, intersection(reachableFixCommits, notReachableFixCommits).length === 0,
     `proof issue #${row.issue_number} reachable and not-reachable fix commit arrays must not overlap`);
+  expect(failures, tag, intersection(reachableFixCommits, unknownFixCommits).length === 0 &&
+    intersection(notReachableFixCommits, unknownFixCommits).length === 0,
+  `proof issue #${row.issue_number} unknown fix commit arrays must not overlap reachable or not-reachable commits`);
 
   const proofReachable = [];
   const proofNotReachable = [];
+  const proofUnknown = [];
   for (const proof of fixCommitProof) {
     expect(failures, tag, isObject(proof),
       `proof issue #${row.issue_number} fixCommitProof entries must be objects`);
@@ -1703,6 +1743,7 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
     }
     if (proof.status === 'reachable' && typeof proof.commitOid === 'string') proofReachable.push(proof.commitOid);
     if (proof.status === 'not_reachable' && typeof proof.commitOid === 'string') proofNotReachable.push(proof.commitOid);
+    if (proof.status === 'unknown' && typeof proof.commitOid === 'string') proofUnknown.push(proof.commitOid);
   }
   for (const proof of canonicalCommitProof) {
     expect(failures, tag, isObject(proof),
@@ -1735,10 +1776,15 @@ function verifyProofEvidenceShape({ failures, tag, row, evidence }) {
 
   expectArrayEqual(failures, tag, `proof issue #${row.issue_number} reachableFixCommits`, reachableFixCommits, uniqueSorted(proofReachable));
   expectArrayEqual(failures, tag, `proof issue #${row.issue_number} notReachableFixCommits`, notReachableFixCommits, uniqueSorted(proofNotReachable));
+  expectArrayEqual(failures, tag, `proof issue #${row.issue_number} unknownFixCommits`, unknownFixCommits, uniqueSorted(proofUnknown));
   expect(failures, tag, evidence.hasReachableFixCommit === (reachableFixCommits.length > 0),
     `proof issue #${row.issue_number} hasReachableFixCommit must match reachableFixCommits`);
   expect(failures, tag, evidence.hasNotReachableFixCommit === (notReachableFixCommits.length > 0),
     `proof issue #${row.issue_number} hasNotReachableFixCommit must match notReachableFixCommits`);
+  if ('hasUnknownFixCommit' in evidence || 'unknownFixCommits' in evidence) {
+    expect(failures, tag, evidence.hasUnknownFixCommit === (unknownFixCommits.length > 0),
+      `proof issue #${row.issue_number} hasUnknownFixCommit must match unknownFixCommits`);
+  }
 }
 
 function canonicalFixCommitProof(evidence) {

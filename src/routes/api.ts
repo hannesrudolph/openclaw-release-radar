@@ -186,6 +186,7 @@ function compactClosureProofEvidence(evidence: unknown) {
     hasNotReachableClosingPr: raw.hasNotReachableClosingPr === true,
     hasReachableFixCommit: raw.hasReachableFixCommit === true,
     hasNotReachableFixCommit: raw.hasNotReachableFixCommit === true,
+    hasUnknownFixCommit: raw.hasUnknownFixCommit === true,
     canonicalIssues: arrayOf(raw.canonicalIssues, compactScalar),
     canonicalIssueDetails: arrayOf(raw.canonicalIssueDetails, compactIssueRef),
     canonicalResolution: compactCanonicalResolution(raw.canonicalResolution),
@@ -201,6 +202,7 @@ function compactClosureProofEvidence(evidence: unknown) {
     canonicalFixCommitProof: arrayOf(raw.canonicalFixCommitProof, compactCommitProof),
     reachableFixCommits: arrayOf(raw.reachableFixCommits, compactScalar),
     notReachableFixCommits: arrayOf(raw.notReachableFixCommits, compactScalar),
+    unknownFixCommits: arrayOf(raw.unknownFixCommits, compactScalar),
   };
 }
 

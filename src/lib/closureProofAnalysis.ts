@@ -430,9 +430,18 @@ export async function analyzeClosureProofsForRelease(
     const commitProof = directCommitProof;
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
+    const unknownFixCommits = unique(commitProof.filter((item) => item.status === 'unknown').map((item) => item.commitOid));
+    const fixCommitSummary = {
+      hasReachableFixCommit: reachableFixCommits.length > 0,
+      hasNotReachableFixCommit: notReachableFixCommits.length > 0,
+      hasUnknownFixCommit: unknownFixCommits.length > 0,
+      reachableFixCommits,
+      notReachableFixCommits,
+      unknownFixCommits,
+    };
     const closureClassification = effectiveClosureProofClassification(row, labelCutoff);
     const result = closureClassification.missingClassification
-      ? missingClassificationClosureProof(row)
+      ? missingClassificationClosureProof(row, fixCommitSummary)
       : classifyClosureProof({
         issueNumber: row.number,
         issueAuthor: row.author,
@@ -445,10 +454,7 @@ export async function analyzeClosureProofsForRelease(
         hasMergedClosingPr: Number(row.merged_closing_prs ?? 0) > 0,
         hasReachableClosingPr: Number(row.reachable_closing_prs ?? 0) > 0,
         hasNotReachableClosingPr: Number(row.not_reachable_closing_prs ?? 0) > 0,
-        hasReachableFixCommit: reachableFixCommits.length > 0,
-        hasNotReachableFixCommit: notReachableFixCommits.length > 0,
-        reachableFixCommits,
-        notReachableFixCommits,
+        ...fixCommitSummary,
         comments,
       });
     const linkedPrs = enrichLinkedPrReachability(releaseTag, parseJsonArray(row.linked_prs_json));
@@ -704,15 +710,39 @@ function missingClassificationFallback(row: any): IssueClassification {
   };
 }
 
-function missingClassificationClosureProof(row: any): ClosureProofResult {
+function missingClassificationClosureProof(
+  row: any,
+  fixCommitSummary: {
+    hasReachableFixCommit?: boolean;
+    hasNotReachableFixCommit?: boolean;
+    hasUnknownFixCommit?: boolean;
+    reachableFixCommits?: string[];
+    notReachableFixCommits?: string[];
+    unknownFixCommits?: string[];
+  } = {},
+): ClosureProofResult {
+  const evidence = {
+    missingClassification: true,
+    classificationIssueNumber: row.classification_issue_number ?? null,
+    classificationPromptVersion: row.classification_prompt_version ?? null,
+    hasReachableFixCommit: fixCommitSummary.hasReachableFixCommit === true,
+    hasNotReachableFixCommit: fixCommitSummary.hasNotReachableFixCommit === true,
+    hasUnknownFixCommit: fixCommitSummary.hasUnknownFixCommit === true,
+    reachableFixCommits: fixCommitSummary.reachableFixCommits ?? [],
+    notReachableFixCommits: fixCommitSummary.notReachableFixCommits ?? [],
+    unknownFixCommits: fixCommitSummary.unknownFixCommits ?? [],
+  };
+  if (fixCommitSummary.hasUnknownFixCommit) {
+    return {
+      status: 'direct_fix_commit_reachability_unknown',
+      summary: 'Closed issue lacks current classification evidence, and named fix/source commit reachability is missing or unknown; release-fix credit is withheld until evidence backfill succeeds.',
+      evidence,
+    };
+  }
   return {
     status: 'unknown',
     summary: 'Closed issue lacks current classification evidence; release-fix credit is withheld until classification backfill succeeds.',
-    evidence: {
-      missingClassification: true,
-      classificationIssueNumber: row.classification_issue_number ?? null,
-      classificationPromptVersion: row.classification_prompt_version ?? null,
-    },
+    evidence,
   };
 }
 
@@ -1768,6 +1798,13 @@ function adjustNotPlannedEvidenceStatus(
       ...result,
       status: 'not_planned_fixed_after_release',
       summary: 'Closed as not planned with fix proof that is not reachable from this release tag.',
+    };
+  }
+  if (evidence.hasUnknownFixCommit === true) {
+    return {
+      ...result,
+      status: 'not_planned_direct_fix_commit_reachability_unknown',
+      summary: 'Closed as not planned with direct fix/source commit proof whose release-tag reachability is missing or unknown.',
     };
   }
   if (linkedPrs.some((pr) => String(pr.state ?? '').toUpperCase() === 'OPEN' && Number(pr.merged ?? 0) !== 1)) {
