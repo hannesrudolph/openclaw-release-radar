@@ -181,6 +181,7 @@ export async function refresh(): Promise<{
 
   try {
     const refreshStartedAt = new Date(t0).toISOString();
+    const evidenceRefreshFailures: string[] = [];
     // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
     // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
     // computation (betaCount, hoursToNextRelease, aggregate breaking) but only
@@ -301,14 +302,16 @@ export async function refresh(): Promise<{
           check_contexts_json: JSON.stringify(commit.checkContexts),
         });
       } catch (e) {
-        console.warn(`[release-checks] ${r.tag_name} fetch failed (continuing): ${(e as Error).message}`);
+        const message = evidenceRefreshFailureMessage('release-checks', r.tag_name, e);
+        evidenceRefreshFailures.push(message);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
     }
 
     // 1b. Pull all security advisories for the repo. One cheap call, backfills
-    // historical CVEs automatically. Failure here must not abort the whole
-    // refresh — security data is additive; if the endpoint is down or the repo
-    // has none, we still want issue/release data to update.
+    // historical CVEs automatically. Failure here should still allow issue rows
+    // to refresh, but score persistence is refused because stale/absent advisory
+    // data changes skip-cve gates and CVE load.
     try {
       const advisories = await listSecurityAdvisories();
       for (const adv of advisories) {
@@ -328,7 +331,9 @@ export async function refresh(): Promise<{
         });
       }
     } catch (e) {
-      console.warn(`[advisories] fetch failed (continuing): ${(e as Error).message}`);
+      const message = evidenceRefreshFailureMessage('advisories', null, e);
+      evidenceRefreshFailures.push(message);
+      console.warn(`${message}; refusing score persistence after evidence refresh failures`);
     }
 
     // 2. Stream issues sorted by updated_at desc.
@@ -536,7 +541,7 @@ export async function refresh(): Promise<{
       crossedOldestEver,
       commenterScanTruncatedCount,
       classificationFailures,
-      evidenceRefreshFailures: [] as string[],
+      evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
       scorePersisted: false,
       scorePersistedAt: null,
     };
@@ -570,14 +575,13 @@ export async function refresh(): Promise<{
     }
 
     const allReleases = listReleasesDb(monitoredReleaseCount);
-    const evidenceRefreshFailures: string[] = [];
 
     for (const rel of allReleases) {
       try {
         const closure = await refreshClosureEvidenceForRelease(rel.tag);
         console.log(`[closure-evidence] ${rel.tag}: ${closure.issueCount} closed issues inspected`);
       } catch (e) {
-        const message = `[closure-evidence] ${rel.tag} failed: ${(e as Error).message}`;
+        const message = evidenceRefreshFailureMessage('closure-evidence', rel.tag, e);
         evidenceRefreshFailures.push(message);
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
@@ -585,7 +589,7 @@ export async function refresh(): Promise<{
         const reachability = await checkReleasePrReachability(rel.tag);
         console.log(`[reachability] ${rel.tag}: ${reachability.reachable}/${reachability.candidates} reachable`);
       } catch (e) {
-        const message = `[reachability] ${rel.tag} failed: ${(e as Error).message}`;
+        const message = evidenceRefreshFailureMessage('reachability', rel.tag, e);
         evidenceRefreshFailures.push(message);
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
@@ -593,7 +597,7 @@ export async function refresh(): Promise<{
         const proof = await analyzeClosureProofsForRelease(rel.tag);
         console.log(`[closure-proof] ${rel.tag}: ${proof.analyzed} analyzed`);
       } catch (e) {
-        const message = `[closure-proof] ${rel.tag} failed: ${(e as Error).message}`;
+        const message = evidenceRefreshFailureMessage('closure-proof', rel.tag, e);
         evidenceRefreshFailures.push(message);
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
@@ -601,7 +605,7 @@ export async function refresh(): Promise<{
     if (shouldRefuseScoreAfterEvidenceFailures(evidenceRefreshFailures)) {
       persistIssueCrawlMeta({
         ...issueCrawlMeta,
-        evidenceRefreshFailures,
+        evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
       });
       throw new Error(`Evidence refresh failed for ${evidenceRefreshFailures.length} step(s); refusing to persist scores`);
     }
@@ -662,6 +666,12 @@ function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {
   return failures.length > 0;
 }
 
+function evidenceRefreshFailureMessage(source: string, scope: string | null, error: unknown): string {
+  const suffix = scope ? ` ${scope}` : '';
+  const message = error instanceof Error ? error.message : String(error);
+  return `[${source}]${suffix} failed: ${message}`;
+}
+
 function shouldRefuseScoreAfterClassificationFailures(failures: unknown[]): boolean {
   return failures.length > 0;
 }
@@ -684,6 +694,7 @@ export const __refreshTest = {
   shouldRefuseScoreAfterClassificationFailures,
   shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
+  evidenceRefreshFailureMessage,
   summarizeFailures,
 };
 

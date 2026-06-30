@@ -240,6 +240,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:live/);
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
+    assert.match(readme, /release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(readme, /Release commit checks and security advisories are score-affecting evidence/);
     assert.match(readme, /malformed nested evidence connections/);
     assert.match(readme, /hasNextPage` without `endCursor/);
     assert.match(readme, /newest audited stable release/);
@@ -374,6 +376,17 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(refresh, /issue\.labels\.length/);
   });
 
+  it('refresh treats release checks and advisories as score-blocking evidence', () => {
+    const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
+    assert.match(refresh, /const evidenceRefreshFailures: string\[\] = \[\]/);
+    assert.match(refresh, /evidenceRefreshFailureMessage\('release-checks', r\.tag_name, e\)/);
+    assert.match(refresh, /evidenceRefreshFailureMessage\('advisories', null, e\)/);
+    assert.match(refresh, /evidenceRefreshFailures\.push\(message\)/);
+    assert.match(refresh, /evidenceRefreshFailures: summarizeFailures\(evidenceRefreshFailures\)/);
+    assert.doesNotMatch(refresh, /release-checks[\s\S]{0,120}continuing/);
+    assert.doesNotMatch(refresh, /advisories[\s\S]{0,120}continuing/);
+  });
+
   it('docs avoid hardcoded current score snapshots and document explanation details', () => {
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     const scoreModel = readFileSync(join(root, 'src/lib/score.ts'), 'utf8')
@@ -387,6 +400,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
+    assert.match(scoringDoc, /release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(scoringDoc, /release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(readme, /structured `explanation` object/);

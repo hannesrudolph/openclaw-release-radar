@@ -63,6 +63,17 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures(['closure proof failed']), true);
   });
 
+  it('formats score-blocking evidence refresh failures with source and scope', () => {
+    assert.equal(
+      __refreshTest.evidenceRefreshFailureMessage('release-checks', 'v2026.6.10', new Error('GraphQL missing contexts')),
+      '[release-checks] v2026.6.10 failed: GraphQL missing contexts',
+    );
+    assert.equal(
+      __refreshTest.evidenceRefreshFailureMessage('advisories', null, new Error('GraphQL unavailable')),
+      '[advisories] failed: GraphQL unavailable',
+    );
+  });
+
   it('refuses to score after any issue classification failure', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterClassificationFailures([]), false);
     assert.equal(__refreshTest.shouldRefuseScoreAfterClassificationFailures(['[classify] issue #1 failed: timeout']), true);
