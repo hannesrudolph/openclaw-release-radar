@@ -31,8 +31,10 @@ import {
   openedDuringReign,
   formatReleaseClosureProofIntegrityFailure,
   formatReleasePrReachabilityIntegrityFailure,
+  getMeta,
   releaseClosureProofIntegrity,
   releasePrReachabilityIntegrity,
+  setMeta,
   unclassifiedIssuesForVersion,
   updateReleaseScore,
   upsertReleaseScoreAudit,
@@ -71,6 +73,12 @@ export interface ReleaseScoreResult {
 export interface ReleaseScoreRun {
   scored: ReleaseScoreResult[];
   recommendedTag: string | null;
+}
+
+export interface ReleaseScorePersistenceContext {
+  source?: string;
+  scope?: string | null;
+  issueCrawl?: Record<string, unknown> | null;
 }
 
 export interface ScoreExplanation {
@@ -253,8 +261,34 @@ export function scoreTagWindow(releases: Array<{ tag: string; prerelease?: numbe
   };
 }
 
-export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
+export function persistReleaseScoreRun(run: ReleaseScoreRun, context: ReleaseScorePersistenceContext = {}): void {
   assertReleaseScoreRunPersistable(run);
+  const persistedAt = new Date().toISOString();
+  const scoredAts = run.scored
+    .map((result) => result.scoredAt)
+    .filter((scoredAt): scoredAt is string => typeof scoredAt === 'string' && Number.isFinite(Date.parse(scoredAt)))
+    .sort((a, b) => Date.parse(a) - Date.parse(b));
+  const previousIssueCrawl = parseScorePersistenceJson(getMeta('issue_crawl_last_run'), null);
+  const issueCrawl = context.issueCrawl ?? previousIssueCrawl;
+  const meta = {
+    schemaVersion: 1,
+    source: context.source ?? 'unknown',
+    scope: context.scope ?? null,
+    persistedAt,
+    scoreModelVersion: SCORE_MODEL_VERSION,
+    promptVersion: PROMPT_VERSION,
+    scoredReleaseCount: run.scored.length,
+    recommendedTag: run.recommendedTag,
+    releaseTags: run.scored.map((result) => result.rel.tag),
+    minScoredAt: scoredAts[0] ?? null,
+    maxScoredAt: scoredAts[scoredAts.length - 1] ?? null,
+    issueCrawlStartedAt: typeof issueCrawl?.startedAt === 'string' ? issueCrawl.startedAt : null,
+    issueCrawlFinishedAt: typeof issueCrawl?.finishedAt === 'string' ? issueCrawl.finishedAt : null,
+    issueCrawlStopReason: typeof issueCrawl?.stopReason === 'string' ? issueCrawl.stopReason : null,
+    issueCrawlScorePersistedAt: context.source === 'refresh'
+      ? persistedAt
+      : typeof issueCrawl?.scorePersistedAt === 'string' ? issueCrawl.scorePersistedAt : null,
+  };
   runInWriteTransaction(() => {
     for (const result of run.scored) {
       const scoredAt = result.scoredAt;
@@ -294,7 +328,18 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun): void {
         gate_evidence_json: JSON.stringify(result.gateEvidence),
       });
     }
+    setMeta('score_persistence_last_run', JSON.stringify(meta));
+    if (meta.maxScoredAt) setMeta('last_scored_at', meta.maxScoredAt);
   });
+}
+
+function parseScorePersistenceJson<T>(json: string | null, fallback: T): T {
+  if (!json) return fallback;
+  try {
+    return JSON.parse(json) as T;
+  } catch {
+    return fallback;
+  }
 }
 
 function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {

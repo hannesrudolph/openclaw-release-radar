@@ -288,10 +288,16 @@ describe('static scoring/UI contracts', () => {
       'populate-db must validate ingestion metadata before preparing DB mutations',
     );
     assert.match(populate, /persistReleaseScoreRun/);
+    assert.match(populate, /source: 'populate-db'/);
     assert.doesNotMatch(populate, /new DatabaseSync/);
     assert.match(backfill, /buildReleaseScoreRun/);
     assert.match(backfill, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
     assert.match(backfill, /persistReleaseScoreRun/);
+    assert.match(backfill, /source: 'backfill-closed-windows'/);
+    const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
+    assert.match(refresh, /persistReleaseScoreRun\(scoreRun, \{/);
+    assert.match(refresh, /source: 'refresh'/);
+    assert.match(refresh, /issueCrawl: issueCrawlMeta/);
     assert.match(populate, /score-ingestion-guard\.mjs/);
     assert.match(backfill, /score-ingestion-guard\.mjs/);
     assert.doesNotMatch(populate, /installConfidence/);
@@ -315,8 +321,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /formatReleaseClosureProofIntegrityFailure/);
     assert.match(scorer, /releasePrReachabilityIntegrity/);
     assert.match(scorer, /formatReleasePrReachabilityIntegrityFailure/);
+    assert.match(scorer, /score_persistence_last_run/);
+    assert.match(scorer, /last_scored_at/);
     assert.match(bridgeTest, /FOREIGN KEY constraint failed/);
     assert.match(bridgeTest, /getReleaseScoreAudit\('v-tx'\), undefined/);
+    assert.match(bridgeTest, /score_persistence_last_run/);
     assert.match(bridgeTest, /persistReleaseScoreRun/);
   });
 
@@ -535,6 +544,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);
     assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
     assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
+    assert.match(scoringDoc, /score_persistence_last_run/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(scoringDoc, /PR reachability evidence must cover the current merged linked-PR candidate set/);
@@ -546,6 +556,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /releaseClosureProofIntegrity/);
     assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
+    assert.match(readme, /score_persistence_last_run/);
     assert.match(readme, /Current value: `1`/);
     assert.match(readme, /stable reason `code`/);
   });

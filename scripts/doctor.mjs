@@ -57,6 +57,7 @@ export function buildDoctorReport({
     tables: {},
     latestScoredStable: null,
     recommendation: null,
+    scorePersistence: null,
     freshness: null,
     ingestion: null,
     coverage: null,
@@ -102,6 +103,26 @@ export function buildDoctorReport({
     }
     if (latest.scoredAt !== latest.auditScoredAt) {
       failures.push(`${latest.tag}: release scored_at (${latest.scoredAt}) does not match audit scored_at (${latest.auditScoredAt})`);
+    }
+
+    report.scorePersistence = scorePersistenceSummary(db, report.recommendation);
+    if (!report.scorePersistence.present) {
+      failures.push('score persistence metadata is missing');
+    } else if (!report.scorePersistence.valid) {
+      failures.push('score persistence metadata is malformed');
+    } else {
+      if (report.scorePersistence.maxReleaseScoredAt !== report.scorePersistence.meta.maxScoredAt) {
+        failures.push(`score persistence maxScoredAt (${report.scorePersistence.meta.maxScoredAt}) does not match release rows (${report.scorePersistence.maxReleaseScoredAt})`);
+      }
+      if (report.scorePersistence.maxAuditScoredAt !== report.scorePersistence.meta.maxScoredAt) {
+        failures.push(`score persistence maxScoredAt (${report.scorePersistence.meta.maxScoredAt}) does not match audit rows (${report.scorePersistence.maxAuditScoredAt})`);
+      }
+      if (report.scorePersistence.auditedStableCount !== report.scorePersistence.meta.scoredReleaseCount) {
+        failures.push(`score persistence scoredReleaseCount (${report.scorePersistence.meta.scoredReleaseCount}) does not match audited stable rows (${report.scorePersistence.auditedStableCount})`);
+      }
+      if (report.recommendation.recommended?.[0]?.tag && report.scorePersistence.meta.recommendedTag !== report.recommendation.recommended[0].tag) {
+        failures.push(`score persistence recommendedTag (${report.scorePersistence.meta.recommendedTag}) does not match recommendation (${report.recommendation.recommended[0].tag})`);
+      }
     }
 
     const audit = getAudit(db, latest.tag);
@@ -610,6 +631,35 @@ function ingestionSummary(db, latest) {
     issueCrawl: parseJson(getMetaValue(db, 'issue_crawl_last_run'), null),
     commenterScanTruncatedIssueCount: latest?.tag ? commenterScanTruncatedIssueCount(db, latest.tag) : 0,
     durableEvidenceFailures: durableIngestionEvidenceFailureSummary(db, latest),
+  };
+}
+
+function scorePersistenceSummary(db) {
+  const raw = getMetaValue(db, 'score_persistence_last_run');
+  const meta = parseJson(raw, null);
+  const releaseStats = db.prepare(`
+    SELECT COUNT(*) AS count, MAX(scored_at) AS maxScoredAt
+    FROM releases
+    WHERE prerelease=0
+      AND (
+        final_score IS NOT NULL
+        OR scored_at IS NOT NULL
+      )
+  `).get();
+  const auditStats = db.prepare(`
+    SELECT COUNT(*) AS count, MAX(a.scored_at) AS maxScoredAt
+    FROM release_score_audits a
+    JOIN releases r ON r.tag=a.release_tag
+    WHERE r.prerelease=0
+  `).get();
+  return {
+    present: typeof raw === 'string' && raw.length > 0,
+    valid: !!meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schemaVersion === 1,
+    meta,
+    auditedStableCount: Number(auditStats?.count ?? 0),
+    scoredStableCount: Number(releaseStats?.count ?? 0),
+    maxReleaseScoredAt: releaseStats?.maxScoredAt ?? null,
+    maxAuditScoredAt: auditStats?.maxScoredAt ?? null,
   };
 }
 

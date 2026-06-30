@@ -765,7 +765,11 @@ export async function refresh(): Promise<{
     const scoreRun = buildReleaseScoreRun({
       releases: allReleases,
     });
-    persistReleaseScoreRun(scoreRun);
+    persistReleaseScoreRun(scoreRun, {
+      source: 'refresh',
+      scope: `monitored:${allReleases.map((release) => release.tag).join(',')}`,
+      issueCrawl: issueCrawlMeta,
+    });
     persistIssueCrawlMeta({
       ...issueCrawlMeta,
       scorePersisted: true,

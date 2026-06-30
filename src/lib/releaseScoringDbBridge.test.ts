@@ -246,6 +246,19 @@ describe('release scoring DB bridge', () => {
       assert.equal(db.getRelease('v-tx')?.final_score, null);
       assert.equal(db.getReleaseScoreAudit('v-tx'), undefined);
 
+      scoring.persistReleaseScoreRun(txRun, { source: 'bridge-test', scope: 'v-tx' });
+      const rawScoreMeta = db.getMeta('score_persistence_last_run');
+      assert.equal(typeof rawScoreMeta, 'string');
+      const scoreMeta = JSON.parse(rawScoreMeta);
+      assert.equal(scoreMeta.schemaVersion, 1);
+      assert.equal(scoreMeta.source, 'bridge-test');
+      assert.equal(scoreMeta.scope, 'v-tx');
+      assert.equal(scoreMeta.scoredReleaseCount, 1);
+      assert.deepEqual(scoreMeta.releaseTags, ['v-tx']);
+      assert.equal(scoreMeta.recommendedTag, txRun.recommendedTag);
+      assert.equal(scoreMeta.maxScoredAt, txRun.scored[0].scoredAt);
+      assert.equal(db.getMeta('last_scored_at'), txRun.scored[0].scoredAt);
+
       db.upsertAdvisory({
         ghsa_id: 'GHSA-malformed',
         cve_id: 'CVE-2026-9999',

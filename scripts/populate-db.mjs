@@ -28,7 +28,7 @@ const monitored = listReleasesDb(10);
 const scoreRun = buildReleaseScoreRun({
   releases: monitored,
 });
-persistReleaseScoreRun(scoreRun);
+persistReleaseScoreRun(scoreRun, { source: 'populate-db' });
 
 console.table(scoreRun.scored.map((result) => ({
   tag: result.rel.tag,

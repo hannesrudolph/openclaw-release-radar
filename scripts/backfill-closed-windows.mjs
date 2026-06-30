@@ -74,7 +74,10 @@ if (!dryRun && !skipScore) {
   const scoreRun = buildReleaseScoreRun({
     releaseLimit: Math.max(limit, releases.length),
   });
-  persistReleaseScoreRun(scoreRun);
+  persistReleaseScoreRun(scoreRun, {
+    source: 'backfill-closed-windows',
+    scope: releaseTags.join(','),
+  });
   scored = scoreRun.scored.length;
   recommendedTag = scoreRun.recommendedTag;
 }
