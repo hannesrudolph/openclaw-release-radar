@@ -5,8 +5,15 @@ import { assessIssueCrawlHealth } from '../../scripts/lib/doctor-health.mjs';
 describe('doctor issue crawl health', () => {
   const latest = { tag: 'v1', scoredAt: '2026-06-30T01:00:00.000Z' };
 
-  it('does not warn when issue crawl metadata is absent', () => {
-    assert.deepEqual(assessIssueCrawlHealth(null, latest), { warnings: [], failures: [] });
+  it('does not warn when issue crawl metadata is absent before any score exists', () => {
+    assert.deepEqual(assessIssueCrawlHealth(null, null), { warnings: [], failures: [] });
+  });
+
+  it('warns when a scored release has no issue crawl metadata', () => {
+    const result = assessIssueCrawlHealth(null, latest);
+
+    assert.equal(result.failures.length, 0);
+    assert.ok(result.warnings.some((warning) => /no issue crawl metadata/.test(warning)));
   });
 
   it('warns when a newer issue crawl hit the page cap without persisting a score', () => {

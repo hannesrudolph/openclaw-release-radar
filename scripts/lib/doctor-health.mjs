@@ -1,7 +1,13 @@
 export function assessIssueCrawlHealth(issueCrawl, latest) {
   const warnings = [];
   const failures = [];
-  if (!issueCrawl) return { warnings, failures };
+  if (!issueCrawl) {
+    if (latest?.scoredAt) {
+      const tag = latest?.tag ? `${latest.tag}: ` : '';
+      warnings.push(`${tag}latest scored release has no issue crawl metadata; run a clean refresh before trusting current score freshness`);
+    }
+    return { warnings, failures };
+  }
 
   if (issueCrawl.schemaVersion !== 1) {
     failures.push(`issue crawl metadata schemaVersion (${issueCrawl.schemaVersion}) must equal 1`);

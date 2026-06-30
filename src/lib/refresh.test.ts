@@ -62,4 +62,16 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures([]), false);
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures(['closure proof failed']), true);
   });
+
+  it('scores using the monitored DB release tag window', () => {
+    assert.deepEqual(__refreshTest.scoringTagWindow([
+      { tag: 'v3', prerelease: 0 },
+      { tag: 'v3-beta.1', prerelease: 1 },
+      { tag: 'v2', prerelease: false },
+      { tag: 'v1', prerelease: null },
+    ]), {
+      allFetchedTags: ['v3', 'v3-beta.1', 'v2', 'v1'],
+      stableTagsNewestFirst: ['v3', 'v2', 'v1'],
+    });
+  });
 });
