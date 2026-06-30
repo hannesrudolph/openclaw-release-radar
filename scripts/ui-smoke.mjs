@@ -146,7 +146,7 @@ try {
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
   const relatedIssueRow = fixPanel.locator('li.evidence__item').filter({ hasText: `#${relatedIssue.number}` }).first();
   await relatedIssueRow.waitFor();
-  await relatedIssueRow.getByText(/Scored as .* risk/).waitFor();
+  await relatedIssueRow.getByText(/Evidence bucket: /).waitFor();
   await relatedIssueRow.getByText(new RegExp(`${relatedIssue.severity}.*${relatedIssue.affectedUsers} users`, 'i')).waitFor();
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);

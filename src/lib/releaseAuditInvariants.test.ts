@@ -436,8 +436,12 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
   mutator?.(dataFreshness, publicRelease);
   const closurePage = (url: string) => {
     const parsed = new URL(url);
-    const statusFilter = parsed.searchParams.get('status');
-    const riskDispositionFilter = parsed.searchParams.get('riskDisposition');
+    const statusFilter = scalarSearchParam(parsed, 'status', url, 'invalid status', {
+      allowedStatuses: CLOSURE_PROOF_STATUSES,
+    });
+    const riskDispositionFilter = scalarSearchParam(parsed, 'riskDisposition', url, 'invalid riskDisposition', {
+      allowedRiskDispositions: CLOSURE_RISK_DISPOSITIONS,
+    });
     if (statusFilter && !CLOSURE_PROOF_STATUSES.includes(statusFilter as any)) {
       throwHttpError(url, 400, {
         error: 'invalid status',
@@ -473,8 +477,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       (!riskDispositionFilter || riskDispositionFilter === row.riskDisposition)
       ? [row]
       : [];
-    const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
-    const limit = Number(parsed.searchParams.get('limit') ?? 50);
+    const cursor = integerSearchParam(parsed, 'cursor', url, 0, 0, Number.MAX_SAFE_INTEGER);
+    const limit = integerSearchParam(parsed, 'limit', url, 50, 1, 100);
     const pageRows = rows.slice(cursor, cursor + limit);
     const sourceRows = [row];
     const filteredCountsByStatus = rows.reduce((acc: any, item) => {
@@ -492,8 +496,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       scoredAt: auditScoredAt,
       dataFreshness,
       filters: {
-        status: parsed.searchParams.get('status'),
-        riskDisposition: parsed.searchParams.get('riskDisposition'),
+        status: statusFilter,
+        riskDisposition: riskDispositionFilter,
       },
       totals: {
         unfilteredRows: sourceRows.length,
@@ -541,13 +545,20 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         commandStatus: 0,
       },
     };
-    const prFilter = parsed.searchParams.get('pr');
-    const rows = (!parsed.searchParams.get('status') || parsed.searchParams.get('status') === row.status) &&
+    const statusFilter = scalarSearchParam(parsed, 'status', url, 'invalid status');
+    if (statusFilter && !['reachable', 'not_reachable', 'unknown'].includes(statusFilter)) {
+      throwHttpError(url, 400, { error: 'invalid status', status: statusFilter });
+    }
+    const prFilter = scalarSearchParam(parsed, 'pr', url, 'invalid pr filter');
+    if (prFilter && !/^(?:[\w.-]+\/[\w.-]+#)?\d+$/.test(prFilter)) {
+      throwHttpError(url, 400, { error: 'invalid pr filter', pr: prFilter });
+    }
+    const rows = (!statusFilter || statusFilter === row.status) &&
       (!prFilter || prFilter === '1' || prFilter === 'openclaw/openclaw#1')
       ? [row]
       : [];
-    const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
-    const limit = Number(parsed.searchParams.get('limit') ?? 100);
+    const cursor = integerSearchParam(parsed, 'cursor', url, 0, 0, Number.MAX_SAFE_INTEGER);
+    const limit = integerSearchParam(parsed, 'limit', url, 100, 1, 250);
     const pageRows = rows.slice(cursor, cursor + limit);
     const sourceRows = [row];
     const filteredCountsByStatus = rows.reduce((acc: any, item) => {
@@ -561,7 +572,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       scoredAt: auditScoredAt,
       dataFreshness,
       filters: {
-        status: parsed.searchParams.get('status'),
+        status: statusFilter,
         pr: prFilter ? { repositoryNameWithOwner: prFilter.includes('#') ? prFilter.split('#')[0] : null, number: Number(prFilter.split('#').pop()) } : null,
       },
       totals: {
@@ -632,13 +643,13 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const functionalities = enumFilter('functionality');
     const scopes = enumFilter('scope');
     const affectedUsers = enumFilter('affectedUsers');
-    const fieldConfirmedFilter = parsed.searchParams.get('fieldConfirmed');
+    const fieldConfirmedFilter = scalarSearchParam(parsed, 'fieldConfirmed', url, 'invalid fieldConfirmed');
     if (fieldConfirmedFilter != null && !['1', 'true', 'yes', '0', 'false', 'no'].includes(fieldConfirmedFilter.toLowerCase())) {
       throwHttpError(url, 400, { error: 'invalid fieldConfirmed', fieldConfirmed: fieldConfirmedFilter });
     }
     const fieldConfirmed = fieldConfirmedFilter == null ? null : ['1', 'true', 'yes'].includes(fieldConfirmedFilter.toLowerCase());
-    const minWeightRaw = parsed.searchParams.get('minWeight');
-    const maxWeightRaw = parsed.searchParams.get('maxWeight');
+    const minWeightRaw = scalarSearchParam(parsed, 'minWeight', url, 'invalid minWeight');
+    const maxWeightRaw = scalarSearchParam(parsed, 'maxWeight', url, 'invalid maxWeight');
     const minWeight = minWeightRaw == null ? null : Number(minWeightRaw);
     const maxWeight = maxWeightRaw == null ? null : Number(maxWeightRaw);
     if (minWeightRaw != null && !Number.isFinite(minWeight)) {
@@ -650,19 +661,19 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (minWeight != null && maxWeight != null && minWeight > maxWeight) {
       throwHttpError(url, 400, { error: 'invalid weight range', minWeight, maxWeight });
     }
-    const sort = parsed.searchParams.get('sort') ?? 'rank';
+    const sort = scalarSearchParam(parsed, 'sort', url, 'invalid sort') ?? 'rank';
     if (!['rank', 'weight', 'updated', 'created', 'closed', 'number'].includes(sort)) {
       throwHttpError(url, 400, { error: 'invalid sort', sort });
     }
-    const direction = parsed.searchParams.get('direction') ?? (sort === 'rank' ? 'asc' : 'desc');
+    const direction = scalarSearchParam(parsed, 'direction', url, 'invalid direction') ?? (sort === 'rank' ? 'asc' : 'desc');
     if (!['asc', 'desc'].includes(direction)) {
       throwHttpError(url, 400, { error: 'invalid direction', direction });
     }
-    const summaryOnlyRaw = parsed.searchParams.get('summaryOnly');
+    const summaryOnlyRaw = scalarSearchParam(parsed, 'summaryOnly', url, 'invalid summaryOnly');
     if (summaryOnlyRaw != null && !['1', 'true', 'yes', '0', 'false', 'no'].includes(summaryOnlyRaw.toLowerCase())) {
       throwHttpError(url, 400, { error: 'invalid summaryOnly', summaryOnly: summaryOnlyRaw });
     }
-    const summaryOnly = ['1', 'true', 'yes'].includes(String(parsed.searchParams.get('summaryOnly') ?? '').toLowerCase());
+    const summaryOnly = ['1', 'true', 'yes'].includes(String(summaryOnlyRaw ?? '').toLowerCase());
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&
       (!states.length || states.includes(row.issue.state)) &&
@@ -676,8 +687,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       (maxWeight == null || row.weight <= maxWeight)
       ? [row]
       : [];
-    const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
-    const limit = Number(parsed.searchParams.get('limit') ?? 50);
+    const cursor = integerSearchParam(parsed, 'cursor', url, 0, 0, Number.MAX_SAFE_INTEGER);
+    const limit = integerSearchParam(parsed, 'limit', url, 50, 1, 250);
     const pageRows = summaryOnly ? [] : rows.slice(cursor, cursor + limit);
     const summaryFor = (count: number) => ({
       count,
@@ -942,6 +953,23 @@ function throwHttpError(url: string, status: number, payload: unknown): never {
   error.body = JSON.stringify(payload);
   error.payload = payload;
   throw error;
+}
+
+function scalarSearchParam(parsed: URL, key: string, url: string, error: string, extra: Record<string, unknown> = {}): string | null {
+  const values = parsed.searchParams.getAll(key);
+  if (values.length === 0) return null;
+  if (values.length > 1) throwHttpError(url, 400, { error, [key]: values, ...extra });
+  const value = values[0].trim();
+  return value ? value : null;
+}
+
+function integerSearchParam(parsed: URL, key: string, url: string, fallback: number, min: number, max: number): number {
+  const value = scalarSearchParam(parsed, key, url, `invalid ${key}`);
+  if (value == null) return fallback;
+  if (!/^-?\d+$/.test(value)) throwHttpError(url, 400, { error: `invalid ${key}`, [key]: value });
+  const number = Number(value);
+  if (!Number.isSafeInteger(number)) throwHttpError(url, 400, { error: `invalid ${key}`, [key]: value });
+  return Math.max(min, Math.min(max, number));
 }
 
 describe('verifyReleaseAudit', () => {

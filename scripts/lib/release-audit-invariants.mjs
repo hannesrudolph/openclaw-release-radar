@@ -2480,10 +2480,20 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   const invalidFilterCases = [
     ['issue evidence audit invalid tier', `${base}?tier=not-a-tier`, 'invalid tier'],
     ['issue evidence audit invalid fieldConfirmed', `${base}?fieldConfirmed=maybe`, 'invalid fieldConfirmed'],
+    ['issue evidence audit repeated fieldConfirmed', `${base}?fieldConfirmed=true&fieldConfirmed=maybe`, 'invalid fieldConfirmed'],
     ['issue evidence audit invalid weight range', `${base}?minWeight=10&maxWeight=1`, 'invalid weight range'],
+    ['issue evidence audit repeated minWeight', `${base}?minWeight=1&minWeight=2`, 'invalid minWeight'],
     ['issue evidence audit invalid sort', `${base}?sort=not-a-sort`, 'invalid sort'],
+    ['issue evidence audit repeated sort', `${base}?sort=rank&sort=weight`, 'invalid sort'],
     ['issue evidence audit invalid direction', `${base}?direction=sideways`, 'invalid direction'],
+    ['issue evidence audit repeated direction', `${base}?direction=asc&direction=desc`, 'invalid direction'],
     ['issue evidence audit invalid summaryOnly', `${base}?summaryOnly=wat`, 'invalid summaryOnly'],
+    ['issue evidence audit invalid limit', `${base}?limit=abc`, 'invalid limit'],
+    ['issue evidence audit decimal limit', `${base}?limit=1.9`, 'invalid limit'],
+    ['issue evidence audit repeated limit', `${base}?limit=1&limit=2`, 'invalid limit'],
+    ['issue evidence audit invalid cursor', `${base}?cursor=abc`, 'invalid cursor'],
+    ['issue evidence audit decimal cursor', `${base}?cursor=1.9`, 'invalid cursor'],
+    ['issue evidence audit repeated cursor', `${base}?cursor=0&cursor=1`, 'invalid cursor'],
   ];
   for (const [label, url, error] of invalidFilterCases) {
     await expectFetchJsonStatus({
@@ -2574,12 +2584,14 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     const nextPage = await fetchJson(`${base}?limit=11&cursor=${firstPage.nextCursor}`);
     expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
       `issue evidence audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
-    if (firstPage.rows.length > 0 && nextPage.rows.length > 0) {
-      expect(failures, tag,
-        firstPage.rows[0].tier !== nextPage.rows[0].tier ||
-        firstPage.rows[0].issue?.number !== nextPage.rows[0].issue?.number,
-        'issue evidence audit pagination must not repeat first row on next page');
-    }
+    expectNoPaginationOverlap({
+      failures,
+      tag,
+      label: 'issue evidence audit',
+      firstRows: firstPage.rows,
+      nextRows: nextPage.rows,
+      identity: (row) => `${row?.tier}:${row?.issue?.number ?? 'missing'}`,
+    });
   } else {
     expect(failures, tag, firstPage.nextCursor == null,
       `issue evidence audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
@@ -2879,11 +2891,47 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     failures,
     tag,
     fetchJson,
+    url: `${base}?status=fixed_in_release&status=closed_without_release_fix_proof`,
+    status: 400,
+    label: 'closure proof audit repeated status',
+    payloadCheck: (payload) => payload?.error === 'invalid status' && Array.isArray(payload.allowedStatuses),
+  });
+  await expectFetchJsonStatus({
+    failures,
+    tag,
+    fetchJson,
     url: `${base}?riskDisposition=not-a-real-disposition`,
     status: 400,
     label: 'closure proof audit invalid riskDisposition',
     payloadCheck: (payload) => payload?.error === 'invalid riskDisposition' && Array.isArray(payload.allowedRiskDispositions),
   });
+  await expectFetchJsonStatus({
+    failures,
+    tag,
+    fetchJson,
+    url: `${base}?riskDisposition=credited_release_fix&riskDisposition=known_not_in_release`,
+    status: 400,
+    label: 'closure proof audit repeated riskDisposition',
+    payloadCheck: (payload) => payload?.error === 'invalid riskDisposition' && Array.isArray(payload.allowedRiskDispositions),
+  });
+  for (const [label, url, error] of [
+    ['closure proof audit invalid limit', `${base}?limit=abc`, 'invalid limit'],
+    ['closure proof audit decimal limit', `${base}?limit=1.9`, 'invalid limit'],
+    ['closure proof audit repeated limit', `${base}?limit=1&limit=2`, 'invalid limit'],
+    ['closure proof audit invalid cursor', `${base}?cursor=abc`, 'invalid cursor'],
+    ['closure proof audit decimal cursor', `${base}?cursor=1.9`, 'invalid cursor'],
+    ['closure proof audit repeated cursor', `${base}?cursor=0&cursor=1`, 'invalid cursor'],
+  ]) {
+    await expectFetchJsonStatus({
+      failures,
+      tag,
+      fetchJson,
+      url,
+      status: 400,
+      label,
+      payloadCheck: (payload) => payload?.error === error,
+    });
+  }
   expect(failures, tag, firstPage.schemaVersion === closureProofAuditSchemaVersion,
     `closure proof audit schemaVersion must be ${closureProofAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
   verifyAllowedKeys({ failures, tag, label: 'closure proof audit payload', value: firstPage, allowed: closureProofAuditKeys });
@@ -2926,10 +2974,14 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     const nextPage = await fetchJson(`${base}?limit=5&cursor=${firstPage.nextCursor}`);
     expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
       `closure proof audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
-    if (firstPage.rows.length > 0 && nextPage.rows.length > 0) {
-      expect(failures, tag, firstPage.rows[0].issueNumber !== nextPage.rows[0].issueNumber,
-        'closure proof audit pagination must not repeat first row on next page');
-    }
+    expectNoPaginationOverlap({
+      failures,
+      tag,
+      label: 'closure proof audit',
+      firstRows: firstPage.rows,
+      nextRows: nextPage.rows,
+      identity: (row) => `${row?.issueNumber}:${row?.status}`,
+    });
   } else {
     expect(failures, tag, firstPage.nextCursor == null,
       `closure proof audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
@@ -3003,6 +3055,28 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
   const rows = reader.prReachabilityRowsForRelease(tag);
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/reachability`;
   const firstPage = await fetchJson(`${base}?limit=7`);
+  for (const [label, url, error] of [
+    ['PR reachability audit invalid status', `${base}?status=bad`, 'invalid status'],
+    ['PR reachability audit repeated status', `${base}?status=reachable&status=bad`, 'invalid status'],
+    ['PR reachability audit invalid pr', `${base}?pr=not-a-pr`, 'invalid pr filter'],
+    ['PR reachability audit repeated pr', `${base}?pr=123&pr=not-a-pr`, 'invalid pr filter'],
+    ['PR reachability audit invalid limit', `${base}?limit=abc`, 'invalid limit'],
+    ['PR reachability audit decimal limit', `${base}?limit=1.9`, 'invalid limit'],
+    ['PR reachability audit repeated limit', `${base}?limit=1&limit=2`, 'invalid limit'],
+    ['PR reachability audit invalid cursor', `${base}?cursor=abc`, 'invalid cursor'],
+    ['PR reachability audit decimal cursor', `${base}?cursor=1.9`, 'invalid cursor'],
+    ['PR reachability audit repeated cursor', `${base}?cursor=0&cursor=1`, 'invalid cursor'],
+  ]) {
+    await expectFetchJsonStatus({
+      failures,
+      tag,
+      fetchJson,
+      url,
+      status: 400,
+      label,
+      payloadCheck: (payload) => payload?.error === error,
+    });
+  }
   expect(failures, tag, firstPage.schemaVersion === 1,
     `PR reachability audit schemaVersion must be 1, got ${JSON.stringify(firstPage.schemaVersion)}`);
   verifyAllowedKeys({ failures, tag, label: 'PR reachability audit payload', value: firstPage, allowed: reachabilityAuditKeys });
@@ -3078,6 +3152,14 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
     const nextPage = await fetchJson(`${base}?limit=7&cursor=${firstPage.nextCursor}`);
     expect(failures, tag, nextPage.cursor === firstPage.nextCursor,
       `PR reachability audit next page cursor (${nextPage.cursor}) must equal requested cursor (${firstPage.nextCursor})`);
+    expectNoPaginationOverlap({
+      failures,
+      tag,
+      label: 'PR reachability audit',
+      firstRows: firstPage.rows,
+      nextRows: nextPage.rows,
+      identity: (row) => `${String(row?.repositoryNameWithOwner ?? '').toLowerCase()}#${row?.number}`,
+    });
   } else {
     expect(failures, tag, firstPage.nextCursor == null,
       `PR reachability audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
@@ -3120,6 +3202,14 @@ function countBy(rows, keyFn) {
     out[key] = (out[key] ?? 0) + 1;
   }
   return out;
+}
+
+function expectNoPaginationOverlap({ failures, tag, label, firstRows, nextRows, identity }) {
+  if (!Array.isArray(firstRows) || !Array.isArray(nextRows)) return;
+  const firstIds = new Set(firstRows.map(identity).filter(Boolean));
+  const repeated = nextRows.map(identity).filter((id) => id && firstIds.has(id));
+  expect(failures, tag, repeated.length === 0,
+    `${label} pagination must not repeat rows on adjacent pages: ${repeated.slice(0, 5).join(', ')}`);
 }
 
 function verifyComparisonSnapshot({ failures, label, snapshot }) {

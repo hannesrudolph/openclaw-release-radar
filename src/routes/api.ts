@@ -131,15 +131,27 @@ function parseJson<T>(json: string | null | undefined, fallback: T): T {
   }
 }
 
+function singleQueryValue(raw: unknown): string | null | undefined {
+  if (raw == null) return null;
+  if (Array.isArray(raw)) return undefined;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text ? text : null;
+}
+
 function boundedInteger(
   raw: unknown,
   fallback: number,
   min: number,
   max: number,
-): number {
-  const value = typeof raw === 'string' && raw.trim() !== '' ? Number(raw) : fallback;
-  if (!Number.isFinite(value)) return fallback;
-  return Math.max(min, Math.min(max, Math.floor(value)));
+): number | undefined {
+  const text = singleQueryValue(raw);
+  if (text === undefined) return undefined;
+  if (text == null) return fallback;
+  if (!/^-?\d+$/.test(text)) return undefined;
+  const value = Number(text);
+  if (!Number.isSafeInteger(value)) return undefined;
+  return Math.max(min, Math.min(max, value));
 }
 
 function closureProofAuditResponseRow(row: ReturnType<typeof closureProofAuditRows>[number]) {
@@ -366,32 +378,36 @@ function parseIssueEvidenceEnumFilter<T extends string>(raw: unknown, allowed: r
 }
 
 function parseBooleanFilter(raw: unknown): boolean | null | undefined {
-  if (raw == null) return null;
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  const text = String(value).trim().toLowerCase();
+  const value = singleQueryValue(raw);
+  if (value === undefined) return undefined;
+  if (value == null) return null;
+  const text = value.toLowerCase();
   if (['1', 'true', 'yes'].includes(text)) return true;
   if (['0', 'false', 'no'].includes(text)) return false;
   return undefined;
 }
 
 function parseNumberFilter(raw: unknown): number | null | undefined {
-  if (raw == null || raw === '') return null;
-  const value = Array.isArray(raw) ? raw[0] : raw;
+  const value = singleQueryValue(raw);
+  if (value === undefined) return undefined;
+  if (value == null) return null;
   const number = Number(value);
   return Number.isFinite(number) ? number : undefined;
 }
 
 function parseIssueEvidenceSort(raw: unknown): IssueEvidenceSort | null {
-  if (raw == null || raw === '') return 'rank';
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  const text = String(value).trim();
+  const value = singleQueryValue(raw);
+  if (value === undefined) return null;
+  if (value == null) return 'rank';
+  const text = value.trim();
   return (ISSUE_EVIDENCE_SORTS as readonly string[]).includes(text) ? text as IssueEvidenceSort : null;
 }
 
 function parseSortDirection(raw: unknown, sort: IssueEvidenceSort): SortDirection | null {
-  if (raw == null || raw === '') return sort === 'rank' ? 'asc' : 'desc';
-  const value = Array.isArray(raw) ? raw[0] : raw;
-  const text = String(value).trim().toLowerCase();
+  const value = singleQueryValue(raw);
+  if (value === undefined) return null;
+  if (value == null) return sort === 'rank' ? 'asc' : 'desc';
+  const text = value.toLowerCase();
   return text === 'asc' || text === 'desc' ? text : null;
 }
 
@@ -1002,7 +1018,15 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     return;
   }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
+  if (limit === undefined) {
+    res.status(400).json({ error: 'invalid limit', limit: req.query.limit });
+    return;
+  }
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (cursor === undefined) {
+    res.status(400).json({ error: 'invalid cursor', cursor: req.query.cursor });
+    return;
+  }
   const evidence = releaseIssueEvidenceRows(tag);
   if (!evidence) {
     res.status(404).json({ error: 'release evidence not found', tag });
@@ -1097,12 +1121,24 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
     return;
   }
   const audit = getReleaseScoreAudit(tag);
-  const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
-    ? req.query.status.trim()
-    : null;
-  const riskDispositionFilter = typeof req.query.riskDisposition === 'string' && req.query.riskDisposition.trim()
-    ? req.query.riskDisposition.trim()
-    : null;
+  const statusFilter = singleQueryValue(req.query.status);
+  const riskDispositionFilter = singleQueryValue(req.query.riskDisposition);
+  if (statusFilter === undefined) {
+    res.status(400).json({
+      error: 'invalid status',
+      status: req.query.status,
+      allowedStatuses: CLOSURE_PROOF_STATUSES,
+    });
+    return;
+  }
+  if (riskDispositionFilter === undefined) {
+    res.status(400).json({
+      error: 'invalid riskDisposition',
+      riskDisposition: req.query.riskDisposition,
+      allowedRiskDispositions: CLOSURE_RISK_DISPOSITIONS,
+    });
+    return;
+  }
   if (statusFilter && !(CLOSURE_PROOF_STATUSES as readonly string[]).includes(statusFilter)) {
     res.status(400).json({
       error: 'invalid status',
@@ -1120,7 +1156,15 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
     return;
   }
   const limit = boundedInteger(req.query.limit, CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT, 1, CLOSURE_PROOF_AUDIT_MAX_LIMIT);
+  if (limit === undefined) {
+    res.status(400).json({ error: 'invalid limit', limit: req.query.limit });
+    return;
+  }
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (cursor === undefined) {
+    res.status(400).json({ error: 'invalid cursor', cursor: req.query.cursor });
+    return;
+  }
   const sourceRows = closureProofAuditRows(tag);
   const allRows = sourceRows
     .filter((row) => !statusFilter || row.status === statusFilter)
@@ -1165,20 +1209,31 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
     return;
   }
   const audit = getReleaseScoreAudit(tag);
-  const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
-    ? req.query.status.trim()
-    : null;
+  const statusFilter = singleQueryValue(req.query.status);
+  if (statusFilter === undefined) {
+    res.status(400).json({ error: 'invalid status', status: req.query.status });
+    return;
+  }
   if (statusFilter && !['reachable', 'not_reachable', 'unknown'].includes(statusFilter)) {
     res.status(400).json({ error: 'invalid status', status: statusFilter });
     return;
   }
-  const prFilter = parsePrFilter(req.query.pr);
-  if (typeof req.query.pr === 'string' && req.query.pr.trim() && !prFilter) {
+  const prValue = singleQueryValue(req.query.pr);
+  const prFilter = prValue ? parsePrFilter(prValue) : null;
+  if (prValue === undefined || (prValue && !prFilter)) {
     res.status(400).json({ error: 'invalid pr filter', pr: req.query.pr });
     return;
   }
   const limit = boundedInteger(req.query.limit, PR_REACHABILITY_AUDIT_DEFAULT_LIMIT, 1, PR_REACHABILITY_AUDIT_MAX_LIMIT);
+  if (limit === undefined) {
+    res.status(400).json({ error: 'invalid limit', limit: req.query.limit });
+    return;
+  }
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
+  if (cursor === undefined) {
+    res.status(400).json({ error: 'invalid cursor', cursor: req.query.cursor });
+    return;
+  }
   const sourceRows = releasePrReachabilityRows(tag);
   const allRows = sourceRows
     .filter((row) => !statusFilter || row.status === statusFilter)

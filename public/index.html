@@ -1673,9 +1673,27 @@ function closureProofForIssue(tag, issueNumber) {
   ].find((row) => Number(row?.number) === number) ?? null;
 }
 
+function issueEvidenceTierLabel(tier) {
+  const labels = {
+    verifiedDebt: 'Field-confirmed blocker evidence',
+    verified: 'Field-confirmed blocker evidence',
+    carryoverDebt: 'Open unconfirmed issue risk',
+    carryover: 'Open unconfirmed issue risk',
+    staleDebt: 'Weak/stale evidence',
+    stale: 'Weak/stale evidence',
+    openedFeltSerious: 'Field-visible opened issue',
+    verifiedFixed: 'Verified release fix',
+    unverifiedClosed: 'Closed issue without release-fix credit',
+  };
+  if (labels[tier]) return labels[tier];
+  if (typeof tier !== 'string' || !tier.trim()) return 'Issue evidence';
+  return tier.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
+}
+
 function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
   const classification = evidenceRow?.debtClassification ?? evidenceRow?.issue?.classification ?? issue;
-  const tier = evidenceRow?.tierLabel ?? evidenceRow?.tier ?? 'public issue';
+  const tier = evidenceRow?.tier ?? proofRow?.status ?? 'public issue';
+  const tierLabel = evidenceRow?.tierLabel ?? issueEvidenceTierLabel(tier);
   const severity = classification?.severity ?? issue?.severity;
   const functionality = classification?.functionality ?? null;
   const scope = classification?.scope ?? issue?.scope;
@@ -1695,7 +1713,7 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
   if (issue?.surface?.label) metrics.push(`surface ${issue.surface.label}`);
   if (issue?.hasWorkaround || classification?.workaroundStatus === 'confirmed') metrics.push('workaround confirmed');
   if (Number.isFinite(classification?.confidence ?? issue?.confidence)) metrics.push(`confidence ${metricValue(classification?.confidence ?? issue?.confidence)}`);
-  const scoreLine = [`Scored as ${tier} risk`, ...scoredBits, ...metrics].filter(Boolean).join(' · ');
+  const scoreLine = [`Evidence bucket: ${tierLabel}`, ...scoredBits, ...metrics].filter(Boolean).join(' · ');
   const bucketReason = issueBucketReason(issue, evidenceRow);
   const proofLine = proofRow
     ? `${proofRow.riskDisposition ? closureRiskDispositionLabel(proofRow.riskDisposition) + ' · ' : ''}${closureStatusLabel(proofRow.status)}: ${proofRow.summary ?? ''}`.trim()

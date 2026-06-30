@@ -93,7 +93,6 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /issueScoringMetaHtml/);
     assert.match(html, /issueBucketReason/);
     assert.match(html, /issueEvidenceRowForIssue/);
-    assert.match(html, /Scored as \$\{tier\} risk/);
     assert.match(html, /scoreLedgerHtml/);
     assert.match(html, /scoreDriversHtml/);
     assert.match(html, /Score drivers:/);
@@ -101,6 +100,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /score-explain__proof/);
     assert.match(html, /issueEvidenceApiLinksHtml/);
     assert.match(html, /\/review\/issues/);
+    assert.match(html, /function issueEvidenceTierLabel/);
+    assert.match(html, /const tierLabel = evidenceRow\?\.tierLabel \?\? issueEvidenceTierLabel\(tier\)/);
+    assert.match(html, /Evidence bucket: \$\{tierLabel\}/);
+    assert.doesNotMatch(html, /Scored as \$\{tier\} risk/);
+    assert.doesNotMatch(html, /Scored as carryover risk/);
     assert.match(html, /tier=openUnconfirmedRisk/);
     assert.doesNotMatch(html, /tier=carryoverDebt/);
     assert.match(html, /fieldConfirmed=true/);

@@ -181,12 +181,24 @@ describe('audit API routes', () => {
       ['/api/releases/v-test/review/issues?scope=bad', 'invalid scope'],
       ['/api/releases/v-test/review/issues?affectedUsers=bad', 'invalid affectedUsers'],
       ['/api/releases/v-test/review/issues?fieldConfirmed=maybe', 'invalid fieldConfirmed'],
+      ['/api/releases/v-test/review/issues?fieldConfirmed=true&fieldConfirmed=maybe', 'invalid fieldConfirmed'],
       ['/api/releases/v-test/review/issues?minWeight=abc', 'invalid minWeight'],
+      ['/api/releases/v-test/review/issues?minWeight=1&minWeight=abc', 'invalid minWeight'],
       ['/api/releases/v-test/review/issues?maxWeight=abc', 'invalid maxWeight'],
+      ['/api/releases/v-test/review/issues?maxWeight=1&maxWeight=abc', 'invalid maxWeight'],
       ['/api/releases/v-test/review/issues?minWeight=10&maxWeight=1', 'invalid weight range'],
       ['/api/releases/v-test/review/issues?sort=bad', 'invalid sort'],
+      ['/api/releases/v-test/review/issues?sort=rank&sort=bad', 'invalid sort'],
       ['/api/releases/v-test/review/issues?direction=sideways', 'invalid direction'],
+      ['/api/releases/v-test/review/issues?direction=asc&direction=sideways', 'invalid direction'],
       ['/api/releases/v-test/review/issues?summaryOnly=wat', 'invalid summaryOnly'],
+      ['/api/releases/v-test/review/issues?summaryOnly=true&summaryOnly=wat', 'invalid summaryOnly'],
+      ['/api/releases/v-test/review/issues?limit=abc', 'invalid limit'],
+      ['/api/releases/v-test/review/issues?limit=1.9', 'invalid limit'],
+      ['/api/releases/v-test/review/issues?limit=1&limit=2', 'invalid limit'],
+      ['/api/releases/v-test/review/issues?cursor=abc', 'invalid cursor'],
+      ['/api/releases/v-test/review/issues?cursor=1.9', 'invalid cursor'],
+      ['/api/releases/v-test/review/issues?cursor=0&cursor=1', 'invalid cursor'],
     ] as const;
 
     for (const [path, error] of cases) {
@@ -202,10 +214,31 @@ describe('audit API routes', () => {
     assert.equal(invalidStatus.body.error, 'invalid status');
     assert.ok(invalidStatus.body.allowedStatuses.includes('fixed_in_release'));
 
+    const repeatedStatus = await getJson('/api/releases/v-test/review/closure-proofs?status=fixed_in_release&status=bad');
+    assert.equal(repeatedStatus.status, 400);
+    assert.equal(repeatedStatus.body.error, 'invalid status');
+
     const invalidDisposition = await getJson('/api/releases/v-test/review/closure-proofs?riskDisposition=bad');
     assert.equal(invalidDisposition.status, 400);
     assert.equal(invalidDisposition.body.error, 'invalid riskDisposition');
     assert.ok(invalidDisposition.body.allowedRiskDispositions.includes('credited_release_fix'));
+
+    const repeatedDisposition = await getJson('/api/releases/v-test/review/closure-proofs?riskDisposition=credited_release_fix&riskDisposition=bad');
+    assert.equal(repeatedDisposition.status, 400);
+    assert.equal(repeatedDisposition.body.error, 'invalid riskDisposition');
+
+    for (const [path, error] of [
+      ['/api/releases/v-test/review/closure-proofs?limit=abc', 'invalid limit'],
+      ['/api/releases/v-test/review/closure-proofs?limit=1.9', 'invalid limit'],
+      ['/api/releases/v-test/review/closure-proofs?limit=1&limit=2', 'invalid limit'],
+      ['/api/releases/v-test/review/closure-proofs?cursor=abc', 'invalid cursor'],
+      ['/api/releases/v-test/review/closure-proofs?cursor=1.9', 'invalid cursor'],
+      ['/api/releases/v-test/review/closure-proofs?cursor=0&cursor=1', 'invalid cursor'],
+    ] as const) {
+      const response = await getJson(path);
+      assert.equal(response.status, 400, path);
+      assert.equal(response.body.error, error, path);
+    }
   });
 
   it('rejects invalid reachability filters at the route boundary', async () => {
@@ -213,9 +246,30 @@ describe('audit API routes', () => {
     assert.equal(invalidStatus.status, 400);
     assert.equal(invalidStatus.body.error, 'invalid status');
 
+    const repeatedStatus = await getJson('/api/releases/v-test/review/reachability?status=reachable&status=bad');
+    assert.equal(repeatedStatus.status, 400);
+    assert.equal(repeatedStatus.body.error, 'invalid status');
+
     const invalidPr = await getJson('/api/releases/v-test/review/reachability?pr=not-a-pr');
     assert.equal(invalidPr.status, 400);
     assert.equal(invalidPr.body.error, 'invalid pr filter');
+
+    const repeatedPr = await getJson('/api/releases/v-test/review/reachability?pr=123&pr=not-a-pr');
+    assert.equal(repeatedPr.status, 400);
+    assert.equal(repeatedPr.body.error, 'invalid pr filter');
+
+    for (const [path, error] of [
+      ['/api/releases/v-test/review/reachability?limit=abc', 'invalid limit'],
+      ['/api/releases/v-test/review/reachability?limit=1.9', 'invalid limit'],
+      ['/api/releases/v-test/review/reachability?limit=1&limit=2', 'invalid limit'],
+      ['/api/releases/v-test/review/reachability?cursor=abc', 'invalid cursor'],
+      ['/api/releases/v-test/review/reachability?cursor=1.9', 'invalid cursor'],
+      ['/api/releases/v-test/review/reachability?cursor=0&cursor=1', 'invalid cursor'],
+    ] as const) {
+      const response = await getJson(path);
+      assert.equal(response.status, 400, path);
+      assert.equal(response.body.error, error, path);
+    }
   });
 
   it('applies issue evidence filters, sorting, summary-only mode, and limit clamps', async () => {
