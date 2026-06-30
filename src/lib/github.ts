@@ -892,6 +892,7 @@ function skipMissingIssueAliases(
   done: Set<number>,
   onMissingIssueAlias?: MissingIssueAliasCallback,
 ): number {
+  if (!onMissingIssueAlias) return 0;
   const missingIndexes = missingIssueIndexesFromGraphqlError(error);
   let skipped = 0;
   for (const idx of missingIndexes) {

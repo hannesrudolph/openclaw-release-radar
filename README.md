@@ -188,7 +188,7 @@ GitHub GraphQL ingestion also fails closed on malformed nested evidence connecti
 
 Score-blocking ingestion failures are appended to `ingestion_evidence_failures` with run/source/scope/message context as soon as they happen. If issue-page comments, label timelines, or fix evidence fail before normal crawl metadata can be completed, refresh writes `stopReason: "evidence_failure"`, persists the failure examples, and refuses score persistence.
 
-When GitHub returns a partial GraphQL response because an issue alias cannot be resolved, batch helpers still recover the rest of the batch, but refresh records the skipped alias as a durable score-blocking evidence failure. Missing issue aliases are not treated as proof that comments, labels, or fix evidence were empty.
+When GitHub returns a partial GraphQL response because an issue alias cannot be resolved, batch helpers recover only when the caller provides an explicit missing-alias reporter. Refresh records the skipped alias as a durable score-blocking evidence failure. Other callers fail closed instead of silently treating comments, labels, or fix evidence as empty.
 
 Audit freshness follows the newest audited stable release, including null-score `wait` rows. Recommendation counts still require a numeric score, so wait/gated audits do not become install candidates.
 

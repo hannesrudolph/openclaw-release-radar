@@ -244,7 +244,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /durable `ingestion_evidence_failures` rows/);
     assert.match(readme, /Release commit checks and security advisories are score-affecting evidence/);
     assert.match(readme, /stopReason: "evidence_failure"/);
-    assert.match(readme, /Missing issue aliases are not treated as proof/);
+    assert.match(readme, /recover only when the caller provides an explicit missing-alias reporter/);
+    assert.match(readme, /Other callers fail closed/);
     assert.match(readme, /malformed nested evidence connections/);
     assert.match(readme, /hasNextPage` without `endCursor/);
     assert.match(readme, /newest audited stable release/);
@@ -367,6 +368,7 @@ describe('static scoring/UI contracts', () => {
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
     assert.match(github, /function skipMissingIssueAliases/);
     assert.match(github, /onMissingIssueAlias/);
+    assert.match(github, /if \(!onMissingIssueAlias\) return 0/);
     assert.match(github, /listIssueCommentsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueLabelEventsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueFixEvidenceBatch[\s\S]*skipMissingIssueAliases/);
@@ -421,6 +423,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
     assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);
+    assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
     assert.match(scoringDoc, /Before writing scores, the script refuses dirty ingestion metadata/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
