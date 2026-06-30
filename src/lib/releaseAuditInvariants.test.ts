@@ -43,6 +43,18 @@ const defaultScoreInput = {
   unresolvedClosureIssueCount: 0,
   unresolvedClosureRiskWeight: 0,
 };
+const proofDependencyFreshnessFixture = [
+  'issue_rows',
+  'issue_fetches',
+  'classification_rows',
+  'label_events',
+  'label_snapshots',
+  'closure_events',
+  'reopen_events',
+  'issue_pr_links',
+  'issue_commit_references',
+  'release_pr_reachability',
+].map((source) => ({ source, max_ts: proofCheckedAt }));
 
 function closureProofFixture(overrides: any = {}) {
   const proof = {
@@ -150,7 +162,7 @@ function reader(overrides: Partial<{
         commandStatus: 0,
       }),
     }],
-    proofDependencyFreshness: [],
+    proofDependencyFreshness: proofDependencyFreshnessFixture,
     issueNumbers: [1],
     audit: {
       prompt_version: 6,
@@ -1285,13 +1297,26 @@ describe('verifyReleaseAudit', () => {
   it('fails when proof dependency source evidence is newer than the proof row', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
-        proofDependencyFreshness: [{
-          source: 'issue_pr_links',
-          max_ts: '2026-01-02T00:00:00.500Z',
-        }],
+        proofDependencyFreshness: [
+          ...proofDependencyFreshnessFixture.filter((source) => source.source !== 'issue_pr_links'),
+          {
+            source: 'issue_pr_links',
+            max_ts: '2026-01-02T00:00:00.500Z',
+          },
+        ],
       }),
     });
     assert.ok(result.failures.some((failure) => /newer than issue_pr_links dependency/.test(failure)));
+  });
+
+  it('fails when proof dependency freshness omits a required source', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofDependencyFreshness: proofDependencyFreshnessFixture
+          .filter((source) => source.source !== 'release_pr_reachability'),
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /dependency freshness must include release_pr_reachability/.test(failure)));
   });
 
   it('fails when source evidence changed after the score audit', async () => {

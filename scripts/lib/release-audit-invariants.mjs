@@ -68,6 +68,18 @@ const affectedUserRiskWeights = new Map([
 ]);
 const fullCommitOidRe = /^[0-9a-f]{40}$/;
 const knownCommitProofSources = new Set(['ClosureComment.fixProof', 'ClosedEvent.closer', 'ReferencedEvent.commit']);
+const requiredProofDependencySources = new Set([
+  'issue_rows',
+  'issue_fetches',
+  'classification_rows',
+  'label_events',
+  'label_snapshots',
+  'closure_events',
+  'reopen_events',
+  'issue_pr_links',
+  'issue_commit_references',
+  'release_pr_reachability',
+]);
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
 const scoreInputSchemaVersion = SCORE_INPUT_SCHEMA_VERSION;
 const scoreComponentsSchemaVersion = SCORE_COMPONENTS_SCHEMA_VERSION;
@@ -1050,7 +1062,13 @@ function verifyProofFreshness({ failures, tag, proofRows, audit, reader }) {
         `proof issue #${row.issue_number} checked_at (${row.checked_at}) must be newer than closure time (${evidence.closedAt})`);
     }
     if (typeof reader.proofDependencyFreshnessForIssue === 'function') {
-      for (const source of reader.proofDependencyFreshnessForIssue(tag, row.issue_number) ?? []) {
+      const dependencyFreshness = reader.proofDependencyFreshnessForIssue(tag, row.issue_number) ?? [];
+      const dependencySources = new Set(dependencyFreshness.map((source) => source?.source).filter(Boolean));
+      for (const required of requiredProofDependencySources) {
+        expect(failures, tag, dependencySources.has(required),
+          `proof issue #${row.issue_number} dependency freshness must include ${required}`);
+      }
+      for (const source of dependencyFreshness) {
         if (!source?.max_ts) continue;
         const sourceAt = Date.parse(source.max_ts);
         expect(failures, tag, Number.isFinite(sourceAt),
