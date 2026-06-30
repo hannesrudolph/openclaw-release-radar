@@ -184,6 +184,8 @@ npm run ui:smoke
 
 Score writers also enforce complete classification coverage before updating release rows or score audits. If any release has `classifiedIssueCount !== rawIssueCount`, `persistReleaseScoreRun` refuses the whole run instead of writing a partial or under-classified score.
 
+GitHub GraphQL ingestion also fails closed on malformed nested evidence connections. Missing `nodes`, missing `pageInfo`, or `hasNextPage` without `endCursor` on issue labels, comments, label timelines, fix evidence, release check contexts, or advisory pages is treated as an ingestion failure, not as empty evidence.
+
 Audit freshness follows the newest audited stable release, including null-score `wait` rows. Recommendation counts still require a numeric score, so wait/gated audits do not become install candidates.
 
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).

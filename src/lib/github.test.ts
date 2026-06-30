@@ -54,6 +54,63 @@ describe('GitHub GraphQL mapping', () => {
     assert.deepEqual(issue.labels, [{ name: 'bug' }, { name: 'impact:discord' }]);
   });
 
+  it('fails closed when issue score evidence connections are missing', () => {
+    const issueNode = {
+      number: 42,
+      title: 'Regression in gateway',
+      body: null,
+      state: 'CLOSED',
+      author: { login: 'maintainer' },
+      authorAssociation: 'MEMBER',
+      createdAt: '2026-06-20T00:00:00Z',
+      updatedAt: '2026-06-21T00:00:00Z',
+      closedAt: '2026-06-22T00:00:00Z',
+      url: 'https://github.com/openclaw/openclaw/issues/42',
+      comments: { totalCount: 3 },
+      reactionGroups: [],
+      labels: { nodes: [], pageInfo: { hasNextPage: false, endCursor: null } },
+    };
+
+    assert.throws(
+      () => __githubTest.mapIssue({ ...issueNode, labels: null }),
+      /issue #42 labels connection/,
+    );
+    assert.throws(
+      () => __githubTest.mapIssue({ ...issueNode, labels: { nodes: null, pageInfo: { hasNextPage: false, endCursor: null } } }),
+      /issue #42 labels connection missing nodes/,
+    );
+    assert.throws(
+      () => __githubTest.mapIssue({ ...issueNode, reactionGroups: null }),
+      /issue #42 missing reactionGroups/,
+    );
+  });
+
+  it('validates GraphQL connections and pagination cursors', () => {
+    const connection = __githubTest.requireGraphqlConnection(
+      { nodes: [{ name: 'bug' }], pageInfo: { hasNextPage: false, endCursor: null } },
+      'test.labels',
+    );
+
+    assert.equal(connection.nodes.length, 1);
+    assert.equal(__githubTest.nextGraphqlPageCursor(connection.pageInfo, 'test.labels'), null);
+    assert.equal(
+      __githubTest.nextGraphqlPageCursor({ hasNextPage: true, endCursor: 'cursor-1' }, 'test.labels'),
+      'cursor-1',
+    );
+    assert.throws(
+      () => __githubTest.requireGraphqlConnection({ nodes: null, pageInfo: { hasNextPage: false, endCursor: null } }, 'test.labels'),
+      /test\.labels connection missing nodes/,
+    );
+    assert.throws(
+      () => __githubTest.requireGraphqlConnection({ nodes: [], pageInfo: null }, 'test.labels'),
+      /test\.labels connection missing pageInfo/,
+    );
+    assert.throws(
+      () => __githubTest.nextGraphqlPageCursor({ hasNextPage: true, endCursor: null }, 'test.labels'),
+      /test\.labels pageInfo hasNextPage without endCursor/,
+    );
+  });
+
   it('builds one GraphQL query with aliased issue comment lookups', () => {
     const query = __githubTest.buildIssueCommentsBatchQuery(2);
 

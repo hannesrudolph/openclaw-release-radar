@@ -240,6 +240,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:live/);
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
+    assert.match(readme, /malformed nested evidence connections/);
+    assert.match(readme, /hasNextPage` without `endCursor/);
     assert.match(readme, /newest audited stable release/);
     assert.match(readme, /null-score `wait` rows/);
     assert.match(readme, /local\.sourceProvenance/);
@@ -357,6 +359,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(github, /listIssueCommentsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueLabelEventsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueFixEvidenceBatch[\s\S]*skipMissingIssueAliases/);
+    assert.match(github, /function requireGraphqlConnection/);
+    assert.match(github, /function nextGraphqlPageCursor/);
+    assert.match(github, /pageInfo hasNextPage without endCursor/);
+    assert.doesNotMatch(github, /connection\?\.nodes \?\? \[\]/);
   });
 
   it('refresh fetches label timelines for all monitored-window issues', () => {
@@ -381,6 +387,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /schemaVersion/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
+    assert.match(scoringDoc, /GraphQL nested evidence connections/);
+    assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(readme, /structured `explanation` object/);
     assert.match(readme, /Current value: `1`/);
     assert.match(readme, /stable reason `code`/);

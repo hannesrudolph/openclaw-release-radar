@@ -228,6 +228,8 @@ Each release review also exposes `dataFreshness`. `scoredAt` is when the score/a
 
 Refresh records the latest issue-pagination crawl in `meta.issue_crawl_last_run`, including pages fetched, stop reason, whether issue backfill was complete, truncated comment scans seen during the crawl, monitored-release evidence refresh failures, and whether score persistence happened after that crawl. If issue pagination stops at `MAX_ISSUE_PAGES`, refresh refuses to persist scores from that incomplete crawl. If closure evidence, PR reachability, or closure-proof refresh fails for any monitored release, refresh records `evidenceRefreshFailures` and refuses to persist scores until those evidence passes complete cleanly. `npm run doctor -- --fail-on-warnings` surfaces missing crawl metadata on scored DBs, recorded page-cap stops, truncated comment scans, evidence refresh failures, and source evidence newer than the latest score so a score cannot quietly look fresh after incomplete evidence ingestion.
 
+GraphQL nested evidence connections are treated as required provenance, not optional decoration. Missing `nodes`, missing `pageInfo`, or a `hasNextPage` page without `endCursor` fails ingestion for score-affecting issue labels, comments, label timelines, fix evidence, release check contexts, and advisory pages instead of being interpreted as empty evidence.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence.

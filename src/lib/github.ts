@@ -310,9 +310,10 @@ export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise
       for (let idx = 0; idx < active.length; idx++) {
         const issueNumber = active[idx];
         const issue = repo[`issue${idx}`];
-        const connection = issue?.timelineItems;
+        if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while fetching label timeline`);
+        const connection = requireGraphqlConnection<any>(issue.timelineItems, `issue #${issueNumber} label timeline`);
         const events = all.get(issueNumber) ?? [];
-        for (const node of connection?.nodes ?? []) {
+        for (const node of connection.nodes) {
           const type = node?.__typename;
           if (type !== 'LabeledEvent' && type !== 'UnlabeledEvent') continue;
           const labelName = node.label?.name;
@@ -327,8 +328,9 @@ export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise
           });
         }
         all.set(issueNumber, events);
-        if (connection?.pageInfo?.hasNextPage && connection.pageInfo.endCursor) {
-          cursors.set(issueNumber, connection.pageInfo.endCursor);
+        const nextCursor = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} label timeline`);
+        if (nextCursor) {
+          cursors.set(issueNumber, nextCursor);
         } else {
           done.add(issueNumber);
         }
@@ -472,6 +474,36 @@ function assertRepo<T>(repo: T | null | undefined): T {
   return repo;
 }
 
+type GraphqlConnection<T> = {
+  nodes: Array<T | null> | null;
+  pageInfo?: PageInfo | null;
+};
+
+function requireGraphqlConnection<T>(
+  connection: GraphqlConnection<T> | null | undefined,
+  context: string,
+): { nodes: Array<T | null>; pageInfo: PageInfo } {
+  if (!connection) throw new Error(`GitHub GraphQL missing ${context} connection`);
+  if (!Array.isArray(connection.nodes)) throw new Error(`GitHub GraphQL ${context} connection missing nodes`);
+  if (!isPageInfo(connection.pageInfo)) throw new Error(`GitHub GraphQL ${context} connection missing pageInfo`);
+  return { nodes: connection.nodes, pageInfo: connection.pageInfo };
+}
+
+function isPageInfo(value: unknown): value is PageInfo {
+  if (!value || typeof value !== 'object') return false;
+  const pageInfo = value as Partial<PageInfo>;
+  return typeof pageInfo.hasNextPage === 'boolean' &&
+    (pageInfo.endCursor === null || typeof pageInfo.endCursor === 'string');
+}
+
+function nextGraphqlPageCursor(pageInfo: PageInfo, context: string): string | null {
+  if (!pageInfo.hasNextPage) return null;
+  if (!pageInfo.endCursor) {
+    throw new Error(`GitHub GraphQL ${context} pageInfo hasNextPage without endCursor`);
+  }
+  return pageInfo.endCursor;
+}
+
 function mapRelease(node: ReleaseNode): GhRelease {
   return {
     tag_name: node.tagName,
@@ -485,9 +517,13 @@ function mapRelease(node: ReleaseNode): GhRelease {
 }
 
 function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string } | null> = []): GhIssue {
-  const reactions = summarizeReactions(node.reactionGroups ?? []);
+  if (!Array.isArray(node.reactionGroups)) {
+    throw new Error(`GitHub GraphQL issue #${node.number} missing reactionGroups`);
+  }
+  const reactions = summarizeReactions(node.reactionGroups);
+  const labels = requireGraphqlConnection(node.labels, `issue #${node.number} labels`);
   const labelNames = new Set(
-    [...(node.labels?.nodes ?? []), ...extraLabelNodes]
+    [...labels.nodes, ...extraLabelNodes]
       .filter((label): label is { name: string } => !!label)
       .map((label) => label.name),
   );
@@ -603,16 +639,16 @@ export async function listReleases(fetchSize = 60): Promise<GhRelease[]> {
       repoVars({ first, after }),
     );
 
-    const connection = assertRepo(data.repository).releases;
+    const connection = requireGraphqlConnection(assertRepo(data.repository).releases, 'repository.releases');
     releases.push(
-      ...(connection.nodes ?? [])
+      ...connection.nodes
         .filter((node): node is ReleaseNode => !!node)
         .map(mapRelease)
         .filter((r) => !r.draft),
     );
 
-    if (!connection.pageInfo.hasNextPage || !connection.pageInfo.endCursor) break;
-    after = connection.pageInfo.endCursor;
+    after = nextGraphqlPageCursor(connection.pageInfo, 'repository.releases');
+    if (!after) break;
   }
 
   return releases.slice(0, wanted);
@@ -662,15 +698,15 @@ export async function* paginateIssues(perPage = GRAPHQL_PAGE_SIZE): AsyncGenerat
       repoVars({ first, after }),
     );
 
-    const connection = assertRepo(data.repository).issues;
-    const issueNodes = (connection.nodes ?? []).filter((node): node is IssueNode => !!node);
+    const connection = requireGraphqlConnection(assertRepo(data.repository).issues, 'repository.issues');
+    const issueNodes = connection.nodes.filter((node): node is IssueNode => !!node);
     const extraLabels = await remainingIssueLabelsForNodes(issueNodes);
     const page = issueNodes.map((node) => mapIssue(node, extraLabels.get(node.number) ?? []));
     if (page.length === 0) return;
     yield page;
 
-    if (!connection.pageInfo.hasNextPage || !connection.pageInfo.endCursor) return;
-    after = connection.pageInfo.endCursor;
+    after = nextGraphqlPageCursor(connection.pageInfo, 'repository.issues');
+    if (!after) return;
   }
 }
 
@@ -688,7 +724,8 @@ export async function listIssuesBatch(issueNumbers: number[]): Promise<Map<numbe
     for (let idx = 0; idx < chunk.length; idx++) {
       const node = repo[`issue${idx}`];
       if (!node?.number) continue;
-      const extraLabels = await remainingIssueLabelNodes(node.number, node.labels?.pageInfo ?? null);
+      const labelConnection = requireGraphqlConnection(node.labels, `issue #${node.number} labels`);
+      const extraLabels = await remainingIssueLabelNodes(node.number, labelConnection.pageInfo);
       all.set(node.number, mapIssue(node, extraLabels));
     }
   }
@@ -729,7 +766,8 @@ function buildIssuesBatchQuery(size: number): string {
 async function remainingIssueLabelsForNodes(nodes: IssueNode[]): Promise<Map<number, Array<{ name: string } | null>>> {
   const out = new Map<number, Array<{ name: string } | null>>();
   await Promise.all(nodes.map(async (node) => {
-    const labels = await remainingIssueLabelNodes(node.number, node.labels?.pageInfo ?? null);
+    const connection = requireGraphqlConnection(node.labels, `issue #${node.number} labels`);
+    const labels = await remainingIssueLabelNodes(node.number, connection.pageInfo);
     if (labels.length) out.set(node.number, labels);
   }));
   return out;
@@ -740,15 +778,17 @@ async function remainingIssueLabelNodes(
   pageInfo: PageInfo | null,
 ): Promise<Array<{ name: string } | null>> {
   const labels: Array<{ name: string } | null> = [];
-  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  let after = pageInfo ? nextGraphqlPageCursor(pageInfo, `issue #${issueNumber} labels`) : null;
   while (after) {
     const data = await gh<{ repository: { issue: { labels: { nodes: Array<{ name: string } | null> | null; pageInfo: PageInfo } | null } | null } | null }>(
       buildIssueLabelsQuery(),
       repoVars({ number: issueNumber, after }),
     );
-    const connection = assertRepo(data.repository).issue?.labels;
-    labels.push(...(connection?.nodes ?? []));
-    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+    const issue = assertRepo(data.repository).issue;
+    if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while paginating labels`);
+    const connection = requireGraphqlConnection(issue.labels, `issue #${issueNumber} labels`);
+    labels.push(...connection.nodes);
+    after = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} labels`);
   }
   return labels;
 }
@@ -804,13 +844,16 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
       for (let idx = 0; idx < active.length; idx++) {
         const issueNumber = active[idx];
         const issue = repo[`issue${idx}`];
+        if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while fetching comments`);
+        const connection = requireGraphqlConnection<CommentNode>(issue.comments, `issue #${issueNumber} comments`);
         const comments = all.get(issueNumber) ?? [];
-        comments.push(...((issue?.comments.nodes ?? [])
+        comments.push(...(connection.nodes
           .filter((node): node is CommentNode => !!node)
           .map(mapComment)));
         all.set(issueNumber, comments);
-        if (issue?.comments.pageInfo.hasNextPage && issue.comments.pageInfo.endCursor) {
-          cursors.set(issueNumber, issue.comments.pageInfo.endCursor);
+        const nextCursor = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} comments`);
+        if (nextCursor) {
+          cursors.set(issueNumber, nextCursor);
         } else {
           done.add(issueNumber);
         }
@@ -877,11 +920,17 @@ export async function getReleaseCommit(tag: string): Promise<GhReleaseCommit> {
   for (;;) {
     const data: ReleaseCommitQueryData = await gh<ReleaseCommitQueryData>(buildReleaseCommitQuery(), repoVars({ tag, after }));
     release = assertRepo(data.repository).release;
+    if (!release) throw new Error(`GitHub GraphQL missing release ${tag}`);
+    if (!release.tagCommit) throw new Error(`GitHub GraphQL missing tag commit for release ${tag}`);
     rollup = release?.tagCommit?.statusCheckRollup ?? null;
-    contexts.push(...mapReleaseCheckContexts(rollup?.contexts.nodes ?? []));
-    const pageInfo: PageInfo | undefined = rollup?.contexts.pageInfo;
-    if (!pageInfo?.hasNextPage || !pageInfo.endCursor) break;
-    after = pageInfo.endCursor;
+    if (!rollup) {
+      after = null;
+      break;
+    }
+    const connection = requireGraphqlConnection(rollup.contexts, `release ${tag} status check contexts`);
+    contexts.push(...mapReleaseCheckContexts(connection.nodes));
+    after = nextGraphqlPageCursor(connection.pageInfo, `release ${tag} status check contexts`);
+    if (!after) break;
   }
 
   const counts = countReleaseCheckContexts(contexts);
@@ -1055,16 +1104,22 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
       const issueNumber = active[idx];
       const issue = repo[`issue${idx}`];
       const evidence = all.get(issueNumber);
-      if (!issue || !evidence) continue;
+      if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while fetching fix evidence`);
+      if (!evidence) continue;
 
-      appendClosedByPullRequestReferences(evidence, issueNumber, issue.closedByPullRequestsReferences?.nodes ?? []);
-      appendFixTimelineNodes(evidence, issueNumber, issue.timelineItems?.nodes ?? []);
+      const closedByPullRequestsReferences = requireGraphqlConnection(
+        issue.closedByPullRequestsReferences,
+        `issue #${issueNumber} closedByPullRequestsReferences`,
+      );
+      const timelineItems = requireGraphqlConnection(issue.timelineItems, `issue #${issueNumber} fix timeline`);
+      appendClosedByPullRequestReferences(evidence, issueNumber, closedByPullRequestsReferences.nodes);
+      appendFixTimelineNodes(evidence, issueNumber, timelineItems.nodes);
       await appendRemainingClosedByPullRequestReferences(
         evidence,
         issueNumber,
-        issue.closedByPullRequestsReferences?.pageInfo ?? null,
+        closedByPullRequestsReferences.pageInfo,
       );
-      await appendRemainingFixTimelineNodes(evidence, issueNumber, issue.timelineItems?.pageInfo ?? null);
+      await appendRemainingFixTimelineNodes(evidence, issueNumber, timelineItems.pageInfo);
     }
   }
   return all;
@@ -1177,15 +1232,20 @@ async function appendRemainingClosedByPullRequestReferences(
   issueNumber: number,
   pageInfo: PageInfo | null,
 ): Promise<void> {
-  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  let after = pageInfo ? nextGraphqlPageCursor(pageInfo, `issue #${issueNumber} closedByPullRequestsReferences`) : null;
   while (after) {
     const data = await gh<{ repository: { issue: { closedByPullRequestsReferences: { nodes: Array<any | null>; pageInfo: PageInfo } } | null } | null }>(
       buildIssueClosedByPrRefsQuery(),
       repoVars({ number: issueNumber, after }),
     );
-    const connection = assertRepo(data.repository).issue?.closedByPullRequestsReferences;
-    appendClosedByPullRequestReferences(evidence, issueNumber, connection?.nodes ?? []);
-    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+    const issue = assertRepo(data.repository).issue;
+    if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while paginating closedByPullRequestsReferences`);
+    const connection = requireGraphqlConnection(
+      issue.closedByPullRequestsReferences,
+      `issue #${issueNumber} closedByPullRequestsReferences`,
+    );
+    appendClosedByPullRequestReferences(evidence, issueNumber, connection.nodes);
+    after = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} closedByPullRequestsReferences`);
   }
 }
 
@@ -1194,15 +1254,17 @@ async function appendRemainingFixTimelineNodes(
   issueNumber: number,
   pageInfo: PageInfo | null,
 ): Promise<void> {
-  let after = pageInfo?.hasNextPage ? pageInfo.endCursor : null;
+  let after = pageInfo ? nextGraphqlPageCursor(pageInfo, `issue #${issueNumber} fix timeline`) : null;
   while (after) {
     const data = await gh<{ repository: { issue: { timelineItems: { nodes: Array<any | null>; pageInfo: PageInfo } } | null } | null }>(
       buildIssueFixTimelineQuery(),
       repoVars({ number: issueNumber, after }),
     );
-    const connection = assertRepo(data.repository).issue?.timelineItems;
-    appendFixTimelineNodes(evidence, issueNumber, connection?.nodes ?? []);
-    after = connection?.pageInfo.hasNextPage ? connection.pageInfo.endCursor : null;
+    const issue = assertRepo(data.repository).issue;
+    if (!issue) throw new Error(`GitHub GraphQL missing issue #${issueNumber} while paginating fix timeline`);
+    const connection = requireGraphqlConnection(issue.timelineItems, `issue #${issueNumber} fix timeline`);
+    appendFixTimelineNodes(evidence, issueNumber, connection.nodes);
+    after = nextGraphqlPageCursor(connection.pageInfo, `issue #${issueNumber} fix timeline`);
   }
 }
 
@@ -1272,7 +1334,9 @@ async function listPullRequestFixesForRepo(
     const responseRepo = assertRepo(data.repository);
     for (let idx = 0; idx < chunk.length; idx++) {
       const pr = responseRepo[`pr${idx}`];
-      if (!pr?.number) continue;
+      if (!pr?.number) {
+        throw new Error(`GitHub GraphQL missing ${repo.nameWithOwner}#${chunk[idx]} pull request without a missing-PR error`);
+      }
       const mapped = mapPullRequestFix(pr);
       all.set(pullRequestKey(mapped.repositoryNameWithOwner, mapped.number), mapped);
     }
@@ -1805,13 +1869,11 @@ export async function listSecurityAdvisories(): Promise<GhAdvisory[]> {
       { package: config.github.repo, after },
     );
 
-    vulnerabilities.push(
-      ...(data.securityVulnerabilities.nodes ?? [])
-        .filter((node): node is SecurityVulnerabilityNode => !!node),
-    );
+    const connection = requireGraphqlConnection(data.securityVulnerabilities, 'securityVulnerabilities');
+    vulnerabilities.push(...connection.nodes.filter((node): node is SecurityVulnerabilityNode => !!node));
 
-    if (!data.securityVulnerabilities.pageInfo.hasNextPage || !data.securityVulnerabilities.pageInfo.endCursor) break;
-    after = data.securityVulnerabilities.pageInfo.endCursor;
+    after = nextGraphqlPageCursor(connection.pageInfo, 'securityVulnerabilities');
+    if (!after) break;
   }
 
   return mapSecurityVulnerabilities(vulnerabilities);
@@ -1834,8 +1896,10 @@ export const __githubTest = {
   shouldRetryGraphqlErrors,
   skipMissingIssueAliases,
   buildIssueLabelEventsBatchQuery,
+  nextGraphqlPageCursor,
   mapComment,
   mapIssue,
   mapRelease,
   mapSecurityVulnerabilities,
+  requireGraphqlConnection,
 };
