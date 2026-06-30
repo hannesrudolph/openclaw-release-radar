@@ -103,10 +103,13 @@ describe('static scoring/UI contracts', () => {
 
   it('frontend closure proof labels cover backend statuses and risk dispositions', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    const payload = readFileSync(join(root, 'src/lib/closureProofPayload.ts'), 'utf8');
     CLOSURE_PROOF_STATUSES.forEach((status) =>
       assert.match(html, new RegExp(`${status}:`), `missing frontend closure label for ${status}`));
     CLOSURE_RISK_DISPOSITIONS.forEach((disposition) =>
       assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
+    assert.match(payload, /CLOSURE_PROOF_STATUS_RANK/);
+    assert.match(payload, /satisfies Record<ClosureProofStatus, number>/);
     assert.match(html, /resolvedByCanonicalReleaseFixCount/);
     assert.match(html, /resolvedByReleaseFixProofCount/);
     assert.match(html, /neutralHighImpactCount/);

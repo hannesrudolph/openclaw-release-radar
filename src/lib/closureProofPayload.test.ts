@@ -2,15 +2,27 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import {
   CLOSURE_PROOF_SCHEMA_VERSION,
+  CLOSURE_PROOF_STATUS_RANK,
   RELEASE_FIX_CREDIT_SCHEMA_VERSION,
   closureRiskDisposition,
   closureRiskWeightForRow,
 } from './closureProofPayload.ts';
+import { CLOSURE_PROOF_STATUSES } from './closureProofTaxonomy.ts';
 
 describe('closure proof risk weighting', () => {
   it('publishes a stable payload schema version', () => {
     assert.equal(CLOSURE_PROOF_SCHEMA_VERSION, 1);
     assert.equal(RELEASE_FIX_CREDIT_SCHEMA_VERSION, 1);
+  });
+
+  it('ranks every known closure proof status intentionally', () => {
+    assert.deepEqual(
+      Object.keys(CLOSURE_PROOF_STATUS_RANK).sort(),
+      [...CLOSURE_PROOF_STATUSES].sort(),
+    );
+    assert.ok(CLOSURE_PROOF_STATUS_RANK.duplicate_to_open_canonical < CLOSURE_PROOF_STATUS_RANK.fixed_in_release);
+    assert.ok(CLOSURE_PROOF_STATUS_RANK.fixed_after_latest_release < CLOSURE_PROOF_STATUS_RANK.fixed_in_release);
+    assert.ok(CLOSURE_PROOF_STATUS_RANK.unknown < CLOSURE_PROOF_STATUS_RANK.non_bug_neutral);
   });
 
   it('weights unresolved closure risk by disposition and issue classification', () => {
