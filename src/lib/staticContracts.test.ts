@@ -293,7 +293,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(bridgeTest, /verifiedDebtWeight/);
     assert.match(bridgeTest, /unresolvedClosureRiskWeight/);
     assert.match(bridgeTest, /unclassified release issue/);
+    assert.match(bridgeTest, /malformed advisory vulnerable_version_range/);
     assert.match(scorer, /assertReleaseScoreRunPersistable/);
+    assert.match(scorer, /assertAdvisoryRangesParseable/);
+    assert.match(scorer, /isRangeParseable/);
     assert.match(scorer, /complete classification coverage/);
     assert.match(bridgeTest, /persistReleaseScoreRun/);
   });
@@ -429,6 +432,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, new RegExp(`Current model: \`${scoreModel}\``));
     assert.match(scoringDoc, /components\.explanation/);
     assert.match(scoringDoc, /schemaVersion/);
+    assert.match(scoringDoc, /Score writers refuse malformed or unsupported `vulnerable_version_range`/);
     assert.match(scoringDoc, /positiveDetails/);
     assert.match(scoringDoc, /limitDetails/);
     assert.match(scoringDoc, /artifact\/release-check\/advisory\/monitored-release evidence refresh failures/);

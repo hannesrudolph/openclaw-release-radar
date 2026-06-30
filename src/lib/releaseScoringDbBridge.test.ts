@@ -222,6 +222,26 @@ describe('release scoring DB bridge', () => {
         /complete classification coverage: v1 5\/6/,
       );
       assert.equal(db.getRelease('v1')?.final_score, null);
+      db.upsertAdvisory({
+        ghsa_id: 'GHSA-malformed',
+        cve_id: 'CVE-2026-9999',
+        summary: 'Malformed advisory range',
+        severity: 'medium',
+        html_url: 'https://example.test/advisory',
+        published_at: '2026-06-01T00:00:00Z',
+        vulnerable_version_range: '^2026.6.0',
+        patched_versions: '2026.6.10',
+      });
+
+      assert.throws(
+        () => scoring.buildReleaseScoreRun({
+          releases: [db.getRelease('v1')],
+          allFetchedTags: ['v2', 'v1'],
+          stableTagsNewestFirst: ['v2', 'v1'],
+          nowForRelease: () => Date.parse('2026-06-11T00:00:00Z'),
+        }),
+        /malformed advisory vulnerable_version_range/,
+      );
     } finally {
       try { db.db.close(); } catch { /* already closed */ }
       rmSync(dir, { recursive: true, force: true });

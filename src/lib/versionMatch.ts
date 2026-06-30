@@ -15,9 +15,8 @@
 //   ">= 1.0.0, < 2.0.0"  → comma-separated AND  (both must hold)
 //   ">= 1.0.0 < 2.0.0"   → space-separated AND  (GitHub uses this form too)
 //
-// Unsupported: caret (^), tilde (~), pipe-OR (|). They don't appear in
-// GitHub-filed advisories so we don't bother. If we encounter one we return
-// `false` (no match) and log a warning — safer than guessing.
+// Unsupported: caret (^), tilde (~), pipe-OR (|). These must not be silently
+// treated as non-matches by score writers because that could hide CVE exposure.
 
 export type CompareResult = -1 | 0 | 1;
 
@@ -76,6 +75,40 @@ function parseClause(raw: string): { op: string; target: string } | null {
   return { op: m[1] ?? '=', target: m[2] };
 }
 
+function rangeClauses(range: string | null | undefined): { clauses: string[]; error: string | null } {
+  if (!range) return { clauses: [], error: null };
+  const cleaned = range.trim();
+  if (!cleaned) return { clauses: [], error: null };
+  const clauses: string[] = [];
+  for (const segment of cleaned.replace(/\s+/g, ' ').split(',')) {
+    const text = segment.trim();
+    if (!text) continue;
+    const matches = [...text.matchAll(/(<=|>=|<|>|==?)?\s*[0-9A-Za-z.\-+]+/g)];
+    if (matches.length === 0) return { clauses: [], error: `unsupported range segment "${text}"` };
+    let cursor = 0;
+    for (const match of matches) {
+      const start = match.index ?? 0;
+      if (text.slice(cursor, start).trim() !== '') {
+        return { clauses: [], error: `unsupported range syntax near "${text.slice(cursor, start).trim()}"` };
+      }
+      clauses.push(match[0].trim());
+      cursor = start + match[0].length;
+    }
+    if (text.slice(cursor).trim() !== '') {
+      return { clauses: [], error: `unsupported range syntax near "${text.slice(cursor).trim()}"` };
+    }
+  }
+  for (const clause of clauses) {
+    if (!parseClause(clause)) return { clauses: [], error: `unsupported clause "${clause}"` };
+  }
+  return { clauses, error: null };
+}
+
+export function isRangeParseable(range: string | null | undefined): boolean {
+  const parsed = rangeClauses(range);
+  return parsed.error == null && parsed.clauses.length > 0;
+}
+
 // Extract the FIRST version that shipped a fix, from a GHSA `patched_versions`
 // string. Examples:
 //   "2026.4.23"             → "2026.4.23"
@@ -116,23 +149,14 @@ export function stableDistance(
 // Returns `false` for malformed input — safer than guessing.
 export function matchesRange(version: string, range: string | null | undefined): boolean {
   if (!version || !range) return false;
-  const cleaned = range.trim();
-  if (!cleaned) return false;
-
-  // Split on comma OR runs of whitespace BETWEEN operators-and-targets.
-  // We can't naively split on space because "< 1.2.3" itself contains space.
-  // Trick: insert delimiter before each operator, then split.
-  const normalized = cleaned.replace(/\s+/g, ' ');
-  const parts: string[] = [];
-  let buf = '';
-  for (const segment of normalized.split(',')) {
-    // Within a comma-segment, look for "op target op target ..." pattern.
-    const tokens = segment.match(/(<=|>=|<|>|==?)?\s*[0-9A-Za-z.\-+]+/g) ?? [];
-    for (const t of tokens) parts.push(t.trim());
+  const { clauses, error } = rangeClauses(range);
+  if (error) {
+    console.warn(`[versionMatch] unsupported range: ${error} in "${range}"`);
+    return false;
   }
-  if (parts.length === 0) return false;
+  if (clauses.length === 0) return false;
 
-  for (const clause of parts) {
+  for (const clause of clauses) {
     const parsed = parseClause(clause);
     if (!parsed) {
       console.warn(`[versionMatch] unsupported clause: "${clause}" in range "${range}"`);

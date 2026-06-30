@@ -1,6 +1,6 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { compareVersions, matchesRange, firstPatchedVersion, stableDistance } from './versionMatch.ts';
+import { compareVersions, isRangeParseable, matchesRange, firstPatchedVersion, stableDistance } from './versionMatch.ts';
 
 describe('compareVersions', () => {
   it('component-wise numeric compare', () => {
@@ -92,9 +92,13 @@ describe('matchesRange', () => {
     assert.equal(matchesRange('1.2.3', '   '), false);
   });
 
-  it('returns false on malformed range (safer than guessing)', () => {
+  it('returns false on malformed range while exposing parse failure', () => {
     assert.equal(matchesRange('1.2.3', '^1.0.0'), false);
     assert.equal(matchesRange('1.2.3', '~1.2.0'), false);
+    assert.equal(isRangeParseable('^1.0.0'), false);
+    assert.equal(isRangeParseable('~1.2.0'), false);
+    assert.equal(isRangeParseable('>= 1.0.0, < 2.0.0'), true);
+    assert.equal(isRangeParseable('>= 1.0.0 < 2.0.0'), true);
   });
 });
 

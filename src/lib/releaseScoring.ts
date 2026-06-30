@@ -15,7 +15,7 @@ import {
   type InstallInput,
 } from './score';
 import { hasHotfixSuccessor } from './releaseNotes';
-import { stableDistance, matchesRange } from './versionMatch';
+import { isRangeParseable, stableDistance, matchesRange } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 import { closureProofPayload, closureRiskDisposition, enrichGateEvidenceWithClosureProof } from './closureProofPayload';
 import {
@@ -189,6 +189,7 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
   const allFetchedTags = options.allFetchedTags ?? tagWindow.allFetchedTags;
   const stableTagsNewestFirst = options.stableTagsNewestFirst ?? tagWindow.stableTagsNewestFirst;
   const advisories = listAdvisories();
+  assertAdvisoryRangesParseable(advisories);
   const cveFor = (tag: string): { affected: boolean; load: number } => {
     const matching = advisories.filter((a) => matchesRange(tag, a.vulnerable_version_range));
     const affected = matching.some((a) => (SEV_RANK[a.severity] ?? 0) >= 2);
@@ -222,6 +223,15 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     explanation: buildScoreExplanation(result, result.rel.tag === recommendedTag),
   }));
   return { scored, recommendedTag };
+}
+
+function assertAdvisoryRangesParseable(advisories: Array<{ ghsa_id?: string | null; vulnerable_version_range?: string | null }>): void {
+  const malformed = advisories
+    .filter((advisory) => !isRangeParseable(advisory.vulnerable_version_range))
+    .map((advisory) => `${advisory.ghsa_id ?? 'unknown'}:${advisory.vulnerable_version_range ?? 'null'}`);
+  if (malformed.length > 0) {
+    throw new Error(`Refusing to score with malformed advisory vulnerable_version_range row(s): ${malformed.slice(0, 10).join(', ')}${malformed.length > 10 ? `, ... ${malformed.length - 10} more` : ''}`);
+  }
 }
 
 export function scoreTagWindow(releases: Array<{ tag: string; prerelease?: number | boolean | null }>): {

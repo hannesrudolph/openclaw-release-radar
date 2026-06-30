@@ -18,6 +18,8 @@ These override the normal 0-10 score:
 - `skip-cve`: medium-or-higher advisory affects the release.
 - `skip-hotfix`: release was superseded quickly or by a hotfix successor.
 
+Advisory version ranges are score-critical. Score writers refuse malformed or unsupported `vulnerable_version_range` strings instead of treating them as non-matches, because a false non-match could hide a `skip-cve` gate.
+
 ## Score Components
 
 The normal score starts from a base value, then applies bounded components:
