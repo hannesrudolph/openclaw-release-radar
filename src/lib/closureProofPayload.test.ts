@@ -6,6 +6,8 @@ import {
   RELEASE_FIX_CREDIT_SCHEMA_VERSION,
   closureRiskDisposition,
   closureRiskWeightForRow,
+  emptyClosureProofPayload,
+  enrichGateEvidenceWithClosureProof,
 } from './closureProofPayload.ts';
 import { CLOSURE_PROOF_STATUSES } from './closureProofTaxonomy.ts';
 
@@ -13,6 +15,31 @@ describe('closure proof risk weighting', () => {
   it('publishes a stable payload schema version', () => {
     assert.equal(CLOSURE_PROOF_SCHEMA_VERSION, 1);
     assert.equal(RELEASE_FIX_CREDIT_SCHEMA_VERSION, 1);
+  });
+
+  it('emits explicit zero-count closure proof payloads', () => {
+    const payload = emptyClosureProofPayload();
+    assert.equal(payload.schemaVersion, CLOSURE_PROOF_SCHEMA_VERSION);
+    assert.equal(payload.creditedCount, 0);
+    assert.equal(payload.notCreditedCount, 0);
+    assert.equal(payload.riskSummary.unresolvedForReleaseCount, 0);
+    assert.deepEqual(payload.examples, []);
+
+    const gateEvidence = {
+      fixProvenance: {
+        closureProof: { stale: true },
+        releaseFixCredit: { countedClosedCount: 10 },
+      },
+    };
+    const enriched = enrichGateEvidenceWithClosureProof('v-empty', gateEvidence, null);
+    assert.equal(enriched.fixProvenance.closureProof.schemaVersion, CLOSURE_PROOF_SCHEMA_VERSION);
+    assert.equal(enriched.fixProvenance.closureProof.analyzedClosedCount, 0);
+    assert.deepEqual(enriched.fixProvenance.releaseFixCredit, {
+      schemaVersion: RELEASE_FIX_CREDIT_SCHEMA_VERSION,
+      countedClosedCount: 0,
+      notCountedClosedCount: 0,
+      analyzedClosedCount: 0,
+    });
   });
 
   it('ranks every known closure proof status intentionally', () => {

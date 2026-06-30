@@ -61,7 +61,7 @@ const USERS_RISK_WEIGHT: Record<string, number> = {
 
 export function closureProofPayload(tag: string, labelCutoffOverride?: string | null) {
   const summaryRows = closureProofSummary(tag);
-  if (!summaryRows.length) return null;
+  if (!summaryRows.length) return emptyClosureProofPayload();
   const release = getRelease(tag);
   const audit = getReleaseScoreAudit(tag);
   const labelCutoff = labelCutoffOverride !== undefined
@@ -119,6 +119,35 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     neutralAuditExamples,
     examplesByStatus,
     examples,
+  };
+}
+
+export function emptyClosureProofPayload() {
+  return {
+    schemaVersion: CLOSURE_PROOF_SCHEMA_VERSION,
+    creditedCount: 0,
+    notCreditedCount: 0,
+    analyzedClosedCount: 0,
+    byStatus: {},
+    byRiskDisposition: {},
+    riskSummary: {
+      creditedReleaseFixCount: 0,
+      resolvedByCanonicalReleaseFixCount: 0,
+      resolvedByReleaseFixProofCount: 0,
+      knownNotInReleaseCount: 0,
+      openCanonicalRiskCount: 0,
+      unsupportedClosureClaimCount: 0,
+      neutralOrNonActionableCount: 0,
+      neutralHighImpactCount: 0,
+      neutralBugShapedCount: 0,
+      missingEvidenceCount: 0,
+      unresolvedForReleaseCount: 0,
+      unresolvedWeightedRisk: 0,
+      weightedRiskByDisposition: {},
+    },
+    neutralAuditExamples: [],
+    examplesByStatus: {},
+    examples: [],
   };
 }
 
@@ -310,14 +339,15 @@ function neutralAuditSeverityRank(severity: unknown): number {
 }
 
 export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any, closureProof = closureProofPayload(tag)) {
-  if (gateEvidence && closureProof) {
+  if (gateEvidence) {
+    const payload = closureProof ?? emptyClosureProofPayload();
     gateEvidence.fixProvenance ??= {};
-    gateEvidence.fixProvenance.closureProof = closureProof;
+    gateEvidence.fixProvenance.closureProof = payload;
     gateEvidence.fixProvenance.releaseFixCredit = {
       schemaVersion: RELEASE_FIX_CREDIT_SCHEMA_VERSION,
-      countedClosedCount: closureProof.creditedCount,
-      notCountedClosedCount: closureProof.notCreditedCount,
-      analyzedClosedCount: closureProof.analyzedClosedCount,
+      countedClosedCount: payload.creditedCount,
+      notCountedClosedCount: payload.notCreditedCount,
+      analyzedClosedCount: payload.analyzedClosedCount,
     };
   }
   return gateEvidence;
@@ -327,7 +357,7 @@ export function persistClosureProofInScoreAudit(tag: string): boolean {
   const audit = getReleaseScoreAudit(tag);
   if (!audit) return false;
   const gateEvidence = parseJson(audit.gate_evidence_json, null);
-  if (!gateEvidence) return false;
+  if (!gateEvidence) throw new Error(`Release ${tag} score audit gate_evidence_json is malformed; refusing to persist closure proof payload`);
   const release = getRelease(tag);
   const labelCutoff = release ? releaseLabelCutoff(release, audit.scored_at) : null;
   const enriched = enrichGateEvidenceWithClosureProof(tag, gateEvidence, closureProofPayload(tag, labelCutoff));

@@ -382,8 +382,6 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }
   const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids]);
   const laterCommitReachability = await laterReachableReleaseByCommit(releaseTag, commitReachability);
-  const counts = new Map<string, number>();
-  deleteIssueClosureProofsForRelease(releaseTag);
   const preparedRows: Array<{
     issueNumber: number;
     result: ClosureProofResult;
@@ -470,22 +468,30 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
   }
   const resultByIssue = new Map(preparedRows.map((item) => [item.issueNumber, item.result]));
 
-  for (const item of preparedRows.filter((item) => sourceIssueNumbers.has(item.issueNumber))) {
+  const proofRows = preparedRows.filter((item) => sourceIssueNumbers.has(item.issueNumber)).map((item) => {
     const adjusted = adjustCanonicalDuplicateStatus(item.issueNumber, item.result, item.evidence, canonicalGraph, resultByIssue, releaseTag);
-    upsertIssueClosureProof({
+    return {
       release_tag: releaseTag,
       issue_number: item.issueNumber,
       status: adjusted.status,
       summary: adjusted.summary,
       evidence_json: JSON.stringify(adjusted.evidence),
-    });
-    counts.set(adjusted.status, (counts.get(adjusted.status) ?? 0) + 1);
+    };
+  });
+  const counts = new Map<string, number>();
+  for (const row of proofRows) {
+    counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
   }
-  persistClosureProofInScoreAudit(releaseTag);
+
+  runInWriteTransaction(() => {
+    deleteIssueClosureProofsForRelease(releaseTag);
+    for (const row of proofRows) upsertIssueClosureProof(row);
+    persistClosureProofInScoreAudit(releaseTag);
+  });
 
   return {
     releaseTag,
-    analyzed: preparedRows.filter((item) => sourceIssueNumbers.has(item.issueNumber)).length,
+    analyzed: proofRows.length,
     buckets: Object.fromEntries([...counts.entries()].sort((a, b) => b[1] - a[1])),
     rawEvidence,
   };

@@ -395,7 +395,16 @@ describe('static scoring/UI contracts', () => {
 
   it('closure proof analysis checks direct commit closers for release reachability', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const payload = readFileSync(join(root, 'src/lib/closureProofPayload.ts'), 'utf8');
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
+    assert.ok(
+      analysis.indexOf('const proofRows = preparedRows') < analysis.indexOf('deleteIssueClosureProofsForRelease(releaseTag)'),
+      'closure proof rows must be staged before deleting persisted proof rows',
+    );
+    assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssueClosureProofsForRelease\(releaseTag\);[\s\S]*persistClosureProofInScoreAudit\(releaseTag\);/);
+    assert.match(payload, /gate_evidence_json is malformed; refusing to persist closure proof payload/);
+    assert.match(payload, /emptyClosureProofPayload/);
+    assert.doesNotMatch(payload, /if \(!summaryRows\.length\) return null/);
     assert.match(analysis, /direct_closer_commits/);
     assert.match(analysis, /e\.closer_type='Commit'/);
     assert.match(analysis, /directClosureCommitMentions/);
