@@ -151,6 +151,26 @@ describe('release fix provenance', () => {
     assert.ok(db.dataFreshnessCacheDigest().count > 0);
   });
 
+  it('tracks local issue fetch freshness separately from GitHub issue updated_at', async () => {
+    const db = await freshDb('issue-fetch-freshness');
+    seedRelease(db, 'v-fetch', '2036-06-01T00:00:00Z');
+    seedIssue(db, 6101, null, '2036-06-01T12:00:00Z');
+
+    const issue = db.getIssue(6101);
+    assert.ok(issue);
+    assert.ok(Date.parse(String(issue.fetched_at)));
+
+    const freshness = db.releaseDataFreshness('v-fetch');
+    const issueRows = freshness.sources.find((source: any) => source.source === 'issue_rows');
+    const issueFetches = freshness.sources.find((source: any) => source.source === 'issue_fetches');
+    assert.ok(issueRows);
+    assert.ok(issueFetches);
+    assert.equal(issueRows.maxAt, '2036-06-01T12:00:00Z');
+    assert.ok(Date.parse(String(issueFetches.maxAt)));
+    assert.notEqual(issueFetches.maxAt, issueRows.maxAt);
+    assert.ok(db.dataFreshnessCacheDigest().digest);
+  });
+
   it('uses the next stable release, not prereleases, for issue attribution windows', async () => {
     const db = await freshDb('stable-attribution-window');
     seedRelease(db, 'v1', '2026-06-01T00:00:00Z');

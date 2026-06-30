@@ -163,7 +163,8 @@ CREATE TABLE IF NOT EXISTS issues (
   reaction_total INTEGER NOT NULL DEFAULT 0,
   positive_reactions INTEGER NOT NULL DEFAULT 0,
   labels TEXT NOT NULL DEFAULT '[]',
-  is_bot INTEGER NOT NULL DEFAULT 0
+  is_bot INTEGER NOT NULL DEFAULT 0,
+  fetched_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
@@ -405,6 +406,7 @@ for (const sql of [
   `ALTER TABLE issues ADD COLUMN commenter_scan_truncated INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issues ADD COLUMN reaction_total INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issues ADD COLUMN positive_reactions INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN fetched_at TEXT`,
   `ALTER TABLE release_commits ADD COLUMN check_state TEXT`,
   `ALTER TABLE release_commits ADD COLUMN check_total INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE release_commits ADD COLUMN check_success INTEGER NOT NULL DEFAULT 0`,
@@ -1184,6 +1186,7 @@ const hasReleaseRowFreshnessColumns = tableHasColumns('releases', [
   'release_derived_fetched_at',
   'release_artifact_checked_at',
 ]);
+const hasIssueFetchFreshnessColumn = tableHasColumns('issues', ['fetched_at']);
 
 const releaseDataFreshnessStmt = db.prepare(`
 WITH target AS (
@@ -1272,6 +1275,9 @@ sources(source, max_ts) AS (
   UNION ALL
   SELECT 'issue_rows', MAX(i.updated_at)
   FROM issues i JOIN issue_universe u ON u.number=i.number
+  ${hasIssueFetchFreshnessColumn ? `UNION ALL
+  SELECT 'issue_fetches', MAX(i.fetched_at)
+  FROM issues i JOIN issue_universe u ON u.number=i.number` : ''}
   UNION ALL
   SELECT 'classification_rows', MAX(c.classified_at)
   FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
@@ -1353,6 +1359,7 @@ export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
 
 const dataFreshnessCacheRowsStmt = db.prepare(`
 SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS max_ts FROM issues
+${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), MAX(fetched_at) FROM issues` : ''}
 UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
 UNION ALL SELECT 'issue_label_events', COUNT(*), MAX(fetched_at) FROM issue_label_events
 UNION ALL SELECT 'issue_label_snapshots', COUNT(*), MAX(fetched_at) FROM issue_label_snapshots
@@ -2116,18 +2123,19 @@ export interface IssueRow {
   positive_reactions?: number;
   labels: string;
   is_bot: number; // 0/1; computed at write time via detectBot()
+  fetched_at?: string | null;
 }
 
 const upsertIssueStmt = db.prepare(`
 INSERT INTO issues (
   number, state, title, author, author_association, html_url, created_at, updated_at, closed_at,
   comments, unique_human_commenters, maintainer_commenters, contributor_commenters, commenter_scan_truncated,
-  reaction_total, positive_reactions, labels, is_bot
+  reaction_total, positive_reactions, labels, is_bot, fetched_at
 )
 VALUES (
   :number, :state, :title, :author, :author_association, :html_url, :created_at, :updated_at, :closed_at,
   :comments, :unique_human_commenters, :maintainer_commenters, :contributor_commenters, :commenter_scan_truncated,
-  :reaction_total, :positive_reactions, :labels, :is_bot
+  :reaction_total, :positive_reactions, :labels, :is_bot, :fetched_at
 )
 ON CONFLICT(number) DO UPDATE SET
   state=excluded.state,
@@ -2146,7 +2154,8 @@ ON CONFLICT(number) DO UPDATE SET
   reaction_total=excluded.reaction_total,
   positive_reactions=excluded.positive_reactions,
   labels=excluded.labels,
-  is_bot=excluded.is_bot
+  is_bot=excluded.is_bot,
+  fetched_at=excluded.fetched_at
 `);
 
 export function upsertIssue(i: IssueRow): void {
@@ -2159,6 +2168,7 @@ export function upsertIssue(i: IssueRow): void {
     commenter_scan_truncated: i.commenter_scan_truncated ?? 0,
     reaction_total: i.reaction_total ?? 0,
     positive_reactions: i.positive_reactions ?? 0,
+    fetched_at: i.fetched_at ?? new Date().toISOString(),
   } as unknown as Record<string, string | number | null>);
 }
 

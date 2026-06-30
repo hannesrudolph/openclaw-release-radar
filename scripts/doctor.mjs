@@ -262,6 +262,10 @@ function coverageSummary(input, issueEvidence) {
 
 function freshnessSummary(db, tag, scoredAt, now) {
   const issueUniverse = issueUniverseFreshness(db, tag);
+  const issueFetchFreshnessSql = tableHasColumns(db, 'issues', ['fetched_at'])
+    ? `
+    UNION ALL SELECT 'issue_fetches', COUNT(*), MAX(fetched_at) FROM issues`
+    : '';
   const releaseRowsFreshnessSql = tableHasColumns(db, 'releases', [
     'release_metadata_fetched_at',
     'release_derived_fetched_at',
@@ -278,6 +282,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
     : '';
   const sourceRows = db.prepare(`
     SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS maxAt FROM issues
+    ${issueFetchFreshnessSql}
     UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
     UNION ALL SELECT 'issue_label_events', COUNT(*), MAX(fetched_at) FROM issue_label_events
     UNION ALL SELECT 'issue_label_snapshots', COUNT(*), MAX(fetched_at) FROM issue_label_snapshots

@@ -412,6 +412,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /freshness\.count/);
     assert.match(api, /freshness\.digest/);
     assert.match(api, /dataFreshness:\s+freshnessForRelease/);
+    assert.match(db, /fetched_at TEXT/);
+    assert.match(db, /'issue_fetches'/);
+    assert.match(db, /MAX\(i\.fetched_at\)/);
     assert.match(db, /release_metadata_fetched_at TEXT/);
     assert.match(db, /release_derived_fetched_at TEXT/);
     assert.match(db, /release_artifact_checked_at TEXT/);

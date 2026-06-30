@@ -349,6 +349,11 @@ export class ReleaseAuditReader {
   }
 
   sourceFreshnessFor(tag) {
+    const issueFetchFreshnessSql = this.tableHasColumns('issues', ['fetched_at'])
+      ? `UNION ALL
+      SELECT 'issue_fetches', MAX(i.fetched_at)
+      FROM issues i JOIN issue_universe u ON u.number=i.number`
+      : '';
     const commitReferenceFreshnessSql = this.tableExists('issue_commit_references')
       ? `UNION ALL
       SELECT 'issue_commit_references', MAX(c.fetched_at)
@@ -412,6 +417,7 @@ export class ReleaseAuditReader {
       UNION ALL
       SELECT 'issue_rows', MAX(i.updated_at)
       FROM issues i JOIN issue_universe u ON u.number=i.number
+      ${issueFetchFreshnessSql}
       UNION ALL
       SELECT 'classification_rows', MAX(c.classified_at)
       FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
@@ -442,7 +448,14 @@ export class ReleaseAuditReader {
   }
 
   proofDependencyFreshnessForIssue(tag, issueNumber) {
+    const hasIssueFetches = this.tableHasColumns('issues', ['fetched_at']);
     const hasCommitReferences = this.tableExists('issue_commit_references');
+    const issueFetchFreshnessSql = hasIssueFetches
+      ? `UNION ALL
+      SELECT 'issue_fetches', MAX(fetched_at)
+      FROM issues
+      WHERE number=?`
+      : '';
     const commitReferenceFreshnessSql = hasCommitReferences
       ? `UNION ALL
       SELECT 'issue_commit_references', MAX(c.fetched_at)
@@ -453,6 +466,7 @@ export class ReleaseAuditReader {
     const params = [
       issueNumber,
       issueNumber,
+      ...(hasIssueFetches ? [issueNumber] : []),
       issueNumber,
       issueNumber,
       issueNumber,
@@ -471,6 +485,7 @@ export class ReleaseAuditReader {
       SELECT 'issue_rows' AS source, MAX(updated_at) AS max_ts
       FROM issues
       WHERE number=?
+      ${issueFetchFreshnessSql}
       UNION ALL
       SELECT 'classification_rows', MAX(classified_at)
       FROM classifications
