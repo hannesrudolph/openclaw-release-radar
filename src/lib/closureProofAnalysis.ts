@@ -376,9 +376,10 @@ export async function analyzeClosureProofsForRelease(
     canonicalCommitMentionsByIssue.set(issueNumber, canonicalMentions);
     for (const mention of mentions) allCommitOids.add(mention.commitOid);
     const row = aggregateByIssue.get(issueNumber);
-    const hasMergedClosingPr = Number(row?.merged_closing_prs ?? 0) > 0;
-    const hasDirectClosureCommit = splitCsv(row?.direct_closer_commits).some((commitOid) => fullCommitOidRe.test(commitOid));
-    if (directMentions.length === 0 && !hasMergedClosingPr && !hasDirectClosureCommit) {
+    if (shouldUseReferencedCommitProof({
+      directMentionCount: directMentions.length,
+      reachableClosingPrCount: Number(row?.reachable_closing_prs ?? 0),
+    })) {
       useReferencedCommitProofIssues.add(issueNumber);
       for (const mention of referencedCommitMentionsByIssue.get(issueNumber) ?? []) allCommitOids.add(mention.commitOid);
     }
@@ -522,6 +523,16 @@ function commitProofEvidence(
       evidence: result?.evidence ?? 'reachability_not_checked',
     };
   });
+}
+
+function shouldUseReferencedCommitProof({
+  directMentionCount,
+  reachableClosingPrCount,
+}: {
+  directMentionCount: number;
+  reachableClosingPrCount: number;
+}): boolean {
+  return directMentionCount === 0 && reachableClosingPrCount === 0;
 }
 
 function enrichLinkedPrReachability(releaseTag: string, rawLinkedPrs: unknown[]): unknown[] {
@@ -1913,6 +1924,7 @@ export const __closureProofAnalysisTest = {
   effectiveClosureProofClassification,
   enrichLinkedPrReachability,
   commitReferenceMentionsFromRows,
+  shouldUseReferencedCommitProof,
   compareLinkedPrEvidencePriority,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,

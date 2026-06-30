@@ -1048,4 +1048,22 @@ describe('closure proof canonical roll-up', () => {
       trustedSource: true,
     }]);
   });
+
+  it('uses referenced commit proof when merged closing PRs are not reachable', () => {
+    assert.equal(__closureProofAnalysisTest.shouldUseReferencedCommitProof({
+      directMentionCount: 0,
+      reachableClosingPrCount: 0,
+    }), true);
+  });
+
+  it('does not use referenced commit fallback when reachable PR or direct commit proof already exists', () => {
+    assert.equal(__closureProofAnalysisTest.shouldUseReferencedCommitProof({
+      directMentionCount: 0,
+      reachableClosingPrCount: 1,
+    }), false);
+    assert.equal(__closureProofAnalysisTest.shouldUseReferencedCommitProof({
+      directMentionCount: 1,
+      reachableClosingPrCount: 0,
+    }), false);
+  });
 });
