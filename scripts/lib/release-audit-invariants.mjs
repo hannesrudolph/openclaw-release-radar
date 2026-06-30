@@ -161,6 +161,9 @@ const publicIssueKeys = new Set([
 const issueEvidenceAuditKeys = new Set([
   'schemaVersion',
   'tag',
+  'sourceMode',
+  'scoredAt',
+  'dataFreshness',
   'labelCutoffAt',
   'filters',
   'countsByTier',
@@ -1857,6 +1860,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       reader,
       tag: release.tag,
       issueEvidence: review.local?.issueEvidence,
+      scoredAt: release.scored_at,
     });
     verifyReleaseChecksGate({
       failures,
@@ -2019,7 +2023,7 @@ function verifyClosureProofExamplesByStatus({ failures, tag, proof, label }) {
   }
 }
 
-async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, reader, tag, issueEvidence }) {
+async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, reader, tag, issueEvidence, scoredAt }) {
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/issues`;
   const firstPage = await fetchJson(`${base}?limit=11`);
   const invalidFilterCases = [
@@ -2048,6 +2052,11 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   verifyAllowedKeys({ failures, tag, label: 'issue evidence audit totals', value: firstPage.totals, allowed: issueEvidenceAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `issue evidence audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.sourceMode === 'current_db',
+    `issue evidence audit sourceMode (${firstPage.sourceMode}) must be current_db`);
+  expect(failures, tag, firstPage.scoredAt === scoredAt,
+    `issue evidence audit scoredAt (${firstPage.scoredAt}) must match DB scored_at (${scoredAt})`);
+  verifyDataFreshness({ failures, tag, dataFreshness: firstPage.dataFreshness, releaseTag: tag, scoredAt });
   expect(failures, tag, firstPage.limit === 11,
     `issue evidence audit limit must be 11, got ${firstPage.limit}`);
   expect(failures, tag, firstPage.cursor === 0,

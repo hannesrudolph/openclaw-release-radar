@@ -601,6 +601,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     return {
       schemaVersion: 1,
       tag: 'v1',
+      sourceMode: 'current_db',
+      scoredAt: auditScoredAt,
+      dataFreshness,
       labelCutoffAt: null,
       filters: {
         tier: tiers.length === 1 ? tiers[0] : null,

@@ -88,7 +88,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(issueEvidence, /Open non-verified risk/);
     assert.match(issueEvidence, /not proven release-local field blockers/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
-    assert.match(readme, /Paginated issue-evidence rows/);
+    assert.match(readme, /Paginated current-DB issue-evidence rows/);
+    assert.match(readme, /`sourceMode`/);
+    assert.match(readme, /`dataFreshness`/);
     assert.match(readme, /comma-separated `tier`/);
     assert.match(readme, /`impact`/);
     assert.match(readme, /`state`/);

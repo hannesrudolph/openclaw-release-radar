@@ -795,6 +795,7 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
+  const audit = getReleaseScoreAudit(tag);
   const tierFilter = parseIssueEvidenceTierFilter(req.query.tier);
   if (tierFilter && tierFilter.length === 0) {
     res.status(400).json({ error: 'invalid tier', tier: req.query.tier });
@@ -905,6 +906,9 @@ api.get('/releases/:tag/review/issues', (req, res) => {
   res.json({
     schemaVersion: RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
     tag,
+    sourceMode: 'current_db',
+    scoredAt: release.scored_at,
+    dataFreshness: freshnessForRelease(release, audit),
     labelCutoffAt: evidence.labelCutoffAt,
     filters: {
       tier: tierFilter?.length === 1 ? tierFilter[0] : null,

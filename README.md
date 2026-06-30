@@ -217,7 +217,7 @@ A healthy completed refresh also records `meta.issue_crawl_last_run`, which `npm
 | `/api/releases/history` | Score history |
 | `/api/public` | Main install recommendation payload |
 | `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields by default |
-| `/api/releases/:tag/review/issues` | Paginated issue-evidence rows for one release; supports comma-separated `tier`, `impact`, `state`, `sentiment`, `severity`, `functionality`, `scope`, `affectedUsers`, `fieldConfirmed`, `minWeight`, `maxWeight`, `sort`, `direction`, `summaryOnly`, plus `limit` and `cursor`; includes `tierInfo`, `summaryByTier`, `filteredSummary`, `filteredCountsByTier`, `filteredSummaryByTier`, and `totals` |
+| `/api/releases/:tag/review/issues` | Paginated current-DB issue-evidence rows for one release; supports comma-separated `tier`, `impact`, `state`, `sentiment`, `severity`, `functionality`, `scope`, `affectedUsers`, `fieldConfirmed`, `minWeight`, `maxWeight`, `sort`, `direction`, `summaryOnly`, plus `limit` and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, `tierInfo`, `summaryByTier`, `filteredSummary`, `filteredCountsByTier`, `filteredSummaryByTier`, and `totals` |
 | `/api/releases/:tag/review/closure-proofs` | Paginated closure-proof rows for one release; supports validated `status`, `riskDisposition`, `limit`, and `cursor`; includes filtered/unfiltered status and risk-disposition counts |
 | `/api/releases/:tag/review/reachability` | Paginated PR reachability rows for one release; supports `status`, `pr`, `limit`, and `cursor`; includes filtered/unfiltered status counts |
 | `/api/comparison` | Internal temporary upstream-comparison payload |
