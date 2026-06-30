@@ -29,6 +29,17 @@ import {
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
 
 const knownCommitProofStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
+const knownReachabilityEvidenceReasons = new Set([
+  'merge_commit_in_release_history',
+  'fix_commit_in_release_history',
+  'not_reachable_from_release_tag',
+  'release_commit_unavailable',
+  'release_commit_fetch_failed',
+  'merge_commit_oid_unavailable',
+  'commit_fetch_failed',
+  'commit_unavailable',
+  'merge_base_error',
+]);
 const knownRiskDispositions = new Set(CLOSURE_RISK_DISPOSITIONS);
 const riskDispositionByProofStatus = new Map(Object.entries(CLOSURE_RISK_DISPOSITION_BY_STATUS));
 const riskDispositionWeights = new Map(Object.entries(CLOSURE_RISK_DISPOSITION_WEIGHT));
@@ -2608,6 +2619,24 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
       `PR reachability audit row checkedAt must be a timestamp for ${row.repositoryNameWithOwner}#${row.number}`);
     expect(failures, tag, isObject(row.evidence),
       `PR reachability audit row evidence must be an object for ${row.repositoryNameWithOwner}#${row.number}`);
+    expect(failures, tag, row.evidence?.schemaVersion === 1,
+      `PR reachability audit row evidence schemaVersion must be 1 for ${row.repositoryNameWithOwner}#${row.number}`);
+    expect(failures, tag, knownReachabilityEvidenceReasons.has(row.evidence?.evidence),
+      `PR reachability audit row evidence reason must be known for ${row.repositoryNameWithOwner}#${row.number}, got ${row.evidence?.evidence}`);
+    if (row.status === 'reachable' || row.status === 'not_reachable') {
+      expect(failures, tag, typeof row.tagCommitOid === 'string' && fullCommitOidRe.test(row.tagCommitOid),
+        `PR reachability ${row.status} row must include full tagCommitOid for ${row.repositoryNameWithOwner}#${row.number}`);
+      expect(failures, tag, typeof row.mergeCommitOid === 'string' && fullCommitOidRe.test(row.mergeCommitOid),
+        `PR reachability ${row.status} row must include full mergeCommitOid for ${row.repositoryNameWithOwner}#${row.number}`);
+      expect(failures, tag, row.method === 'git-merge-base',
+        `PR reachability ${row.status} row must use git-merge-base for ${row.repositoryNameWithOwner}#${row.number}`);
+      expect(failures, tag, row.evidence.evidence !== 'merge_base_error',
+        `PR reachability ${row.status} row must not use merge_base_error evidence for ${row.repositoryNameWithOwner}#${row.number}`);
+    }
+    if (row.status === 'unknown') {
+      expect(failures, tag, row.evidence.evidence !== 'merge_commit_in_release_history' && row.evidence.evidence !== 'fix_commit_in_release_history',
+        `unknown PR reachability row cannot use reachable evidence for ${row.repositoryNameWithOwner}#${row.number}`);
+    }
   }
   if (firstPage.total > firstPage.rows.length) {
     expect(failures, tag, Number.isInteger(firstPage.nextCursor) && firstPage.nextCursor === firstPage.rows.length,

@@ -34,6 +34,8 @@ const artifactVerificationFixture = {
 };
 const proofCheckedAt = '2026-01-02T00:00:00Z';
 const auditScoredAt = '2026-01-02T00:00:01Z';
+const tagOid = 'a'.repeat(40);
+const mergeOid = 'b'.repeat(40);
 const defaultScoreInput = {
   schemaVersion: 1,
   rawIssueCount: 1,
@@ -123,8 +125,8 @@ function reader(overrides: Partial<{
           merged: 1,
           reachabilityStatus: 'reachable',
           reachabilityMethod: 'git-merge-base',
-          reachabilityEvidence: 'reachable_from_release_tag',
-          mergeCommitOid: 'merge-1',
+          reachabilityEvidence: 'merge_commit_in_release_history',
+          mergeCommitOid: mergeOid,
         }],
         stateReasons: ['COMPLETED'],
       }),
@@ -135,9 +137,18 @@ function reader(overrides: Partial<{
       pr_number: 1,
       merged: 1,
       status: 'reachable',
-      tag_commit_oid: 'tag-commit',
-      release_tag_commit_oid: 'tag-commit',
-      merge_commit_oid: 'merge-1',
+      tag_commit_oid: tagOid,
+      release_tag_commit_oid: tagOid,
+      merge_commit_oid: mergeOid,
+      evidence_json: JSON.stringify({
+        schemaVersion: 1,
+        evidence: 'merge_commit_in_release_history',
+        method: 'git-merge-base',
+        tagCommitOid: tagOid,
+        checkedCommitOid: mergeOid,
+        baseRefName: 'main',
+        commandStatus: 0,
+      }),
     }],
     proofDependencyFreshness: [],
     issueNumbers: [1],
@@ -242,7 +253,15 @@ function reader(overrides: Partial<{
       base_ref_name: row.base_ref_name ?? 'main',
       status: row.status,
       method: row.method ?? 'git-merge-base',
-      evidence_json: row.evidence_json ?? '{"evidence":"test"}',
+      evidence_json: row.evidence_json ?? JSON.stringify({
+        schemaVersion: 1,
+        evidence: 'merge_commit_in_release_history',
+        method: 'git-merge-base',
+        tagCommitOid: row.tag_commit_oid ?? tagOid,
+        checkedCommitOid: row.merge_commit_oid ?? mergeOid,
+        baseRefName: row.base_ref_name ?? 'main',
+        commandStatus: 0,
+      }),
       checked_at: proofCheckedAt,
     })),
     getReleaseScoreAudit: () => data.audit,
@@ -429,11 +448,19 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       status: 'reachable',
       method: 'git-merge-base',
       checkedAt: proofCheckedAt,
-      tagCommitOid: 'tag-commit',
-      mergeCommitOid: 'merge-1',
-      prMergeCommitOid: 'merge-1',
+      tagCommitOid: tagOid,
+      mergeCommitOid: mergeOid,
+      prMergeCommitOid: mergeOid,
       baseRefName: 'main',
-      evidence: { evidence: 'test' },
+      evidence: {
+        schemaVersion: 1,
+        evidence: 'merge_commit_in_release_history',
+        method: 'git-merge-base',
+        tagCommitOid: tagOid,
+        checkedCommitOid: mergeOid,
+        baseRefName: 'main',
+        commandStatus: 0,
+      },
     };
     const prFilter = parsed.searchParams.get('pr');
     const rows = (!parsed.searchParams.get('status') || parsed.searchParams.get('status') === row.status) &&
@@ -905,6 +932,54 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /PR reachability audit scoredAt/.test(failure)));
   });
 
+  it('fails when reachable PR reachability rows lack auditable commit identity', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.includes('/api/releases/v1/review/reachability') && payload.rows?.[0]) {
+          return {
+            ...payload,
+            rows: [{
+              ...payload.rows[0],
+              tagCommitOid: null,
+              mergeCommitOid: null,
+            }],
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /must include full tagCommitOid/.test(failure)));
+    assert.ok(result.failures.some((failure) => /must include full mergeCommitOid/.test(failure)));
+  });
+
+  it('fails when PR reachability evidence reason is not known', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.includes('/api/releases/v1/review/reachability') && payload.rows?.[0]) {
+          return {
+            ...payload,
+            rows: [{
+              ...payload.rows[0],
+              evidence: { ...payload.rows[0].evidence, evidence: 'mystery_reachability_reason' },
+            }],
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /evidence reason must be known/.test(failure)));
+  });
+
   it('fails when review closure proof masks stale persisted audit proof payload', async () => {
     const staleProof = closureProofFixture({
       examples: [{ number: 999, status: 'fixed_in_release', riskWeight: 0 }],
@@ -1153,9 +1228,18 @@ describe('verifyReleaseAudit', () => {
           pr_number: 2,
           merged: 1,
           status: 'reachable',
-          tag_commit_oid: 'tag-commit',
-          release_tag_commit_oid: 'tag-commit',
-          merge_commit_oid: 'merge-2',
+          tag_commit_oid: tagOid,
+          release_tag_commit_oid: tagOid,
+          merge_commit_oid: 'c'.repeat(40),
+          evidence_json: JSON.stringify({
+            schemaVersion: 1,
+            evidence: 'merge_commit_in_release_history',
+            method: 'git-merge-base',
+            tagCommitOid: tagOid,
+            checkedCommitOid: 'c'.repeat(40),
+            baseRefName: 'main',
+            commandStatus: 0,
+          }),
         }],
       }),
     });
@@ -1171,9 +1255,18 @@ describe('verifyReleaseAudit', () => {
           pr_number: 1,
           merged: 1,
           status: 'not_reachable',
-          tag_commit_oid: 'tag-commit',
-          release_tag_commit_oid: 'tag-commit',
-          merge_commit_oid: 'merge-1',
+          tag_commit_oid: tagOid,
+          release_tag_commit_oid: tagOid,
+          merge_commit_oid: mergeOid,
+          evidence_json: JSON.stringify({
+            schemaVersion: 1,
+            evidence: 'not_reachable_from_release_tag',
+            method: 'git-merge-base',
+            tagCommitOid: tagOid,
+            checkedCommitOid: mergeOid,
+            baseRefName: 'main',
+            commandStatus: 1,
+          }),
         }],
       }),
     });

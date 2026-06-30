@@ -21,9 +21,36 @@ export interface CommitReachability {
   evidence: string;
 }
 
+type ReachabilityStatus = CommitReachability['status'];
+
+type ReachabilityEvidenceReason =
+  | 'merge_commit_in_release_history'
+  | 'fix_commit_in_release_history'
+  | 'not_reachable_from_release_tag'
+  | 'release_commit_unavailable'
+  | 'release_commit_fetch_failed'
+  | 'merge_commit_oid_unavailable'
+  | 'commit_fetch_failed'
+  | 'commit_unavailable'
+  | 'merge_base_error';
+
 const remote = process.env.OPENCLAW_REPO_URL ?? 'https://github.com/openclaw/openclaw.git';
 const repoDir = resolve('.cache/openclaw.git');
 const trackedRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
+const REACHABILITY_EVIDENCE_SCHEMA_VERSION = 1;
+const REACHABILITY_METHOD = 'git-merge-base';
+
+export const KNOWN_REACHABILITY_EVIDENCE_REASONS: readonly ReachabilityEvidenceReason[] = [
+  'merge_commit_in_release_history',
+  'fix_commit_in_release_history',
+  'not_reachable_from_release_tag',
+  'release_commit_unavailable',
+  'release_commit_fetch_failed',
+  'merge_commit_oid_unavailable',
+  'commit_fetch_failed',
+  'commit_unavailable',
+  'merge_base_error',
+] as const;
 
 const candidateStmt = db.prepare(`
 SELECT DISTINCT
@@ -68,7 +95,12 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
         merge_commit_oid: candidate.merge_commit_oid ?? null,
         base_ref_name: candidate.base_ref_name ?? null,
         status: 'unknown',
-        evidence_json: JSON.stringify({ evidence: 'release_commit_unavailable' }),
+        evidence_json: JSON.stringify(reachabilityEvidence({
+          evidence: 'release_commit_unavailable',
+          tagCommitOid: null,
+          checkedCommitOid: candidate.merge_commit_oid ?? null,
+          baseRefName: candidate.base_ref_name ?? null,
+        })),
       });
       unknown++;
     }
@@ -93,7 +125,13 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
         merge_commit_oid: candidate.merge_commit_oid ?? null,
         base_ref_name: candidate.base_ref_name ?? null,
         status: 'unknown',
-        evidence_json: JSON.stringify({ evidence: 'release_commit_fetch_failed', status: releaseFetch.status }),
+        evidence_json: JSON.stringify(reachabilityEvidence({
+          evidence: 'release_commit_fetch_failed',
+          tagCommitOid: release.tag_commit_oid,
+          checkedCommitOid: candidate.merge_commit_oid ?? null,
+          baseRefName: candidate.base_ref_name ?? null,
+          command: releaseFetch,
+        })),
       });
       unknown++;
     }
@@ -113,12 +151,17 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
         merge_commit_oid: null,
         base_ref_name: candidate.base_ref_name ?? null,
         status: 'unknown',
-        evidence_json: JSON.stringify({ evidence: 'merge_commit_oid_unavailable' }),
+        evidence_json: JSON.stringify(reachabilityEvidence({
+          evidence: 'merge_commit_oid_unavailable',
+          tagCommitOid: release.tag_commit_oid,
+          checkedCommitOid: null,
+          baseRefName: candidate.base_ref_name ?? null,
+        })),
       });
       unknown++;
       continue;
     }
-    git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commit], { allowFailure: true });
+    const commitFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commit], { allowFailure: true });
     const exists = git(['cat-file', '-e', `${commit}^{commit}`], { allowFailure: true });
     if (exists.status !== 0) {
       upsertReleasePrReachability({
@@ -131,7 +174,13 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
         merge_commit_oid: commit,
         base_ref_name: candidate.base_ref_name ?? null,
         status: 'unknown',
-        evidence_json: JSON.stringify({ evidence: 'commit_unavailable' }),
+        evidence_json: JSON.stringify(reachabilityEvidence({
+          evidence: commitFetch.status === 0 ? 'commit_unavailable' : 'commit_fetch_failed',
+          tagCommitOid: release.tag_commit_oid,
+          checkedCommitOid: commit,
+          baseRefName: candidate.base_ref_name ?? null,
+          command: commitFetch.status === 0 ? exists : commitFetch,
+        })),
       });
       unknown++;
       continue;
@@ -149,7 +198,13 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
       merge_commit_oid: commit,
       base_ref_name: candidate.base_ref_name ?? null,
       status: interpreted.status,
-      evidence_json: JSON.stringify(interpreted.evidence),
+      evidence_json: JSON.stringify(reachabilityEvidence({
+        evidence: interpreted.evidence.evidence as ReachabilityEvidenceReason,
+        tagCommitOid: release.tag_commit_oid,
+        checkedCommitOid: commit,
+        baseRefName: candidate.base_ref_name ?? null,
+        command: res,
+      })),
     });
     if (interpreted.status === 'reachable') reachable++;
     else if (interpreted.status === 'not_reachable') notReachable++;
@@ -253,8 +308,8 @@ function git(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {})
 
 function interpretMergeBaseResult(
   res: ReturnType<typeof run>,
-  reachableEvidence: string,
-): { status: CommitReachability['status']; evidence: Record<string, unknown> & { evidence: string } } {
+  reachableEvidence: ReachabilityEvidenceReason,
+): { status: ReachabilityStatus; evidence: Record<string, unknown> & { evidence: ReachabilityEvidenceReason } } {
   if (res.status === 0) return { status: 'reachable', evidence: { evidence: reachableEvidence } };
   if (res.status === 1) return { status: 'not_reachable', evidence: { evidence: 'not_reachable_from_release_tag' } };
   return {
@@ -266,6 +321,27 @@ function interpretMergeBaseResult(
       stdout: trimProcessOutput(res.stdout),
       signal: res.signal ?? null,
     },
+  };
+}
+
+function reachabilityEvidence(input: {
+  evidence: ReachabilityEvidenceReason;
+  tagCommitOid: string | null;
+  checkedCommitOid: string | null;
+  baseRefName?: string | null;
+  command?: ReturnType<typeof run> | null;
+}) {
+  return {
+    schemaVersion: REACHABILITY_EVIDENCE_SCHEMA_VERSION,
+    evidence: input.evidence,
+    method: REACHABILITY_METHOD,
+    tagCommitOid: input.tagCommitOid,
+    checkedCommitOid: input.checkedCommitOid,
+    baseRefName: input.baseRefName ?? null,
+    commandStatus: input.command?.status ?? null,
+    stdout: trimProcessOutput(input.command?.stdout),
+    stderr: trimProcessOutput(input.command?.stderr),
+    signal: input.command?.signal ?? null,
   };
 }
 
@@ -286,5 +362,7 @@ function run(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {})
 }
 
 export const __releaseReachabilityTest = {
+  KNOWN_REACHABILITY_EVIDENCE_REASONS,
   interpretMergeBaseResult,
+  reachabilityEvidence,
 };

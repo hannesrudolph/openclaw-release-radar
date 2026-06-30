@@ -27,4 +27,31 @@ describe('release reachability helpers', () => {
     assert.equal(error.evidence.status, 128);
     assert.equal(error.evidence.stderr, 'fatal: bad object');
   });
+
+  it('emits typed evidence with commit identity and command diagnostics', () => {
+    const tagCommitOid = 'a'.repeat(40);
+    const checkedCommitOid = 'b'.repeat(40);
+    const evidence = __releaseReachabilityTest.reachabilityEvidence({
+      evidence: 'commit_fetch_failed',
+      tagCommitOid,
+      checkedCommitOid,
+      baseRefName: 'main',
+      command: { status: 128, stdout: '', stderr: 'fatal: bad object', signal: null } as any,
+    });
+
+    assert.equal(evidence.schemaVersion, 1);
+    assert.equal(evidence.evidence, 'commit_fetch_failed');
+    assert.equal(evidence.method, 'git-merge-base');
+    assert.equal(evidence.tagCommitOid, tagCommitOid);
+    assert.equal(evidence.checkedCommitOid, checkedCommitOid);
+    assert.equal(evidence.baseRefName, 'main');
+    assert.equal(evidence.commandStatus, 128);
+    assert.equal(evidence.stderr, 'fatal: bad object');
+  });
+
+  it('exports every persisted reachability evidence reason as known', () => {
+    assert.ok(__releaseReachabilityTest.KNOWN_REACHABILITY_EVIDENCE_REASONS.includes('merge_commit_in_release_history'));
+    assert.ok(__releaseReachabilityTest.KNOWN_REACHABILITY_EVIDENCE_REASONS.includes('not_reachable_from_release_tag'));
+    assert.ok(__releaseReachabilityTest.KNOWN_REACHABILITY_EVIDENCE_REASONS.includes('merge_base_error'));
+  });
 });
