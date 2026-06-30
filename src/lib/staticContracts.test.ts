@@ -395,8 +395,16 @@ describe('static scoring/UI contracts', () => {
     assert.match(provenanceTest, /stable-window-integrity/);
     assert.match(scorer, /score_persistence_last_run/);
     assert.match(doctor, /auditedStableTags/);
+    assert.match(doctor, /scoredStableTags/);
+    assert.match(doctor, /missingAuditTags/);
+    assert.match(doctor, /orphanAuditTags/);
+    assert.match(doctor, /releaseAuditMismatches/);
     assert.match(doctor, /auditModelVersions/);
     assert.match(doctor, /auditPromptVersions/);
+    assert.match(doctor, /score persistence releaseTags do not match scored stable release rows/);
+    assert.match(doctor, /score persistence missing release_score_audits rows for scored stable releases/);
+    assert.match(doctor, /score persistence has audit rows without scored stable release rows/);
+    assert.match(doctor, /score persistence release\/audit field mismatch/);
     assert.match(doctor, /score persistence releaseTags do not match audited stable rows/);
     assert.match(doctor, /score persistence scoreModelVersion does not match audited stable rows/);
     assert.match(doctor, /score persistence promptVersion does not match audited stable rows/);

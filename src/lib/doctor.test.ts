@@ -1,5 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
+import { buildDoctorReport } from '../../scripts/doctor.mjs';
 import {
   assessDataFreshnessHealth,
   assessDurableIngestionEvidenceFailureHealth,
@@ -282,3 +287,223 @@ describe('doctor durable ingestion evidence failure health', () => {
     assert.ok(result.warnings.some((warning) => /advisories:1/.test(warning)));
   });
 });
+
+describe('doctor score persistence release/audit parity', () => {
+  it('passes a coherent scored release/audit fixture', () => {
+    const { dbPath, cleanup } = freshDoctorDb();
+    try {
+      const report = buildDoctorReport({ dbPath });
+
+      assert.deepEqual(report.failures, []);
+      assert.deepEqual(report.scorePersistence.scoredStableTags, ['v2', 'v1']);
+      assert.deepEqual(report.scorePersistence.auditedStableTags, ['v2', 'v1']);
+      assert.deepEqual(report.scorePersistence.missingAuditTags, []);
+      assert.deepEqual(report.scorePersistence.orphanAuditTags, []);
+      assert.deepEqual(report.scorePersistence.releaseAuditMismatches, []);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('fails when an older scored stable release is missing an audit row even if meta matches audits', () => {
+    const { db, dbPath, cleanup } = freshDoctorDb();
+    try {
+      db.prepare(`DELETE FROM release_score_audits WHERE release_tag='v1'`).run();
+      writeScorePersistenceMeta(db, ['v2']);
+
+      const report = buildDoctorReport({ dbPath });
+
+      assert.ok(report.failures.some((failure) => /scored stable row count \(2\) does not match audited stable rows \(1\)/.test(failure)));
+      assert.ok(report.failures.some((failure) => /releaseTags do not match scored stable release rows/.test(failure)));
+      assert.ok(report.failures.some((failure) => /missing release_score_audits rows.*v1/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('fails when an older release row and audit row disagree', () => {
+    const { db, dbPath, cleanup } = freshDoctorDb();
+    try {
+      db.prepare(`UPDATE release_score_audits SET final_score=6.6, scored_at='2026-06-01T02:00:00Z', status='wait', recommended=1 WHERE release_tag='v1'`).run();
+
+      const report = buildDoctorReport({ dbPath });
+
+      assert.ok(report.failures.some((failure) => /release\/audit field mismatch/.test(failure)));
+      assert.deepEqual(
+        report.scorePersistence.releaseAuditMismatches.filter((row: any) => row.tag === 'v1').map((row: any) => row.field).sort(),
+        ['final_score', 'recommended', 'scored_at', 'status'],
+      );
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('fails when an audit row exists for a stable release that is no longer scored', () => {
+    const { db, dbPath, cleanup } = freshDoctorDb();
+    try {
+      db.prepare(`UPDATE releases SET final_score=NULL, scored_at=NULL, recommended=0 WHERE tag='v1'`).run();
+
+      const report = buildDoctorReport({ dbPath });
+
+      assert.ok(report.failures.some((failure) => /scored stable row count \(1\) does not match audited stable rows \(2\)/.test(failure)));
+      assert.ok(report.failures.some((failure) => /orphan audit rows.*v1|audit rows without scored stable release rows.*v1/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
+});
+
+function freshDoctorDb() {
+  const dir = mkdtempSync(join(tmpdir(), 'radar-doctor-'));
+  const dbPath = join(dir, 'radar.db');
+  const db = new DatabaseSync(dbPath);
+  db.exec(`
+    CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    CREATE TABLE releases (
+      tag TEXT PRIMARY KEY,
+      published_at TEXT,
+      prerelease INTEGER NOT NULL DEFAULT 0,
+      final_score REAL,
+      state TEXT,
+      recommended INTEGER NOT NULL DEFAULT 0,
+      score_reason TEXT,
+      scored_at TEXT,
+      release_metadata_fetched_at TEXT,
+      release_derived_fetched_at TEXT,
+      release_artifact_checked_at TEXT
+    );
+    CREATE TABLE issues (
+      number INTEGER PRIMARY KEY,
+      created_at TEXT,
+      updated_at TEXT,
+      closed_at TEXT,
+      fetched_at TEXT,
+      commenter_scan_truncated INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE classifications (issue_number INTEGER PRIMARY KEY, classified_at TEXT);
+    CREATE TABLE release_score_audits (
+      release_tag TEXT PRIMARY KEY,
+      scored_at TEXT NOT NULL,
+      score_model_version TEXT NOT NULL,
+      prompt_version INTEGER NOT NULL,
+      final_score REAL,
+      status TEXT NOT NULL,
+      band TEXT NOT NULL,
+      recommended INTEGER NOT NULL DEFAULT 0,
+      input_json TEXT NOT NULL,
+      components_json TEXT,
+      issue_evidence_json TEXT NOT NULL,
+      gate_evidence_json TEXT NOT NULL
+    );
+    CREATE TABLE release_commits (tag TEXT PRIMARY KEY, fetched_at TEXT);
+    CREATE TABLE issue_closure_proofs (release_tag TEXT, issue_number INTEGER, status TEXT, checked_at TEXT);
+    CREATE TABLE issue_closure_events (issue_number INTEGER, closed_at TEXT, fetched_at TEXT);
+    CREATE TABLE issue_reopen_events (issue_number INTEGER, reopened_at TEXT, fetched_at TEXT);
+    CREATE TABLE issue_pr_links (issue_number INTEGER, pr_repository_name_with_owner TEXT, pr_number INTEGER, fetched_at TEXT);
+    CREATE TABLE issue_commit_references (issue_number INTEGER, fetched_at TEXT);
+    CREATE TABLE pull_request_fixes (
+      pr_repository_name_with_owner TEXT,
+      pr_number INTEGER,
+      merged INTEGER,
+      merge_commit_oid TEXT,
+      base_ref_name TEXT,
+      fetched_at TEXT
+    );
+    CREATE TABLE release_pr_reachability (
+      tag TEXT,
+      pr_repository_name_with_owner TEXT,
+      pr_number INTEGER,
+      status TEXT,
+      merge_commit_oid TEXT,
+      base_ref_name TEXT,
+      checked_at TEXT
+    );
+    CREATE TABLE issue_label_events (issue_number INTEGER, fetched_at TEXT);
+    CREATE TABLE issue_label_snapshots (issue_number INTEGER, fetched_at TEXT);
+    CREATE TABLE advisories (fetched_at TEXT);
+    CREATE TABLE ingestion_evidence_failures (
+      id INTEGER PRIMARY KEY,
+      run_id TEXT,
+      occurred_at TEXT,
+      source TEXT,
+      scope TEXT,
+      release_tag TEXT,
+      issue_number INTEGER,
+      pr_repository_name_with_owner TEXT,
+      pr_number INTEGER,
+      message TEXT,
+      context_json TEXT,
+      scoring_blocking INTEGER
+    );
+    CREATE TABLE comparison_snapshots (id INTEGER PRIMARY KEY, source_url TEXT, captured_at TEXT, page_title TEXT);
+    CREATE TABLE comparison_releases (snapshot_id INTEGER);
+  `);
+  seedDoctorFixture(db);
+  return {
+    db,
+    dbPath,
+    cleanup: () => {
+      db.close();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+function seedDoctorFixture(db: DatabaseSync) {
+  const releaseRows = [
+    ['v2', '2026-06-02T00:00:00Z', 7.8, 'eligible', 1, '2026-06-02T01:00:00Z'],
+    ['v1', '2026-06-01T00:00:00Z', 7.5, 'eligible', 0, '2026-06-01T01:00:00Z'],
+  ] as const;
+  const insertRelease = db.prepare(`
+    INSERT INTO releases (
+      tag, published_at, prerelease, final_score, state, recommended, score_reason, scored_at,
+      release_metadata_fetched_at, release_derived_fetched_at, release_artifact_checked_at
+    ) VALUES (?, ?, 0, ?, ?, ?, 'test reason', ?, '2026-05-31T00:00:00Z', '2026-05-31T00:00:00Z', '2026-05-31T00:00:00Z')
+  `);
+  const insertAudit = db.prepare(`
+    INSERT INTO release_score_audits (
+      release_tag, scored_at, score_model_version, prompt_version, final_score, status, band, recommended,
+      input_json, components_json, issue_evidence_json, gate_evidence_json
+    ) VALUES (?, ?, 'test-model', 6, ?, ?, 'ok', ?, ?, '{}', ?, ?)
+  `);
+  for (const [tag, publishedAt, score, status, recommended, scoredAt] of releaseRows) {
+    insertRelease.run(tag, publishedAt, score, status, recommended, scoredAt);
+    insertAudit.run(
+      tag,
+      scoredAt,
+      score,
+      status,
+      recommended,
+      JSON.stringify({ rawIssueCount: 1, classifiedIssueCount: 1 }),
+      JSON.stringify({ debtSummary: {}, verifiedDebt: [], carryoverDebt: [], staleDebt: [], openedFeltSerious: [], verifiedFixed: [], unverifiedClosed: [], unclassifiedIssues: [] }),
+      JSON.stringify({ fixProvenance: { closureProof: { analyzedClosedCount: 0, riskSummary: {} }, releaseFixCredit: { analyzedClosedCount: 0 } } }),
+    );
+    db.prepare(`INSERT INTO release_commits (tag, fetched_at) VALUES (?, '2026-05-31T00:00:00Z')`).run(tag);
+  }
+  db.prepare(`
+    INSERT INTO issues (number, created_at, updated_at, closed_at, fetched_at, commenter_scan_truncated)
+    VALUES (1, '2026-06-02T00:30:00Z', '2026-06-02T00:30:00Z', NULL, '2026-06-02T00:30:00Z', 0)
+  `).run();
+  db.prepare(`INSERT INTO classifications (issue_number, classified_at) VALUES (1, '2026-06-02T00:40:00Z')`).run();
+  writeScorePersistenceMeta(db, ['v2', 'v1']);
+}
+
+function writeScorePersistenceMeta(db: DatabaseSync, releaseTags: string[]) {
+  db.prepare(`
+    INSERT INTO meta (key, value)
+    VALUES ('score_persistence_last_run', ?)
+    ON CONFLICT(key) DO UPDATE SET value=excluded.value
+  `).run(JSON.stringify({
+    schemaVersion: 1,
+    source: 'test',
+    scope: null,
+    persistedAt: '2026-06-02T01:05:00Z',
+    scoreModelVersion: 'test-model',
+    promptVersion: 6,
+    scoredReleaseCount: releaseTags.length,
+    recommendedTag: 'v2',
+    releaseTags,
+    minScoredAt: '2026-06-01T01:00:00Z',
+    maxScoredAt: '2026-06-02T01:00:00Z',
+  }));
+}

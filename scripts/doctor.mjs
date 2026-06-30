@@ -117,6 +117,12 @@ export function buildDoctorReport({
       if (report.scorePersistence.maxAuditScoredAt !== report.scorePersistence.meta.maxScoredAt) {
         failures.push(`score persistence maxScoredAt (${report.scorePersistence.meta.maxScoredAt}) does not match audit rows (${report.scorePersistence.maxAuditScoredAt})`);
       }
+      if (report.scorePersistence.scoredStableCount !== report.scorePersistence.auditedStableCount) {
+        failures.push(`score persistence scored stable row count (${report.scorePersistence.scoredStableCount}) does not match audited stable rows (${report.scorePersistence.auditedStableCount})`);
+      }
+      if (JSON.stringify(report.scorePersistence.scoredStableTags) !== JSON.stringify(report.scorePersistence.meta.releaseTags ?? [])) {
+        failures.push('score persistence releaseTags do not match scored stable release rows');
+      }
       if (report.scorePersistence.auditedStableCount !== report.scorePersistence.meta.scoredReleaseCount) {
         failures.push(`score persistence scoredReleaseCount (${report.scorePersistence.meta.scoredReleaseCount}) does not match audited stable rows (${report.scorePersistence.auditedStableCount})`);
       }
@@ -133,6 +139,19 @@ export function buildDoctorReport({
       }
       if (report.recommendation.recommended?.[0]?.tag && report.scorePersistence.meta.recommendedTag !== report.recommendation.recommended[0].tag) {
         failures.push(`score persistence recommendedTag (${report.scorePersistence.meta.recommendedTag}) does not match recommendation (${report.recommendation.recommended[0].tag})`);
+      }
+      if (report.scorePersistence.missingAuditTags.length > 0) {
+        failures.push(`score persistence missing release_score_audits rows for scored stable releases: ${report.scorePersistence.missingAuditTags.join(', ')}`);
+      }
+      if (report.scorePersistence.orphanAuditTags.length > 0) {
+        failures.push(`score persistence has audit rows without scored stable release rows: ${report.scorePersistence.orphanAuditTags.join(', ')}`);
+      }
+      if (report.scorePersistence.releaseAuditMismatches.length > 0) {
+        const examples = report.scorePersistence.releaseAuditMismatches
+          .slice(0, 5)
+          .map((row) => `${row.tag} ${row.field} release=${JSON.stringify(row.release)} audit=${JSON.stringify(row.audit)}`)
+          .join('; ');
+        failures.push(`score persistence release/audit field mismatch: ${examples}`);
       }
     }
 
@@ -670,6 +689,60 @@ function scorePersistenceSummary(db) {
     WHERE r.prerelease=0
     ORDER BY r.published_at IS NULL, r.published_at DESC
   `).all();
+  const scoredRows = db.prepare(`
+    SELECT tag
+    FROM releases
+    WHERE prerelease=0
+      AND (
+        final_score IS NOT NULL
+        OR scored_at IS NOT NULL
+      )
+    ORDER BY published_at IS NULL, published_at DESC
+  `).all();
+  const missingAuditTags = db.prepare(`
+    SELECT r.tag
+    FROM releases r
+    LEFT JOIN release_score_audits a ON a.release_tag=r.tag
+    WHERE r.prerelease=0
+      AND (
+        r.final_score IS NOT NULL
+        OR r.scored_at IS NOT NULL
+      )
+      AND a.release_tag IS NULL
+    ORDER BY r.published_at IS NULL, r.published_at DESC
+  `).all().map((row) => row.tag);
+  const orphanAuditTags = db.prepare(`
+    SELECT a.release_tag
+    FROM release_score_audits a
+    LEFT JOIN releases r ON r.tag=a.release_tag
+    WHERE r.tag IS NULL
+      OR r.prerelease != 0
+      OR (
+        r.final_score IS NULL
+        AND r.scored_at IS NULL
+      )
+    ORDER BY a.release_tag
+  `).all().map((row) => row.release_tag);
+  const parityRows = db.prepare(`
+    SELECT r.tag,
+           r.final_score AS release_final_score,
+           a.final_score AS audit_final_score,
+           r.scored_at AS release_scored_at,
+           a.scored_at AS audit_scored_at,
+           r.state AS release_status,
+           a.status AS audit_status,
+           r.recommended AS release_recommended,
+           a.recommended AS audit_recommended
+    FROM releases r
+    JOIN release_score_audits a ON a.release_tag=r.tag
+    WHERE r.prerelease=0
+      AND (
+        r.final_score IS NOT NULL
+        OR r.scored_at IS NOT NULL
+      )
+    ORDER BY r.published_at IS NULL, r.published_at DESC
+  `).all();
+  const releaseAuditMismatches = parityRows.flatMap((row) => releaseAuditMismatchesForRow(row));
   return {
     present: typeof raw === 'string' && raw.length > 0,
     valid: !!meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schemaVersion === 1,
@@ -678,10 +751,30 @@ function scorePersistenceSummary(db) {
     scoredStableCount: Number(releaseStats?.count ?? 0),
     maxReleaseScoredAt: releaseStats?.maxScoredAt ?? null,
     maxAuditScoredAt: auditStats?.maxScoredAt ?? null,
+    scoredStableTags: scoredRows.map((row) => row.tag),
     auditedStableTags: auditRows.map((row) => row.release_tag),
     auditModelVersions: [...new Set(auditRows.map((row) => row.score_model_version))],
     auditPromptVersions: [...new Set(auditRows.map((row) => row.prompt_version))],
+    missingAuditTags,
+    orphanAuditTags,
+    releaseAuditMismatches,
   };
+}
+
+function releaseAuditMismatchesForRow(row) {
+  return [
+    ['final_score', row.release_final_score, row.audit_final_score],
+    ['scored_at', row.release_scored_at, row.audit_scored_at],
+    ['status', row.release_status, row.audit_status],
+    ['recommended', row.release_recommended, row.audit_recommended],
+  ]
+    .filter(([, releaseValue, auditValue]) => releaseValue !== auditValue)
+    .map(([field, releaseValue, auditValue]) => ({
+      tag: row.tag,
+      field,
+      release: releaseValue,
+      audit: auditValue,
+    }));
 }
 
 function durableIngestionEvidenceFailureSummary(db, latest) {
@@ -920,5 +1013,8 @@ function parseArgs(argv) {
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1])) {
-  await main();
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
 }
