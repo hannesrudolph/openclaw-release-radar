@@ -930,6 +930,37 @@ describe('closure proof canonical roll-up', () => {
     assert.deepEqual(result.classificationDiff.sentiment, { raw: 'neutral', effective: 'negative' });
   });
 
+  it('uses release-cutoff labels instead of current labels for closure proof classification', () => {
+    const result = __closureProofAnalysisTest.effectiveClosureProofClassification(
+      {
+        number: 42,
+        title: 'Provider setup confusion',
+        labels: JSON.stringify(['stale']),
+        sentiment: 'negative',
+        severity: 'medium',
+        scope: 'moderate',
+        functionality: 'provider',
+        affected_users: 'some',
+        has_workaround: 0,
+        workaround_status: 'unknown',
+        duplicate_cluster: null,
+        affects_version: null,
+        confidence: 0.7,
+        rationale: '',
+      },
+      '2026-06-01T00:00:00Z',
+      () => [],
+      () => 1,
+      () => 0,
+    );
+
+    assert.deepEqual(result.currentLabels, ['stale']);
+    assert.deepEqual(result.labels, []);
+    assert.equal(result.labelSource, 'timeline');
+    assert.equal(result.labelCutoffAt, '2026-06-01T00:00:00Z');
+    assert.equal(result.classification.sentiment, 'negative');
+  });
+
   it('marks missing classification rows without promoting closure proof credit', () => {
     const classification = __closureProofAnalysisTest.effectiveClosureProofClassification({
       title: '[Bug]: closed issue still needs classification',

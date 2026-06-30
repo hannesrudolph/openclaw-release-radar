@@ -4,6 +4,10 @@ import {
   deleteCommentIssuePrLinksForIssues,
   deleteIssueClosureProofsForRelease,
   deleteIssuePrLinksForIssues,
+  getRelease,
+  issueLabelEventCount,
+  issueLabelSnapshotCountAt,
+  labelsForIssueAt,
   upsertIssueClosureEvent,
   upsertIssueClosureProof,
   upsertIssueCommitReference,
@@ -18,6 +22,7 @@ import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommen
 import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
 import type { IssueClassification } from './llm';
 import { persistClosureProofInScoreAudit } from './closureProofPayload';
+import { releaseLabelCutoff } from './labelCutoff';
 import { checkReleaseCommitReachability, checkReleasePrReachability, resolveCommitOidPrefix, type CommitReachability } from './releaseReachability';
 
 export interface ClosureProofAnalysisResult {
@@ -290,6 +295,9 @@ WHERE tag=?
 const issueExistsStmt = db.prepare(`SELECT 1 FROM issues WHERE number=?`);
 
 export async function analyzeClosureProofsForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult> {
+  const analysisStartedAt = new Date().toISOString();
+  const release = getRelease(releaseTag);
+  const labelCutoff = release ? releaseLabelCutoff(release, analysisStartedAt) : null;
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
   const sourceIssueNumbers = new Set(issueNumbers);
@@ -407,7 +415,7 @@ export async function analyzeClosureProofsForRelease(releaseTag: string): Promis
     const commitProof = directCommitProof;
     const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
     const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
-    const closureClassification = effectiveClosureProofClassification(row);
+    const closureClassification = effectiveClosureProofClassification(row, labelCutoff);
     const result = closureClassification.missingClassification
       ? missingClassificationClosureProof(row)
       : classifyClosureProof({
@@ -554,19 +562,48 @@ function parseObjectJson(value: unknown): Record<string, unknown> {
   }
 }
 
-function effectiveClosureProofClassification(row: any): {
+function effectiveClosureProofClassification(
+  row: any,
+  labelCutoff: string | null = null,
+  labelResolver = labelsForIssueAt,
+  eventCount = issueLabelEventCount,
+  snapshotCountAt = issueLabelSnapshotCountAt,
+): {
   labels: string[];
+  currentLabels: string[];
+  labelCutoffAt: string | null;
+  labelSource: 'current' | 'timeline' | 'snapshot' | 'missing_timeline';
+  labelTimelineEventCount: number;
+  labelSnapshotCount: number;
   rawClassification: IssueClassification;
   classification: IssueClassification;
   classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
   missingClassification: boolean;
   promptVersion: number | null;
 } {
-  const labels = parseJsonArray(row.labels).filter((label): label is string => typeof label === 'string');
+  const issueNumber = Number(row.number ?? row.issue_number ?? 0);
+  const currentLabels = parseJsonArray(row.labels).filter((label): label is string => typeof label === 'string');
+  const labelTimelineEventCount = Number.isInteger(issueNumber) && issueNumber > 0 ? eventCount(issueNumber) : 0;
+  const labelSnapshotCount = Number.isInteger(issueNumber) && issueNumber > 0 ? snapshotCountAt(issueNumber, labelCutoff) : 0;
+  const labels = Number.isInteger(issueNumber) && issueNumber > 0
+    ? labelResolver(issueNumber, currentLabels, labelCutoff, {
+      useFallbackWhenNoEvents: labelCutoff == null,
+      useSnapshotWhenNoEvents: labelCutoff != null,
+    })
+    : currentLabels;
+  const labelSource = closureProofLabelSource(labelCutoff, labelTimelineEventCount, labelSnapshotCount);
+  const labelEvidence = {
+    labels,
+    currentLabels,
+    labelCutoffAt: labelCutoff,
+    labelSource,
+    labelTimelineEventCount,
+    labelSnapshotCount,
+  };
   if (!hasClassification(row)) {
     const fallback = missingClassificationFallback(row);
     return {
-      labels,
+      ...labelEvidence,
       rawClassification: fallback,
       classification: fallback,
       classificationDiff: {},
@@ -588,13 +625,24 @@ function effectiveClosureProofClassification(row: any): {
     labels,
   );
   return {
-    labels,
+    ...labelEvidence,
     rawClassification,
     classification,
     classificationDiff: classificationDiff(rawClassification, classification),
     missingClassification: false,
     promptVersion: typeof row.classification_prompt_version === 'number' ? row.classification_prompt_version : null,
   };
+}
+
+function closureProofLabelSource(
+  labelCutoff: string | null,
+  timelineEventCount: number,
+  snapshotCount: number,
+): 'current' | 'timeline' | 'snapshot' | 'missing_timeline' {
+  if (labelCutoff == null) return 'current';
+  if (timelineEventCount > 0) return 'timeline';
+  if (snapshotCount > 0) return 'snapshot';
+  return 'missing_timeline';
 }
 
 function hasClassification(row: any): boolean {
