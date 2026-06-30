@@ -180,6 +180,9 @@ describe('audit API routes', () => {
       ['/api/releases/v-test/review/issues?functionality=bad', 'invalid functionality'],
       ['/api/releases/v-test/review/issues?scope=bad', 'invalid scope'],
       ['/api/releases/v-test/review/issues?affectedUsers=bad', 'invalid affectedUsers'],
+      ['/api/releases/v-test/review/issues?issue=bad', 'invalid issue'],
+      ['/api/releases/v-test/review/issues?issue=101&issue=102', 'invalid issue'],
+      ['/api/releases/v-test/review/issues?issue=101&number=102', 'invalid issue'],
       ['/api/releases/v-test/review/issues?fieldConfirmed=maybe', 'invalid fieldConfirmed'],
       ['/api/releases/v-test/review/issues?fieldConfirmed=true&fieldConfirmed=maybe', 'invalid fieldConfirmed'],
       ['/api/releases/v-test/review/issues?minWeight=abc', 'invalid minWeight'],
@@ -228,6 +231,9 @@ describe('audit API routes', () => {
     assert.equal(repeatedDisposition.body.error, 'invalid riskDisposition');
 
     for (const [path, error] of [
+      ['/api/releases/v-test/review/closure-proofs?issue=bad', 'invalid issue'],
+      ['/api/releases/v-test/review/closure-proofs?issue=103&issue=104', 'invalid issue'],
+      ['/api/releases/v-test/review/closure-proofs?issue=103&number=104', 'invalid issue'],
       ['/api/releases/v-test/review/closure-proofs?limit=abc', 'invalid limit'],
       ['/api/releases/v-test/review/closure-proofs?limit=1.9', 'invalid limit'],
       ['/api/releases/v-test/review/closure-proofs?limit=1&limit=2', 'invalid limit'],
@@ -315,6 +321,19 @@ describe('audit API routes', () => {
     assert.equal(stateOpen.body.filters.state, 'open');
     assert.deepEqual(stateOpen.body.filters.states, ['open']);
     assert.ok(stateOpen.body.rows.every((row: any) => row.issue.state === 'open'));
+
+    const byIssue = await getJson('/api/releases/v-test/review/issues?issue=101');
+    assert.equal(byIssue.status, 200);
+    assert.equal(byIssue.body.filters.issue, 101);
+    assert.equal(byIssue.body.filters.issueNumber, 101);
+    assert.ok(byIssue.body.total >= 1);
+    assert.ok(byIssue.body.rows.every((row: any) => row.issue.number === 101));
+
+    const byNumberAlias = await getJson('/api/releases/v-test/review/issues?number=104');
+    assert.equal(byNumberAlias.status, 200);
+    assert.equal(byNumberAlias.body.filters.issue, 104);
+    assert.ok(byNumberAlias.body.total >= 1);
+    assert.ok(byNumberAlias.body.rows.every((row: any) => row.issue.number === 104));
   });
 
   it('applies closure proof filter intersections and limit clamps', async () => {
@@ -328,6 +347,19 @@ describe('audit API routes', () => {
     assert.equal(filtered.body.rows[0].riskDisposition, 'known_not_in_release');
     assert.equal(filtered.body.rows[0].riskDispositionLabel, 'known not in this tag');
     assert.equal(typeof filtered.body.rows[0].riskWeightLabel, 'string');
+
+    const issueFiltered = await getJson('/api/releases/v-test/review/closure-proofs?issue=103');
+    assert.equal(issueFiltered.status, 200);
+    assert.equal(issueFiltered.body.filters.issue, 103);
+    assert.equal(issueFiltered.body.filters.issueNumber, 103);
+    assert.equal(issueFiltered.body.total, 1);
+    assert.equal(issueFiltered.body.rows[0].issueNumber, 103);
+
+    const numberAlias = await getJson('/api/releases/v-test/review/closure-proofs?number=104');
+    assert.equal(numberAlias.status, 200);
+    assert.equal(numberAlias.body.filters.issue, 104);
+    assert.equal(numberAlias.body.total, 1);
+    assert.equal(numberAlias.body.rows[0].issueNumber, 104);
 
     const clamped = await getJson('/api/releases/v-test/review/closure-proofs?limit=999&cursor=-2');
     assert.equal(clamped.status, 200);

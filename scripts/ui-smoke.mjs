@@ -130,6 +130,16 @@ try {
   await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();
   await fixPanel.locator('.score-explain__proof').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel.locator('.score-explain__proof').filter({ hasText: explanationProofText }).first().waitFor();
+  await assertAuditLinkJson(
+    fixPanel.locator(`a.score-explain__ref[href*="issue=${explanationIssueRef.number}"]`, { hasText: 'issue evidence row' }).first(),
+    explanationIssueRef.number,
+    'issue evidence row',
+  );
+  await assertAuditLinkJson(
+    fixPanel.locator(`a.score-explain__ref[href*="issue=${explanationIssueRef.number}"]`, { hasText: 'closure proof row' }).first(),
+    explanationIssueRef.number,
+    'closure proof row',
+  );
   await fixPanel
     .getByText('A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.')
     .waitFor();
@@ -148,6 +158,11 @@ try {
   await relatedIssueRow.waitFor();
   await relatedIssueRow.getByText(/Evidence bucket: /).waitFor();
   await relatedIssueRow.getByText(new RegExp(`${relatedIssue.severity}.*${relatedIssue.affectedUsers} users`, 'i')).waitFor();
+  await assertAuditLinkJson(
+    relatedIssueRow.locator('a.score-explain__ref', { hasText: 'issue evidence row' }).first(),
+    relatedIssue.number,
+    'related issue evidence row',
+  );
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {
@@ -263,6 +278,25 @@ async function json(path) {
   const res = await fetch(base + path);
   if (!res.ok) throw new Error(`${path} returned ${res.status}`);
   return res.json();
+}
+
+async function assertAuditLinkJson(locator, expectedIssueNumber, label) {
+  await locator.waitFor();
+  const href = await locator.getAttribute('href');
+  if (!href) throw new Error(`${label} link is missing href`);
+  const url = new URL(href, base);
+  const payload = await json(`${url.pathname}${url.search}`);
+  if (payload.filters?.issue !== expectedIssueNumber || payload.filters?.issueNumber !== expectedIssueNumber) {
+    throw new Error(`${label} link did not echo issue filter ${expectedIssueNumber}: ${JSON.stringify(payload.filters)}`);
+  }
+  if (!Array.isArray(payload.rows) || payload.rows.length < 1) {
+    throw new Error(`${label} link returned no rows`);
+  }
+  const ok = payload.rows.every((row) => {
+    const number = row.issue?.number ?? row.issueNumber;
+    return number === expectedIssueNumber;
+  });
+  if (!ok) throw new Error(`${label} link returned rows for another issue`);
 }
 
 async function assertVisualSmoke(page, label) {

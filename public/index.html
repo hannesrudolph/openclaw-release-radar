@@ -1690,7 +1690,7 @@ function issueEvidenceTierLabel(tier) {
   return tier.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
 }
 
-function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
+function issueScoringMetaHtml(issue, evidenceRow, proofRow, releaseTag = null) {
   const classification = evidenceRow?.debtClassification ?? evidenceRow?.issue?.classification ?? issue;
   const tier = evidenceRow?.tier ?? proofRow?.status ?? 'public issue';
   const tierLabel = evidenceRow?.tierLabel ?? issueEvidenceTierLabel(tier);
@@ -1730,7 +1730,8 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
   return `<span class="evidence__meta">${esc(scoreLine)}</span>`
     + (bucketReason ? `<span class="evidence__meta">${esc(bucketReason)}</span>` : '')
     + (debtDiffLine ? `<span class="evidence__meta">${esc(debtDiffLine)}</span>` : '')
-    + (proofLine ? `<span class="evidence__meta">${esc(proofLine)}</span>` : '');
+    + (proofLine ? `<span class="evidence__meta">${esc(proofLine)}</span>` : '')
+    + issueAuditLinksHtml(releaseTag, issue?.number, { closureProof: !!proofRow || issue?.state === 'closed' });
 }
 
 function issueBucketReason(issue, evidenceRow) {
@@ -1774,7 +1775,7 @@ function issueRowHtml(issue, extra = false, releaseTag = null) {
   const proofRow = closureProofForIssue(releaseTag, issue.number);
   return `<li class="evidence__item"${extra ? ' data-extra-issue hidden' : ''}>${link}`
     + (stateLabel ? `<span class="evidence__meta">${esc(stateLabel)}</span>` : '')
-    + issueScoringMetaHtml(issue, evidenceRow, proofRow)
+    + issueScoringMetaHtml(issue, evidenceRow, proofRow, releaseTag)
     + `</li>`;
 }
 
@@ -1974,7 +1975,7 @@ function scoreDetailBucketsHtml(detail) {
   ).join('')}</div>`;
 }
 
-function scoreDetailIssueRefsHtml(issueRefs) {
+function scoreDetailIssueRefsHtml(issueRefs, releaseTag = null) {
   if (!Array.isArray(issueRefs) || !issueRefs.length) return '';
   const refs = issueRefs.slice(0, 5);
   const links = `<div class="score-explain__refs">${refs.map((issue) => {
@@ -1992,21 +1993,33 @@ function scoreDetailIssueRefsHtml(issueRefs) {
     .filter(Boolean)
     .join('');
   const reasons = refs
-    .map(scoreDetailIssueReasonHtml)
+    .map((issue) => scoreDetailIssueReasonHtml(issue, releaseTag))
     .filter(Boolean)
     .join('');
   return links + (reasons || proofs ? `<div class="score-explain__proofs">${reasons}${proofs}</div>` : '');
 }
 
-function scoreDetailIssueReasonHtml(issue) {
-  if (typeof issue?.scoringReason !== 'string' || !issue.scoringReason.trim()) return '';
+function scoreDetailIssueReasonHtml(issue, releaseTag = null) {
+  const auditLinks = issueAuditLinksHtml(releaseTag, issue?.number, { closureProof: !!issue?.proof });
+  if (typeof issue?.scoringReason !== 'string' || !issue.scoringReason.trim()) return auditLinks;
   const label = Number.isInteger(issue.number) ? `#${issue.number}` : 'Issue';
-  return `<div class="score-explain__proof">${esc(label)}: ${esc(issue.scoringReason)}</div>`;
+  return `<div class="score-explain__proof">${esc(label)}: ${esc(issue.scoringReason)}</div>${auditLinks}`;
 }
 
 function evidenceLink(url, label) {
-  if (typeof url !== 'string' || !/^https?:\/\//i.test(url)) return '';
+  if (typeof url !== 'string' || !/^(?:https?:\/\/|\/)/i.test(url)) return '';
   return `<a class="score-explain__ref" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+}
+
+function issueAuditLinksHtml(releaseTag, issueNumber, { closureProof = false } = {}) {
+  if (!releaseTag || !Number.isInteger(Number(issueNumber)) || Number(issueNumber) <= 0) return '';
+  const tag = encodeURIComponent(releaseTag);
+  const issue = encodeURIComponent(Number(issueNumber));
+  const links = [
+    evidenceLink(`/api/releases/${tag}/review/issues?issue=${issue}`, 'issue evidence row'),
+  ];
+  if (closureProof) links.push(evidenceLink(`/api/releases/${tag}/review/closure-proofs?issue=${issue}`, 'closure proof row'));
+  return `<div class="score-explain__refs">${links.filter(Boolean).join('')}</div>`;
 }
 
 function scoreEvidenceLinksHtml(releaseChecks, artifact) {
@@ -2142,13 +2155,13 @@ function scoreDetailIssueProofHtml(issue) {
   return `<div class="score-explain__proof">#${esc(issue.number)}: ${esc(parts.join(' · '))}</div>`;
 }
 
-function scoreExplanationDetailsHtml(details, fallbackText) {
+function scoreExplanationDetailsHtml(details, fallbackText, releaseTag = null) {
   if (Array.isArray(details) && details.length) {
     return details.map((detail) =>
       `<li class="score-explain__detail">${detail.label ? `<strong>${esc(detail.label)}:</strong> ` : ''}<span>${esc(detail.text ?? '')}</span>`
       + scoreDetailMetricsHtml(detail.metrics)
       + scoreDetailBucketsHtml(detail)
-      + scoreDetailIssueRefsHtml(detail.issueRefs)
+      + scoreDetailIssueRefsHtml(detail.issueRefs, releaseTag)
       + '</li>'
     ).join('');
   }
@@ -2401,7 +2414,7 @@ function installVerdictText(local) {
   return 'This release is not recommended to install because an install or recommendation gate is active.';
 }
 
-function whyNotTenHtml(local) {
+function whyNotTenHtml(local, releaseTag = null) {
   const structured = local?.components?.explanation;
   if (structured && Array.isArray(structured.limits)) {
     const positives = Array.isArray(structured.positives) ? structured.positives : [];
@@ -2414,10 +2427,10 @@ function whyNotTenHtml(local) {
       + scoreLedgerHtml(structured.scoreLedger)
       + (positives.length
         ? '<p><strong>What looks good:</strong></p>'
-          + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives) + '</ul>'
+          + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives, releaseTag) + '</ul>'
         : '')
       + '<p><strong>What keeps it below perfect:</strong></p>'
-      + '<ul>' + scoreExplanationDetailsHtml(limitDetails, limits) + '</ul>'
+      + '<ul>' + scoreExplanationDetailsHtml(limitDetails, limits, releaseTag) + '</ul>'
       + `<p>${esc(verdict)}</p>`
       + '</div>';
   }
@@ -2534,7 +2547,7 @@ function scoreReviewHtml(r) {
       + '</div>'
     : '';
   return '<div class="score-review">'
-    + whyNotTenHtml(local)
+    + whyNotTenHtml(local, r.tag)
     + '<div class="score-review__grid">'
     + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(local.modelVersion ?? 'unknown')}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Score</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')}</span></div>`

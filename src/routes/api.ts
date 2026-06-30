@@ -343,6 +343,18 @@ function parsePrFilter(raw: unknown): { repo: string | null; number: number } | 
   return { repo, number };
 }
 
+function parseIssueNumberFilter(issueRaw: unknown, numberRaw: unknown): number | null | undefined {
+  const issue = singleQueryValue(issueRaw);
+  const number = singleQueryValue(numberRaw);
+  if (issue === undefined || number === undefined) return undefined;
+  if (issue == null && number == null) return null;
+  const values = [issue, number].filter((value): value is string => value != null);
+  const parsed = values.map((value) => Number(value));
+  if (parsed.some((value) => !Number.isInteger(value) || value <= 0)) return undefined;
+  if (parsed.some((value) => value !== parsed[0])) return undefined;
+  return parsed[0];
+}
+
 function parseIssueEvidenceTierFilter(raw: unknown): ReleaseIssueEvidenceTier[] | null {
   const tiers = parseCommaList(raw);
   if (!tiers.length) return null;
@@ -943,6 +955,11 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     return;
   }
   const audit = getReleaseScoreAudit(tag);
+  const issueNumberFilter = parseIssueNumberFilter(req.query.issue, req.query.number);
+  if (issueNumberFilter === undefined) {
+    res.status(400).json({ error: 'invalid issue', issue: req.query.issue, number: req.query.number });
+    return;
+  }
   const tierFilter = parseIssueEvidenceTierFilter(req.query.tier);
   if (tierFilter && tierFilter.length === 0) {
     res.status(400).json({ error: 'invalid tier', tier: req.query.tier });
@@ -1050,6 +1067,7 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     .filter(({ row }) => !functionalitySet || functionalitySet.has(issueClassificationField(row, 'functionality') as any))
     .filter(({ row }) => !scopeSet || scopeSet.has(issueClassificationField(row, 'scope') as any))
     .filter(({ row }) => !affectedUsersSet || affectedUsersSet.has(issueClassificationField(row, 'affectedUsers') as any))
+    .filter(({ row }) => issueNumberFilter == null || Number(row.issue?.number) === issueNumberFilter)
     .filter(({ row }) => fieldConfirmedFilter == null || row.fieldConfirmed === fieldConfirmedFilter)
     .filter(({ row }) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
     .filter(({ row }) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
@@ -1082,6 +1100,8 @@ api.get('/releases/:tag/review/issues', (req, res) => {
       scopes: scopeFilter ?? null,
       affectedUsers: affectedUsersFilter?.length === 1 ? affectedUsersFilter[0] : null,
       affectedUsersList: affectedUsersFilter ?? null,
+      issue: issueNumberFilter,
+      issueNumber: issueNumberFilter,
       fieldConfirmed: fieldConfirmedFilter,
       minWeight,
       maxWeight,
@@ -1121,6 +1141,11 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
     return;
   }
   const audit = getReleaseScoreAudit(tag);
+  const issueNumberFilter = parseIssueNumberFilter(req.query.issue, req.query.number);
+  if (issueNumberFilter === undefined) {
+    res.status(400).json({ error: 'invalid issue', issue: req.query.issue, number: req.query.number });
+    return;
+  }
   const statusFilter = singleQueryValue(req.query.status);
   const riskDispositionFilter = singleQueryValue(req.query.riskDisposition);
   if (statusFilter === undefined) {
@@ -1167,6 +1192,7 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
   }
   const sourceRows = closureProofAuditRows(tag);
   const allRows = sourceRows
+    .filter((row) => issueNumberFilter == null || Number(row.number) === issueNumberFilter)
     .filter((row) => !statusFilter || row.status === statusFilter)
     .filter((row) => !riskDispositionFilter || row.riskDisposition === riskDispositionFilter);
   const pageRows = allRows.slice(cursor, cursor + limit).map(closureProofAuditResponseRow);
@@ -1178,6 +1204,8 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
     scoredAt: release.scored_at,
     dataFreshness: freshnessForRelease(release, audit),
     filters: {
+      issue: issueNumberFilter,
+      issueNumber: issueNumberFilter,
       status: statusFilter,
       riskDisposition: riskDispositionFilter,
     },

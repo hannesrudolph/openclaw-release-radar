@@ -100,6 +100,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /score-explain__proof/);
     assert.match(html, /issueEvidenceApiLinksHtml/);
     assert.match(html, /\/review\/issues/);
+    assert.match(html, /function issueAuditLinksHtml/);
+    assert.match(html, /review\/issues\?issue=/);
+    assert.match(html, /review\/closure-proofs\?issue=/);
+    assert.match(html, /issue evidence row/);
+    assert.match(html, /closure proof row/);
     assert.match(html, /function issueEvidenceTierLabel/);
     assert.match(html, /const tierLabel = evidenceRow\?\.tierLabel \?\? issueEvidenceTierLabel\(tier\)/);
     assert.match(html, /Evidence bucket: \$\{tierLabel\}/);
@@ -135,6 +140,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(issueEvidence, /not proven release-local field blockers/);
     assert.match(issueEvidence, /Closed issues without release-fix credit/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
+    assert.match(readme, /supports exact `issue`\/`number`/);
     assert.match(readme, /Paginated current-DB issue-evidence rows/);
     assert.match(readme, /`sourceMode`/);
     assert.match(readme, /`dataFreshness`/);
@@ -152,6 +158,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /`sort`/);
     assert.match(readme, /`direction`/);
     assert.match(readme, /`summaryOnly`/);
+    assert.match(readme, /\/api\/releases\/:tag\/review\/closure-proofs.*supports exact `issue`\/`number`/);
     assert.match(readme, /summaryByTier/);
     assert.match(readme, /filteredSummary/);
     assert.match(readme, /filteredCountsByTier/);

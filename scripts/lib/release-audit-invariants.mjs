@@ -295,6 +295,8 @@ const issueEvidenceAuditFilterKeys = new Set([
   'scopes',
   'affectedUsers',
   'affectedUsersList',
+  'issue',
+  'issueNumber',
   'fieldConfirmed',
   'minWeight',
   'maxWeight',
@@ -376,7 +378,7 @@ const closureProofAuditKeys = new Set([
   'nextCursor',
   'rows',
 ]);
-const closureProofAuditFilterKeys = new Set(['status', 'riskDisposition']);
+const closureProofAuditFilterKeys = new Set(['issue', 'issueNumber', 'status', 'riskDisposition']);
 const closureProofAuditTotalsKeys = new Set(['unfilteredRows', 'filteredRows', 'unfilteredDistinctIssues', 'filteredDistinctIssues']);
 const closureProofAuditRowKeys = new Set([
   'issueNumber',
@@ -2505,6 +2507,9 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   const firstPage = await fetchJson(`${base}?limit=11`);
   const invalidFilterCases = [
     ['issue evidence audit invalid tier', `${base}?tier=not-a-tier`, 'invalid tier'],
+    ['issue evidence audit invalid issue', `${base}?issue=bad`, 'invalid issue'],
+    ['issue evidence audit repeated issue', `${base}?issue=1&issue=2`, 'invalid issue'],
+    ['issue evidence audit conflicting issue aliases', `${base}?issue=1&number=2`, 'invalid issue'],
     ['issue evidence audit invalid fieldConfirmed', `${base}?fieldConfirmed=maybe`, 'invalid fieldConfirmed'],
     ['issue evidence audit repeated fieldConfirmed', `${base}?fieldConfirmed=true&fieldConfirmed=maybe`, 'invalid fieldConfirmed'],
     ['issue evidence audit invalid weight range', `${base}?minWeight=10&maxWeight=1`, 'invalid weight range'],
@@ -2621,6 +2626,19 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   } else {
     expect(failures, tag, firstPage.nextCursor == null,
       `issue evidence audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
+  }
+  const issueExample = (firstPage.rows ?? []).find((row) => Number.isInteger(row?.issue?.number) && row.issue.number > 0);
+  if (issueExample) {
+    const issuePage = await fetchJson(`${base}?issue=${encodeURIComponent(issueExample.issue.number)}&summaryOnly=true`);
+    expect(failures, tag, issuePage.filters?.issue === issueExample.issue.number,
+      `issue evidence audit issue filter echo (${issuePage.filters?.issue}) must match ${issueExample.issue.number}`);
+    expect(failures, tag, issuePage.filters?.issueNumber === issueExample.issue.number,
+      `issue evidence audit issueNumber filter echo (${issuePage.filters?.issueNumber}) must match ${issueExample.issue.number}`);
+    expect(failures, tag, issuePage.total >= 1,
+      `issue evidence audit issue filter for #${issueExample.issue.number} must return at least one row`);
+    const issueRows = await fetchJson(`${base}?issue=${encodeURIComponent(issueExample.issue.number)}&limit=10`);
+    expect(failures, tag, (issueRows.rows ?? []).every((row) => row.issue?.number === issueExample.issue.number),
+      `issue evidence audit issue filter must return only #${issueExample.issue.number} rows`);
   }
   const summaryOnlyPage = await fetchJson(`${base}?summaryOnly=true&tier=carryoverDebt,staleDebt`);
   const expectedSummaryOnlyTotal = Number(firstPage.countsByTier?.carryoverDebt ?? 0) + Number(firstPage.countsByTier?.staleDebt ?? 0);
@@ -2941,6 +2959,9 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     payloadCheck: (payload) => payload?.error === 'invalid riskDisposition' && Array.isArray(payload.allowedRiskDispositions),
   });
   for (const [label, url, error] of [
+    ['closure proof audit invalid issue', `${base}?issue=bad`, 'invalid issue'],
+    ['closure proof audit repeated issue', `${base}?issue=1&issue=2`, 'invalid issue'],
+    ['closure proof audit conflicting issue aliases', `${base}?issue=1&number=2`, 'invalid issue'],
     ['closure proof audit invalid limit', `${base}?limit=abc`, 'invalid limit'],
     ['closure proof audit decimal limit', `${base}?limit=1.9`, 'invalid limit'],
     ['closure proof audit repeated limit', `${base}?limit=1&limit=2`, 'invalid limit'],
@@ -3011,6 +3032,18 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
   } else {
     expect(failures, tag, firstPage.nextCursor == null,
       `closure proof audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
+  }
+  const proofIssueExample = (firstPage.rows ?? []).find((row) => Number.isInteger(row?.issueNumber) && row.issueNumber > 0);
+  if (proofIssueExample) {
+    const issuePage = await fetchJson(`${base}?issue=${encodeURIComponent(proofIssueExample.issueNumber)}`);
+    expect(failures, tag, issuePage.filters?.issue === proofIssueExample.issueNumber,
+      `closure proof audit issue filter echo (${issuePage.filters?.issue}) must match ${proofIssueExample.issueNumber}`);
+    expect(failures, tag, issuePage.filters?.issueNumber === proofIssueExample.issueNumber,
+      `closure proof audit issueNumber filter echo (${issuePage.filters?.issueNumber}) must match ${proofIssueExample.issueNumber}`);
+    expect(failures, tag, issuePage.total === 1,
+      `closure proof audit issue filter for #${proofIssueExample.issueNumber} must return exactly one proof row`);
+    expect(failures, tag, (issuePage.rows ?? []).every((row) => row.issueNumber === proofIssueExample.issueNumber),
+      `closure proof audit issue filter must return only #${proofIssueExample.issueNumber} rows`);
   }
   for (const row of firstPage.rows ?? []) {
     verifyAllowedKeys({ failures, tag, label: 'closure proof audit row', value: row, allowed: closureProofAuditRowKeys });

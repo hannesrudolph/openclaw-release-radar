@@ -443,6 +443,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const riskDispositionFilter = scalarSearchParam(parsed, 'riskDisposition', url, 'invalid riskDisposition', {
       allowedRiskDispositions: CLOSURE_RISK_DISPOSITIONS,
     });
+    const issueFilter = issueNumberSearchParam(parsed, url);
     if (statusFilter && !CLOSURE_PROOF_STATUSES.includes(statusFilter as any)) {
       throwHttpError(url, 400, {
         error: 'invalid status',
@@ -474,7 +475,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       classificationDiff: {},
       evidence: {},
     };
-    const rows = (!statusFilter || statusFilter === row.status) &&
+    const rows = (issueFilter == null || issueFilter === row.issueNumber) &&
+      (!statusFilter || statusFilter === row.status) &&
       (!riskDispositionFilter || riskDispositionFilter === row.riskDisposition)
       ? [row]
       : [];
@@ -497,6 +499,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       scoredAt: auditScoredAt,
       dataFreshness,
       filters: {
+        issue: issueFilter,
+        issueNumber: issueFilter,
         status: statusFilter,
         riskDisposition: riskDispositionFilter,
       },
@@ -644,6 +648,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const functionalities = enumFilter('functionality');
     const scopes = enumFilter('scope');
     const affectedUsers = enumFilter('affectedUsers');
+    const issueFilter = issueNumberSearchParam(parsed, url);
     const fieldConfirmedFilter = scalarSearchParam(parsed, 'fieldConfirmed', url, 'invalid fieldConfirmed');
     if (fieldConfirmedFilter != null && !['1', 'true', 'yes', '0', 'false', 'no'].includes(fieldConfirmedFilter.toLowerCase())) {
       throwHttpError(url, 400, { error: 'invalid fieldConfirmed', fieldConfirmed: fieldConfirmedFilter });
@@ -683,6 +688,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       (!functionalities.length || functionalities.includes(row.issue.classification.functionality)) &&
       (!scopes.length || scopes.includes(row.issue.classification.scope)) &&
       (!affectedUsers.length || affectedUsers.includes(row.issue.classification.affectedUsers)) &&
+      (issueFilter == null || row.issue.number === issueFilter) &&
       (fieldConfirmed == null || row.fieldConfirmed === fieldConfirmed) &&
       (minWeight == null || row.weight >= minWeight) &&
       (maxWeight == null || row.weight <= maxWeight)
@@ -746,6 +752,8 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         scopes: scopes.length ? scopes : null,
         affectedUsers: affectedUsers.length === 1 ? affectedUsers[0] : null,
         affectedUsersList: affectedUsers.length ? affectedUsers : null,
+        issue: issueFilter,
+        issueNumber: issueFilter,
         fieldConfirmed,
         minWeight,
         maxWeight,
@@ -971,6 +979,21 @@ function integerSearchParam(parsed: URL, key: string, url: string, fallback: num
   const number = Number(value);
   if (!Number.isSafeInteger(number)) throwHttpError(url, 400, { error: `invalid ${key}`, [key]: value });
   return Math.max(min, Math.min(max, number));
+}
+
+function issueNumberSearchParam(parsed: URL, url: string): number | null {
+  const issue = scalarSearchParam(parsed, 'issue', url, 'invalid issue');
+  const number = scalarSearchParam(parsed, 'number', url, 'invalid issue');
+  if (issue == null && number == null) return null;
+  const values = [issue, number].filter((value): value is string => value != null);
+  const parsedValues = values.map((value) => Number(value));
+  if (parsedValues.some((value) => !Number.isInteger(value) || value <= 0)) {
+    throwHttpError(url, 400, { error: 'invalid issue', issue, number });
+  }
+  if (parsedValues.some((value) => value !== parsedValues[0])) {
+    throwHttpError(url, 400, { error: 'invalid issue', issue, number });
+  }
+  return parsedValues[0];
 }
 
 describe('verifyReleaseAudit', () => {
