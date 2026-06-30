@@ -965,6 +965,7 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
+  const audit = getReleaseScoreAudit(tag);
   const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
     ? req.query.status.trim()
     : null;
@@ -998,6 +999,9 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
   res.json({
     schemaVersion: CLOSURE_PROOF_AUDIT_SCHEMA_VERSION,
     tag,
+    sourceMode: 'current_db',
+    scoredAt: release.scored_at,
+    dataFreshness: freshnessForRelease(release, audit),
     filters: {
       status: statusFilter,
       riskDisposition: riskDispositionFilter,
@@ -1029,6 +1033,7 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
     res.status(404).json({ error: 'release not found', tag });
     return;
   }
+  const audit = getReleaseScoreAudit(tag);
   const statusFilter = typeof req.query.status === 'string' && req.query.status.trim()
     ? req.query.status.trim()
     : null;
@@ -1057,6 +1062,9 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
   res.json({
     schemaVersion: PR_REACHABILITY_AUDIT_SCHEMA_VERSION,
     tag,
+    sourceMode: 'current_db',
+    scoredAt: release.scored_at,
+    dataFreshness: freshnessForRelease(release, audit),
     filters: {
       status: statusFilter,
       pr: prFilter ? { repositoryNameWithOwner: prFilter.repo, number: prFilter.number } : null,

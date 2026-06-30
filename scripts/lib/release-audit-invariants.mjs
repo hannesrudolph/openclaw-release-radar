@@ -262,6 +262,9 @@ const issueEvidenceIssueKeys = new Set([
 const closureProofAuditKeys = new Set([
   'schemaVersion',
   'tag',
+  'sourceMode',
+  'scoredAt',
+  'dataFreshness',
   'filters',
   'totals',
   'total',
@@ -322,6 +325,9 @@ const closureProofAuditEvidenceKeys = new Set([
 const reachabilityAuditKeys = new Set([
   'schemaVersion',
   'tag',
+  'sourceMode',
+  'scoredAt',
+  'dataFreshness',
   'filters',
   'totals',
   'total',
@@ -1974,6 +1980,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         failures,
         proof,
         tag: release.tag,
+        scoredAt: release.scored_at,
       });
       await verifyPrReachabilityAuditEndpoint({
         apiBase,
@@ -1981,6 +1988,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
         failures,
         reader,
         tag: release.tag,
+        scoredAt: release.scored_at,
       });
 
       if (comparison?.local) {
@@ -2404,7 +2412,7 @@ function timestampOrNull(value) {
   return Number.isFinite(timestamp) ? timestamp : null;
 }
 
-async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {
+async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof, scoredAt }) {
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/closure-proofs`;
   const firstPage = await fetchJson(`${base}?limit=5`);
   await expectFetchJsonStatus({
@@ -2432,6 +2440,11 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
   verifyAllowedKeys({ failures, tag, label: 'closure proof audit totals', value: firstPage.totals, allowed: closureProofAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `closure proof audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.sourceMode === 'current_db',
+    `closure proof audit sourceMode (${firstPage.sourceMode}) must be current_db`);
+  expect(failures, tag, firstPage.scoredAt === scoredAt,
+    `closure proof audit scoredAt (${firstPage.scoredAt}) must match DB scored_at (${scoredAt})`);
+  verifyDataFreshness({ failures, tag, dataFreshness: firstPage.dataFreshness, releaseTag: tag, scoredAt });
   expect(failures, tag, firstPage.total === proof.creditedCount + proof.notCreditedCount,
     `closure proof audit total (${firstPage.total}) must match analyzed proof count (${proof.creditedCount + proof.notCreditedCount})`);
   expect(failures, tag, firstPage.totalRows === firstPage.total,
@@ -2530,7 +2543,7 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
   }
 }
 
-async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures, reader, tag }) {
+async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures, reader, tag, scoredAt }) {
   if (typeof reader.prReachabilityRowsForRelease !== 'function') return;
   const rows = reader.prReachabilityRowsForRelease(tag);
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/reachability`;
@@ -2542,6 +2555,11 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
   verifyAllowedKeys({ failures, tag, label: 'PR reachability audit totals', value: firstPage.totals, allowed: reachabilityAuditTotalsKeys });
   expect(failures, tag, firstPage.tag === tag,
     `PR reachability audit tag (${firstPage.tag}) must match release tag (${tag})`);
+  expect(failures, tag, firstPage.sourceMode === 'current_db',
+    `PR reachability audit sourceMode (${firstPage.sourceMode}) must be current_db`);
+  expect(failures, tag, firstPage.scoredAt === scoredAt,
+    `PR reachability audit scoredAt (${firstPage.scoredAt}) must match DB scored_at (${scoredAt})`);
+  verifyDataFreshness({ failures, tag, dataFreshness: firstPage.dataFreshness, releaseTag: tag, scoredAt });
   expect(failures, tag, firstPage.total === rows.length,
     `PR reachability audit total (${firstPage.total}) must match DB rows (${rows.length})`);
   expect(failures, tag, firstPage.totalRows === firstPage.total,

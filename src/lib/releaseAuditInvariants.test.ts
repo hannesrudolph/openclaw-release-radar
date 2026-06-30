@@ -390,6 +390,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     return {
       schemaVersion: 1,
       tag: 'v1',
+      sourceMode: 'current_db',
+      scoredAt: auditScoredAt,
+      dataFreshness,
       filters: {
         status: parsed.searchParams.get('status'),
         riskDisposition: parsed.searchParams.get('riskDisposition'),
@@ -448,6 +451,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     return {
       schemaVersion: 1,
       tag: 'v1',
+      sourceMode: 'current_db',
+      scoredAt: auditScoredAt,
+      dataFreshness,
       filters: {
         status: parsed.searchParams.get('status'),
         pr: prFilter ? { repositoryNameWithOwner: prFilter.includes('#') ? prFilter.split('#')[0] : null, number: Number(prFilter.split('#').pop()) } : null,
@@ -876,6 +882,27 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /issue_rows ageHoursAtScore/.test(failure)));
+  });
+
+  it('fails when proof audit endpoints use stale score timestamps', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.includes('/api/releases/v1/review/closure-proofs')) {
+          return { ...payload, scoredAt: '2025-12-31T00:00:00Z' };
+        }
+        if (url.includes('/api/releases/v1/review/reachability')) {
+          return { ...payload, scoredAt: '2025-12-31T00:00:00Z' };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /closure proof audit scoredAt/.test(failure)));
+    assert.ok(result.failures.some((failure) => /PR reachability audit scoredAt/.test(failure)));
   });
 
   it('fails when review closure proof masks stale persisted audit proof payload', async () => {
