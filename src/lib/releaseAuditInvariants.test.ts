@@ -1422,6 +1422,66 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*must include known state/.test(failure)));
   });
 
+  it('fails when related PR context proof is missing identity fields', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'related_open_pr_context',
+          checked_at: proofCheckedAt,
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            relatedPrContext: {
+              open: [{ number: 44 }],
+            },
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /relatedPrContext\.open\[0\].*repositoryNameWithOwner/.test(failure)));
+    assert.ok(result.failures.some((failure) => /relatedPrContext\.open\[0\].*must include source/.test(failure)));
+  });
+
+  it('fails when canonical open PR evidence is missing identity fields', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        closed: [{ number: 1, prompt_version: 6 }],
+        verified: [],
+        unverified: [{ number: 1, prompt_version: 6 }],
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'superseded_to_open_pr',
+          checked_at: proofCheckedAt,
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: false,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            canonicalOpenPrs: [{ number: 45, repositoryNameWithOwner: 'openclaw/openclaw' }],
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /canonicalOpenPrs\[0\].*must include source/.test(failure)));
+    assert.ok(result.failures.some((failure) => /canonicalOpenPrs\[0\].*must include known state/.test(failure)));
+  });
+
   it('fails when reachable linked PR proof is backed by a different PR row', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({

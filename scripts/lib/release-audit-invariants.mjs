@@ -1149,6 +1149,18 @@ function verifyEmbeddedProofPrEvidenceShapes({ failures, tag, row, evidence }) {
   for (const [idx, pr] of (Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : []).entries()) {
     verifyEmbeddedProofPr({ failures, tag, row, pr, label: `linkedPrs[${idx}]` });
   }
+  const context = relatedPrContext(evidence);
+  for (const [bucket, prs] of Object.entries(context)) {
+    for (const [idx, pr] of prs.entries()) {
+      verifyEmbeddedProofPr({ failures, tag, row, pr, label: `relatedPrContext.${bucket}[${idx}]` });
+    }
+  }
+  for (const [idx, pr] of (Array.isArray(evidence.canonicalOpenPrs) ? evidence.canonicalOpenPrs : []).entries()) {
+    verifyEmbeddedProofPr({ failures, tag, row, pr, label: `canonicalOpenPrs[${idx}]` });
+  }
+  for (const [idx, pr] of (Array.isArray(evidence.relatedOpenPrs) ? evidence.relatedOpenPrs : []).entries()) {
+    verifyEmbeddedProofPr({ failures, tag, row, pr, label: `relatedOpenPrs[${idx}]` });
+  }
 }
 
 function verifyEmbeddedProofPr({ failures, tag, row, pr, label }) {
