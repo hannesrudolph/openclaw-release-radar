@@ -220,4 +220,59 @@ describe('release score explanations', () => {
     assert.equal(coverage.metrics?.missingClassificationCount, 1);
     assert.deepEqual(coverage.issueRefs?.map((issue: any) => issue.number), [1002]);
   });
+
+  it('explains verified field-blocker debt with issue references', () => {
+    const explanation = __releaseScoringTest.buildScoreExplanation({
+      conf: {
+        status: 'eligible',
+        components: { verifiedDebt: -1.2 },
+        evidenceCoverage: 1,
+      },
+      input: {
+        rawIssueCount: 1,
+        classifiedIssueCount: 1,
+        verifiedDebtWeight: 30,
+      },
+      debtEvidence: {
+        debtSummary: {
+          verified: {
+            count: 1,
+            weight: 30,
+            storedWeight: 30,
+            byInstallImpactClass: { state_data: 1 },
+          },
+        },
+        verifiedDebt: [{
+          tier: 'verified',
+          weight: 30,
+          installImpactClass: 'state_data',
+          installImpactMultiplier: 1,
+          issue: {
+            number: 1003,
+            title: 'release-local data loss after upgrade',
+            url: 'https://example.test/issues/1003',
+            state: 'open',
+          },
+        }],
+      },
+      gateEvidence: {
+        fixProvenance: {},
+        artifactVerification: {},
+      },
+    } as any, false);
+    const verified = explanation.limitDetails.find((detail: any) =>
+      detail.code === 'verified_field_blocker_debt',
+    );
+    assert.ok(verified);
+    assert.match(verified.text, /verified field-blocker debt/);
+    assert.equal(verified.metrics?.count, 1);
+    assert.equal(verified.metrics?.rawWeight, 30);
+    assert.equal(verified.metrics?.cappedPenalty, 1.2);
+    assert.equal(verified.metrics?.maxPenalty, 2);
+    assert.equal(verified.metrics?.capApplied, false);
+    assert.deepEqual(verified.metrics?.byInstallImpactClass, { state_data: 1 });
+    assert.deepEqual(verified.issueRefs?.map((issue: any) => issue.number), [1003]);
+    assert.equal(verified.issueRefs?.[0]?.weight, 30);
+    assert.equal(verified.issueRefs?.[0]?.installImpactClass, 'state_data');
+  });
 });

@@ -75,6 +75,7 @@ const publicPayloadSchemaVersion = 1;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationCodes = new Set([
   'field_visible_reports_opened',
+  'verified_field_blocker_debt',
   'source_carryover_risk',
   'stale_low_confidence_evidence',
   'incomplete_classification_coverage',

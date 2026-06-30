@@ -219,7 +219,7 @@ That structured `explanation` object contains:
 
 - `schemaVersion`: explanation contract version. Current value: `1`.
 - `positives` / `limits`: human-readable evidence lines for the UI.
-- `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets`, and `issueRefs`.
+- `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, optional `metrics`, `buckets` / `riskBuckets`, and `issueRefs`.
 - `verdict`: install-facing interpretation of the score.
 
 The `/api/releases/:tag/review` `local.input` and `local.components` objects also expose `schemaVersion`. Current value: `1`.

@@ -164,6 +164,7 @@ export const RELEASE_CHECKS_SCHEMA_VERSION = 1;
 export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
+  'verified_field_blocker_debt',
   'source_carryover_risk',
   'stale_low_confidence_evidence',
   'incomplete_classification_coverage',
@@ -586,6 +587,31 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           closedCount: Math.max(0, opened.length - openedStillOpen.length),
         },
         issueRefs: issueRefs(examples, 5),
+      },
+    );
+  }
+
+  if ((input.verifiedDebtWeight ?? 0) > 0) {
+    const verifiedIssues = verified
+      .map((row: any) => row.issue)
+      .filter(Boolean);
+    const example = issueListText(verifiedIssues, 3);
+    addLimit(
+      'verified_field_blocker_debt',
+      `There is verified field-blocker debt: release-local, field/community-confirmed high-impact issue evidence is still open. This contributes ${penaltyText(components.verifiedDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.verifiedDebtMaxPenalty} point penalty.` +
+      sentenceSuffix('Top examples', example),
+      {
+        metrics: {
+          count: Number(debtSummary.verified?.count ?? verified.length),
+          storedExampleCount: verified.length,
+          rawWeight: roundMetric(input.verifiedDebtWeight),
+          storedExampleWeight: roundMetric(debtSummary.verified?.storedWeight ?? verified.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
+          cappedPenalty: Math.abs(numberOrZero(components.verifiedDebt)),
+          maxPenalty: SCORE_COMPONENT_LIMITS.verifiedDebtMaxPenalty,
+          capApplied: Math.abs(numberOrZero(components.verifiedDebt)) >= SCORE_COMPONENT_LIMITS.verifiedDebtMaxPenalty,
+          byInstallImpactClass: debtSummary.verified?.byInstallImpactClass ?? {},
+        },
+        issueRefs: issueRefs(verified, 5),
       },
     );
   }

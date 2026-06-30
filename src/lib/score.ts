@@ -38,6 +38,7 @@ const ARTIFACT_DOWN = -1.2;
 const PRIOR = 12;
 
 export const SCORE_COMPONENT_LIMITS = {
+  verifiedDebtMaxPenalty: Math.abs(VERIFIED_DEBT_MAX),
   carryoverDebtMaxPenalty: Math.abs(CARRYOVER_DEBT_MAX),
   staleDebtMaxPenalty: Math.abs(STALE_DEBT_MAX),
   closureRiskMaxPenalty: Math.abs(CLOSURE_RISK_MAX),
