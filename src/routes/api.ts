@@ -628,7 +628,7 @@ const COMPARISON_DELTA_SCHEMA_VERSION = 1;
 const STATUS_PAYLOAD_SCHEMA_VERSION = 1;
 const CONFIG_PAYLOAD_SCHEMA_VERSION = 1;
 const RELEASE_ROW_SCHEMA_VERSION = 2;
-const RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1;
+const RELEASE_HISTORY_ROW_SCHEMA_VERSION = 2;
 
 function scoreAuditSummary(audit: ReturnType<typeof getReleaseScoreAudit>) {
   if (!audit) return null;
@@ -733,12 +733,22 @@ api.get('/releases', (_req, res) => {
 api.get('/releases/history', (_req, res) => {
   const rows = listReleasesDb(SCORE_HISTORY_CHART_LIMIT);
   res.json(
-    rows.map((r) => ({
-      schemaVersion: RELEASE_HISTORY_ROW_SCHEMA_VERSION,
-      tag: r.tag,
-      publishedAt: r.published_at,
-      finalScore: r.final_score,
-    })),
+    rows.map((r) => {
+      const audit = getReleaseScoreAudit(r.tag);
+      return {
+        schemaVersion: RELEASE_HISTORY_ROW_SCHEMA_VERSION,
+        tag: r.tag,
+        publishedAt: r.published_at,
+        finalScore: r.final_score,
+        status: r.state,
+        band: bandFor(r.final_score, (r.state ?? 'eligible') as InstallStatus),
+        recommended: r.recommended === 1,
+        scoredAt: r.scored_at,
+        scoreAudit: scoreAuditSummary(audit),
+        dataFreshness: freshnessForRelease(r, audit),
+        auditLinks: releaseAuditLinks(r.tag),
+      };
+    }),
   );
 });
 

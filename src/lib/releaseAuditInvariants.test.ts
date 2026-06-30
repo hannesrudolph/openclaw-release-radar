@@ -808,7 +808,19 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       }];
     }
     if (url.endsWith('/api/releases/history')) {
-      return [{ schemaVersion: 1, tag: 'v1', publishedAt: '2026-01-01T00:00:00Z', finalScore: 7.5 }];
+      return [{
+        schemaVersion: 2,
+        tag: 'v1',
+        publishedAt: '2026-01-01T00:00:00Z',
+        finalScore: 7.5,
+        status: 'eligible',
+        band: 'ok',
+        recommended: true,
+        scoredAt: auditScoredAt,
+        scoreAudit,
+        dataFreshness,
+        auditLinks,
+      }];
     }
     if (url.endsWith('/api/comparison')) {
       return {

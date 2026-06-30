@@ -152,6 +152,24 @@ describe('audit API routes', () => {
     });
   });
 
+  it('exposes audit provenance on score history rows', async () => {
+    const response = await getJson('/api/releases/history');
+
+    assert.equal(response.status, 200);
+    const row = response.body.find((item: any) => item.tag === 'v-test');
+    assert.equal(row.schemaVersion, 2);
+    assert.equal(row.tag, 'v-test');
+    assert.equal(row.publishedAt, '2026-06-01T00:00:00Z');
+    assert.equal(row.scoreAudit, null);
+    assert.equal(row.dataFreshness.tag, 'v-test');
+    assert.deepEqual(row.auditLinks, {
+      review: '/api/releases/v-test/review',
+      issues: '/api/releases/v-test/review/issues',
+      closureProofs: '/api/releases/v-test/review/closure-proofs',
+      reachability: '/api/releases/v-test/review/reachability',
+    });
+  });
+
   it('rejects invalid issue evidence filters at the route boundary', async () => {
     const cases = [
       ['/api/releases/v-test/review/issues?tier=not-a-tier', 'invalid tier'],

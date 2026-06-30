@@ -227,7 +227,7 @@ A healthy completed refresh also records `meta.issue_crawl_last_run`, which `npm
 | `/api/health` | Basic process and target repo check |
 | `/api/status` | Refresh state and last error |
 | `/api/releases` | Dashboard release data; each row includes `auditLinks` for review, issue evidence, closure proofs, and PR reachability |
-| `/api/releases/history` | Score history |
+| `/api/releases/history` | Score history; each row includes `scoredAt`, `scoreAudit`, `dataFreshness`, and `auditLinks` so chart points can be audited |
 | `/api/public` | Main install recommendation payload; each release row includes `auditLinks` for audit drill-down |
 | `/api/releases/:tag/review` | Local score audit for one release; no upstream comparison fields; includes `local.sourceProvenance` with `sourceMode`, score/audit timestamp alignment, freshness sources, and raw-row links |
 | `/api/releases/:tag/review/issues` | Paginated current-DB issue-evidence rows for one release; supports comma-separated `tier`, `impact`, `state`, `sentiment`, `severity`, `functionality`, `scope`, `affectedUsers`, `fieldConfirmed`, `minWeight`, `maxWeight`, `sort`, `direction`, `summaryOnly`, plus `limit` and `cursor`; includes `sourceMode`, `scoredAt`, `dataFreshness`, `tierInfo`, `summaryByTier`, `filteredSummary`, `filteredCountsByTier`, `filteredSummaryByTier`, and `totals` |
@@ -257,7 +257,8 @@ The `/api/releases/:tag/review` `local.gateEvidence` object also exposes `schema
 The `/api/releases/:tag/review` `local.gateEvidence.labelTimeline` object also exposes `schemaVersion`. Current value: `1`.
 The `/api/releases/:tag/review` `local.gateEvidence.releaseChecks` object exposes `schemaVersion`. Current value: `2`. `local.gateEvidence.artifactVerification.schemaVersion` current value: `1`.
 The internal `/api/comparison` payload, upstream row, and delta objects also expose `schemaVersion`. Current value: `1`.
-The `/api/status`, `/api/config`, and `/api/releases/history` rows also expose `schemaVersion`. Current value: `1`.
+The `/api/status` and `/api/config` payloads also expose `schemaVersion`. Current value: `1`.
+The `/api/releases/history` rows expose `schemaVersion`. Current value: `2`.
 The `/api/public` payload, `/api/releases` rows, and `/api/public` release rows expose `schemaVersion`. Current value: `3`.
 
 ## Development Commands

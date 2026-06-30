@@ -739,10 +739,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /STATUS_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /CONFIG_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 2/);
-    assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1/);
+    assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 2/);
     assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 3/);
     assert.match(api, /function releaseAuditLinks/);
     assert.match(api, /auditLinks:\s+releaseAuditLinks/);
+    assert.match(api, /api\.get\('\/releases\/history'/);
+    assert.match(api, /scoreAudit:\s+scoreAuditSummary\(audit\)/);
+    assert.match(api, /dataFreshness:\s+freshnessForRelease\(r, audit\)/);
+    assert.match(readme, /\/api\/releases\/history.*`scoredAt`, `scoreAudit`, `dataFreshness`, and `auditLinks`/);
+    assert.match(scoringDoc, /\/api\/releases\/history` rows expose `schemaVersion`\. Current value: `2`/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /dataFreshnessCacheDigest/);

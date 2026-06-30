@@ -95,7 +95,7 @@ const comparisonDeltaSchemaVersion = 1;
 const statusPayloadSchemaVersion = 1;
 const configPayloadSchemaVersion = 1;
 const releaseRowSchemaVersion = 2;
-const releaseHistoryRowSchemaVersion = 1;
+const releaseHistoryRowSchemaVersion = 2;
 const publicReleaseSchemaVersion = 3;
 const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
 const closureProofSchemaVersion = 1;
@@ -137,7 +137,19 @@ const releaseRowKeys = new Set([
   'status',
   'tag',
 ]);
-const releaseHistoryRowKeys = new Set(['schemaVersion', 'tag', 'publishedAt', 'finalScore']);
+const releaseHistoryRowKeys = new Set([
+  'schemaVersion',
+  'tag',
+  'publishedAt',
+  'finalScore',
+  'status',
+  'band',
+  'recommended',
+  'scoredAt',
+  'scoreAudit',
+  'dataFreshness',
+  'auditLinks',
+]);
 const publicReleaseKeys = new Set([
   'auditLinks',
   'band',
@@ -1931,6 +1943,39 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       `history row schemaVersion must be ${releaseHistoryRowSchemaVersion}, got ${JSON.stringify(row?.schemaVersion)}`);
     expect(failures, row?.tag ?? 'api/releases/history', typeof row.tag === 'string' && row.tag.length > 0,
       'history row tag must be present');
+    expect(failures, row?.tag ?? 'api/releases/history', typeof row.publishedAt === 'string' && row.publishedAt.length > 0,
+      'history row publishedAt must be present');
+    expect(failures, row?.tag ?? 'api/releases/history', row.finalScore == null || typeof row.finalScore === 'number',
+      'history row finalScore must be numeric or null');
+    expect(failures, row?.tag ?? 'api/releases/history', row.scoredAt == null || typeof row.scoredAt === 'string',
+      'history row scoredAt must be string or null');
+    expect(failures, row?.tag ?? 'api/releases/history', typeof row.status === 'string' && row.status.length > 0,
+      'history row status must be present');
+    expect(failures, row?.tag ?? 'api/releases/history', typeof row.band === 'string' && row.band.length > 0,
+      'history row band must be present');
+    expect(failures, row?.tag ?? 'api/releases/history', typeof row.recommended === 'boolean',
+      'history row recommended must be boolean');
+    verifyAuditLinks({ failures, tag: row?.tag ?? 'api/releases/history', label: 'history row auditLinks', auditLinks: row.auditLinks });
+    const releaseApi = releaseApiByTag.get(row.tag);
+    if (releaseApi) {
+      expectJsonEqual(failures, row.tag, 'history row scoreAudit must match releases row scoreAudit',
+        row.scoreAudit, releaseApi.scoreAudit);
+      expectJsonEqual(failures, row.tag, 'history row dataFreshness must match releases row dataFreshness',
+        row.dataFreshness, releaseApi.dataFreshness);
+      expect(failures, row.tag, row.scoredAt === releaseApi.scoredAt,
+        `history scoredAt (${row.scoredAt}) must match releases scoredAt (${releaseApi.scoredAt})`);
+      expect(failures, row.tag, row.finalScore === releaseApi.finalScore,
+        `history finalScore (${row.finalScore}) must match releases finalScore (${releaseApi.finalScore})`);
+      expect(failures, row.tag, row.status === releaseApi.status,
+        `history status (${row.status}) must match releases status (${releaseApi.status})`);
+      expect(failures, row.tag, row.band === releaseApi.band,
+        `history band (${row.band}) must match releases band (${releaseApi.band})`);
+      expect(failures, row.tag, row.recommended === releaseApi.recommended,
+        `history recommended (${row.recommended}) must match releases recommended (${releaseApi.recommended})`);
+    } else {
+      verifyScoreAuditSummary({ failures, tag: row.tag, summary: row.scoreAudit });
+      verifyDataFreshness({ failures, tag: row.tag, dataFreshness: row.dataFreshness, releaseTag: row.tag, scoredAt: row.scoredAt });
+    }
   }
   const publicByTag = new Map((publicPayload.releases ?? []).map((release) => [release.tag, release]));
   for (const release of publicPayload.releases ?? []) {
