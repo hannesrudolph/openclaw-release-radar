@@ -33,6 +33,66 @@ before(async () => {
     prerelease: false,
     body: '',
   });
+  seedIssue({
+    number: 101,
+    state: 'open',
+    title: 'release local broad regression still open',
+    createdAt: '2026-06-01T12:00:00Z',
+    updatedAt: '2026-06-02T12:00:00Z',
+    labels: ['P1', 'bug', 'regression'],
+    classification: {
+      sentiment: 'negative',
+      severity: 'high',
+      functionality: 'core',
+      scope: 'broad',
+      affectedUsers: 'many',
+    },
+  });
+  seedIssue({
+    number: 102,
+    state: 'open',
+    title: 'provider issue needs info',
+    createdAt: '2026-06-01T13:00:00Z',
+    updatedAt: '2026-06-02T13:00:00Z',
+    labels: ['bug', 'stale'],
+    classification: {
+      sentiment: 'negative',
+      severity: 'medium',
+      functionality: 'provider',
+      scope: 'moderate',
+      affectedUsers: 'some',
+    },
+  });
+  seedIssue({
+    number: 103,
+    state: 'closed',
+    title: 'fixed release bug',
+    createdAt: '2026-06-01T14:00:00Z',
+    updatedAt: '2026-06-03T00:00:00Z',
+    closedAt: '2026-06-03T00:00:00Z',
+    labels: ['bug'],
+  });
+  seedClosure(103, '2026-06-03T00:00:00Z');
+  seedClosureProof(103, 'fixed_in_release');
+  seedIssue({
+    number: 104,
+    state: 'closed',
+    title: 'fixed after release bug',
+    createdAt: '2026-06-01T15:00:00Z',
+    updatedAt: '2026-06-04T00:00:00Z',
+    closedAt: '2026-06-04T00:00:00Z',
+    labels: ['bug'],
+  });
+  seedClosure(104, '2026-06-04T00:00:00Z');
+  seedClosureProof(104, 'fixed_after_release');
+  seedReachability({
+    prNumber: 123,
+    status: 'reachable',
+  });
+  seedReachability({
+    prNumber: 124,
+    status: 'not_reachable',
+  });
 
   const { api } = await import(`../routes/api.ts?api-routes-${Date.now()}`);
   const app = express();
@@ -102,4 +162,177 @@ describe('audit API routes', () => {
     assert.equal(invalidPr.status, 400);
     assert.equal(invalidPr.body.error, 'invalid pr filter');
   });
+
+  it('applies issue evidence filters, sorting, summary-only mode, and limit clamps', async () => {
+    const clamped = await getJson('/api/releases/v-test/review/issues?limit=999&cursor=-5');
+    assert.equal(clamped.status, 200);
+    assert.equal(clamped.body.limit, 250);
+    assert.equal(clamped.body.cursor, 0);
+    assert.ok(clamped.body.total >= 4);
+
+    const summaryOnly = await getJson('/api/releases/v-test/review/issues?tier=verifiedDebt&summaryOnly=true');
+    assert.equal(summaryOnly.status, 200);
+    assert.equal(summaryOnly.body.filters.tier, 'verifiedDebt');
+    assert.deepEqual(summaryOnly.body.filters.tiers, ['verifiedDebt']);
+    assert.equal(summaryOnly.body.filters.summaryOnly, true);
+    assert.equal(summaryOnly.body.limit, 0);
+    assert.equal(summaryOnly.body.cursor, 0);
+    assert.deepEqual(summaryOnly.body.rows, []);
+    assert.equal(summaryOnly.body.total, 1);
+
+    const fieldConfirmed = await getJson('/api/releases/v-test/review/issues?tier=verifiedDebt&fieldConfirmed=true');
+    assert.equal(fieldConfirmed.status, 200);
+    assert.equal(fieldConfirmed.body.filters.fieldConfirmed, true);
+    assert.ok(fieldConfirmed.body.rows.every((row: any) => row.tier === 'verifiedDebt' && row.fieldConfirmed === true));
+
+    const updatedDesc = await getJson('/api/releases/v-test/review/issues?limit=10&sort=updated&direction=desc');
+    assert.equal(updatedDesc.status, 200);
+    assert.equal(updatedDesc.body.filters.sort, 'updated');
+    assert.equal(updatedDesc.body.filters.direction, 'desc');
+    assert.ok(isNonIncreasingTimestamps(updatedDesc.body.rows.map((row: any) => row.issue.updatedAt)));
+
+    const stateOpen = await getJson('/api/releases/v-test/review/issues?state=open');
+    assert.equal(stateOpen.status, 200);
+    assert.equal(stateOpen.body.filters.state, 'open');
+    assert.deepEqual(stateOpen.body.filters.states, ['open']);
+    assert.ok(stateOpen.body.rows.every((row: any) => row.issue.state === 'open'));
+  });
+
+  it('applies closure proof filter intersections and limit clamps', async () => {
+    const filtered = await getJson('/api/releases/v-test/review/closure-proofs?status=fixed_after_release&riskDisposition=known_not_in_release');
+    assert.equal(filtered.status, 200);
+    assert.equal(filtered.body.filters.status, 'fixed_after_release');
+    assert.equal(filtered.body.filters.riskDisposition, 'known_not_in_release');
+    assert.equal(filtered.body.total, 1);
+    assert.equal(filtered.body.rows[0].issueNumber, 104);
+    assert.equal(filtered.body.rows[0].status, 'fixed_after_release');
+    assert.equal(filtered.body.rows[0].riskDisposition, 'known_not_in_release');
+
+    const clamped = await getJson('/api/releases/v-test/review/closure-proofs?limit=999&cursor=-2');
+    assert.equal(clamped.status, 200);
+    assert.equal(clamped.body.limit, 100);
+    assert.equal(clamped.body.cursor, 0);
+  });
+
+  it('applies reachability PR filter variants and limit clamps', async () => {
+    const byNumber = await getJson('/api/releases/v-test/review/reachability?pr=123');
+    assert.equal(byNumber.status, 200);
+    assert.deepEqual(byNumber.body.filters.pr, { repositoryNameWithOwner: null, number: 123 });
+    assert.equal(byNumber.body.total, 1);
+    assert.equal(byNumber.body.rows[0].number, 123);
+
+    const byRepo = await getJson('/api/releases/v-test/review/reachability?pr=OpenClaw/OpenClaw%23123');
+    assert.equal(byRepo.status, 200);
+    assert.deepEqual(byRepo.body.filters.pr, { repositoryNameWithOwner: 'OpenClaw/OpenClaw', number: 123 });
+    assert.equal(byRepo.body.total, 1);
+    assert.equal(byRepo.body.rows[0].repositoryNameWithOwner, 'openclaw/openclaw');
+
+    const clamped = await getJson('/api/releases/v-test/review/reachability?limit=999&cursor=-2');
+    assert.equal(clamped.status, 200);
+    assert.equal(clamped.body.limit, 250);
+    assert.equal(clamped.body.cursor, 0);
+  });
 });
+
+function isNonIncreasingTimestamps(values: string[]): boolean {
+  for (let index = 1; index < values.length; index++) {
+    if (Date.parse(values[index - 1]) < Date.parse(values[index])) return false;
+  }
+  return true;
+}
+
+function seedIssue(input: {
+  number: number;
+  state: 'open' | 'closed';
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  closedAt?: string | null;
+  labels?: string[];
+  classification?: {
+    sentiment?: string;
+    severity?: string;
+    functionality?: string;
+    scope?: string;
+    affectedUsers?: string;
+  };
+}) {
+  dbModule.upsertIssue({
+    number: input.number,
+    state: input.state,
+    title: input.title,
+    author: 'reporter',
+    author_association: 'NONE',
+    html_url: `https://example.test/issues/${input.number}`,
+    created_at: input.createdAt,
+    updated_at: input.updatedAt,
+    closed_at: input.closedAt ?? null,
+    comments: 1,
+    unique_human_commenters: 1,
+    maintainer_commenters: 0,
+    contributor_commenters: 0,
+    commenter_scan_truncated: 0,
+    reaction_total: 0,
+    positive_reactions: 0,
+    labels: JSON.stringify(input.labels ?? ['bug']),
+    is_bot: 0,
+  });
+  const c = input.classification ?? {};
+  dbModule.upsertClassification(input.number, {
+    sentiment: c.sentiment ?? 'negative',
+    severity: c.severity ?? 'high',
+    functionality: c.functionality ?? 'core',
+    scope: c.scope ?? 'broad',
+    affectedUsers: c.affectedUsers ?? 'many',
+    workaroundStatus: 'unknown',
+    duplicateCluster: null,
+    affectsVersion: null,
+    confidence: 0.95,
+    rationale: 'route test classification',
+  }, input.updatedAt, 1);
+}
+
+function seedClosure(issueNumber: number, closedAt: string) {
+  dbModule.upsertIssueClosureEvent({
+    issue_number: issueNumber,
+    event_id: `closed-${issueNumber}`,
+    closed_at: closedAt,
+    actor_login: 'maintainer',
+    state_reason: 'COMPLETED',
+    closer_type: null,
+    closer_number: null,
+    closer_oid: null,
+    raw_json: '{}',
+  });
+}
+
+function seedClosureProof(issueNumber: number, status: string) {
+  dbModule.upsertIssueClosureProof({
+    release_tag: 'v-test',
+    issue_number: issueNumber,
+    status,
+    summary: status,
+    evidence_json: JSON.stringify({ status }),
+  });
+}
+
+function seedReachability({
+  prNumber,
+  status,
+}: {
+  prNumber: number;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+}) {
+  dbModule.upsertReleasePrReachability({
+    tag: 'v-test',
+    pr_repository_owner: 'openclaw',
+    pr_repository_name: 'openclaw',
+    pr_repository_name_with_owner: 'openclaw/openclaw',
+    pr_number: prNumber,
+    tag_commit_oid: 'tag-commit',
+    merge_commit_oid: `merge-${prNumber}`,
+    base_ref_name: 'main',
+    status,
+    evidence_json: '{}',
+  });
+}

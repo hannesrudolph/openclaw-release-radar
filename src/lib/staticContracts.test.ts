@@ -123,6 +123,7 @@ describe('static scoring/UI contracts', () => {
 
   it('release audit verifier uses shared closure proof taxonomy', () => {
     const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
+    const routeTest = readFileSync(join(root, 'src/lib/apiRoutes.test.ts'), 'utf8');
     assert.match(verifier, /closureProofTaxonomy\.ts/);
     assert.match(verifier, /releaseScoring\.ts/);
     assert.match(verifier, /SCORE_INPUT_SCHEMA_VERSION/);
@@ -143,6 +144,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /invalid summaryOnly/);
     assert.match(verifier, /invalid status/);
     assert.match(verifier, /invalid riskDisposition/);
+    assert.match(routeTest, /applies issue evidence filters/);
+    assert.match(routeTest, /summaryOnly=true/);
+    assert.match(routeTest, /status=fixed_after_release&riskDisposition=known_not_in_release/);
+    assert.match(routeTest, /pr=OpenClaw\/OpenClaw%23123/);
     assert.doesNotMatch(verifier, /'fixed_in_release'[\s\S]*'unknown'[\s\S]*\]\);/);
   });
 
