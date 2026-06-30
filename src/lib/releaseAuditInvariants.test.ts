@@ -16,14 +16,17 @@ const labelTimelineFixture = {
   historicalCurrentLabelFallbackAllowed: true,
 };
 const releaseChecksFixture = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   state: 'SUCCESS',
   total: 1,
   success: 1,
   failure: 0,
   pending: 0,
   skipped: 0,
-  contexts: [],
+  contextCount: 1,
+  shownContextCount: 1,
+  contextsTruncated: false,
+  contexts: [{ name: 'build', conclusion: 'SUCCESS' }],
 };
 const artifactVerificationFixture = {
   schemaVersion: 1,

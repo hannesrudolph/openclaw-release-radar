@@ -175,7 +175,7 @@ export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
 export const GATE_EVIDENCE_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
 export const LABEL_TIMELINE_SCHEMA_VERSION = 1;
-export const RELEASE_CHECKS_SCHEMA_VERSION = 1;
+export const RELEASE_CHECKS_SCHEMA_VERSION = 2;
 export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
@@ -621,6 +621,8 @@ function scoreRelease(args: {
     labelInfo,
     labelCutoff,
   );
+  const releaseCheckContexts = releaseCommit ? parseJsonArray(releaseCommit.check_contexts_json).slice(0, 25) : [];
+  const releaseCheckContextCount = Number(releaseCommit?.check_total ?? 0);
   const gateEvidence = enrichGateEvidenceWithClosureProof(rel.tag, {
     schemaVersion: GATE_EVIDENCE_SCHEMA_VERSION,
     cve,
@@ -637,7 +639,10 @@ function scoreRelease(args: {
       failure: releaseCommit.check_failure,
       pending: releaseCommit.check_pending,
       skipped: releaseCommit.check_skipped,
-      contexts: parseJsonArray(releaseCommit.check_contexts_json).slice(0, 25),
+      contextCount: releaseCheckContextCount,
+      shownContextCount: releaseCheckContexts.length,
+      contextsTruncated: releaseCheckContexts.length < releaseCheckContextCount,
+      contexts: releaseCheckContexts,
     } : null,
     artifactVerification: {
       schemaVersion: ARTIFACT_VERIFICATION_SCHEMA_VERSION,

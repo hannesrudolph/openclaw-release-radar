@@ -125,7 +125,12 @@ describe('release score explanations', () => {
     const closureProof = (run.scored[0].gateEvidence as any).fixProvenance?.closureProof ?? {};
     const releaseChecks = (run.scored[0].gateEvidence as any).releaseChecks;
     const artifactVerification = (run.scored[0].gateEvidence as any).artifactVerification;
-    if (releaseChecks) assert.equal(releaseChecks.schemaVersion, RELEASE_CHECKS_SCHEMA_VERSION);
+    if (releaseChecks) {
+      assert.equal(releaseChecks.schemaVersion, RELEASE_CHECKS_SCHEMA_VERSION);
+      assert.equal(releaseChecks.contextCount, releaseChecks.total);
+      assert.equal(releaseChecks.shownContextCount, releaseChecks.contexts.length);
+      assert.equal(releaseChecks.contextsTruncated, releaseChecks.shownContextCount < releaseChecks.contextCount);
+    }
     assert.equal(artifactVerification.schemaVersion, ARTIFACT_VERIFICATION_SCHEMA_VERSION);
     const nonFixedClosureStatuses = Object.entries(closureProof.byStatus ?? {})
       .filter(([status, count]) => status !== 'fixed_in_release' && Number(count ?? 0) > 0)

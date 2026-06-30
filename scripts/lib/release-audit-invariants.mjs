@@ -1040,7 +1040,7 @@ function verifyReleaseChecksGate({ failures, tag, releaseChecks }) {
   if (!isObject(releaseChecks)) return;
   expect(failures, tag, releaseChecks.schemaVersion === releaseChecksSchemaVersion,
     `releaseChecks schemaVersion (${releaseChecks.schemaVersion}) must equal ${releaseChecksSchemaVersion}`);
-  for (const key of ['total', 'success', 'failure', 'pending', 'skipped']) {
+  for (const key of ['total', 'success', 'failure', 'pending', 'skipped', 'contextCount', 'shownContextCount']) {
     expect(failures, tag, Number.isInteger(releaseChecks[key]) && releaseChecks[key] >= 0,
       `releaseChecks ${key} must be a non-negative integer`);
   }
@@ -1048,8 +1048,20 @@ function verifyReleaseChecksGate({ failures, tag, releaseChecks }) {
     Number(releaseChecks.pending ?? -1) + Number(releaseChecks.skipped ?? -1);
   expect(failures, tag, counted === releaseChecks.total,
     `releaseChecks counted contexts (${counted}) must equal total (${releaseChecks.total})`);
+  expect(failures, tag, releaseChecks.contextCount === releaseChecks.total,
+    `releaseChecks contextCount (${releaseChecks.contextCount}) must equal total (${releaseChecks.total})`);
+  expect(failures, tag, typeof releaseChecks.contextsTruncated === 'boolean',
+    'releaseChecks contextsTruncated must be boolean');
   expect(failures, tag, Array.isArray(releaseChecks.contexts),
     'releaseChecks contexts must be an array');
+  if (Array.isArray(releaseChecks.contexts)) {
+    expect(failures, tag, releaseChecks.contexts.length === releaseChecks.shownContextCount,
+      `releaseChecks shownContextCount (${releaseChecks.shownContextCount}) must equal contexts length (${releaseChecks.contexts.length})`);
+    expect(failures, tag, releaseChecks.shownContextCount <= releaseChecks.contextCount,
+      `releaseChecks shownContextCount (${releaseChecks.shownContextCount}) must not exceed contextCount (${releaseChecks.contextCount})`);
+    expect(failures, tag, releaseChecks.contextsTruncated === (releaseChecks.shownContextCount < releaseChecks.contextCount),
+      'releaseChecks contextsTruncated must reflect whether contexts are omitted');
+  }
 }
 
 function verifyArtifactVerificationGate({ failures, tag, artifactVerification }) {

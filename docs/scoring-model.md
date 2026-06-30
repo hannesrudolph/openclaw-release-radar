@@ -277,7 +277,7 @@ The model reads the release tag commit's GitHub `statusCheckRollup`.
 - Failed checks add a larger penalty.
 - Missing check data is neutral.
 
-The audit payload stores check state, counts, and check contexts.
+The audit payload stores check state, complete check counts, `contextCount`, `shownContextCount`, `contextsTruncated`, and a capped example list of check contexts.
 
 ## Artifact Verification
 
@@ -298,7 +298,7 @@ The model verifies npm registry metadata against the release notes:
 It also checks whether the linked release evidence report exists and is non-empty. A verified npm artifact adds confidence. A missing linked evidence report offsets part of that confidence instead of being treated like an npm integrity mismatch.
 
 If the markdown evidence report link is missing but the release notes include a successful GitHub Actions `full release validation` run with a non-expired artifact, the scorer treats that action artifact as fallback release evidence. The original report URL and fallback action URL remain exposed in `gateEvidence.artifactVerification`.
-`gateEvidence.releaseChecks.schemaVersion` and `gateEvidence.artifactVerification.schemaVersion` are the release-check and artifact-verification contract versions. Current value: `1`.
+`gateEvidence.releaseChecks.schemaVersion` is the release-check contract version. Current value: `2`. `gateEvidence.artifactVerification.schemaVersion` is the artifact-verification contract version. Current value: `1`.
 
 ## Inspecting Current Evidence
 

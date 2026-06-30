@@ -658,6 +658,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /mandatory canonical `label`/);
     assert.match(readme, /score_persistence_last_run/);
     assert.match(readme, /Current value: `1`/);
+    assert.match(readme, /releaseChecks` object exposes `schemaVersion`\. Current value: `2`/);
     assert.match(readme, /Current value: `3`/);
     assert.match(readme, /stable reason `code`/);
   });
@@ -670,7 +671,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /export const GATE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const LABEL_TIMELINE_SCHEMA_VERSION = 1/);
-    assert.match(scorer, /export const RELEASE_CHECKS_SCHEMA_VERSION = 1/);
+    assert.match(scorer, /export const RELEASE_CHECKS_SCHEMA_VERSION = 2/);
     assert.match(scorer, /export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const SCORE_EXPLANATION_LIMIT_CODES/);
     assert.match(scorer, /export const SCORE_EXPLANATION_POSITIVE_CODES/);
@@ -682,6 +683,8 @@ describe('static scoring/UI contracts', () => {
     const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
+    const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
+    const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
     assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 3/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
@@ -741,6 +744,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /filteredCountsByRiskDisposition/);
     assert.match(api, /laterFixProof: compactLaterFixProof/);
     assert.match(api, /unscoredFixProof: compactUnscoredFixProof/);
+    assert.match(scorer, /contextCount: releaseCheckContextCount/);
+    assert.match(scorer, /shownContextCount: releaseCheckContexts\.length/);
+    assert.match(scorer, /contextsTruncated: releaseCheckContexts\.length < releaseCheckContextCount/);
+    assert.match(verifier, /releaseChecks contextsTruncated must be boolean/);
+    assert.match(scoringDoc, /contextsTruncated/);
     const publicIssues = readFileSync(join(root, 'src/lib/publicIssueSummary.ts'), 'utf8');
     assert.match(publicIssues, /classifyIssueRowWithLabels/);
     assert.doesNotMatch(publicIssues, /confidence: classification\.confidence/);
