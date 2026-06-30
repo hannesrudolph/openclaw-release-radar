@@ -130,8 +130,10 @@ try {
   await fixPanel.locator('a').filter({ hasText: 'Open closure proof rows' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open PR reachability rows' }).first().waitFor();
   await fixPanel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
-  await fixPanel.locator('a').filter({ hasText: `#${relatedIssue.number}` }).first().waitFor();
-  await fixPanel.getByText(/Scored as .* risk /).first().waitFor();
+  const relatedIssueRow = fixPanel.locator('li.evidence__item').filter({ hasText: `#${relatedIssue.number}` }).first();
+  await relatedIssueRow.waitFor();
+  await relatedIssueRow.getByText(/Scored as .* risk/).waitFor();
+  await relatedIssueRow.getByText(new RegExp(`${relatedIssue.severity}.*${relatedIssue.affectedUsers} users`, 'i')).waitFor();
 
   const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
   await normalRow.evaluate((el) => {

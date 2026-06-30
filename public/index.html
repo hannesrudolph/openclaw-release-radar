@@ -1611,15 +1611,81 @@ function issueStateLabel(issue) {
   return allReleases[0]?.tag ? `closed after ${allReleases[0].tag}` : 'closed';
 }
 
-function issueRowHtml(issue, extra = false) {
+function issueEvidenceRowsForRelease(tag) {
+  const review = reviewByTag.get(tag);
+  const evidence = review?.local?.issueEvidence ?? {};
+  return [
+    ...(evidence.verifiedDebt ?? []),
+    ...(evidence.carryoverDebt ?? []),
+    ...(evidence.staleDebt ?? []),
+    ...(evidence.openedFeltSerious ?? []),
+    ...(evidence.verifiedFixed ?? []),
+    ...(evidence.unverifiedClosed ?? []),
+  ].filter((row) => row?.issue?.number);
+}
+
+function issueEvidenceRowForIssue(tag, issueNumber) {
+  const number = Number(issueNumber);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  return issueEvidenceRowsForRelease(tag).find((row) => Number(row.issue?.number) === number) ?? null;
+}
+
+function closureProofForIssue(tag, issueNumber) {
+  const number = Number(issueNumber);
+  if (!Number.isInteger(number) || number <= 0) return null;
+  const proof = reviewByTag.get(tag)?.local?.gateEvidence?.fixProvenance?.closureProof;
+  const examplesByStatus = proof?.examplesByStatus && typeof proof.examplesByStatus === 'object'
+    ? Object.values(proof.examplesByStatus).flatMap((rows) => Array.isArray(rows) ? rows : [])
+    : [];
+  return [
+    ...(proof?.examples ?? []),
+    ...(proof?.neutralAuditExamples ?? []),
+    ...examplesByStatus,
+  ].find((row) => Number(row?.number) === number) ?? null;
+}
+
+function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
+  const classification = evidenceRow?.issue?.classification ?? issue;
+  const tier = evidenceRow?.tierLabel ?? evidenceRow?.tier ?? 'public issue';
+  const severity = classification?.severity ?? issue?.severity;
+  const functionality = classification?.functionality ?? null;
+  const scope = classification?.scope ?? issue?.scope;
+  const affectedUsers = classification?.affectedUsers ?? issue?.affectedUsers;
+  const scoredBits = [
+    severity && functionality ? `${severity} ${functionality}` : severity,
+    scope,
+    affectedUsers ? `${affectedUsers} users` : null,
+  ].filter(Boolean);
+  const metrics = [];
+  if (Number.isFinite(evidenceRow?.weight)) metrics.push(`w ${metricValue(evidenceRow.weight)}`);
+  if (evidenceRow?.fieldConfirmed === true) metrics.push('field-confirmed');
+  else if (evidenceRow?.fieldConfirmed === false) metrics.push('not field-confirmed');
+  if (evidenceRow?.installImpactClass) {
+    metrics.push(`${String(evidenceRow.installImpactClass).replace(/_/g, ' ')} x${metricValue(evidenceRow.installImpactMultiplier ?? 1)}`);
+  }
+  if (issue?.surface?.label) metrics.push(`surface ${issue.surface.label}`);
+  if (issue?.hasWorkaround || classification?.workaroundStatus === 'confirmed') metrics.push('workaround confirmed');
+  if (Number.isFinite(classification?.confidence ?? issue?.confidence)) metrics.push(`confidence ${metricValue(classification?.confidence ?? issue?.confidence)}`);
+  const scoreLine = [`Scored as ${tier} risk`, ...scoredBits, ...metrics].filter(Boolean).join(' · ');
+  const proofLine = proofRow
+    ? `${proofRow.riskDisposition ? closureRiskDispositionLabel(proofRow.riskDisposition) + ' · ' : ''}${closureStatusLabel(proofRow.status)}: ${proofRow.summary ?? ''}`.trim()
+    : '';
+  return `<span class="evidence__meta">${esc(scoreLine)}</span>`
+    + (proofLine ? `<span class="evidence__meta">${esc(proofLine)}</span>` : '');
+}
+
+function issueRowHtml(issue, extra = false, releaseTag = null) {
   const href = safeExternalUrl(issue.url);
   const label = `#${issue.number} ${issue.title}`;
   const link = href
     ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
     : `<span>${esc(label)}</span>`;
   const stateLabel = issueStateLabel(issue);
+  const evidenceRow = issueEvidenceRowForIssue(releaseTag, issue.number);
+  const proofRow = closureProofForIssue(releaseTag, issue.number);
   return `<li class="evidence__item"${extra ? ' data-extra-issue hidden' : ''}>${link}`
     + (stateLabel ? `<span class="evidence__meta">${esc(stateLabel)}</span>` : '')
+    + issueScoringMetaHtml(issue, evidenceRow, proofRow)
     + `</li>`;
 }
 
@@ -1636,8 +1702,8 @@ function selectedWatchAreaSummaryHtml(r) {
   ).join('');
 }
 
-function issueRowsHtml(issues, visibleCount = 8) {
-  return issues.map((issue, idx) => issueRowHtml(issue, idx >= visibleCount)).join('')
+function issueRowsHtml(issues, visibleCount = 8, releaseTag = null) {
+  return issues.map((issue, idx) => issueRowHtml(issue, idx >= visibleCount, releaseTag)).join('')
     + (issues.length > visibleCount
       ? '<li class="evidence__item"><button type="button" class="evidence__more" data-expanded="false" data-collapsed-label="Show all ' + esc(issues.length) + ' related issues">Show all ' + esc(issues.length) + ' related issues</button></li>'
       : '');
@@ -1654,19 +1720,19 @@ function issueEvidenceHtml(r) {
   if (!issues.length) return '';
 
   if (!selected.size) {
-    return evidenceSectionHtml(title, issueRowsHtml(issues));
+    return evidenceSectionHtml(title, issueRowsHtml(issues, 8, r.tag));
   }
 
   const selectedIssues = issues.filter(issueMatchesSelectedProfile);
   const generalIssues = issues.filter((i) => !issueHasInstallSurface(i));
   const selectedHtml = selectedIssues.length
-    ? issueRowsHtml(selectedIssues)
+    ? issueRowsHtml(selectedIssues, 8, r.tag)
     : '<li class="evidence__item"><span class="evidence__meta">No watch-area issues found for selected areas.</span></li>';
   return evidenceSectionHtml(title, selectedHtml)
     + evidenceSectionHtml(
       'General issues',
       generalIssues.length
-        ? issueRowsHtml(generalIssues)
+        ? issueRowsHtml(generalIssues, 8, r.tag)
         : '<li class="evidence__item"><span class="evidence__meta">No untagged/core watch issues found for this release.</span></li>',
       'Core or untagged serious issues count for every install profile.',
     );
