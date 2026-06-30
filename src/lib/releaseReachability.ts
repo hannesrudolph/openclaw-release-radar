@@ -197,37 +197,26 @@ export async function checkReleaseCommitReachability(
   if (!uniqueCommits.length) return results;
   const release = releaseCommitStmt.get(tag) as { tag_commit_oid: string | null } | undefined;
   if (!release?.tag_commit_oid) {
-    for (const commitOid of uniqueCommits) {
-      results.set(commitOid, {
-        commitOid,
-        tagCommitOid: null,
-        status: 'unknown',
-        evidence: 'release_commit_unavailable',
-      });
-    }
-    return results;
+    throw new Error(`Release ${tag} has no tag commit evidence; refusing to check direct commit reachability`);
   }
 
   await ensureRepo();
   git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
-  const releaseFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], {
+  const releaseFetchArgs = ['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid];
+  const releaseFetch = git(releaseFetchArgs, {
     allowFailure: true,
     stdio: 'inherit',
   });
   if (releaseFetch.status !== 0) {
-    for (const commitOid of uniqueCommits) {
-      results.set(commitOid, {
-        commitOid,
-        tagCommitOid: release.tag_commit_oid,
-        status: 'unknown',
-        evidence: 'release_commit_fetch_failed',
-      });
-    }
-    return results;
+    throw new Error(gitFailureMessage('release_commit_fetch_failed', releaseFetchArgs, releaseFetch));
   }
 
   for (const commitOid of uniqueCommits) {
-    git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commitOid], { allowFailure: true });
+    const commitFetchArgs = ['fetch', '--filter=blob:none', '--no-tags', 'origin', commitOid];
+    const commitFetch = git(commitFetchArgs, { allowFailure: true });
+    if (commitFetch.status !== 0) {
+      throw new Error(gitFailureMessage('commit_fetch_failed', commitFetchArgs, commitFetch));
+    }
     const exists = git(['cat-file', '-e', `${commitOid}^{commit}`], { allowFailure: true });
     if (exists.status !== 0) {
       results.set(commitOid, {
@@ -238,7 +227,11 @@ export async function checkReleaseCommitReachability(
       });
       continue;
     }
-    const res = git(['merge-base', '--is-ancestor', commitOid, release.tag_commit_oid], { allowFailure: true });
+    const mergeBaseArgs = ['merge-base', '--is-ancestor', commitOid, release.tag_commit_oid];
+    const res = git(mergeBaseArgs, { allowFailure: true });
+    if (res.status !== 0 && res.status !== 1) {
+      throw new Error(gitFailureMessage('merge_base_error', mergeBaseArgs, res));
+    }
     const interpreted = interpretMergeBaseResult(res, 'fix_commit_in_release_history');
     results.set(commitOid, {
       commitOid,

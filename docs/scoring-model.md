@@ -115,6 +115,8 @@ GitHub `ReferencedEvent` commit references are stored separately from closure ev
 
 Every same-repo merged PR stored in closure proof `linkedPrs` carries release-tag reachability metadata: `reachabilityStatus`, `reachabilityMethod`, `tagCommitOid`, `mergeCommitOid`, and `reachabilityEvidence`. This makes each proof row self-auditing instead of requiring reviewers to cross-reference `release_pr_reachability` manually. Merged PRs from external repositories are marked `external_repo_unchecked` with `external_repository_not_checked_against_openclaw_release_tag`; they remain visible as context but are not release inclusion proof.
 
+Named direct fix/source commit proof also fails closed on git infrastructure errors. Missing release commit evidence, release commit fetch failures, candidate commit fetch failures, and merge-base errors abort closure proof persistence so transient git failures cannot downgrade a reachable fix into unknown proof without durable failure provenance.
+
 The closure proof analyzer classifies every closed issue that is not counted as a fix for the scored release into one of these buckets:
 
 - `fixed_in_release`: merged closing PR or named fix/source commit is reachable from this release tag.

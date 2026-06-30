@@ -396,6 +396,7 @@ describe('static scoring/UI contracts', () => {
   it('closure proof analysis checks direct commit closers for release reachability', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
     const payload = readFileSync(join(root, 'src/lib/closureProofPayload.ts'), 'utf8');
+    const reachability = readFileSync(join(root, 'src/lib/releaseReachability.ts'), 'utf8');
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
     assert.ok(
       analysis.indexOf('const proofRows = preparedRows') < analysis.indexOf('deleteIssueClosureProofsForRelease(releaseTag)'),
@@ -405,6 +406,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(payload, /gate_evidence_json is malformed; refusing to persist closure proof payload/);
     assert.match(payload, /emptyClosureProofPayload/);
     assert.doesNotMatch(payload, /if \(!summaryRows\.length\) return null/);
+    assert.match(reachability, /refusing to check direct commit reachability/);
+    assert.match(reachability, /throw new Error\(gitFailureMessage\('release_commit_fetch_failed'/);
+    assert.match(reachability, /throw new Error\(gitFailureMessage\('commit_fetch_failed'/);
+    assert.match(reachability, /throw new Error\(gitFailureMessage\('merge_base_error'/);
     assert.match(analysis, /direct_closer_commits/);
     assert.match(analysis, /e\.closer_type='Commit'/);
     assert.match(analysis, /directClosureCommitMentions/);
