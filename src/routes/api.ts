@@ -1130,7 +1130,8 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
 // recommended: true for the single newest release that passed all gates and scores
 //              at or above the recommendation threshold.
 // reason:      short human explanation of the verdict.
-// sentiment / severity / scope / hasWorkaround / confidence: per-issue LLM context.
+// sentiment / severity / scope / hasWorkaround: compact effective issue context.
+// Detailed classifier confidence/rationale stays on review/audit endpoints, not /api/public.
 //
 // The score is NOT issue-volume based (that is confounded by how long/popular a
 // release was). It comes from age/cadence-invariant signals: known CVEs, settle
@@ -1140,8 +1141,8 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
 // Data refreshes on a configurable interval (REFRESH_MINUTES). scoredAt = last time
 // the score was computed for this specific release.
 
-const PUBLIC_PAYLOAD_SCHEMA_VERSION = 2;
-const PUBLIC_RELEASE_SCHEMA_VERSION = 2;
+const PUBLIC_PAYLOAD_SCHEMA_VERSION = 3;
+const PUBLIC_RELEASE_SCHEMA_VERSION = 3;
 
 function publicCacheKey(
   freshness = releaseScoreAuditFreshness(),

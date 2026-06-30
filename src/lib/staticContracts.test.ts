@@ -652,13 +652,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /releaseClosureProofIntegrity/);
     assert.match(verifier, /releasePrReachabilityIntegrity/);
     assert.match(readme, /structured `explanation` object/);
-    assert.match(readme, /public payload contract version\. Current value: `2`/);
+    assert.match(readme, /public payload contract version\. Current value: `3`/);
     assert.match(readme, /mandatory canonical `label`/);
     assert.match(scoringDoc, /ledger row keys, labels, order, cap keys, and cap order/);
     assert.match(scoringDoc, /mandatory canonical `label`/);
     assert.match(readme, /score_persistence_last_run/);
     assert.match(readme, /Current value: `1`/);
-    assert.match(readme, /Current value: `2`/);
+    assert.match(readme, /Current value: `3`/);
     assert.match(readme, /stable reason `code`/);
   });
 
@@ -682,7 +682,7 @@ describe('static scoring/UI contracts', () => {
     const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
-    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 2/);
+    assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 3/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
     assert.match(api, /COMPARISON_PAYLOAD_SCHEMA_VERSION = 1/);
@@ -707,7 +707,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /CONFIG_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /RELEASE_ROW_SCHEMA_VERSION = 2/);
     assert.match(api, /RELEASE_HISTORY_ROW_SCHEMA_VERSION = 1/);
-    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 2/);
+    assert.match(api, /PUBLIC_RELEASE_SCHEMA_VERSION = 3/);
     assert.match(api, /function releaseAuditLinks/);
     assert.match(api, /auditLinks:\s+releaseAuditLinks/);
     assert.match(api, /function publicCacheKey/);
@@ -743,6 +743,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /unscoredFixProof: compactUnscoredFixProof/);
     const publicIssues = readFileSync(join(root, 'src/lib/publicIssueSummary.ts'), 'utf8');
     assert.match(publicIssues, /classifyIssueRowWithLabels/);
+    assert.doesNotMatch(publicIssues, /confidence: classification\.confidence/);
+    assert.doesNotMatch(publicIssues, /rationale: classification\.rationale/);
     assert.match(publicIssues, /labelsForIssueAt/);
     assert.match(publicIssues, /useSnapshotWhenNoEvents:\s*labelCutoff != null/);
     assert.match(publicIssues, /comparePublicIssueSignal/);

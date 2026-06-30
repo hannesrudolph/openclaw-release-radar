@@ -85,8 +85,6 @@ function issueSummary({ issue, classification }: ReturnType<typeof classifyPubli
     scope: classification.scope,
     affectedUsers: classification.affectedUsers,
     hasWorkaround: classification.workaroundStatus === 'confirmed' || issue.has_workaround === 1,
-    confidence: classification.confidence,
-    rationale: classification.rationale,
   };
 }
 

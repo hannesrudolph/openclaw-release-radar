@@ -96,7 +96,7 @@ const statusPayloadSchemaVersion = 1;
 const configPayloadSchemaVersion = 1;
 const releaseRowSchemaVersion = 2;
 const releaseHistoryRowSchemaVersion = 1;
-const publicReleaseSchemaVersion = 2;
+const publicReleaseSchemaVersion = 3;
 const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
 const closureProofSchemaVersion = 1;
 const closureProofAuditSchemaVersion = 1;
@@ -107,7 +107,7 @@ const labelTimelineSchemaVersion = LABEL_TIMELINE_SCHEMA_VERSION;
 const releaseChecksSchemaVersion = RELEASE_CHECKS_SCHEMA_VERSION;
 const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
 const scoreExplanationSchemaVersion = 1;
-const publicPayloadSchemaVersion = 2;
+const publicPayloadSchemaVersion = 3;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationLimitCodes = new Set(SCORE_EXPLANATION_LIMIT_CODES);
 const knownExplanationPositiveCodes = new Set(SCORE_EXPLANATION_POSITIVE_CODES);
@@ -162,10 +162,8 @@ const publicReleaseKeys = new Set([
 const publicIssueKeys = new Set([
   'affectedUsers',
   'closedAt',
-  'confidence',
   'hasWorkaround',
   'number',
-  'rationale',
   'scope',
   'sentiment',
   'severity',

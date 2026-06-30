@@ -378,7 +378,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     ],
   };
   const publicRelease = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     tag: 'v1',
     score: 7.5,
     band: 'ok',
@@ -780,7 +780,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     if (url.endsWith('/api/config')) return { schemaVersion: 1, releases: 10, refreshMinutes: 0 };
     if (url.endsWith('/api/public')) {
       return {
-        schemaVersion: 2,
+        schemaVersion: 3,
         repo: 'x/y',
         updatedAt: auditScoredAt,
         releases: [publicRelease],
