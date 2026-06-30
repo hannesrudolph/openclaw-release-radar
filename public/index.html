@@ -816,7 +816,7 @@ footer a:hover{color:var(--text)}
           <div class="score-explain">
             <div class="score-explain__title">What this score means</div>
             <p><strong>Global score</strong> estimates whether this stable release is a recommended install candidate under the current audit gates. It combines hard gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
-            <p><strong>My install</strong> appears after you select a meaningful profile. It keeps global/core issues, keeps issues for your selected surfaces, and filters out unrelated surfaced issues so the trend reflects your setup instead of everyone else's.</p>
+            <p><strong>My install</strong> appears after you select a meaningful profile. It is a capped local estimate layered on the global audited score: global/core issues still count, selected surfaces stay visible, and unrelated surfaced issues are filtered out of the personal view.</p>
             <p>The score is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
           </div>
         </details>
@@ -1087,7 +1087,7 @@ function installChipsHtml(max = 8) {
 function installSummarySubText() {
   if (selectedProfileSurfaces.size === 0) return "Tell us what you use, and we'll check each update for your setup.";
   const missing = missingInstallProfileRequirements();
-  if (!missing.length) return 'Each update is now scored for the way you use it.';
+  if (!missing.length) return 'Each update now shows a profile-adjusted estimate beside the audited global score.';
   return `Also pick ${missing.join(' and ')} to finish.`;
 }
 
@@ -1328,8 +1328,8 @@ function hasMeaningfulInstallProfile() {
 function installProfileStatusText() {
   if (selectedProfileSurfaces.size === 0) return '';
   const missing = missingInstallProfileRequirements();
-  if (!missing.length) return 'My install score is active. Issue evidence and trend are filtered for this profile.';
-  return `Filtering issue evidence only. Select ${missing.join(' + ')} to calculate a My install score.`;
+  if (!missing.length) return 'Profile estimate is active. Issue evidence and trend are filtered for this profile; the audited global score remains the source of truth.';
+  return `Filtering issue evidence only. Select ${missing.join(' + ')} to show a profile-adjusted estimate.`;
 }
 
 function renderInstallProfileStatus() {

@@ -32,6 +32,11 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /release looks safe to install|No safe target|broadly safe/i);
     assert.match(html, /if \(local\?\.recommended\)[\s\S]*recommended install candidate under the audit gates/);
     assert.match(html, /local\?\.status === 'eligible'[\s\S]*passed hard install gates/);
+    assert.doesNotMatch(html, /Each update is now scored for the way you use it/);
+    assert.doesNotMatch(html, /My install score is active/);
+    assert.match(html, /profile-adjusted estimate beside the audited global score/);
+    assert.match(html, /audited global score remains the source of truth/);
+    assert.match(html, /capped local estimate layered on the global audited score/);
   });
 
   it('empty watchIssues does not hide capped issue evidence', () => {
