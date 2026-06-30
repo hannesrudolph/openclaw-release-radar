@@ -76,6 +76,8 @@ The initial open interval starts at `issues.created_at` and ends at the first fe
 
 An issue is attributed to a release only when one of those open intervals overlaps the release's stable-to-stable reign window. This prevents reports that were already closed before a release from counting against that release merely because they were reopened later.
 
+Score persistence refuses ambiguous open-interval evidence. If a fetched reopen event has no preceding close event for that issue, the scorer cannot prove where the earlier open interval ended, so `persistReleaseScoreRun` refuses to write release rows or score audits until timeline evidence is complete. Score persistence also refuses ambiguous stable release windows when stable releases have missing or duplicate `published_at` timestamps.
+
 ## Label Timing
 
 Current labels can be misleading because labels may be added or removed after a release. The model persists GitHub `LabeledEvent` and `UnlabeledEvent` timeline items in `issue_label_events`.

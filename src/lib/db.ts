@@ -2625,6 +2625,191 @@ export function formatReleaseClosureProofIntegrityFailure(report: ReleaseClosure
     `minProofCheckedAt=${report.minProofCheckedAt ?? 'none'})${suffix}`;
 }
 
+export interface StableReleaseWindowIntegrity {
+  missingPublishedAtCount: number;
+  duplicatePublishedAtCount: number;
+  duplicateReleaseCount: number;
+  examples: Array<{
+    kind: 'missing_published_at' | 'duplicate_published_at';
+    publishedAt: string | null;
+    tags: string[];
+    count: number;
+  }>;
+}
+
+const stableReleaseWindowIntegrityCountsStmt = db.prepare(`
+WITH duplicate_timestamps AS (
+  SELECT published_at, COUNT(*) AS count
+  FROM releases
+  WHERE prerelease = 0
+    AND published_at IS NOT NULL
+  GROUP BY published_at
+  HAVING COUNT(*) > 1
+)
+SELECT
+  (SELECT COUNT(*) FROM releases WHERE prerelease = 0 AND published_at IS NULL) AS missingPublishedAtCount,
+  (SELECT COUNT(*) FROM duplicate_timestamps) AS duplicatePublishedAtCount,
+  COALESCE((SELECT SUM(count) FROM duplicate_timestamps), 0) AS duplicateReleaseCount
+`);
+
+const stableReleaseWindowIntegrityExamplesStmt = db.prepare(`
+SELECT *
+FROM (
+  SELECT
+    'missing_published_at' AS kind,
+    NULL AS publishedAt,
+    tag AS tags,
+    1 AS count
+  FROM releases
+  WHERE prerelease = 0
+    AND published_at IS NULL
+
+  UNION ALL
+
+  SELECT
+    'duplicate_published_at' AS kind,
+    published_at AS publishedAt,
+    group_concat(tag) AS tags,
+    COUNT(*) AS count
+  FROM releases
+  WHERE prerelease = 0
+    AND published_at IS NOT NULL
+  GROUP BY published_at
+  HAVING COUNT(*) > 1
+)
+ORDER BY publishedAt DESC, kind, tags
+LIMIT ?
+`);
+
+export function stableReleaseWindowIntegrity(exampleLimit = 10): StableReleaseWindowIntegrity {
+  const counts = stableReleaseWindowIntegrityCountsStmt.get() as Record<string, unknown> | undefined;
+  const examples = stableReleaseWindowIntegrityExamplesStmt.all(Math.max(0, Math.floor(exampleLimit))) as Array<{
+    kind: StableReleaseWindowIntegrity['examples'][number]['kind'];
+    publishedAt: string | null;
+    tags: string | null;
+    count: number;
+  }>;
+  return {
+    missingPublishedAtCount: Number(counts?.missingPublishedAtCount ?? 0),
+    duplicatePublishedAtCount: Number(counts?.duplicatePublishedAtCount ?? 0),
+    duplicateReleaseCount: Number(counts?.duplicateReleaseCount ?? 0),
+    examples: examples.map((example) => ({
+      kind: example.kind,
+      publishedAt: example.publishedAt ?? null,
+      tags: String(example.tags ?? '').split(',').filter(Boolean),
+      count: Number(example.count ?? 0),
+    })),
+  };
+}
+
+export function formatStableReleaseWindowIntegrityFailure(report: StableReleaseWindowIntegrity): string | null {
+  const failed = report.missingPublishedAtCount + report.duplicateReleaseCount;
+  if (failed === 0) return null;
+  const examples = report.examples
+    .slice(0, 3)
+    .map((example) => example.kind === 'duplicate_published_at'
+      ? `${example.kind} ${example.publishedAt ?? 'null'} [${example.tags.join(', ')}]`
+      : `${example.kind} [${example.tags.join(', ')}]`)
+    .join(', ');
+  const suffix = examples ? `; examples: ${examples}` : '';
+  return `stable release windows are ambiguous for ${failed} release row(s) ` +
+    `(missingPublishedAt=${report.missingPublishedAtCount}, duplicateTimestamps=${report.duplicatePublishedAtCount}, ` +
+    `duplicateReleases=${report.duplicateReleaseCount})${suffix}`;
+}
+
+export interface ReleaseIssueTimelineIntegrity {
+  tag: string;
+  ambiguousReopenCount: number;
+  issueCount: number;
+  examples: Array<{
+    issueNumber: number;
+    reopenedAt: string;
+    createdAt: string | null;
+    closedAt: string | null;
+  }>;
+}
+
+const releaseIssueTimelineIntegrityBaseSql = `
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+),
+ambiguous_reopens AS (
+  SELECT
+    r.issue_number,
+    r.reopened_at,
+    i.created_at,
+    i.closed_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  JOIN target
+  WHERE target.start_at IS NOT NULL
+    AND r.reopened_at IS NOT NULL
+    AND i.created_at < target.end_at
+    AND (i.closed_at IS NULL OR i.closed_at > target.start_at)
+    AND NOT EXISTS (
+      SELECT 1
+      FROM issue_closure_events c
+      WHERE c.issue_number=r.issue_number
+        AND c.closed_at IS NOT NULL
+        AND c.closed_at < r.reopened_at
+    )
+)
+`;
+
+const releaseIssueTimelineIntegrityCountsStmt = db.prepare(`
+${releaseIssueTimelineIntegrityBaseSql}
+SELECT
+  COUNT(*) AS ambiguousReopenCount,
+  COUNT(DISTINCT issue_number) AS issueCount
+FROM ambiguous_reopens
+`);
+
+const releaseIssueTimelineIntegrityExamplesStmt = db.prepare(`
+${releaseIssueTimelineIntegrityBaseSql}
+SELECT issue_number AS issueNumber, reopened_at AS reopenedAt, created_at AS createdAt, closed_at AS closedAt
+FROM ambiguous_reopens
+ORDER BY reopened_at DESC, issue_number
+LIMIT ?
+`);
+
+export function releaseIssueTimelineIntegrity(tag: string, exampleLimit = 10): ReleaseIssueTimelineIntegrity {
+  const counts = releaseIssueTimelineIntegrityCountsStmt.get(tag) as Record<string, unknown> | undefined;
+  const examples = releaseIssueTimelineIntegrityExamplesStmt.all(tag, Math.max(0, Math.floor(exampleLimit))) as ReleaseIssueTimelineIntegrity['examples'];
+  return {
+    tag,
+    ambiguousReopenCount: Number(counts?.ambiguousReopenCount ?? 0),
+    issueCount: Number(counts?.issueCount ?? 0),
+    examples: examples.map((example) => ({
+      issueNumber: Number(example.issueNumber),
+      reopenedAt: example.reopenedAt,
+      createdAt: example.createdAt ?? null,
+      closedAt: example.closedAt ?? null,
+    })),
+  };
+}
+
+export function formatReleaseIssueTimelineIntegrityFailure(report: ReleaseIssueTimelineIntegrity): string | null {
+  if (report.ambiguousReopenCount === 0) return null;
+  const examples = report.examples
+    .slice(0, 3)
+    .map((example) => `#${example.issueNumber} reopened ${example.reopenedAt}`)
+    .join(', ');
+  const suffix = examples ? `; examples: ${examples}` : '';
+  return `${report.tag}: issue open-interval evidence is ambiguous for ${report.ambiguousReopenCount} reopen event(s) ` +
+    `across ${report.issueCount} issue(s); each reopen must have a preceding close event before release attribution can be trusted${suffix}`;
+}
+
 const releasePrReachabilityRowsStmt = db.prepare(`
 SELECT r.*,
        p.title,

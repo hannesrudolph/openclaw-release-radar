@@ -41,7 +41,7 @@ function classification(overrides: Partial<IssueClassification> = {}): IssueClas
   };
 }
 
-function seedRelease(db: any, tag = 'v1', publishedAt = '2026-06-01T00:00:00Z', prerelease = false) {
+function seedRelease(db: any, tag = 'v1', publishedAt: string | null = '2026-06-01T00:00:00Z', prerelease = false) {
   db.upsertRelease({
     tag,
     name: tag,
@@ -295,6 +295,37 @@ describe('release fix provenance', () => {
 
     assert.ok(!db.issuesForVersion('v1').some((row: any) => row.number === 7002));
     assert.ok(db.issuesForVersion('v2').some((row: any) => row.number === 7002));
+  });
+
+  it('flags reopen intervals that are missing their preceding close evidence', async () => {
+    const db = await freshDb('ambiguous-reopen-interval');
+    seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
+    seedRelease(db, 'v2', '2026-06-10T00:00:00Z');
+    seedIssue(db, 7004, '2026-06-15T00:00:00Z', '2026-05-01T00:00:00Z');
+    seedReopen(db, 7004, '2026-06-12T00:00:00Z');
+
+    let report = db.releaseIssueTimelineIntegrity('v1');
+    assert.equal(report.ambiguousReopenCount, 1);
+    assert.equal(report.issueCount, 1);
+    assert.match(db.formatReleaseIssueTimelineIntegrityFailure(report) ?? '', /ambiguous.*#7004/);
+
+    seedClosure(db, 7004, 'COMPLETED', '2026-05-02T00:00:00Z');
+    report = db.releaseIssueTimelineIntegrity('v1');
+    assert.equal(report.ambiguousReopenCount, 0);
+    assert.equal(db.formatReleaseIssueTimelineIntegrityFailure(report), null);
+  });
+
+  it('flags missing or duplicate stable release window boundaries', async () => {
+    const db = await freshDb('stable-window-integrity');
+    seedRelease(db, 'v-window-unique-1', '2016-01-01T00:00:00Z');
+    seedRelease(db, 'v-window-unique-alias', '2016-01-01T00:00:00Z');
+    seedRelease(db, 'v-missing', null);
+
+    const report = db.stableReleaseWindowIntegrity();
+    assert.equal(report.missingPublishedAtCount, 1);
+    assert.ok(report.duplicatePublishedAtCount >= 1);
+    assert.ok(report.duplicateReleaseCount >= 2);
+    assert.match(db.formatStableReleaseWindowIntegrityFailure(report) ?? '', /stable release windows are ambiguous/);
   });
 
   it('uses open intervals for audit source freshness issue universes', async () => {

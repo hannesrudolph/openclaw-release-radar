@@ -280,7 +280,6 @@ describe('release scoring DB bridge', () => {
         /malformed advisory vulnerable_version_range/,
       );
     } finally {
-      try { db.db.close(); } catch { /* already closed */ }
       rmSync(dir, { recursive: true, force: true });
     }
   });

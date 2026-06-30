@@ -30,11 +30,15 @@ import {
   listReleasesDb,
   openedDuringReign,
   formatReleaseClosureProofIntegrityFailure,
+  formatReleaseIssueTimelineIntegrityFailure,
   formatReleasePrReachabilityIntegrityFailure,
+  formatStableReleaseWindowIntegrityFailure,
   getMeta,
   releaseClosureProofIntegrity,
+  releaseIssueTimelineIntegrity,
   releasePrReachabilityIntegrity,
   setMeta,
+  stableReleaseWindowIntegrity,
   unclassifiedIssuesForVersion,
   updateReleaseScore,
   upsertReleaseScoreAudit,
@@ -366,6 +370,8 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
   const incomplete = run.scored.filter((result) =>
     Number(result.input.classifiedIssueCount ?? 0) !== Number(result.input.rawIssueCount ?? 0));
   const failures: string[] = [];
+  const stableWindowFailure = formatStableReleaseWindowIntegrityFailure(stableReleaseWindowIntegrity(3));
+  if (stableWindowFailure) failures.push(stableWindowFailure);
   if (incomplete.length > 0) {
     const examples = incomplete
       .slice(0, 5)
@@ -375,6 +381,10 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
     failures.push(`incomplete classification coverage: ${examples}${suffix}`);
   }
   for (const result of run.scored) {
+    const timelineFailure = formatReleaseIssueTimelineIntegrityFailure(
+      releaseIssueTimelineIntegrity(result.rel.tag, 3),
+    );
+    if (timelineFailure) failures.push(timelineFailure);
     const closureProofFailure = formatReleaseClosureProofIntegrityFailure(
       releaseClosureProofIntegrity(result.rel.tag, 3),
     );
