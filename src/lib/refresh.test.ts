@@ -57,4 +57,9 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('exhausted'), false);
     assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('early_stop'), false);
   });
+
+  it('refuses to score after any monitored-release evidence refresh failure', () => {
+    assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures([]), false);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures(['closure proof failed']), true);
+  });
 });

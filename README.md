@@ -178,18 +178,32 @@ npm run verify:live
 npm run ui:smoke
 ```
 
-`npm run doctor` is a read-only SQLite health report. It prints DB path/size, table counts, latest scored stable, recommendation count, classification coverage, source freshness, closure-proof coverage, PR reachability counts, comparison snapshot state, warnings, and failures. Use `--api-base http://127.0.0.1:8787` to also check the running local server. Add `--fail-on-warnings` when stale evidence warnings should fail the command.
+`npm run doctor` is a read-only SQLite health report. It prints DB path/size, table counts, latest scored stable, recommendation count, classification coverage, source freshness, closure-proof coverage, PR reachability counts, comparison snapshot state, warnings, and failures. It also checks the latest recorded issue crawl metadata, including page-cap stops, truncated comment scans, and monitored-release evidence refresh failures. Use `--api-base http://127.0.0.1:8787` to also check the running local server. Add `--fail-on-warnings` when stale evidence warnings should fail the command.
 
-`verify:local` and `verify:live` start with `npm run doctor -- --fail-on-warnings` and use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit or the latest evidence is stale.
+`verify:local` and `verify:live` start with `npm run doctor -- --fail-on-warnings` and use `--all` internally, so they check every scored stable release and fail if a scored release lacks a score audit, the latest evidence is stale, or the latest crawl recorded evidence failures that could affect the current score.
 
 Scoring rules and evidence sources are documented in [docs/scoring-model.md](docs/scoring-model.md).
 
-A healthy completed refresh has:
+A healthy `/api/status` response has:
 
 ```json
 {
   "refreshing": false,
   "lastError": null
+}
+```
+
+A healthy completed refresh also records `meta.issue_crawl_last_run`, which `npm run doctor` reports under `ingestion.issueCrawl`:
+
+```json
+{
+  "ingestion": {
+    "issueCrawl": {
+      "stopReason": "exhausted",
+      "evidenceRefreshFailures": [],
+      "scorePersisted": true
+    }
+  }
 }
 ```
 

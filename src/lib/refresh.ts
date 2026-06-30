@@ -531,6 +531,7 @@ export async function refresh(): Promise<{
       stopReason: issuePaginationStopReason,
       crossedOldestEver,
       commenterScanTruncatedCount,
+      evidenceRefreshFailures: [] as string[],
       scorePersisted: false,
       scorePersistedAt: null,
     };
@@ -556,26 +557,40 @@ export async function refresh(): Promise<{
     }
 
     const allReleases = listReleasesDb(monitoredReleaseCount);
+    const evidenceRefreshFailures: string[] = [];
 
     for (const rel of allReleases) {
       try {
         const closure = await refreshClosureEvidenceForRelease(rel.tag);
         console.log(`[closure-evidence] ${rel.tag}: ${closure.issueCount} closed issues inspected`);
       } catch (e) {
-        console.warn(`[closure-evidence] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+        const message = `[closure-evidence] ${rel.tag} failed: ${(e as Error).message}`;
+        evidenceRefreshFailures.push(message);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
       try {
         const reachability = await checkReleasePrReachability(rel.tag);
         console.log(`[reachability] ${rel.tag}: ${reachability.reachable}/${reachability.candidates} reachable`);
       } catch (e) {
-        console.warn(`[reachability] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+        const message = `[reachability] ${rel.tag} failed: ${(e as Error).message}`;
+        evidenceRefreshFailures.push(message);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
       try {
         const proof = await analyzeClosureProofsForRelease(rel.tag);
         console.log(`[closure-proof] ${rel.tag}: ${proof.analyzed} analyzed`);
       } catch (e) {
-        console.warn(`[closure-proof] ${rel.tag} failed (continuing): ${(e as Error).message}`);
+        const message = `[closure-proof] ${rel.tag} failed: ${(e as Error).message}`;
+        evidenceRefreshFailures.push(message);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
+    }
+    if (shouldRefuseScoreAfterEvidenceFailures(evidenceRefreshFailures)) {
+      persistIssueCrawlMeta({
+        ...issueCrawlMeta,
+        evidenceRefreshFailures,
+      });
+      throw new Error(`Evidence refresh failed for ${evidenceRefreshFailures.length} step(s); refusing to persist scores`);
     }
 
     // 4. Score every monitored release with the Install Confidence model — a single
@@ -635,6 +650,10 @@ function shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason: IssueP
   return issuePaginationStopReason === 'page_cap';
 }
 
+function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {
+  return failures.length > 0;
+}
+
 function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
   setMeta(ISSUE_CRAWL_META_KEY, JSON.stringify(meta));
 }
@@ -642,6 +661,7 @@ function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
 export const __refreshTest = {
   shouldDropStaleClassificationsAfterPromptSweep,
   shouldMarkBackfillComplete,
+  shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
 };
 

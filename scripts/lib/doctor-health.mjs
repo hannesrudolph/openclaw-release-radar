@@ -12,8 +12,13 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
   const startedAt = issueCrawl.startedAt ?? null;
   const finishedAt = issueCrawl.finishedAt ?? null;
   const scorePersisted = issueCrawl.scorePersisted === true;
+  const evidenceRefreshFailures = issueCrawl.evidenceRefreshFailures;
   const crawlStartedAfterLatestScore = isAfter(startedAt, latestScoredAt);
   const crawlFinishedAfterLatestScore = isAfter(finishedAt, latestScoredAt);
+
+  if (evidenceRefreshFailures != null && !Array.isArray(evidenceRefreshFailures)) {
+    failures.push('issue crawl metadata evidenceRefreshFailures must be an array when present');
+  }
 
   if (stopReason === 'page_cap') {
     const message = `latest issue crawl hit page cap after ${Number(issueCrawl.pagesFetched ?? 0)} page(s); score persistence is unsafe until a complete crawl runs`;
@@ -21,6 +26,15 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
       failures.push(message);
     } else {
       warnings.push(`${message}; current score predates that incomplete crawl`);
+    }
+  }
+
+  if (Array.isArray(evidenceRefreshFailures) && evidenceRefreshFailures.length > 0) {
+    const message = `latest issue crawl recorded ${evidenceRefreshFailures.length} monitored-release evidence refresh failure(s); score persistence is unsafe until closure evidence, PR reachability, and closure proof all refresh cleanly`;
+    if (scorePersisted || !crawlStartedAfterLatestScore) {
+      failures.push(message);
+    } else {
+      warnings.push(`${message}; current score predates that failed evidence refresh`);
     }
   }
 
