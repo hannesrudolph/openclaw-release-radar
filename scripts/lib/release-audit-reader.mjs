@@ -465,6 +465,10 @@ export class ReleaseAuditReader {
       SELECT 'label_snapshots', MAX(s.fetched_at)
       FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
       UNION ALL
+      SELECT 'closure_proofs', MAX(p.checked_at)
+      FROM issue_closure_proofs p
+      WHERE p.release_tag=?
+      UNION ALL
       SELECT 'closure_events', MAX(e.fetched_at)
       FROM issue_closure_events e JOIN closed_universe u ON u.number=e.issue_number
       UNION ALL
@@ -481,7 +485,7 @@ export class ReleaseAuditReader {
         SELECT 'release_pr_reachability', MAX(r.checked_at)
         FROM release_pr_reachability r JOIN pr_universe u ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND u.pr_number=r.pr_number
       WHERE r.tag=?
-    `).all(tag, tag, tag);
+    `).all(tag, tag, tag, tag);
   }
 
   proofDependencyFreshnessForIssue(tag, issueNumber) {

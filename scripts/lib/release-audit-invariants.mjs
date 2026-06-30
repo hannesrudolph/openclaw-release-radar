@@ -1277,6 +1277,10 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
     if (source?.maxAt != null) {
       expect(failures, tag, Number.isFinite(Date.parse(source.maxAt)),
         `dataFreshness ${source.source} maxAt must be a valid timestamp`);
+      if (dataFreshness.scoredAt != null && Number.isFinite(Date.parse(source.maxAt)) && Number.isFinite(Date.parse(dataFreshness.scoredAt))) {
+        expect(failures, tag, Date.parse(source.maxAt) <= Date.parse(dataFreshness.scoredAt),
+          `dataFreshness ${source.source} changed at ${source.maxAt}, newer than scoredAt ${dataFreshness.scoredAt}`);
+      }
     }
     if (source?.ageHoursAtScore != null) {
       expect(failures, tag, typeof source.ageHoursAtScore === 'number' && Number.isFinite(source.ageHoursAtScore),

@@ -186,6 +186,40 @@ describe('installConfidence — graded signals', () => {
     assert.ok(stale > verified);
   });
 
+  it('capped source-only and weak evidence do not drag a clean well-proven release below solid', () => {
+    const result = installConfidence(mk({
+      publishedAt: daysAgo(10),
+      isLatest: true,
+      hoursToNextStable: null,
+      betaCount: 6,
+      feltOpenedWeight: 6,
+      feltClosedWeight: 45,
+      verifiedDebtWeight: 0,
+      carryoverDebtWeight: 500,
+      carryoverDebtIssueCount: 200,
+      staleDebtWeight: 500,
+      unresolvedClosureRiskWeight: 0,
+      rawIssueCount: 3000,
+      classifiedIssueCount: 3000,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: 7,
+      releaseCheckSuccess: 7,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+    }), NOW);
+
+    assert.equal(result.status, 'eligible');
+    assert.equal(result.band, 'solid');
+    assert.ok(result.score != null && result.score >= 8, `expected a solid score, got ${result.score}`);
+    assert.equal(Math.abs(result.components?.verifiedDebt ?? NaN), 0);
+    assert.equal(result.components?.carryoverDebt, -0.6);
+    assert.equal(result.components?.staleDebt, -0.2);
+    assert.equal(Math.abs(result.components?.closureRisk ?? NaN), 0);
+    assert.match(result.reason, /200 open unconfirmed issues/);
+  });
+
   it('short reason uses issue counts beside risk weights when available', () => {
     const result = installConfidence(mk({
       isLatest: true,

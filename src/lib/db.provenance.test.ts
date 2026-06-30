@@ -1,10 +1,14 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { mkdtempSync } from 'node:fs';
-import { join } from 'node:path';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
+import { fileURLToPath } from 'node:url';
 import type { IssueClassification } from './llm.ts';
 import { ReleaseAuditReader } from '../../scripts/lib/release-audit-reader.mjs';
+
+const root = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 
 function dbPath(name: string): string {
   return join(mkdtempSync(join(tmpdir(), `radar-${name}-`)), 'radar.db');
@@ -708,6 +712,95 @@ describe('release fix provenance', () => {
       /releaseFixCredit counts must match closureProof counts/,
     );
     assert.deepEqual(JSON.parse(db.getReleaseScoreAudit('v-proof').gate_evidence_json), validGate);
+  });
+
+  it('can refresh closure proof rows without mutating the existing score audit payload', () => {
+    const path = dbPath('closure-proof-analysis-audit-mode');
+    const dir = dirname(path);
+    try {
+      const script = `
+        import assert from 'node:assert/strict';
+        import { mkdirSync } from 'node:fs';
+        import { dirname, join } from 'node:path';
+        import { spawnSync } from 'node:child_process';
+        function git(args, cwd) {
+          const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+          assert.equal(result.status, 0, result.stdout + result.stderr);
+          return result.stdout.trim();
+        }
+        (async () => {
+        const testDir = dirname(process.env.DB_PATH);
+        const workDir = join(testDir, 'work');
+        const remoteDir = join(testDir, 'remote.git');
+        mkdirSync(workDir, { recursive: true });
+        git(['init'], workDir);
+        git(['config', 'user.email', 'test@example.test'], workDir);
+        git(['config', 'user.name', 'Test User'], workDir);
+        git(['commit', '--allow-empty', '-m', 'seed'], workDir);
+        const commitOid = git(['rev-parse', 'HEAD'], workDir);
+        git(['init', '--bare', remoteDir], testDir);
+        git(['remote', 'add', 'origin', remoteDir], workDir);
+        git(['push', 'origin', 'HEAD:refs/heads/main'], workDir);
+        process.env.OPENCLAW_REPO_URL = remoteDir;
+        const dbModule = await import('./src/lib/db.ts');
+        const analysisModule = await import('./src/lib/closureProofAnalysis.ts');
+        const db = dbModule.default ?? dbModule;
+        const analysis = analysisModule.default ?? analysisModule;
+        db.upsertRelease({
+          tag: 'v-proof-empty',
+          name: 'v-proof-empty',
+          published_at: '2026-06-01T00:00:00Z',
+          html_url: 'https://example.test/v-proof-empty',
+          prerelease: false,
+          body: '',
+        });
+        db.upsertReleaseCommit({
+          tag: 'v-proof-empty',
+          tag_commit_oid: commitOid,
+          committed_at: '2026-06-01T00:00:00Z',
+        });
+        db.upsertReleaseScoreAudit({
+          release_tag: 'v-proof-empty',
+          scored_at: '2026-06-02T00:00:00Z',
+          score_model_version: 'test-model',
+          prompt_version: 1,
+          final_score: 7.5,
+          status: 'eligible',
+          band: 'ok',
+          recommended: 1,
+          input_json: '{"schemaVersion":1,"rawIssueCount":0,"classifiedIssueCount":0}',
+          components_json: '{"schemaVersion":1,"components":{},"explanation":{"schemaVersion":1}}',
+          issue_evidence_json: '{"schemaVersion":1}',
+          gate_evidence_json: '{"schemaVersion":1,"fixProvenance":{"verifiedFixedCount":0,"unverifiedClosedCount":0}}',
+        });
+        const originalGateEvidence = db.getReleaseScoreAudit('v-proof-empty').gate_evidence_json;
+        const sideTableOnly = await analysis.analyzeClosureProofsForRelease('v-proof-empty', {
+          persistScoreAuditPayload: false,
+        });
+        assert.equal(sideTableOnly.analyzed, 0);
+        assert.equal(db.closureProofRows('v-proof-empty').length, 0);
+        assert.equal(db.getReleaseScoreAudit('v-proof-empty').gate_evidence_json, originalGateEvidence);
+        const defaultMode = await analysis.analyzeClosureProofsForRelease('v-proof-empty');
+        assert.equal(defaultMode.analyzed, 0);
+        const updatedGateEvidence = JSON.parse(db.getReleaseScoreAudit('v-proof-empty').gate_evidence_json);
+        assert.equal(updatedGateEvidence.fixProvenance.closureProof.analyzedClosedCount, 0);
+        assert.equal(updatedGateEvidence.fixProvenance.releaseFixCredit.analyzedClosedCount, 0);
+        assert.notEqual(JSON.stringify(updatedGateEvidence), originalGateEvidence);
+        db.db.close();
+        })().catch((error) => {
+          console.error(error);
+          process.exitCode = 1;
+        });
+      `;
+      const result = spawnSync('npx', ['tsx', '-e', script], {
+        cwd: root,
+        env: { ...process.env, DB_PATH: path },
+        encoding: 'utf8',
+      });
+      assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   it('public release row freshness digest changes when emitted score fields change', async () => {

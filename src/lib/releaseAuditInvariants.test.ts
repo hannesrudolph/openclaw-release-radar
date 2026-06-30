@@ -1111,6 +1111,23 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /issue_rows ageHoursAtScore/.test(failure)));
   });
 
+  it('fails when API data freshness reports source evidence newer than the score', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: apiFixtureFetchJson((freshness) => {
+        const closureProofs = freshness.sources.find((source: any) => source.source === 'closure_proofs');
+        closureProofs.maxAt = '2026-01-02T00:01:01Z';
+        closureProofs.ageHoursAtScore = -0.02;
+        freshness.closureProofCheckedAtMax = closureProofs.maxAt;
+        freshness.sourceFetchedAtMax = closureProofs.maxAt;
+        freshness.sourceFetchedAgeHoursAtScore = -0.02;
+      }),
+    });
+
+    assert.ok(result.failures.some((failure) => /closure_proofs changed .* newer than scoredAt/.test(failure)));
+  });
+
   it('fails when proof audit endpoints use stale score timestamps', async () => {
     const fetchJson = apiFixtureFetchJson();
     const result = await verifyReleaseAudit({
