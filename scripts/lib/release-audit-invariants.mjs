@@ -1788,6 +1788,25 @@ function verifyClosureProofExamplesByStatus({ failures, tag, proof, label }) {
 async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, reader, tag, issueEvidence }) {
   const base = `${apiBase}/api/releases/${encodeURIComponent(tag)}/review/issues`;
   const firstPage = await fetchJson(`${base}?limit=11`);
+  const invalidFilterCases = [
+    ['issue evidence audit invalid tier', `${base}?tier=not-a-tier`, 'invalid tier'],
+    ['issue evidence audit invalid fieldConfirmed', `${base}?fieldConfirmed=maybe`, 'invalid fieldConfirmed'],
+    ['issue evidence audit invalid weight range', `${base}?minWeight=10&maxWeight=1`, 'invalid weight range'],
+    ['issue evidence audit invalid sort', `${base}?sort=not-a-sort`, 'invalid sort'],
+    ['issue evidence audit invalid direction', `${base}?direction=sideways`, 'invalid direction'],
+    ['issue evidence audit invalid summaryOnly', `${base}?summaryOnly=wat`, 'invalid summaryOnly'],
+  ];
+  for (const [label, url, error] of invalidFilterCases) {
+    await expectFetchJsonStatus({
+      failures,
+      tag,
+      fetchJson,
+      url,
+      status: 400,
+      label,
+      payloadCheck: (payload) => payload?.error === error,
+    });
+  }
   expect(failures, tag, firstPage.schemaVersion === issueEvidenceAuditSchemaVersion,
     `issue evidence audit schemaVersion must be ${issueEvidenceAuditSchemaVersion}, got ${JSON.stringify(firstPage.schemaVersion)}`);
   expect(failures, tag, firstPage.tag === tag,

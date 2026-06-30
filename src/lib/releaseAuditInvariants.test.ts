@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { verifyReleaseAudit } from '../../scripts/lib/release-audit-invariants.mjs';
 import { CLOSURE_PROOF_STATUSES, CLOSURE_RISK_DISPOSITIONS } from './closureProofTaxonomy.ts';
+import { RELEASE_ISSUE_EVIDENCE_TIERS } from './releaseIssueEvidence.ts';
 
 const labelTimelineFixture = {
   schemaVersion: 1,
@@ -496,6 +497,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     };
     const tierFilter = parsed.searchParams.get('tier');
     const tiers = tierFilter ? tierFilter.split(',').map((tier) => tier.trim()).filter(Boolean) : [];
+    if (tiers.some((tier) => !(RELEASE_ISSUE_EVIDENCE_TIERS as readonly string[]).includes(tier))) {
+      throwHttpError(url, 400, { error: 'invalid tier', tier: tierFilter });
+    }
     const impactFilter = parsed.searchParams.get('impact');
     const impacts = impactFilter ? impactFilter.split(',').map((impact) => impact.trim()).filter(Boolean) : [];
     const stateFilter = parsed.searchParams.get('state');
@@ -510,11 +514,35 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const scopes = enumFilter('scope');
     const affectedUsers = enumFilter('affectedUsers');
     const fieldConfirmedFilter = parsed.searchParams.get('fieldConfirmed');
+    if (fieldConfirmedFilter != null && !['1', 'true', 'yes', '0', 'false', 'no'].includes(fieldConfirmedFilter.toLowerCase())) {
+      throwHttpError(url, 400, { error: 'invalid fieldConfirmed', fieldConfirmed: fieldConfirmedFilter });
+    }
     const fieldConfirmed = fieldConfirmedFilter == null ? null : ['1', 'true', 'yes'].includes(fieldConfirmedFilter.toLowerCase());
-    const minWeight = parsed.searchParams.get('minWeight') == null ? null : Number(parsed.searchParams.get('minWeight'));
-    const maxWeight = parsed.searchParams.get('maxWeight') == null ? null : Number(parsed.searchParams.get('maxWeight'));
+    const minWeightRaw = parsed.searchParams.get('minWeight');
+    const maxWeightRaw = parsed.searchParams.get('maxWeight');
+    const minWeight = minWeightRaw == null ? null : Number(minWeightRaw);
+    const maxWeight = maxWeightRaw == null ? null : Number(maxWeightRaw);
+    if (minWeightRaw != null && !Number.isFinite(minWeight)) {
+      throwHttpError(url, 400, { error: 'invalid minWeight', minWeight: minWeightRaw });
+    }
+    if (maxWeightRaw != null && !Number.isFinite(maxWeight)) {
+      throwHttpError(url, 400, { error: 'invalid maxWeight', maxWeight: maxWeightRaw });
+    }
+    if (minWeight != null && maxWeight != null && minWeight > maxWeight) {
+      throwHttpError(url, 400, { error: 'invalid weight range', minWeight, maxWeight });
+    }
     const sort = parsed.searchParams.get('sort') ?? 'rank';
+    if (!['rank', 'weight', 'updated', 'created', 'closed', 'number'].includes(sort)) {
+      throwHttpError(url, 400, { error: 'invalid sort', sort });
+    }
     const direction = parsed.searchParams.get('direction') ?? (sort === 'rank' ? 'asc' : 'desc');
+    if (!['asc', 'desc'].includes(direction)) {
+      throwHttpError(url, 400, { error: 'invalid direction', direction });
+    }
+    const summaryOnlyRaw = parsed.searchParams.get('summaryOnly');
+    if (summaryOnlyRaw != null && !['1', 'true', 'yes', '0', 'false', 'no'].includes(summaryOnlyRaw.toLowerCase())) {
+      throwHttpError(url, 400, { error: 'invalid summaryOnly', summaryOnly: summaryOnlyRaw });
+    }
     const summaryOnly = ['1', 'true', 'yes'].includes(String(parsed.searchParams.get('summaryOnly') ?? '').toLowerCase());
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&

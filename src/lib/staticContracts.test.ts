@@ -125,6 +125,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(verifier, /new Set\(CLOSURE_PROOF_STATUSES\)/);
     assert.match(verifier, /Object\.entries\(CLOSURE_RISK_DISPOSITION_BY_STATUS\)/);
     assert.match(verifier, /expectFetchJsonStatus/);
+    assert.match(verifier, /invalid tier/);
+    assert.match(verifier, /invalid fieldConfirmed/);
+    assert.match(verifier, /invalid weight range/);
+    assert.match(verifier, /invalid sort/);
+    assert.match(verifier, /invalid direction/);
+    assert.match(verifier, /invalid summaryOnly/);
     assert.match(verifier, /invalid status/);
     assert.match(verifier, /invalid riskDisposition/);
     assert.doesNotMatch(verifier, /'fixed_in_release'[\s\S]*'unknown'[\s\S]*\]\);/);
