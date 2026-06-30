@@ -180,10 +180,15 @@ describe('static scoring/UI contracts', () => {
     assert.match(doctor, /api public recommended tag/);
     assert.match(doctor, /api status lastScoredAt/);
     assert.match(verifier, /buildReleaseScoreRun/);
+    assert.match(verifier, /verifyScoreAuditPayloadContracts/);
     assert.match(verifier, /RADAR_DB_READ_ONLY = '1'/);
     assert.match(verifier, /verifyScoredReleaseCoverage/);
     assert.match(verifier, /SCORE_MODEL_VERSION/);
     assert.match(verifier, /PROMPT_VERSION/);
+    assert.match(verifier, /SCORE_INPUT_SCHEMA_VERSION/);
+    assert.match(verifier, /SCORE_COMPONENTS_SCHEMA_VERSION/);
+    assert.match(verifier, /ISSUE_EVIDENCE_SCHEMA_VERSION/);
+    assert.match(verifier, /GATE_EVIDENCE_SCHEMA_VERSION/);
     assert.match(verifier, /complete classification coverage/);
     assert.match(verifier, /release scored_at/);
     assert.match(verifier, /audit issue_evidence_json/);

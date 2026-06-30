@@ -1,6 +1,7 @@
 // Offline validation of the real scoring path against the real DB. This reads
 // existing classifications/evidence only; it does not call GitHub or the LLM.
 import { DatabaseSync } from 'node:sqlite';
+import { verifyScoreAuditPayloadContracts } from './lib/score-audit-contracts.mjs';
 
 const args = parseArgs(process.argv.slice(2));
 const check = args.check !== false && args['print-only'] !== true;
@@ -8,7 +9,15 @@ const dbPath = process.env.DB_PATH ?? './data/radar.db';
 process.env.RADAR_DB_READ_ONLY = '1';
 const db = new DatabaseSync(dbPath, { readOnly: true });
 db.exec('PRAGMA query_only = ON');
-const { buildReleaseScoreRun, PROMPT_VERSION, SCORE_MODEL_VERSION } = await import('../src/lib/releaseScoring.ts');
+const {
+  buildReleaseScoreRun,
+  GATE_EVIDENCE_SCHEMA_VERSION,
+  ISSUE_EVIDENCE_SCHEMA_VERSION,
+  PROMPT_VERSION,
+  SCORE_COMPONENTS_SCHEMA_VERSION,
+  SCORE_INPUT_SCHEMA_VERSION,
+  SCORE_MODEL_VERSION,
+} = await import('../src/lib/releaseScoring.ts');
 
 const allRel = db.prepare(
   `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`,
@@ -138,10 +147,26 @@ function comparePersisted({ failures, result, audit, recommended }) {
   expectEqual(failures, tag, 'closed serious count', Number(rel.closed_serious_fixed ?? 0), result.closedSerious);
   expectJson(failures, tag, 'broken surfaces', parseJson(rel.broken_surfaces, []), parseJson(result.brokenSurfaces, []));
 
-  expectJson(failures, tag, 'audit input_json', parseJson(audit.input_json, null), normalizeJson(input));
-  expectJson(failures, tag, 'audit issue_evidence_json', parseJson(audit.issue_evidence_json, null), normalizeJson(result.debtEvidence));
-  expectJson(failures, tag, 'audit gate_evidence_json', parseJson(audit.gate_evidence_json, null), normalizeJson(result.gateEvidence));
+  const persistedInput = parseJson(audit.input_json, null);
+  const persistedIssueEvidence = parseJson(audit.issue_evidence_json, null);
+  const persistedGateEvidence = parseJson(audit.gate_evidence_json, null);
   const components = parseJson(audit.components_json, null);
+  failures.push(...verifyScoreAuditPayloadContracts({
+    tag,
+    input: persistedInput,
+    components,
+    issueEvidence: persistedIssueEvidence,
+    gateEvidence: persistedGateEvidence,
+    versions: {
+      scoreInput: SCORE_INPUT_SCHEMA_VERSION,
+      scoreComponents: SCORE_COMPONENTS_SCHEMA_VERSION,
+      issueEvidence: ISSUE_EVIDENCE_SCHEMA_VERSION,
+      gateEvidence: GATE_EVIDENCE_SCHEMA_VERSION,
+    },
+  }));
+  expectJson(failures, tag, 'audit input_json', persistedInput, normalizeJson(input));
+  expectJson(failures, tag, 'audit issue_evidence_json', persistedIssueEvidence, normalizeJson(result.debtEvidence));
+  expectJson(failures, tag, 'audit gate_evidence_json', persistedGateEvidence, normalizeJson(result.gateEvidence));
   expectJson(failures, tag, 'audit components', components?.components ?? null, normalizeJson(conf.components));
   expectJson(failures, tag, 'audit explanation', components?.explanation ?? null, normalizeJson(result.explanation));
   expectEqual(failures, tag, 'audit evidenceCoverage', components?.evidenceCoverage, conf.evidenceCoverage);
