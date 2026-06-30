@@ -262,6 +262,20 @@ function coverageSummary(input, issueEvidence) {
 
 function freshnessSummary(db, tag, scoredAt, now) {
   const issueUniverse = issueUniverseFreshness(db, tag);
+  const releaseRowsFreshnessSql = tableHasColumns(db, 'releases', [
+    'release_metadata_fetched_at',
+    'release_derived_fetched_at',
+    'release_artifact_checked_at',
+  ])
+    ? `
+    UNION ALL
+    SELECT 'release_rows', COUNT(*) AS count, MAX(updated_at) AS maxAt
+    FROM (
+      SELECT release_metadata_fetched_at AS updated_at FROM releases
+      UNION ALL SELECT release_derived_fetched_at FROM releases
+      UNION ALL SELECT release_artifact_checked_at FROM releases
+    )`
+    : '';
   const sourceRows = db.prepare(`
     SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS maxAt FROM issues
     UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
@@ -274,6 +288,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
     UNION ALL SELECT 'issue_commit_references', COUNT(*), MAX(fetched_at) FROM issue_commit_references
     UNION ALL SELECT 'pull_request_fixes', COUNT(*), MAX(fetched_at) FROM pull_request_fixes
     UNION ALL SELECT 'release_pr_reachability', COUNT(*), MAX(checked_at) FROM release_pr_reachability
+    ${releaseRowsFreshnessSql}
     UNION ALL SELECT 'release_commits', COUNT(*), MAX(fetched_at) FROM release_commits
     UNION ALL SELECT 'advisories', COUNT(*), MAX(fetched_at) FROM advisories
   `).all();
@@ -560,6 +575,11 @@ function scalar(db, sql, ...args) {
   const row = db.prepare(sql).get(...args);
   if (!row) return 0;
   return Number(Object.values(row)[0] ?? 0);
+}
+
+function tableHasColumns(db, table, columns) {
+  const existing = new Set(db.prepare(`PRAGMA table_info(${table})`).all().map((col) => col.name));
+  return columns.every((column) => existing.has(column));
 }
 
 function parseJson(json, fallback) {

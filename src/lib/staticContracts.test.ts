@@ -389,6 +389,7 @@ describe('static scoring/UI contracts', () => {
 
   it('public issue summaries use effective scoring classifications', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     assert.match(api, /PUBLIC_PAYLOAD_SCHEMA_VERSION = 1/);
     assert.match(api, /SCORE_AUDIT_SUMMARY_SCHEMA_VERSION = 1/);
     assert.match(api, /LOCAL_AUDIT_SCHEMA_VERSION = 1/);
@@ -411,6 +412,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /freshness\.count/);
     assert.match(api, /freshness\.digest/);
     assert.match(api, /dataFreshness:\s+freshnessForRelease/);
+    assert.match(db, /release_metadata_fetched_at TEXT/);
+    assert.match(db, /release_derived_fetched_at TEXT/);
+    assert.match(db, /release_artifact_checked_at TEXT/);
+    assert.match(db, /release_metadata_fetched_at AS updated_at/);
+    assert.match(db, /'release_rows'/);
     assert.match(api, /publicIssueSummariesForRelease/);
     assert.match(api, /PUBLIC_ISSUES_PER_RELEASE/);
     assert.match(api, /releaseLabelCutoff\(r,\s*audit\?\.scored_at/);

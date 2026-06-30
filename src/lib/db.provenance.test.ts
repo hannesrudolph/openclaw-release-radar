@@ -106,6 +106,51 @@ function seedReopen(db: any, issue: number, reopenedAt = '2026-06-02T12:00:00Z')
 }
 
 describe('release fix provenance', () => {
+  it('tracks release-row source freshness for score-affecting metadata', async () => {
+    const db = await freshDb('release-row-freshness');
+    seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
+    db.updateReleaseDerivedStats({
+      tag: 'v1',
+      breaking_count: 1,
+      fixes_count: 2,
+      changes_count: 3,
+      highlights_count: 4,
+      pr_refs_count: 5,
+      beta_count: 0,
+      hours_to_next_release: null,
+      hours_to_next_stable: null,
+      npm_package_url: 'https://example.test/pkg',
+      release_tarball_url: 'https://example.test/tarball',
+      release_integrity: 'sha512-test',
+      release_sha: 'sha-test',
+      full_release_ci_report_url: 'https://example.test/ci',
+      full_release_validation_url: 'https://example.test/validation',
+    });
+    db.updateReleaseArtifactVerification({
+      tag: 'v1',
+      registry_version: '1.0.0',
+      registry_integrity: 'sha512-registry',
+      registry_tarball_url: 'https://example.test/registry.tgz',
+      ci_report_verified: 1,
+      ci_report_mismatch: null,
+      release_validation_verified: 1,
+      release_validation_mismatch: null,
+      artifact_verified: 1,
+      artifact_mismatch: null,
+    });
+
+    const release = db.getRelease('v1');
+    assert.ok(release);
+    assert.ok(Date.parse(String(release.release_metadata_fetched_at)));
+    assert.ok(Date.parse(String(release.release_derived_fetched_at)));
+    assert.ok(Date.parse(String(release.release_artifact_checked_at)));
+
+    const releaseMetadata = db.releaseDataFreshness('v1').sources.find((source: any) => source.source === 'release_metadata');
+    assert.ok(releaseMetadata);
+    assert.ok(Date.parse(String(releaseMetadata.maxAt)));
+    assert.ok(db.dataFreshnessCacheDigest().count > 0);
+  });
+
   it('uses the next stable release, not prereleases, for issue attribution windows', async () => {
     const db = await freshDb('stable-attribution-window');
     seedRelease(db, 'v1', '2026-06-01T00:00:00Z');

@@ -342,6 +342,12 @@ export class ReleaseAuditReader {
     return !!row;
   }
 
+  tableHasColumns(name, columns) {
+    if (!this.tableExists(name)) return false;
+    const existing = new Set(this.db.prepare(`PRAGMA table_info(${name})`).all().map((col) => col.name));
+    return columns.every((column) => existing.has(column));
+  }
+
   sourceFreshnessFor(tag) {
     const commitReferenceFreshnessSql = this.tableExists('issue_commit_references')
       ? `UNION ALL
@@ -349,6 +355,19 @@ export class ReleaseAuditReader {
       FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number`
       : `UNION ALL
       SELECT 'issue_commit_references', NULL`;
+    const releaseRowsFreshnessSql = this.tableHasColumns('releases', [
+      'release_metadata_fetched_at',
+      'release_derived_fetched_at',
+      'release_artifact_checked_at',
+    ])
+      ? `
+        SELECT r.release_metadata_fetched_at AS updated_at FROM releases r JOIN target ON target.tag=r.tag
+        UNION ALL
+        SELECT r.release_derived_fetched_at FROM releases r JOIN target ON target.tag=r.tag
+        UNION ALL
+        SELECT r.release_artifact_checked_at FROM releases r JOIN target ON target.tag=r.tag
+        UNION ALL`
+      : '';
     return this.db.prepare(`
       WITH target AS (
         SELECT tag, published_at,
@@ -385,6 +404,7 @@ export class ReleaseAuditReader {
       )
       SELECT 'release_metadata' AS source, MAX(updated_at) AS max_ts
       FROM (
+        ${releaseRowsFreshnessSql}
         SELECT fetched_at AS updated_at FROM release_commits WHERE tag=?
         UNION ALL
         SELECT fetched_at FROM advisories

@@ -137,6 +137,9 @@ CREATE TABLE IF NOT EXISTS releases (
   release_validation_mismatch TEXT,
   artifact_verified INTEGER NOT NULL DEFAULT 0,
   artifact_mismatch TEXT,
+  release_metadata_fetched_at TEXT,
+  release_derived_fetched_at TEXT,
+  release_artifact_checked_at TEXT,
   -- JSON array of the top product surfaces this release breaks (visible regressions),
   -- e.g. [{"label":"Discord","icon":"discord","count":11}]. See lib/surfaces.ts.
   broken_surfaces TEXT
@@ -441,6 +444,9 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN release_validation_mismatch TEXT`,
   `ALTER TABLE releases ADD COLUMN artifact_verified INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN artifact_mismatch TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_metadata_fetched_at TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_derived_fetched_at TEXT`,
+  `ALTER TABLE releases ADD COLUMN release_artifact_checked_at TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
   `ALTER TABLE issue_commit_references ADD COLUMN commit_message_headline TEXT`,
 ]) {
@@ -708,18 +714,22 @@ export interface ReleaseRow {
   release_validation_mismatch: string | null;
   artifact_verified: number;
   artifact_mismatch: string | null;
+  release_metadata_fetched_at: string | null;
+  release_derived_fetched_at: string | null;
+  release_artifact_checked_at: string | null;
   broken_surfaces: string | null;
 }
 
 const upsertReleaseStmt = db.prepare(`
-INSERT INTO releases (tag, name, published_at, html_url, prerelease, body)
-VALUES (:tag, :name, :published_at, :html_url, :prerelease, :body)
+INSERT INTO releases (tag, name, published_at, html_url, prerelease, body, release_metadata_fetched_at)
+VALUES (:tag, :name, :published_at, :html_url, :prerelease, :body, :release_metadata_fetched_at)
 ON CONFLICT(tag) DO UPDATE SET
   name=excluded.name,
   published_at=excluded.published_at,
   html_url=excluded.html_url,
   prerelease=excluded.prerelease,
-  body=excluded.body
+  body=excluded.body,
+  release_metadata_fetched_at=excluded.release_metadata_fetched_at
 `);
 
 export function upsertRelease(r: {
@@ -730,7 +740,11 @@ export function upsertRelease(r: {
   prerelease: boolean;
   body: string | null;
 }): void {
-  upsertReleaseStmt.run({ ...r, prerelease: r.prerelease ? 1 : 0 });
+  upsertReleaseStmt.run({
+    ...r,
+    prerelease: r.prerelease ? 1 : 0,
+    release_metadata_fetched_at: new Date().toISOString(),
+  });
 }
 
 const updateReleaseDerivedStatsStmt = db.prepare(`
@@ -748,7 +762,8 @@ UPDATE releases SET
   release_integrity=:release_integrity,
   release_sha=:release_sha,
   full_release_ci_report_url=:full_release_ci_report_url,
-  full_release_validation_url=:full_release_validation_url
+  full_release_validation_url=:full_release_validation_url,
+  release_derived_fetched_at=:release_derived_fetched_at
 WHERE tag=:tag
 `);
 
@@ -777,6 +792,7 @@ export function updateReleaseDerivedStats(args: {
     release_sha: args.release_sha ?? null,
     full_release_ci_report_url: args.full_release_ci_report_url ?? null,
     full_release_validation_url: args.full_release_validation_url ?? null,
+    release_derived_fetched_at: new Date().toISOString(),
   });
 }
 
@@ -790,7 +806,8 @@ UPDATE releases SET
   release_validation_verified=:release_validation_verified,
   release_validation_mismatch=:release_validation_mismatch,
   artifact_verified=:artifact_verified,
-  artifact_mismatch=:artifact_mismatch
+  artifact_mismatch=:artifact_mismatch,
+  release_artifact_checked_at=:release_artifact_checked_at
 WHERE tag=:tag
 `);
 
@@ -806,7 +823,10 @@ export function updateReleaseArtifactVerification(args: {
   artifact_verified: number;
   artifact_mismatch: string | null;
 }): void {
-  updateReleaseArtifactVerificationStmt.run(args);
+  updateReleaseArtifactVerificationStmt.run({
+    ...args,
+    release_artifact_checked_at: new Date().toISOString(),
+  });
 }
 
 // Install Confidence score writer. final_score is the 0–10 IC (NULL when 'wait').
@@ -1154,6 +1174,17 @@ export interface ReleaseDataFreshness {
   sources: ReleaseDataFreshnessSource[];
 }
 
+function tableHasColumns(table: string, columns: string[]): boolean {
+  const existing = new Set((db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((col) => col.name));
+  return columns.every((column) => existing.has(column));
+}
+
+const hasReleaseRowFreshnessColumns = tableHasColumns('releases', [
+  'release_metadata_fetched_at',
+  'release_derived_fetched_at',
+  'release_artifact_checked_at',
+]);
+
 const releaseDataFreshnessStmt = db.prepare(`
 WITH target AS (
   SELECT
@@ -1226,6 +1257,14 @@ pr_universe AS (
 sources(source, max_ts) AS (
   SELECT 'release_metadata', MAX(updated_at)
   FROM (
+    ${hasReleaseRowFreshnessColumns ? `
+    SELECT r.release_metadata_fetched_at AS updated_at FROM releases r JOIN target ON target.tag=r.tag
+    UNION ALL
+    SELECT r.release_derived_fetched_at FROM releases r JOIN target ON target.tag=r.tag
+    UNION ALL
+    SELECT r.release_artifact_checked_at FROM releases r JOIN target ON target.tag=r.tag
+    UNION ALL
+    ` : ''}
     SELECT fetched_at AS updated_at FROM release_commits WHERE tag=?
     UNION ALL
     SELECT fetched_at FROM advisories
@@ -1324,6 +1363,13 @@ UNION ALL SELECT 'issue_pr_links', COUNT(*), MAX(fetched_at) FROM issue_pr_links
 UNION ALL SELECT 'issue_commit_references', COUNT(*), MAX(fetched_at) FROM issue_commit_references
 UNION ALL SELECT 'pull_request_fixes', COUNT(*), MAX(fetched_at) FROM pull_request_fixes
 UNION ALL SELECT 'release_pr_reachability', COUNT(*), MAX(checked_at) FROM release_pr_reachability
+${hasReleaseRowFreshnessColumns ? `UNION ALL
+SELECT 'release_rows', COUNT(*) AS count, MAX(updated_at) AS max_ts
+FROM (
+  SELECT release_metadata_fetched_at AS updated_at FROM releases
+  UNION ALL SELECT release_derived_fetched_at FROM releases
+  UNION ALL SELECT release_artifact_checked_at FROM releases
+)` : ''}
 UNION ALL SELECT 'release_commits', COUNT(*), MAX(fetched_at) FROM release_commits
 UNION ALL SELECT 'advisories', COUNT(*), MAX(fetched_at) FROM advisories
 `);
