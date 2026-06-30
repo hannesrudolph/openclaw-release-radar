@@ -361,10 +361,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     sourceFetchedAtMax: proofCheckedAt,
     sourceFetchedAgeHoursAtScore: 0,
     sources: [
-      { source: 'issue_rows', maxAt: '2026-01-01T23:00:00Z', ageHoursAtScore: 1 },
-      { source: 'classification_rows', maxAt: '2026-01-01T23:10:00Z', ageHoursAtScore: 0.83 },
-      { source: 'closure_proofs', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
-      { source: 'release_metadata', maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+      { source: 'issue_rows', count: 1, nullCount: 0, maxAt: '2026-01-01T23:00:00Z', ageHoursAtScore: 1 },
+      { source: 'classification_rows', count: 1, nullCount: 0, maxAt: '2026-01-01T23:10:00Z', ageHoursAtScore: 0.83 },
+      { source: 'closure_proofs', count: 1, nullCount: 0, maxAt: proofCheckedAt, ageHoursAtScore: 0 },
+      { source: 'release_metadata', count: 1, nullCount: 0, maxAt: proofCheckedAt, ageHoursAtScore: 0 },
     ],
   };
   const publicRelease = {

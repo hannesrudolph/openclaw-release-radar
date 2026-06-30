@@ -24,6 +24,9 @@ export function assessDataFreshnessHealth(freshness, latest, {
   const requiredTimestampSources = new Set(['issue_fetches', 'release_rows']);
   if (Array.isArray(freshness.sources)) {
     for (const source of freshness.sources) {
+      if (Number(source?.nullCount ?? 0) > 0) {
+        failures.push(`${tag}: ${source.source} freshness has ${Number(source.nullCount)} row(s) without timestamp; rerun a complete refresh before trusting current score`);
+      }
       if (!requiredTimestampSources.has(source?.source)) continue;
       if (Number(source.count ?? 0) > 0 && source.maxAt == null) {
         failures.push(`${tag}: ${source.source} freshness has ${Number(source.count ?? 0)} row(s) but no timestamp; run a freshness backfill or refresh before trusting current score`);

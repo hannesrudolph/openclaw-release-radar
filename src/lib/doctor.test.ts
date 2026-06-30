@@ -54,6 +54,21 @@ describe('doctor data freshness health', () => {
     assert.ok(result.failures.some((failure) => /release_rows freshness/.test(failure)));
   });
 
+  it('fails when a populated freshness source has partial null timestamps', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: latest.scoredAt,
+      issueUpdatedAtMax: '2026-06-30T00:59:00.000Z',
+      issueUpdatedAgeHoursAtScore: 0.02,
+      issueUpdatedAgeHoursNow: 0.03,
+      sourceFetchedAtMax: '2026-06-30T00:59:00.000Z',
+      sources: [
+        { source: 'issue_pr_links', count: 10, nullCount: 2, maxAt: '2026-06-30T00:59:00.000Z' },
+      ],
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /issue_pr_links freshness has 2 row/.test(failure)));
+  });
+
   it('fails when issue rows include updates after the latest score', () => {
     const result = assessDataFreshnessHealth({
       scoredAt: latest.scoredAt,

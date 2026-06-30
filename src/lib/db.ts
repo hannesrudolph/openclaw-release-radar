@@ -1205,6 +1205,8 @@ export function publicIssueSummaryFreshness(limit: number): { count: number; max
 
 export interface ReleaseDataFreshnessSource {
   source: string;
+  count: number;
+  nullCount: number;
   maxAt: string | null;
   ageHoursAtScore: number | null;
 }
@@ -1302,11 +1304,11 @@ pr_universe AS (
   JOIN closed_universe c ON c.number=l.issue_number
   WHERE ${creditedFixLinkSql('l')}
 ),
-sources(source, max_ts) AS (
-  SELECT 'release_metadata', MAX(updated_at)
-  FROM (
-    ${hasReleaseRowFreshnessColumns ? `
-    SELECT r.release_metadata_fetched_at AS updated_at FROM releases r JOIN target ON target.tag=r.tag
+	sources(source, count, null_count, max_ts) AS (
+	  SELECT 'release_metadata', COUNT(*), COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0), MAX(updated_at)
+	  FROM (
+	    ${hasReleaseRowFreshnessColumns ? `
+	    SELECT r.release_metadata_fetched_at AS updated_at FROM releases r JOIN target ON target.tag=r.tag
     UNION ALL
     SELECT r.release_derived_fetched_at FROM releases r JOIN target ON target.tag=r.tag
     UNION ALL
@@ -1316,52 +1318,52 @@ sources(source, max_ts) AS (
     SELECT fetched_at AS updated_at FROM release_commits WHERE tag=?
     UNION ALL
     SELECT fetched_at FROM advisories
-  )
-  UNION ALL
-  SELECT 'issue_rows', MAX(i.updated_at)
-  FROM issues i JOIN issue_universe u ON u.number=i.number
-  ${hasIssueFetchFreshnessColumn ? `UNION ALL
-  SELECT 'issue_fetches', MAX(i.fetched_at)
-  FROM issues i JOIN issue_universe u ON u.number=i.number` : ''}
-  UNION ALL
-  SELECT 'classification_rows', MAX(c.classified_at)
-  FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
-  UNION ALL
-  SELECT 'label_events', MAX(e.fetched_at)
-  FROM issue_label_events e JOIN issue_universe u ON u.number=e.issue_number
-  UNION ALL
-  SELECT 'label_snapshots', MAX(s.fetched_at)
-  FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
-  UNION ALL
-  SELECT 'closure_proofs', MAX(p.checked_at)
-  FROM issue_closure_proofs p
-  JOIN target ON target.tag=p.release_tag
-  UNION ALL
-  SELECT 'closure_events', MAX(e.fetched_at)
-  FROM issue_closure_events e JOIN closed_universe u ON u.number=e.issue_number
-  UNION ALL
-  SELECT 'reopen_events', MAX(r.fetched_at)
-  FROM issue_reopen_events r JOIN issue_universe u ON u.number=r.issue_number
-  UNION ALL
-  SELECT 'issue_pr_links', MAX(l.fetched_at)
-  FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
-  UNION ALL
-  SELECT 'issue_commit_references', MAX(c.fetched_at)
-  FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number
-  UNION ALL
-  SELECT 'pull_request_fixes', MAX(p.fetched_at)
-  FROM pull_request_fixes p
-  JOIN pr_universe u ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner AND u.pr_number=p.pr_number
-  UNION ALL
-  SELECT 'release_pr_reachability', MAX(r.checked_at)
-  FROM release_pr_reachability r
-  JOIN pr_universe u ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND u.pr_number=r.pr_number
-  WHERE r.tag=?
-)
-SELECT source, max_ts
-FROM sources
-ORDER BY source
-`);
+	  )
+	  UNION ALL
+	  SELECT 'issue_rows', COUNT(*), COALESCE(SUM(CASE WHEN i.updated_at IS NULL THEN 1 ELSE 0 END), 0), MAX(i.updated_at)
+	  FROM issues i JOIN issue_universe u ON u.number=i.number
+	  ${hasIssueFetchFreshnessColumn ? `UNION ALL
+	  SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN i.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(i.fetched_at)
+	  FROM issues i JOIN issue_universe u ON u.number=i.number` : ''}
+	  UNION ALL
+	  SELECT 'classification_rows', COUNT(*), COALESCE(SUM(CASE WHEN c.classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(c.classified_at)
+	  FROM classifications c JOIN issue_universe u ON u.number=c.issue_number
+	  UNION ALL
+	  SELECT 'label_events', COUNT(*), COALESCE(SUM(CASE WHEN e.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(e.fetched_at)
+	  FROM issue_label_events e JOIN issue_universe u ON u.number=e.issue_number
+	  UNION ALL
+	  SELECT 'label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN s.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.fetched_at)
+	  FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
+	  UNION ALL
+	  SELECT 'closure_proofs', COUNT(*), COALESCE(SUM(CASE WHEN p.checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(p.checked_at)
+	  FROM issue_closure_proofs p
+	  JOIN target ON target.tag=p.release_tag
+	  UNION ALL
+	  SELECT 'closure_events', COUNT(*), COALESCE(SUM(CASE WHEN e.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(e.fetched_at)
+	  FROM issue_closure_events e JOIN closed_universe u ON u.number=e.issue_number
+	  UNION ALL
+	  SELECT 'reopen_events', COUNT(*), COALESCE(SUM(CASE WHEN r.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(r.fetched_at)
+	  FROM issue_reopen_events r JOIN issue_universe u ON u.number=r.issue_number
+	  UNION ALL
+	  SELECT 'issue_pr_links', COUNT(*), COALESCE(SUM(CASE WHEN l.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(l.fetched_at)
+	  FROM issue_pr_links l JOIN closed_universe u ON u.number=l.issue_number
+	  UNION ALL
+	  SELECT 'issue_commit_references', COUNT(*), COALESCE(SUM(CASE WHEN c.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(c.fetched_at)
+	  FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number
+	  UNION ALL
+	  SELECT 'pull_request_fixes', COUNT(*), COALESCE(SUM(CASE WHEN p.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(p.fetched_at)
+	  FROM pull_request_fixes p
+	  JOIN pr_universe u ON u.pr_repository_name_with_owner=p.pr_repository_name_with_owner AND u.pr_number=p.pr_number
+	  UNION ALL
+	  SELECT 'release_pr_reachability', COUNT(*), COALESCE(SUM(CASE WHEN r.checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(r.checked_at)
+	  FROM release_pr_reachability r
+	  JOIN pr_universe u ON u.pr_repository_name_with_owner=r.pr_repository_name_with_owner AND u.pr_number=r.pr_number
+	  WHERE r.tag=?
+	)
+	SELECT source, count, null_count, max_ts
+	FROM sources
+	ORDER BY source
+	`);
 
 const latestScoredStableReleaseTagStmt = db.prepare(`
 SELECT tag
@@ -1380,9 +1382,11 @@ export function latestScoredStableReleaseTag(): string | null {
 export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
   const audit = getReleaseScoreAudit(tag);
   const scoredAt = audit?.scored_at ?? null;
-  const rows = releaseDataFreshnessStmt.all(tag, tag, tag) as Array<{ source: string; max_ts: string | null }>;
+  const rows = releaseDataFreshnessStmt.all(tag, tag, tag) as Array<{ source: string; count: number; null_count: number; max_ts: string | null }>;
   const sources = rows.map((row) => ({
     source: row.source,
+    count: Number(row.count ?? 0),
+    nullCount: Number(row.null_count ?? 0),
     maxAt: row.max_ts ?? null,
     ageHoursAtScore: ageHoursAtScore(row.max_ts ?? null, scoredAt),
   }));
@@ -1403,27 +1407,27 @@ export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
 }
 
 const dataFreshnessCacheRowsStmt = db.prepare(`
-SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS max_ts FROM issues
-${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), MAX(fetched_at) FROM issues` : ''}
-UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
-UNION ALL SELECT 'issue_label_events', COUNT(*), MAX(fetched_at) FROM issue_label_events
-UNION ALL SELECT 'issue_label_snapshots', COUNT(*), MAX(fetched_at) FROM issue_label_snapshots
-UNION ALL SELECT 'issue_closure_proofs', COUNT(*), MAX(checked_at) FROM issue_closure_proofs
-UNION ALL SELECT 'issue_closure_events', COUNT(*), MAX(fetched_at) FROM issue_closure_events
-UNION ALL SELECT 'issue_reopen_events', COUNT(*), MAX(fetched_at) FROM issue_reopen_events
-UNION ALL SELECT 'issue_pr_links', COUNT(*), MAX(fetched_at) FROM issue_pr_links
-UNION ALL SELECT 'issue_commit_references', COUNT(*), MAX(fetched_at) FROM issue_commit_references
-UNION ALL SELECT 'pull_request_fixes', COUNT(*), MAX(fetched_at) FROM pull_request_fixes
-UNION ALL SELECT 'release_pr_reachability', COUNT(*), MAX(checked_at) FROM release_pr_reachability
+SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS null_count, MAX(updated_at) AS max_ts FROM issues
+${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issues` : ''}
+UNION ALL SELECT 'classifications', COUNT(*), COALESCE(SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(classified_at) FROM classifications
+UNION ALL SELECT 'issue_label_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_events
+UNION ALL SELECT 'issue_label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_snapshots
+UNION ALL SELECT 'issue_closure_proofs', COUNT(*), COALESCE(SUM(CASE WHEN checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(checked_at) FROM issue_closure_proofs
+UNION ALL SELECT 'issue_closure_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_closure_events
+UNION ALL SELECT 'issue_reopen_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_reopen_events
+UNION ALL SELECT 'issue_pr_links', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_pr_links
+UNION ALL SELECT 'issue_commit_references', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_commit_references
+UNION ALL SELECT 'pull_request_fixes', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM pull_request_fixes
+UNION ALL SELECT 'release_pr_reachability', COUNT(*), COALESCE(SUM(CASE WHEN checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(checked_at) FROM release_pr_reachability
 ${hasReleaseRowFreshnessColumns ? `UNION ALL
-SELECT 'release_rows', COUNT(*) AS count, MAX(updated_at) AS max_ts
+SELECT 'release_rows', COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS null_count, MAX(updated_at) AS max_ts
 FROM (
   SELECT release_metadata_fetched_at AS updated_at FROM releases
   UNION ALL SELECT release_derived_fetched_at FROM releases
   UNION ALL SELECT release_artifact_checked_at FROM releases
 )` : ''}
-UNION ALL SELECT 'release_commits', COUNT(*), MAX(fetched_at) FROM release_commits
-UNION ALL SELECT 'advisories', COUNT(*), MAX(fetched_at) FROM advisories
+UNION ALL SELECT 'release_commits', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM release_commits
+UNION ALL SELECT 'advisories', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM advisories
 `);
 
 export function dataFreshnessCacheDigest(): { count: number; max_ts: string | null; digest: string } {

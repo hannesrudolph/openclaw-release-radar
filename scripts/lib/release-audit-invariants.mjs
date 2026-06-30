@@ -1190,6 +1190,14 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
   for (const source of dataFreshness.sources ?? []) {
     expect(failures, tag, typeof source?.source === 'string' && source.source.length > 0,
       'dataFreshness source name must be present');
+    expect(failures, tag, Number.isInteger(source?.count) && source.count >= 0,
+      `dataFreshness ${source?.source} count must be a non-negative integer`);
+    expect(failures, tag, Number.isInteger(source?.nullCount) && source.nullCount >= 0,
+      `dataFreshness ${source?.source} nullCount must be a non-negative integer`);
+    expect(failures, tag, Number(source?.nullCount ?? 0) <= Number(source?.count ?? 0),
+      `dataFreshness ${source?.source} nullCount (${source?.nullCount}) must not exceed count (${source?.count})`);
+    expect(failures, tag, Number(source?.nullCount ?? 0) === 0,
+      `dataFreshness ${source?.source} must not have null freshness timestamps`);
     if (source?.maxAt != null) {
       expect(failures, tag, Number.isFinite(Date.parse(source.maxAt)),
         `dataFreshness ${source.source} maxAt must be a valid timestamp`);

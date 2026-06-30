@@ -264,7 +264,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
   const issueUniverse = issueUniverseFreshness(db, tag);
   const issueFetchFreshnessSql = tableHasColumns(db, 'issues', ['fetched_at'])
     ? `
-    UNION ALL SELECT 'issue_fetches', COUNT(*), MAX(fetched_at) FROM issues`
+    UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issues`
     : '';
   const releaseRowsFreshnessSql = tableHasColumns(db, 'releases', [
     'release_metadata_fetched_at',
@@ -273,7 +273,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
   ])
     ? `
     UNION ALL
-    SELECT 'release_rows', COUNT(*) AS count, MAX(updated_at) AS maxAt
+    SELECT 'release_rows', COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS nullCount, MAX(updated_at) AS maxAt
     FROM (
       SELECT release_metadata_fetched_at AS updated_at FROM releases
       UNION ALL SELECT release_derived_fetched_at FROM releases
@@ -281,21 +281,21 @@ function freshnessSummary(db, tag, scoredAt, now) {
     )`
     : '';
   const sourceRows = db.prepare(`
-    SELECT 'issues' AS source, COUNT(*) AS count, MAX(updated_at) AS maxAt FROM issues
+    SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS nullCount, MAX(updated_at) AS maxAt FROM issues
     ${issueFetchFreshnessSql}
-    UNION ALL SELECT 'classifications', COUNT(*), MAX(classified_at) FROM classifications
-    UNION ALL SELECT 'issue_label_events', COUNT(*), MAX(fetched_at) FROM issue_label_events
-    UNION ALL SELECT 'issue_label_snapshots', COUNT(*), MAX(fetched_at) FROM issue_label_snapshots
-    UNION ALL SELECT 'issue_closure_proofs', COUNT(*), MAX(checked_at) FROM issue_closure_proofs
-    UNION ALL SELECT 'issue_closure_events', COUNT(*), MAX(fetched_at) FROM issue_closure_events
-    UNION ALL SELECT 'issue_reopen_events', COUNT(*), MAX(fetched_at) FROM issue_reopen_events
-    UNION ALL SELECT 'issue_pr_links', COUNT(*), MAX(fetched_at) FROM issue_pr_links
-    UNION ALL SELECT 'issue_commit_references', COUNT(*), MAX(fetched_at) FROM issue_commit_references
-    UNION ALL SELECT 'pull_request_fixes', COUNT(*), MAX(fetched_at) FROM pull_request_fixes
-    UNION ALL SELECT 'release_pr_reachability', COUNT(*), MAX(checked_at) FROM release_pr_reachability
+    UNION ALL SELECT 'classifications', COUNT(*), COALESCE(SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(classified_at) FROM classifications
+    UNION ALL SELECT 'issue_label_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_events
+    UNION ALL SELECT 'issue_label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_snapshots
+    UNION ALL SELECT 'issue_closure_proofs', COUNT(*), COALESCE(SUM(CASE WHEN checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(checked_at) FROM issue_closure_proofs
+    UNION ALL SELECT 'issue_closure_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_closure_events
+    UNION ALL SELECT 'issue_reopen_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_reopen_events
+    UNION ALL SELECT 'issue_pr_links', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_pr_links
+    UNION ALL SELECT 'issue_commit_references', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_commit_references
+    UNION ALL SELECT 'pull_request_fixes', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM pull_request_fixes
+    UNION ALL SELECT 'release_pr_reachability', COUNT(*), COALESCE(SUM(CASE WHEN checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(checked_at) FROM release_pr_reachability
     ${releaseRowsFreshnessSql}
-    UNION ALL SELECT 'release_commits', COUNT(*), MAX(fetched_at) FROM release_commits
-    UNION ALL SELECT 'advisories', COUNT(*), MAX(fetched_at) FROM advisories
+    UNION ALL SELECT 'release_commits', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM release_commits
+    UNION ALL SELECT 'advisories', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM advisories
   `).all();
   const sourceFetchedAtMax = maxTimestamp(sourceRows.map((row) => row.maxAt ?? null));
   return {
@@ -309,6 +309,7 @@ function freshnessSummary(db, tag, scoredAt, now) {
     sources: sourceRows.map((row) => ({
       source: row.source,
       count: Number(row.count ?? 0),
+      nullCount: Number(row.nullCount ?? 0),
       maxAt: row.maxAt ?? null,
       ageHoursAtScore: ageHours(row.maxAt ?? null, scoredAt),
     })),
