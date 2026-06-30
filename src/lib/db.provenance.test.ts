@@ -113,6 +113,38 @@ function seedReopen(db: any, issue: number, reopenedAt = '2026-06-02T12:00:00Z')
 }
 
 describe('release fix provenance', () => {
+  it('supports nested write transactions with savepoint rollback', async () => {
+    const db = await freshDb('nested-write-transactions');
+
+    db.runInWriteTransaction(() => {
+      seedRelease(db, 'v-outer');
+      assert.throws(() => {
+        db.runInWriteTransaction(() => {
+          seedRelease(db, 'v-inner');
+          throw new Error('inner failure');
+        });
+      }, /inner failure/);
+      seedRelease(db, 'v-after-inner');
+    });
+
+    assert.ok(db.getRelease('v-outer'));
+    assert.equal(db.getRelease('v-inner'), undefined);
+    assert.ok(db.getRelease('v-after-inner'));
+
+    assert.throws(() => {
+      db.runInWriteTransaction(() => {
+        seedRelease(db, 'v-outer-fail');
+        db.runInWriteTransaction(() => {
+          seedRelease(db, 'v-inner-commit');
+        });
+        throw new Error('outer failure');
+      });
+    }, /outer failure/);
+
+    assert.equal(db.getRelease('v-outer-fail'), undefined);
+    assert.equal(db.getRelease('v-inner-commit'), undefined);
+  });
+
   it('stores append-only ingestion evidence failures for durable fetch provenance', async () => {
     const db = await freshDb('ingestion-evidence-failures');
 

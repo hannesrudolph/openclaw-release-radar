@@ -70,15 +70,28 @@ export const db = dbReadOnly
   ? new DatabaseSync(config.db.path, { readOnly: true })
   : new DatabaseSync(config.db.path);
 
+let writeTransactionDepth = 0;
+let writeTransactionSequence = 0;
+
 export function runInWriteTransaction<T>(fn: () => T): T {
-  db.exec('BEGIN');
+  const nested = writeTransactionDepth > 0;
+  const savepoint = nested ? `radar_write_tx_${++writeTransactionSequence}` : null;
+  db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+  writeTransactionDepth++;
   try {
     const result = fn();
-    db.exec('COMMIT');
+    db.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
     return result;
   } catch (error) {
-    db.exec('ROLLBACK');
+    if (nested) {
+      db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    } else {
+      db.exec('ROLLBACK');
+    }
     throw error;
+  } finally {
+    writeTransactionDepth--;
   }
 }
 // WAL improves concurrent reads but isn't supported on every mount (FUSE, some NFS).

@@ -299,6 +299,7 @@ describe('static scoring/UI contracts', () => {
     const backfill = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
+    const dbModule = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
     assert.match(populate, /const initialMonitored = listReleasesDb\(10\);\s*assertCleanIngestionMetadataBeforeScore\(initialMonitored\);/);
@@ -343,6 +344,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /formatReleasePrReachabilityIntegrityFailure/);
     assert.match(scorer, /score_persistence_last_run/);
     assert.match(scorer, /last_scored_at/);
+    assert.match(dbModule, /writeTransactionDepth/);
+    assert.match(dbModule, /SAVEPOINT/);
+    assert.match(dbModule, /ROLLBACK TO SAVEPOINT/);
     assert.match(bridgeTest, /FOREIGN KEY constraint failed/);
     assert.match(bridgeTest, /getReleaseScoreAudit\('v-tx'\), undefined/);
     assert.match(bridgeTest, /score_persistence_last_run/);
