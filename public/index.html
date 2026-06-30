@@ -398,6 +398,10 @@ main.main-home{max-width:880px}
   font-size:var(--text-xs);color:var(--muted);line-height:1.45;
 }
 .release--skip .release__reason{color:var(--danger)}
+.release__drivers{
+  font-size:var(--text-xs);color:var(--muted);line-height:1.45;
+}
+.release__drivers strong{color:var(--text);font-weight:650}
 /* ── affected-area surface chips ─────────────────────────────────────── */
 /* vertical list — caption and items share the same text colour; icons stay muted */
 .surfaces{
@@ -1969,6 +1973,25 @@ function scoreLedgerHtml(ledger) {
     + '</div>';
 }
 
+function scoreDriversHtml(release) {
+  const rows = release?.explanation?.scoreLedger?.rows;
+  if (!Array.isArray(rows)) return '';
+  const usefulRows = rows.filter((row) => row && typeof row === 'object' && row.key !== 'base');
+  const penalties = usefulRows
+    .filter((row) => Number(row.points) < 0)
+    .sort((a, b) => Number(a.points) - Number(b.points))
+    .slice(0, 2);
+  const positives = usefulRows
+    .filter((row) => Number(row.points) > 0)
+    .sort((a, b) => Number(b.points) - Number(a.points))
+    .slice(0, 1);
+  const parts = [...penalties, ...positives]
+    .map((row) => `${row.label ?? row.key} ${signedPoints(Number(row.points))}`)
+    .filter(Boolean);
+  if (!parts.length) return '';
+  return `<span class="release__drivers"><strong>Score drivers:</strong> ${esc(parts.join(' · '))}</span>`;
+}
+
 function signedPoints(value) {
   if (!Number.isFinite(value)) return '—';
   if (value > 0) return `+${metricValue(value)}`;
@@ -2672,6 +2695,7 @@ function renderReleases() {
       ? '' : (cat.reason || r.reason || '');
     const reasonLine = reasonText
       ? `<span class="release__reason">${esc(reasonText)}</span>` : '';
+    const driversLine = scoreDriversHtml(r);
 
 	    const surfaces = issueBackedSurfaces(r);
 	    const surfacesLine = affectedAreasHtml(surfaces);
@@ -2684,6 +2708,7 @@ function renderReleases() {
           ${advBadge}
         </div>
 	        ${reasonLine}
+	        ${driversLine}
 	        ${surfacesLine}
 	      </div>
       <div class="release__right" title="${esc(si.main.label)}">

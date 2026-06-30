@@ -95,6 +95,16 @@ try {
   if (recommendedTag !== publicRecommended[0].tag) {
     throw new Error(`Recommended DOM row ${recommendedTag} did not match public API ${publicRecommended[0].tag}`);
   }
+  const recommendedDriverText = await recommendedRows.first().locator('.release__drivers').innerText();
+  if (!/^Score drivers:/i.test(recommendedDriverText)) {
+    throw new Error(`recommended row missing score drivers: ${recommendedDriverText}`);
+  }
+  if (!/\brisk\b/i.test(recommendedDriverText)) {
+    throw new Error(`recommended row score drivers did not include a risk label: ${recommendedDriverText}`);
+  }
+  if (/raw\/classified|attributed issues/i.test(recommendedDriverText)) {
+    throw new Error(`recommended row score drivers looked issue-volume based: ${recommendedDriverText}`);
+  }
 
   const fixPanel = await openScoreBreakdown(page, fixCreditTag);
   await fixPanel.getByText('Model', { exact: true }).waitFor();
@@ -140,6 +150,8 @@ try {
     if (!el.classList.contains('release--normal')) throw new Error('eligible non-recommended row is not normal category');
     if (el.querySelector('.rec-pill')) throw new Error('eligible non-recommended row shows Recommended pill');
     if (el.querySelector('.release__reason')?.textContent?.trim()) throw new Error('eligible non-recommended row has verbose reason text');
+    const drivers = el.querySelector('.release__drivers')?.textContent?.trim() ?? '';
+    if (!drivers.startsWith('Score drivers:')) throw new Error('eligible non-recommended row is missing score drivers');
   });
   const normalPanel = await openScoreBreakdown(page, eligibleNonRecommended.tag);
   await normalPanel.getByText('The release passed hard install gates.').waitFor();
