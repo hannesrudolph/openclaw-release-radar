@@ -499,14 +499,17 @@ describe('GitHub GraphQL mapping', () => {
 
   it('marks missing issue aliases done during partial-error recovery', () => {
     const done = new Set<number>();
+    const missing: Array<{ issueNumber: number; aliasIndex: number }> = [];
     const skipped = __githubTest.skipMissingIssueAliases(
       new Error('GitHub GraphQL error: NOT_FOUND repository.issue1 Could not resolve to an Issue with the number of 95854.'),
       [100, 200, 300],
       done,
+      (event: { issueNumber: number; aliasIndex: number }) => missing.push(event),
     );
 
     assert.equal(skipped, 1);
     assert.deepEqual([...done], [200]);
+    assert.deepEqual(missing, [{ issueNumber: 200, aliasIndex: 1 }]);
   });
 
   it('classifies transient GraphQL errors as retryable without retrying missing aliases', () => {

@@ -232,6 +232,8 @@ GraphQL nested evidence connections are treated as required provenance, not opti
 
 `ingestion_evidence_failures` is append-only provenance for score-blocking fetch failures. It records the refresh run id, source, scope, optional release/issue/PR coordinates, message, context JSON, and occurrence timestamp so failed evidence pulls remain auditable even when refresh exits before it can complete normal crawl metadata.
 
+GitHub partial responses for missing issue aliases are recovered only to preserve the rest of a batch. During refresh, each skipped alias is recorded as score-blocking ingestion evidence failure, and scoring is refused rather than treating that issue's comments, labels, or fix evidence as empty.
+
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence. Before writing scores, the script refuses dirty ingestion metadata: missing/malformed `issue_crawl_last_run`, page-cap or evidence-failure stop reasons, recorded evidence/classification failures, or durable ingestion failure rows newer than the latest score.

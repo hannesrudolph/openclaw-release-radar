@@ -462,10 +462,38 @@ export async function refresh(): Promise<{
         .map((issue) => issue.number);
       monitoredIssuesFetched += monitoredIssueNumbers.length;
       const commentIssueNumbers = page.filter((issue) => issue.comments > 0).map((issue) => issue.number);
+      const evidenceFailureCountBeforePage = evidenceRefreshFailures.length;
       const [commentsResult, labelEventsResult, stateEvidenceResult] = await Promise.allSettled([
-        listIssueCommentsBatch(commentIssueNumbers),
-        listIssueLabelEventsBatch(monitoredIssueNumbers),
-        listIssueFixEvidenceBatch(monitoredIssueNumbers),
+        listIssueCommentsBatch(commentIssueNumbers, {
+          onMissingIssueAlias: ({ issueNumber, aliasIndex }) => {
+            const message = recordEvidenceRefreshFailure('issue-comments-missing-alias', `issue #${issueNumber}`, new Error('GitHub issue alias was missing during comment batch recovery'), {
+              page: pagesFetched,
+              issueNumber,
+              aliasIndex,
+            });
+            console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+          },
+        }),
+        listIssueLabelEventsBatch(monitoredIssueNumbers, {
+          onMissingIssueAlias: ({ issueNumber, aliasIndex }) => {
+            const message = recordEvidenceRefreshFailure('issue-label-events-missing-alias', `issue #${issueNumber}`, new Error('GitHub issue alias was missing during label timeline batch recovery'), {
+              page: pagesFetched,
+              issueNumber,
+              aliasIndex,
+            });
+            console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+          },
+        }),
+        listIssueFixEvidenceBatch(monitoredIssueNumbers, {
+          onMissingIssueAlias: ({ issueNumber, aliasIndex }) => {
+            const message = recordEvidenceRefreshFailure('issue-fix-evidence-missing-alias', `issue #${issueNumber}`, new Error('GitHub issue alias was missing during fix evidence batch recovery'), {
+              page: pagesFetched,
+              issueNumber,
+              aliasIndex,
+            });
+            console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+          },
+        }),
       ]);
       const pageEvidenceScope = `page ${pagesFetched}`;
       const pageEvidenceContext = {
@@ -492,10 +520,11 @@ export async function refresh(): Promise<{
         const message = recordEvidenceRefreshFailure('issue-fix-evidence', pageEvidenceScope, stateEvidenceResult.reason, pageEvidenceContext);
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
-      if (pageEvidenceFailureCount > 0) {
+      const pageFailureCount = evidenceRefreshFailures.length - evidenceFailureCountBeforePage;
+      if (pageEvidenceFailureCount > 0 || pageFailureCount > 0) {
         issuePaginationStopReason = 'evidence_failure';
         persistIssueCrawlMeta(buildIssueCrawlMeta());
-        throw new Error(`Issue page evidence refresh failed for ${pageEvidenceFailureCount} source(s); refusing to persist scores`);
+        throw new Error(`Issue page evidence refresh failed for ${Math.max(pageEvidenceFailureCount, pageFailureCount)} source(s); refusing to persist scores`);
       }
 
       const commentsByIssue = settledValue(commentsResult);

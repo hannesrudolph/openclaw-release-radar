@@ -244,6 +244,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /durable `ingestion_evidence_failures` rows/);
     assert.match(readme, /Release commit checks and security advisories are score-affecting evidence/);
     assert.match(readme, /stopReason: "evidence_failure"/);
+    assert.match(readme, /Missing issue aliases are not treated as proof/);
     assert.match(readme, /malformed nested evidence connections/);
     assert.match(readme, /hasNextPage` without `endCursor/);
     assert.match(readme, /newest audited stable release/);
@@ -365,6 +366,7 @@ describe('static scoring/UI contracts', () => {
   it('GraphQL issue evidence batches recover from missing issue aliases', () => {
     const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
     assert.match(github, /function skipMissingIssueAliases/);
+    assert.match(github, /onMissingIssueAlias/);
     assert.match(github, /listIssueCommentsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueLabelEventsBatch[\s\S]*skipMissingIssueAliases/);
     assert.match(github, /listIssueFixEvidenceBatch[\s\S]*skipMissingIssueAliases/);
@@ -377,8 +379,8 @@ describe('static scoring/UI contracts', () => {
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const monitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
-    assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers\)/);
-    assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers\)/);
+    assert.match(refresh, /listIssueLabelEventsBatch\(monitoredIssueNumbers,/);
+    assert.match(refresh, /listIssueFixEvidenceBatch\(monitoredIssueNumbers,/);
     assert.match(refresh, /persistIssueStateEvidence\(stateEvidence\)/);
     assert.doesNotMatch(refresh, /issue\.labels\.length/);
   });
@@ -387,6 +389,9 @@ describe('static scoring/UI contracts', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const evidenceRefreshFailures: string\[\] = \[\]/);
     assert.match(refresh, /insertIngestionEvidenceFailure/);
+    assert.match(refresh, /issue-comments-missing-alias/);
+    assert.match(refresh, /issue-label-events-missing-alias/);
+    assert.match(refresh, /issue-fix-evidence-missing-alias/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('release-checks', r\.tag_name, e/);
     assert.match(refresh, /recordEvidenceRefreshFailure\('advisories', advisoryScope, e/);
     assert.match(refresh, /Promise\.allSettled/);
@@ -415,6 +420,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
     assert.match(scoringDoc, /stopReason: "evidence_failure"/);
     assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
+    assert.match(scoringDoc, /GitHub partial responses for missing issue aliases/);
     assert.match(scoringDoc, /Before writing scores, the script refuses dirty ingestion metadata/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);

@@ -281,7 +281,16 @@ export interface ClosureCommentCommitMention {
 
 type CommitOidResolver = (prefix: string) => string | null;
 
-export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise<Map<number, GhIssueLabelEvent[]>> {
+type MissingIssueAliasCallback = (event: { issueNumber: number; aliasIndex: number }) => void;
+
+interface IssueBatchOptions {
+  onMissingIssueAlias?: MissingIssueAliasCallback;
+}
+
+export async function listIssueLabelEventsBatch(
+  issueNumbers: number[],
+  options: IssueBatchOptions = {},
+): Promise<Map<number, GhIssueLabelEvent[]>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueLabelEvent[]>();
   for (const issueNumber of uniqueIssueNumbers) all.set(issueNumber, []);
@@ -303,7 +312,7 @@ export async function listIssueLabelEventsBatch(issueNumbers: number[]): Promise
           ]))),
         );
       } catch (error) {
-        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
+        if (skipMissingIssueAliases(error, active, done, options.onMissingIssueAlias) === 0) throw error;
         continue;
       }
       const repo = assertRepo(data.repository);
@@ -811,7 +820,10 @@ export async function listIssueComments(issueNumber: number): Promise<GhComment[
   return comments.get(issueNumber) ?? [];
 }
 
-export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Map<number, GhComment[]>> {
+export async function listIssueCommentsBatch(
+  issueNumbers: number[],
+  options: IssueBatchOptions = {},
+): Promise<Map<number, GhComment[]>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhComment[]>();
   for (const issueNumber of uniqueIssueNumbers) all.set(issueNumber, []);
@@ -836,7 +848,7 @@ export async function listIssueCommentsBatch(issueNumbers: number[]): Promise<Ma
           }),
         );
       } catch (error) {
-        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
+        if (skipMissingIssueAliases(error, active, done, options.onMissingIssueAlias) === 0) throw error;
         continue;
       }
 
@@ -874,13 +886,19 @@ function missingIssueIndexesFromGraphqlError(error: unknown): number[] {
   return [...indexes].sort((a, b) => a - b);
 }
 
-function skipMissingIssueAliases(error: unknown, active: number[], done: Set<number>): number {
+function skipMissingIssueAliases(
+  error: unknown,
+  active: number[],
+  done: Set<number>,
+  onMissingIssueAlias?: MissingIssueAliasCallback,
+): number {
   const missingIndexes = missingIssueIndexesFromGraphqlError(error);
   let skipped = 0;
   for (const idx of missingIndexes) {
     const missingIssueNumber = active[idx];
     if (missingIssueNumber != null) {
       done.add(missingIssueNumber);
+      onMissingIssueAlias?.({ issueNumber: missingIssueNumber, aliasIndex: idx });
       skipped++;
     }
   }
@@ -1072,7 +1090,10 @@ function countReleaseCheckContexts(contexts: GhReleaseCheckContext[]): {
   return { success, failure, pending, skipped };
 }
 
-export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise<Map<number, GhIssueFixEvidence>> {
+export async function listIssueFixEvidenceBatch(
+  issueNumbers: number[],
+  options: IssueBatchOptions = {},
+): Promise<Map<number, GhIssueFixEvidence>> {
   const uniqueIssueNumbers = [...new Set(issueNumbers)].filter((n) => Number.isInteger(n));
   const all = new Map<number, GhIssueFixEvidence>();
   for (const issueNumber of uniqueIssueNumbers) {
@@ -1095,7 +1116,7 @@ export async function listIssueFixEvidenceBatch(issueNumbers: number[]): Promise
         );
         break;
       } catch (error) {
-        if (skipMissingIssueAliases(error, active, done) === 0) throw error;
+        if (skipMissingIssueAliases(error, active, done, options.onMissingIssueAlias) === 0) throw error;
       }
     }
     if (!data || active.length === 0) continue;
