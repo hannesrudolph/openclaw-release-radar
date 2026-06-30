@@ -319,7 +319,7 @@ function scoreExplanationFixture() {
         { key: 'verifiedDebt', label: 'Field blocker debt', points: 0, kind: 'neutral' },
         { key: 'carryoverDebt', label: 'Open unconfirmed issue risk', points: 0, kind: 'neutral' },
         { key: 'staleDebt', label: 'Weak or stale evidence', points: 0, kind: 'neutral' },
-        { key: 'closureRisk', label: 'Closed issue proof risk', points: 0, kind: 'neutral' },
+        { key: 'closureRisk', label: 'Closed-issue proof gap', points: 0, kind: 'neutral' },
         { key: 'coverage', label: 'Classification coverage', points: 0, kind: 'neutral' },
         { key: 'survival', label: 'Stable survival', points: 0, kind: 'neutral' },
         { key: 'shakeout', label: 'Beta shakeout', points: 0, kind: 'neutral' },
@@ -752,7 +752,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           description: 'Closed issues credited as fixed by code proof reachable from this release tag.',
         },
         unverifiedClosed: {
-          label: 'Unverified closed issues',
+          label: 'Closed issues without release-fix credit',
           description: 'Closed release-window issues that do not receive direct release-fix credit.',
         },
         unclassifiedIssues: {

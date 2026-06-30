@@ -171,7 +171,7 @@ describe('release score explanations', () => {
     assert.ok(closureExamples.every((item: any, index: number) =>
       index === 0 || Number(closureExamples[index - 1].riskWeight ?? 0) >= Number(item.riskWeight ?? 0)));
 
-    const carryover = explanation.limitDetails.find((detail) => detail.code === 'source_carryover_risk');
+    const carryover = explanation.limitDetails.find((detail) => detail.code === 'open_unconfirmed_issue_risk');
     assert.ok(carryover);
     assert.equal(carryover.label, 'Open unconfirmed issue risk');
     assert.ok((carryover.metrics?.count ?? 0) > 0);
@@ -188,6 +188,9 @@ describe('release score explanations', () => {
     assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactClass === 'string'));
     assert.ok(carryover.issueRefs?.some((issue) => typeof issue.installImpactMultiplier === 'number'));
     assert.ok(carryover.issueRefs?.some((issue) => typeof issue.weight === 'number'));
+    assert.ok(carryover.issueRefs?.some((issue) => typeof issue.scoringReason === 'string' && /release-local|source\/static|field/.test(issue.scoringReason)));
+    assert.ok(carryover.issueRefs?.some((issue) => typeof issue.fieldConfirmed === 'boolean'));
+    assert.ok(carryover.issueRefs?.some((issue) => typeof issue.releaseLocal === 'boolean'));
 
     const stale = explanation.limitDetails.find((detail) => detail.code === 'stale_low_confidence_evidence');
     assert.ok(stale);

@@ -140,6 +140,9 @@ export interface ScoreExplanationIssueRef {
   status?: string | null;
   tier?: string | null;
   weight?: number | null;
+  fieldConfirmed?: boolean | null;
+  releaseLocal?: boolean | null;
+  scoringReason?: string | null;
   installImpactClass?: string | null;
   installImpactMultiplier?: number | null;
   proof?: ScoreExplanationIssueProof | null;
@@ -180,7 +183,7 @@ export const ARTIFACT_VERIFICATION_SCHEMA_VERSION = 1;
 export const SCORE_EXPLANATION_LIMIT_CODES = [
   'field_visible_reports_opened',
   'verified_field_blocker_debt',
-  'source_carryover_risk',
+  'open_unconfirmed_issue_risk',
   'stale_low_confidence_evidence',
   'incomplete_classification_coverage',
   'closed_issues_not_counted_as_release_fixes',
@@ -201,7 +204,7 @@ type ScoreExplanationPositiveCode = (typeof SCORE_EXPLANATION_POSITIVE_CODES)[nu
 export const SCORE_EXPLANATION_DETAIL_LABELS: Record<ScoreExplanationLimitCode | ScoreExplanationPositiveCode, string> = {
   field_visible_reports_opened: 'Field-visible reports opened',
   verified_field_blocker_debt: 'Field blocker debt',
-  source_carryover_risk: 'Open unconfirmed issue risk',
+  open_unconfirmed_issue_risk: 'Open unconfirmed issue risk',
   stale_low_confidence_evidence: 'Stale or weak evidence',
   incomplete_classification_coverage: 'Incomplete classification coverage',
   closed_issues_not_counted_as_release_fixes: 'Closed issue release proof',
@@ -768,8 +771,8 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover, 3);
     addLimit(
-      'source_carryover_risk',
-      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
+      'open_unconfirmed_issue_risk',
+      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only/static, or otherwise not proven release-local blockers. This is context, not confirmed release-local breakage; some rows can have field discussion but still stay here when the issue predates the release window or lacks release-tag proof. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${penaltyText(components.carryoverDebt)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -1001,7 +1004,7 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
       points: roundMetric(components.carryoverDebt),
       kind: scoreLedgerKind(components.carryoverDebt),
       metric: roundMetric(input.carryoverDebtWeight),
-      note: 'Open negative issue debt overlapping this release that is inherited, source-only, or otherwise not proven release-local field-blocker evidence.',
+      note: 'Open negative issue debt overlapping this release that is inherited, source-only/static, or otherwise not proven release-local blocker evidence.',
     },
     {
       key: 'staleDebt',
@@ -1013,7 +1016,7 @@ function buildScoreLedger(result: ReleaseScoreResult): ScoreExplanationLedger | 
     },
     {
       key: 'closureRisk',
-      label: 'Closed issue proof risk',
+      label: 'Closed-issue proof gap',
       points: roundMetric(components.closureRisk),
       kind: scoreLedgerKind(components.closureRisk),
       metric: roundMetric(input.unresolvedClosureRiskWeight),
@@ -1196,11 +1199,44 @@ function issueRefs(items: any[], limit = 2): ScoreExplanationIssueRef[] {
       status: item?.status ?? null,
       tier: item?.tier ?? null,
       weight: typeof item?.weight === 'number' ? roundMetric(item.weight) : null,
+      fieldConfirmed: typeof item?.fieldConfirmed === 'boolean' ? item.fieldConfirmed : null,
+      releaseLocal: typeof item?.clusterReleaseLocal === 'boolean' ? item.clusterReleaseLocal : null,
+      scoringReason: issueRefScoringReason(item),
       installImpactClass: item?.installImpactClass ?? null,
       installImpactMultiplier: typeof item?.installImpactMultiplier === 'number' ? roundMetric(item.installImpactMultiplier) : null,
       proof: issueRefProof(item),
     }))
     .filter((item) => Number.isInteger(item.number) && item.number > 0 && item.title.length > 0);
+}
+
+function issueRefScoringReason(item: any): string | null {
+  const tier = String(item?.tier ?? '');
+  if (tier === 'verified') return 'Release-local field/community-confirmed blocker evidence.';
+  if (tier === 'stale') return 'Weak, stale, low-confidence, low-severity, or needs-info evidence; capped separately from hard blocker debt.';
+  if (tier !== 'carryover') return null;
+
+  const releaseLocal = typeof item?.clusterReleaseLocal === 'boolean' ? item.clusterReleaseLocal : null;
+  const fieldConfirmed = typeof item?.fieldConfirmed === 'boolean' ? item.fieldConfirmed : null;
+  const sourceOnly = hasSourceOnlyEvidenceLabel(item);
+  if (releaseLocal === false && fieldConfirmed === true) {
+    return 'Has field/community discussion, but it is inherited from before this release window rather than proven as a release-local blocker.';
+  }
+  if (releaseLocal === false) {
+    return 'Inherited from before this release window; not proven as a release-local blocker.';
+  }
+  if (sourceOnly && fieldConfirmed !== true) {
+    return 'Source/static reproduction only; not field-confirmed as installed-release breakage.';
+  }
+  if (fieldConfirmed === false) {
+    return 'Open negative issue, but not field-confirmed as installed-release breakage.';
+  }
+  return 'Open negative issue overlapping this release, but not enough evidence to count as hard release-local blocker debt.';
+}
+
+function hasSourceOnlyEvidenceLabel(item: any): boolean {
+  const issue = item?.issue && typeof item.issue === 'object' ? item.issue : item;
+  const labels = Array.isArray(issue?.labels) ? issue.labels : [];
+  return labels.some((label: unknown) => label === 'clawsweeper:source-repro' || label === 'clawsweeper:current-main-repro');
 }
 
 function issueRefProof(item: any): ScoreExplanationIssueProof | null {

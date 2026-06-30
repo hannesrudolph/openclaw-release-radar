@@ -124,7 +124,7 @@ try {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);
   }
   await fixPanel.locator('.score-ledger').filter({ hasText: 'Score math' }).first().waitFor();
-  await fixPanel.locator('.score-ledger__row').filter({ hasText: 'Closed issue proof risk' }).first().waitFor();
+  await fixPanel.locator('.score-ledger__row').filter({ hasText: 'Closed-issue proof gap' }).first().waitFor();
   await fixPanel.locator('.score-explain__metric').filter({ hasText: explanationMetricText }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: `#${explanationIssueRef.number}` }).first().waitFor();
   await fixPanel.locator('.score-explain__ref').filter({ hasText: /\sx[0-9.]+/ }).first().waitFor();
@@ -136,8 +136,8 @@ try {
   await fixPanel.locator('a').filter({ hasText: 'Open review JSON' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'Open issue evidence rows' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'open unconfirmed issue risk' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'field-confirmed unconfirmed risk' }).first().waitFor();
-  await fixPanel.locator('a').filter({ hasText: 'critical core unconfirmed risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'field-discussed open risk' }).first().waitFor();
+  await fixPanel.locator('a').filter({ hasText: 'critical core contextual risk' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'weak or stale issue evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'high-weight weak/stale evidence' }).first().waitFor();
   await fixPanel.locator('a').filter({ hasText: 'opened reports' }).first().waitFor();
@@ -191,7 +191,7 @@ try {
     const freshness = review.local?.dataFreshness;
     if (!freshness?.issueUpdatedAtMax || !freshness?.scoredAt) throw new Error(`Missing data freshness for ${release.tag}`);
     await panel.locator('.score-review__item').filter({ hasText: 'Source freshness' }).getByText('issue lag').waitFor();
-    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Open unconfirmed ${Math.round(input.carryoverDebtWeight ?? 0)} · Weak/stale ${Math.round(input.staleDebtWeight ?? 0)} · Closed issue proof ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
+    const expectedRiskWeights = `Field ${Math.round(input.verifiedDebtWeight ?? 0)} · Open unconfirmed ${Math.round(input.carryoverDebtWeight ?? 0)} · Weak/stale ${Math.round(input.staleDebtWeight ?? 0)} · Closed proof gap ${Math.round(input.unresolvedClosureRiskWeight ?? 0)}`;
     await panel.locator('.score-review__item').filter({ hasText: 'Audit weights' }).getByText(expectedRiskWeights).waitFor();
     const credit = review.local?.gateEvidence?.fixProvenance?.releaseFixCredit;
     if (credit) {

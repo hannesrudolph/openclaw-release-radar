@@ -1697,6 +1697,7 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
   if (issue?.hasWorkaround || classification?.workaroundStatus === 'confirmed') metrics.push('workaround confirmed');
   if (Number.isFinite(classification?.confidence ?? issue?.confidence)) metrics.push(`confidence ${metricValue(classification?.confidence ?? issue?.confidence)}`);
   const scoreLine = [`Scored as ${tier} risk`, ...scoredBits, ...metrics].filter(Boolean).join(' · ');
+  const bucketReason = issueBucketReason(issue, evidenceRow);
   const proofLine = proofRow
     ? `${proofRow.riskDisposition ? closureRiskDispositionLabel(proofRow.riskDisposition) + ' · ' : ''}${closureStatusLabel(proofRow.status)}: ${proofRow.summary ?? ''}`.trim()
     : '';
@@ -1710,8 +1711,39 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow) {
       }).join('; ')}`
     : '';
   return `<span class="evidence__meta">${esc(scoreLine)}</span>`
+    + (bucketReason ? `<span class="evidence__meta">${esc(bucketReason)}</span>` : '')
     + (debtDiffLine ? `<span class="evidence__meta">${esc(debtDiffLine)}</span>` : '')
     + (proofLine ? `<span class="evidence__meta">${esc(proofLine)}</span>` : '');
+}
+
+function issueBucketReason(issue, evidenceRow) {
+  const tier = evidenceRow?.tier;
+  if (tier === 'verifiedDebt' || tier === 'verified') {
+    return 'Why this is hard blocker debt: release-local field/community-confirmed blocker evidence.';
+  }
+  if (tier === 'staleDebt' || tier === 'stale') {
+    return 'Why this is capped weak/stale evidence: stale, low-confidence, needs-info, low-severity, docs, or otherwise weak evidence.';
+  }
+  if (tier !== 'carryoverDebt' && tier !== 'carryover') return '';
+  const releaseLocal = typeof evidenceRow?.clusterReleaseLocal === 'boolean' ? evidenceRow.clusterReleaseLocal : null;
+  const fieldConfirmed = typeof evidenceRow?.fieldConfirmed === 'boolean' ? evidenceRow.fieldConfirmed : null;
+  const labels = evidenceRow?.issue?.labels ?? issue?.labels ?? [];
+  const sourceOnly = Array.isArray(labels) && labels.some((label) =>
+    label === 'clawsweeper:source-repro' || label === 'clawsweeper:current-main-repro'
+  );
+  if (releaseLocal === false && fieldConfirmed === true) {
+    return 'Why this is open unconfirmed risk: it has field/community discussion, but it is inherited from before this release window rather than proven as a release-local blocker.';
+  }
+  if (releaseLocal === false) {
+    return 'Why this is open unconfirmed risk: it is inherited from before this release window and is not proven as a release-local blocker.';
+  }
+  if (sourceOnly && fieldConfirmed !== true) {
+    return 'Why this is open unconfirmed risk: it has source/static reproduction only, not field-confirmed installed-release breakage.';
+  }
+  if (fieldConfirmed === false) {
+    return 'Why this is open unconfirmed risk: it is open negative evidence, but not field-confirmed installed-release breakage.';
+  }
+  return 'Why this is open unconfirmed risk: it overlaps the release, but does not have enough release-local blocker proof to become hard blocker debt.';
 }
 
 function issueRowHtml(issue, extra = false, releaseTag = null) {
@@ -1806,8 +1838,8 @@ function issueEvidenceApiLinksHtml(tag) {
   const links = [
     ['Open issue evidence rows', base],
     ['open unconfirmed issue risk', `${base}?tier=openUnconfirmedRisk&sort=weight&direction=desc`],
-    ['field-confirmed unconfirmed risk', `${base}?tier=openUnconfirmedRisk&fieldConfirmed=true&minWeight=5&sort=weight&direction=desc`],
-    ['critical core unconfirmed risk', `${base}?tier=openUnconfirmedRisk&sentiment=negative&severity=critical&functionality=core&sort=weight&direction=desc`],
+    ['field-discussed open risk', `${base}?tier=openUnconfirmedRisk&fieldConfirmed=true&minWeight=5&sort=weight&direction=desc`],
+    ['critical core contextual risk', `${base}?tier=openUnconfirmedRisk&sentiment=negative&severity=critical&functionality=core&sort=weight&direction=desc`],
     ['weak or stale issue evidence', `${base}?tier=weakOrStaleEvidence&sort=weight&direction=desc`],
     ['high-weight weak/stale evidence', `${base}?tier=weakOrStaleEvidence&minWeight=5&sort=weight&direction=desc`],
     ['opened reports', `${base}?tier=openedFeltSerious`],
@@ -1942,7 +1974,17 @@ function scoreDetailIssueRefsHtml(issueRefs) {
     .map(scoreDetailIssueProofHtml)
     .filter(Boolean)
     .join('');
-  return links + (proofs ? `<div class="score-explain__proofs">${proofs}</div>` : '');
+  const reasons = refs
+    .map(scoreDetailIssueReasonHtml)
+    .filter(Boolean)
+    .join('');
+  return links + (reasons || proofs ? `<div class="score-explain__proofs">${reasons}${proofs}</div>` : '');
+}
+
+function scoreDetailIssueReasonHtml(issue) {
+  if (typeof issue?.scoringReason !== 'string' || !issue.scoringReason.trim()) return '';
+  const label = Number.isInteger(issue.number) ? `#${issue.number}` : 'Issue';
+  return `<div class="score-explain__proof">${esc(label)}: ${esc(issue.scoringReason)}</div>`;
 }
 
 function evidenceLink(url, label) {
@@ -2034,7 +2076,7 @@ function componentLabel(key) {
     verifiedDebt: 'Field blocker debt',
     carryoverDebt: 'Open unconfirmed issue risk',
     staleDebt: 'Weak or stale evidence',
-    closureRisk: 'Closed issue proof risk',
+    closureRisk: 'Closed-issue proof gap',
     coverage: 'Classification coverage',
     survival: 'Release survival',
     shakeout: 'Prerelease bake time',
@@ -2388,7 +2430,7 @@ function whyNotTenHtml(local) {
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
     reasons.push(
-      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only, or otherwise not proven release-local field blockers. This is context, not confirmed release-local field breakage. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${esc(components.carryoverDebt ?? 0)} points.`
+      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only/static, or otherwise not proven release-local blockers. This is context, not confirmed release-local breakage; field-discussed items can still stay here when they predate this release window or lack release-tag proof. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${esc(components.carryoverDebt ?? 0)} points.`
       + sentenceSuffix('Top examples', example)
     );
   }
@@ -2482,7 +2524,7 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + (dataFreshnessLine ? `<div class="score-review__item"><span class="score-review__label">Source freshness</span><span class="score-review__value">${dataFreshnessLine}</span></div>` : '')
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Audit weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Open unconfirmed ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Weak/stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closed issue proof ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Audit weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Open unconfirmed ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Weak/stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closed proof gap ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
     + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closed issue proof</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
     + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
@@ -2492,8 +2534,8 @@ function scoreReviewHtml(r) {
     + '</div>'
     + scoreEvidenceLinksHtml(releaseChecks, artifact)
     + compHtml
-    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-only and static findings remain capped as open unconfirmed issue risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
-    + `<div class="evidence__meta">Open unconfirmed issue risk means open negative issues that still overlap this release, but are inherited backlog, source-only findings, or otherwise not proven as release-local field blockers.</div>`
+    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-only/static and inherited findings remain capped as open unconfirmed issue risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
+    + `<div class="evidence__meta">Open unconfirmed issue risk means open negative issues that still overlap this release, but are inherited backlog, source-only/static findings, or otherwise not proven as release-local blockers.</div>`
     + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · ${issueEvidenceApiLinksHtml(r.tag)} · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/reachability" target="_blank" rel="noopener">Open PR reachability rows</a></div>`
     + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
     + closureProofHtml(closureProof)

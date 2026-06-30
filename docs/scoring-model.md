@@ -25,7 +25,7 @@ Advisory version ranges are score-critical. Score writers refuse malformed or un
 The normal score starts from a base value, then applies bounded components:
 
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
-- `carryoverDebt` internally, displayed as open unconfirmed issue risk: open negative issue debt overlapping the release that is inherited, source-only, or otherwise not proven release-local field-blocker evidence. This is capped.
+- `carryoverDebt` internally, displayed as open unconfirmed issue risk: open negative issue debt overlapping the release that is inherited, source-only/static, or otherwise not proven release-local blocker evidence. This is capped.
 - `staleDebt`: low-confidence, stale, needs-info, or weak evidence risk. This is heavily capped.
 - `closureRisk`: closed issue evidence that is not credited as fixed in this release and remains unresolved for this tag. This is capped and does not score non-bug, reporter-withdrawn, or concretely non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
@@ -64,7 +64,7 @@ The model deliberately separates:
 
 Issue evidence stores both `rawClassification` from the persisted classifier row and effective `classification` after deterministic title/label overrides. When those differ, `classificationDiff` records the changed fields so reviewers can see whether a score came from the LLM row or a rule-based override. Open-debt rows can also expose `debtClassification` and `debtClassificationDiff` when debt scoring uses a risk-only bug-evidence hint that differs from the display classification.
 
-Debt evidence also records `installImpactClass` and `installImpactMultiplier`, so damped provider/security/product-debt risks are auditable in the score explanation instead of being hidden inside the final weight. Stale or weak rows with concrete bug evidence, such as source-only repro plus impact labels, remain capped as `staleDebt`; they are not promoted to verified field-blocker debt.
+Debt evidence also records `installImpactClass`, `installImpactMultiplier`, and issue-ref scoring reasons, so damped provider/security/product-debt risks and open unconfirmed examples are auditable in the score explanation instead of being hidden inside the final weight. Stale or weak rows with concrete bug evidence, such as source-only/static repro plus impact labels, remain capped as `staleDebt`; they are not promoted to verified field-blocker debt.
 
 If raw attributed issues exist without current classifications, the score explanation includes `incomplete_classification_coverage` with raw/classified counts, the missing count, the evidence-coverage ratio, the capped penalty, and example unclassified issue references when available. This makes coverage penalties explicit instead of hiding them inside the final score.
 

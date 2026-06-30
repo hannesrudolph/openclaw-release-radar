@@ -74,7 +74,7 @@ export const RELEASE_ISSUE_EVIDENCE_TIER_INFO: Record<ReleaseIssueEvidenceTier, 
     description: 'Closed issues credited as fixed by code proof reachable from this release tag.',
   },
   unverifiedClosed: {
-    label: 'Unverified closed issues',
+    label: 'Closed issues without release-fix credit',
     description: 'Closed release-window issues that do not receive direct release-fix credit.',
   },
   unclassifiedIssues: {

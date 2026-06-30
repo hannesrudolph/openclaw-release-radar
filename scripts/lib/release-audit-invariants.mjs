@@ -388,7 +388,7 @@ const componentLedgerRows = [
   ['verifiedDebt', 'Field blocker debt'],
   ['carryoverDebt', 'Open unconfirmed issue risk'],
   ['staleDebt', 'Weak or stale evidence'],
-  ['closureRisk', 'Closed issue proof risk'],
+  ['closureRisk', 'Closed-issue proof gap'],
   ['coverage', 'Classification coverage'],
   ['survival', 'Stable survival'],
   ['shakeout', 'Beta shakeout'],
@@ -413,7 +413,7 @@ const ledgerKeys = new Set(['schemaVersion', 'finalScore', 'status', 'band', 'su
 const ledgerRowKeys = new Set(['key', 'label', 'points', 'kind', 'metric', 'note']);
 const ledgerCapKeys = new Set(['key', 'label', 'ceiling', 'applied', 'before', 'after', 'reason']);
 const explanationDetailKeys = new Set(['code', 'label', 'text', 'metrics', 'buckets', 'riskBuckets', 'issueRefs']);
-const explanationIssueRefKeys = new Set(['number', 'title', 'url', 'state', 'status', 'tier', 'weight', 'installImpactClass', 'installImpactMultiplier', 'proof']);
+const explanationIssueRefKeys = new Set(['number', 'title', 'url', 'state', 'status', 'tier', 'weight', 'fieldConfirmed', 'releaseLocal', 'scoringReason', 'installImpactClass', 'installImpactMultiplier', 'proof']);
 const explanationIssueProofKeys = new Set(['status', 'statusLabel', 'riskDisposition', 'riskDispositionLabel', 'summary', 'riskWeight', 'canonicalIssue', 'canonicalPath', 'openPrs', 'reachablePrs', 'notReachablePrs']);
 const explanationLinkedRefKeys = new Set(['number', 'title', 'url', 'state', 'status']);
 const forbiddenPublicKeys = new Set([
@@ -3285,6 +3285,12 @@ function verifyExplanationDetails({ failures, tag, source, label, details, expec
             `${source} score explanation ${label}[${idx}] issueRefs entries must include a title`);
           expect(failures, tag, isObject(issue) && (issue.url == null || typeof issue.url === 'string'),
             `${source} score explanation ${label}[${idx}] issueRefs url must be null or string`);
+          expect(failures, tag, isObject(issue) && (issue.fieldConfirmed == null || typeof issue.fieldConfirmed === 'boolean'),
+            `${source} score explanation ${label}[${idx}] issueRefs fieldConfirmed must be null or boolean`);
+          expect(failures, tag, isObject(issue) && (issue.releaseLocal == null || typeof issue.releaseLocal === 'boolean'),
+            `${source} score explanation ${label}[${idx}] issueRefs releaseLocal must be null or boolean`);
+          expect(failures, tag, isObject(issue) && (issue.scoringReason == null || typeof issue.scoringReason === 'string'),
+            `${source} score explanation ${label}[${idx}] issueRefs scoringReason must be null or string`);
         }
       }
     }

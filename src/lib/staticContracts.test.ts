@@ -74,9 +74,11 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /structured\.limitDetails/);
     assert.match(html, /scoreDetailIssueRefsHtml/);
     assert.match(html, /scoreDetailIssueProofHtml/);
+    assert.match(html, /scoreDetailIssueReasonHtml/);
     assert.match(html, /scoreDetailMetricsHtml/);
     assert.match(html, /scoreDetailBucketsHtml/);
     assert.match(html, /issueScoringMetaHtml/);
+    assert.match(html, /issueBucketReason/);
     assert.match(html, /issueEvidenceRowForIssue/);
     assert.match(html, /Scored as \$\{tier\} risk/);
     assert.match(html, /scoreLedgerHtml/);
@@ -97,8 +99,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /high-weight weak\/stale evidence/);
     assert.match(html, /tier=openedFeltSerious/);
     assert.match(html, /Open unconfirmed/);
+    assert.match(html, /field-discussed open risk/);
+    assert.match(html, /critical core contextual risk/);
     assert.match(html, /Open unconfirmed issue risk means open negative issues/);
+    assert.match(html, /Why this is open unconfirmed risk/);
     assert.doesNotMatch(html, /Non-verified/);
+    assert.doesNotMatch(html, /field-confirmed unconfirmed risk/);
+    assert.doesNotMatch(html, /source_carryover_risk/);
     assert.match(html, /componentLabel/);
     assert.match(html, /detail\.label \? `<strong>\$\{esc\(detail\.label\)\}:<\/strong> `/);
     assert.match(html, /Audit weights/);
@@ -109,6 +116,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(issueEvidence, /summarizeIssueEvidenceRows/);
     assert.match(issueEvidence, /Open unconfirmed issue risk/);
     assert.match(issueEvidence, /not proven release-local field blockers/);
+    assert.match(issueEvidence, /Closed issues without release-fix credit/);
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /Paginated current-DB issue-evidence rows/);
     assert.match(readme, /`sourceMode`/);
