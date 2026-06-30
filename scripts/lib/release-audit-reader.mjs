@@ -570,6 +570,12 @@ export class ReleaseAuditReader {
       WHERE issue_number=?
       ${commitReferenceFreshnessSql}
       UNION ALL
+      SELECT 'pull_request_fixes', MAX(p.fetched_at)
+      FROM pull_request_fixes p
+      JOIN linked_prs l
+        ON l.pr_repository_name_with_owner=p.pr_repository_name_with_owner
+       AND l.pr_number=p.pr_number
+      UNION ALL
       SELECT 'release_pr_reachability', MAX(r.checked_at)
       FROM release_pr_reachability r
       JOIN linked_prs l

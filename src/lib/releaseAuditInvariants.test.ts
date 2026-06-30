@@ -57,6 +57,7 @@ const proofDependencyFreshnessFixture = [
   'reopen_events',
   'issue_pr_links',
   'issue_commit_references',
+  'pull_request_fixes',
   'release_pr_reachability',
 ].map((source) => ({ source, max_ts: proofCheckedAt }));
 
@@ -1688,14 +1689,29 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /newer than issue_pr_links dependency/.test(failure)));
   });
 
+  it('fails when linked PR metadata is newer than the proof row', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofDependencyFreshness: [
+          ...proofDependencyFreshnessFixture.filter((source) => source.source !== 'pull_request_fixes'),
+          {
+            source: 'pull_request_fixes',
+            max_ts: '2026-01-02T00:00:00.500Z',
+          },
+        ],
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /newer than pull_request_fixes dependency/.test(failure)));
+  });
+
   it('fails when proof dependency freshness omits a required source', async () => {
     const result = await verifyReleaseAudit({
       reader: reader({
         proofDependencyFreshness: proofDependencyFreshnessFixture
-          .filter((source) => source.source !== 'release_pr_reachability'),
+          .filter((source) => source.source !== 'pull_request_fixes'),
       }),
     });
-    assert.ok(result.failures.some((failure) => /dependency freshness must include release_pr_reachability/.test(failure)));
+    assert.ok(result.failures.some((failure) => /dependency freshness must include pull_request_fixes/.test(failure)));
   });
 
   it('fails when source evidence changed after the score audit', async () => {

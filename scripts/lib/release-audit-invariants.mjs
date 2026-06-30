@@ -84,6 +84,7 @@ const requiredProofDependencySources = new Set([
   'reopen_events',
   'issue_pr_links',
   'issue_commit_references',
+  'pull_request_fixes',
   'release_pr_reachability',
 ]);
 const bugShapedTitleRe = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;

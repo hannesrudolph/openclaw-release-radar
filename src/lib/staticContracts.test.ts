@@ -820,6 +820,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /dataFreshness:\s+freshnessForRelease\(r, audit\)/);
     assert.match(readme, /\/api\/releases\/history.*`scoredAt`, `scoreAudit`, `dataFreshness`, and `auditLinks`/);
     assert.match(scoringDoc, /\/api\/releases\/history` rows expose `schemaVersion`\. Current value: `2`/);
+    assert.match(verifier, /'pull_request_fixes'/);
+    assert.match(readFileSync(join(root, 'scripts/lib/release-audit-reader.mjs'), 'utf8'), /SELECT 'pull_request_fixes', MAX\(p\.fetched_at\)/);
     assert.match(api, /function publicCacheKey/);
     assert.match(api, /releaseScoreAuditFreshness/);
     assert.match(api, /dataFreshnessCacheDigest/);
