@@ -303,6 +303,7 @@ describe('static scoring/UI contracts', () => {
     const backfill = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
     const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
+    const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
     const dbModule = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
@@ -347,6 +348,12 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /releasePrReachabilityIntegrity/);
     assert.match(scorer, /formatReleasePrReachabilityIntegrityFailure/);
     assert.match(scorer, /score_persistence_last_run/);
+    assert.match(doctor, /auditedStableTags/);
+    assert.match(doctor, /auditModelVersions/);
+    assert.match(doctor, /auditPromptVersions/);
+    assert.match(doctor, /score persistence releaseTags do not match audited stable rows/);
+    assert.match(doctor, /score persistence scoreModelVersion does not match audited stable rows/);
+    assert.match(doctor, /score persistence promptVersion does not match audited stable rows/);
     assert.match(scorer, /last_scored_at/);
     assert.match(dbModule, /writeTransactionDepth/);
     assert.match(dbModule, /SAVEPOINT/);
@@ -641,6 +648,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
     assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
     assert.match(scoringDoc, /score_persistence_last_run/);
+    assert.match(scoringDoc, /exact release-tag set, model version, and prompt version/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(scoringDoc, /PR reachability evidence must cover the current merged linked-PR candidate set/);

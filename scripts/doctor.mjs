@@ -120,6 +120,17 @@ export function buildDoctorReport({
       if (report.scorePersistence.auditedStableCount !== report.scorePersistence.meta.scoredReleaseCount) {
         failures.push(`score persistence scoredReleaseCount (${report.scorePersistence.meta.scoredReleaseCount}) does not match audited stable rows (${report.scorePersistence.auditedStableCount})`);
       }
+      if (JSON.stringify(report.scorePersistence.auditedStableTags) !== JSON.stringify(report.scorePersistence.meta.releaseTags ?? [])) {
+        failures.push('score persistence releaseTags do not match audited stable rows');
+      }
+      if (report.scorePersistence.auditModelVersions.length !== 1 ||
+        report.scorePersistence.auditModelVersions[0] !== report.scorePersistence.meta.scoreModelVersion) {
+        failures.push('score persistence scoreModelVersion does not match audited stable rows');
+      }
+      if (report.scorePersistence.auditPromptVersions.length !== 1 ||
+        report.scorePersistence.auditPromptVersions[0] !== report.scorePersistence.meta.promptVersion) {
+        failures.push('score persistence promptVersion does not match audited stable rows');
+      }
       if (report.recommendation.recommended?.[0]?.tag && report.scorePersistence.meta.recommendedTag !== report.recommendation.recommended[0].tag) {
         failures.push(`score persistence recommendedTag (${report.scorePersistence.meta.recommendedTag}) does not match recommendation (${report.recommendation.recommended[0].tag})`);
       }
@@ -652,6 +663,13 @@ function scorePersistenceSummary(db) {
     JOIN releases r ON r.tag=a.release_tag
     WHERE r.prerelease=0
   `).get();
+  const auditRows = db.prepare(`
+    SELECT a.release_tag, a.score_model_version, a.prompt_version
+    FROM release_score_audits a
+    JOIN releases r ON r.tag=a.release_tag
+    WHERE r.prerelease=0
+    ORDER BY r.published_at IS NULL, r.published_at DESC
+  `).all();
   return {
     present: typeof raw === 'string' && raw.length > 0,
     valid: !!meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schemaVersion === 1,
@@ -660,6 +678,9 @@ function scorePersistenceSummary(db) {
     scoredStableCount: Number(releaseStats?.count ?? 0),
     maxReleaseScoredAt: releaseStats?.maxScoredAt ?? null,
     maxAuditScoredAt: auditStats?.maxScoredAt ?? null,
+    auditedStableTags: auditRows.map((row) => row.release_tag),
+    auditModelVersions: [...new Set(auditRows.map((row) => row.score_model_version))],
+    auditPromptVersions: [...new Set(auditRows.map((row) => row.prompt_version))],
   };
 }
 
