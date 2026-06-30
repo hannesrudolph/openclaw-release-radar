@@ -222,6 +222,30 @@ describe('release scoring DB bridge', () => {
         /complete classification coverage: v1 5\/6/,
       );
       assert.equal(db.getRelease('v1')?.final_score, null);
+
+      db.upsertClassification(9104, classification(), '2026-06-01T15:00:00Z', 1);
+      seedRelease(db, 'v-tx', '2026-06-05T00:00:00Z');
+      const txRun = scoring.buildReleaseScoreRun({
+        releases: [db.getRelease('v-tx')],
+        allFetchedTags: ['v-tx'],
+        stableTagsNewestFirst: ['v-tx'],
+        nowForRelease: () => Date.parse('2026-06-11T00:00:00Z'),
+      });
+      const validResult = txRun.scored[0];
+      const invalidResult = {
+        ...validResult,
+        rel: { ...validResult.rel, tag: 'v-missing' },
+      };
+      assert.throws(
+        () => scoring.persistReleaseScoreRun({
+          ...txRun,
+          scored: [validResult, invalidResult],
+        }),
+        /FOREIGN KEY constraint failed/,
+      );
+      assert.equal(db.getRelease('v-tx')?.final_score, null);
+      assert.equal(db.getReleaseScoreAudit('v-tx'), undefined);
+
       db.upsertAdvisory({
         ghsa_id: 'GHSA-malformed',
         cve_id: 'CVE-2026-9999',

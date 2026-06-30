@@ -298,6 +298,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /assertAdvisoryRangesParseable/);
     assert.match(scorer, /isRangeParseable/);
     assert.match(scorer, /complete classification coverage/);
+    assert.match(scorer, /runInWriteTransaction/);
+    assert.match(bridgeTest, /FOREIGN KEY constraint failed/);
+    assert.match(bridgeTest, /getReleaseScoreAudit\('v-tx'\), undefined/);
     assert.match(bridgeTest, /persistReleaseScoreRun/);
   });
 

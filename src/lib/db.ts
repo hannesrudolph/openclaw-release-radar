@@ -69,6 +69,18 @@ if (!dbReadOnly) mkdirSync(dirname(config.db.path), { recursive: true });
 export const db = dbReadOnly
   ? new DatabaseSync(config.db.path, { readOnly: true })
   : new DatabaseSync(config.db.path);
+
+export function runInWriteTransaction<T>(fn: () => T): T {
+  db.exec('BEGIN');
+  try {
+    const result = fn();
+    db.exec('COMMIT');
+    return result;
+  } catch (error) {
+    db.exec('ROLLBACK');
+    throw error;
+  }
+}
 // WAL improves concurrent reads but isn't supported on every mount (FUSE, some NFS).
 // Fall back to the default rollback journal if it fails.
 if (!dbReadOnly) {
