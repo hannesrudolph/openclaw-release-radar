@@ -307,6 +307,8 @@ describe('static scoring/UI contracts', () => {
   it('legacy fix provenance ingestion runs the full proof pipeline', () => {
     const script = readFileSync(join(root, 'scripts/ingest-fix-provenance.mjs'), 'utf8');
     assert.match(script, /releaseTagArg/);
+    assert.match(script, /assertCleanIngestionMetadataBeforeScore/);
+    assert.match(script, /insertIngestionEvidenceFailure/);
     assert.match(script, /await import\('\.\.\/src\/lib\/closureProofAnalysis\.ts'\)/);
     assert.match(script, /refreshClosureEvidenceForRelease/);
     assert.match(script, /checkReleasePrReachability/);
@@ -328,6 +330,15 @@ describe('static scoring/UI contracts', () => {
       assert.match(script, /releaseTagArg\(process\.argv\.slice\(2\)/, `${file} must validate args first`);
       assert.doesNotMatch(script, /^import \{ .* \} from '\.\.\/src\/lib\//m, `${file} must not statically import DB/network modules`);
       assert.match(script, /await import\('\.\.\/src\/lib\//, `${file} should dynamically import DB/network modules after validation`);
+      assert.match(script, /getRelease/);
+    }
+    for (const file of [
+      'scripts/analyze-closure-proofs.mjs',
+      'scripts/ingest-fix-provenance.mjs',
+    ]) {
+      const script = readFileSync(join(root, file), 'utf8');
+      assert.match(script, /assertCleanIngestionMetadataBeforeScore\(listReleasesDb\(10\)\)/, `${file} must refuse dirty ingestion metadata before mutation`);
+      assert.match(script, /insertIngestionEvidenceFailure/, `${file} must record durable failure provenance`);
     }
   });
 

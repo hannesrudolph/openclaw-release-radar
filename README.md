@@ -296,9 +296,9 @@ npm start
 
 `npm start` runs the compiled app from `dist/`.
 
-Refresh computes closure proof automatically. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging.
+Refresh computes closure proof automatically. `npm run analyze:closure-proofs -- <tag>` is available when you want to rerun just that proof pass for inspection/debugging. It requires clean ingestion metadata before writing, requires the release to exist locally, and records score-blocking `ingestion_evidence_failures` if the proof pipeline aborts.
 
-`npm run ingest:fix-provenance -- <tag>` is kept as a compatibility alias and now runs the same full closure-proof/reachability pipeline.
+`npm run ingest:fix-provenance -- <tag>` is kept as a compatibility alias and now runs the same guarded closure-proof/reachability pipeline.
 
 ## Local Data
 

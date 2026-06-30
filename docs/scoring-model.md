@@ -236,7 +236,7 @@ GraphQL nested evidence connections are treated as required provenance, not opti
 
 GitHub partial responses for missing issue aliases are recovered only when a caller provides an explicit missing-alias reporter. During refresh, each skipped alias is recorded as a score-blocking ingestion evidence failure, and scoring is refused rather than treating that issue's comments, labels, or fix evidence as empty. Other callers fail closed on the GraphQL error.
 
-Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
+Refresh recomputes closure proof automatically for monitored releases. The manual proof commands rerun the same proof pass for a specific tag when debugging. They require the release to exist locally, require clean ingestion metadata before writing, and record score-blocking `ingestion_evidence_failures` rows when the proof/reachability pipeline aborts.
 
 PR reachability is staged before replacement. `checkReleasePrReachability` fetches the release commit, fetches and validates each candidate PR merge commit, builds the full replacement row set in memory, validates row evidence shape, then replaces `release_pr_reachability` for that tag inside one DB transaction. Run-level git evidence failures abort before deleting old reachability rows; refresh records them as score-blocking evidence failures, and the standalone reachability command records a durable `ingestion_evidence_failures` row before exiting.
 
