@@ -1826,6 +1826,26 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
   const countSum = Object.values(firstPage.countsByTier ?? {}).reduce((sum, count) => sum + Number(count ?? 0), 0);
   expect(failures, tag, firstPage.total === countSum,
     `issue evidence audit total (${firstPage.total}) must equal countsByTier sum (${countSum})`);
+  expect(failures, tag, firstPage.totalRows === firstPage.total,
+    `issue evidence audit totalRows (${firstPage.totalRows}) must match filtered total (${firstPage.total})`);
+  expect(failures, tag, isObject(firstPage.totals),
+    'issue evidence audit totals must be an object');
+  expect(failures, tag, firstPage.totals?.unfilteredRows === countSum,
+    `issue evidence audit totals.unfilteredRows (${firstPage.totals?.unfilteredRows}) must equal countsByTier sum (${countSum})`);
+  expect(failures, tag, firstPage.totals?.filteredRows === firstPage.total,
+    `issue evidence audit totals.filteredRows (${firstPage.totals?.filteredRows}) must match total (${firstPage.total})`);
+  expect(failures, tag, Number.isInteger(firstPage.distinctIssueCount) && firstPage.distinctIssueCount >= 0,
+    `issue evidence audit distinctIssueCount (${firstPage.distinctIssueCount}) must be a non-negative integer`);
+  expect(failures, tag, firstPage.totals?.filteredDistinctIssues === firstPage.distinctIssueCount,
+    `issue evidence audit totals.filteredDistinctIssues (${firstPage.totals?.filteredDistinctIssues}) must match distinctIssueCount (${firstPage.distinctIssueCount})`);
+  expectJsonEqual(failures, tag, 'issue evidence audit unfilteredCountsByTier must match countsByTier',
+    firstPage.unfilteredCountsByTier, firstPage.countsByTier);
+  expectJsonEqual(failures, tag, 'issue evidence audit filteredCountsByTier must match unfiltered counts without filters',
+    firstPage.filteredCountsByTier, firstPage.countsByTier);
+  expectJsonEqual(failures, tag, 'issue evidence audit unfilteredSummaryByTier must match summaryByTier',
+    firstPage.unfilteredSummaryByTier, firstPage.summaryByTier);
+  expectJsonEqual(failures, tag, 'issue evidence audit filteredSummaryByTier must match summaryByTier without filters',
+    firstPage.filteredSummaryByTier, firstPage.summaryByTier);
   expect(failures, tag, firstPage.filteredSummary?.count === firstPage.total,
     `issue evidence audit filteredSummary count (${firstPage.filteredSummary?.count}) must match total (${firstPage.total})`);
   expect(failures, tag, Array.isArray(firstPage.rows),
@@ -1862,6 +1882,12 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     'issue evidence audit summaryOnly rows must be empty');
   expect(failures, tag, summaryOnlyPage.total === expectedSummaryOnlyTotal,
     `issue evidence audit summaryOnly total (${summaryOnlyPage.total}) must match selected tier counts (${expectedSummaryOnlyTotal})`);
+  expect(failures, tag, summaryOnlyPage.totals?.unfilteredRows === countSum,
+    `issue evidence audit summaryOnly unfilteredRows (${summaryOnlyPage.totals?.unfilteredRows}) must match unfiltered total (${countSum})`);
+  expect(failures, tag, summaryOnlyPage.totals?.filteredRows === summaryOnlyPage.total,
+    `issue evidence audit summaryOnly filteredRows (${summaryOnlyPage.totals?.filteredRows}) must match total (${summaryOnlyPage.total})`);
+  expect(failures, tag, summaryOnlyPage.totalRows === summaryOnlyPage.total,
+    `issue evidence audit summaryOnly totalRows (${summaryOnlyPage.totalRows}) must match total (${summaryOnlyPage.total})`);
   expect(failures, tag, summaryOnlyPage.filteredSummary?.count === summaryOnlyPage.total,
     `issue evidence audit summaryOnly filteredSummary count (${summaryOnlyPage.filteredSummary?.count}) must match total (${summaryOnlyPage.total})`);
 
@@ -1928,6 +1954,14 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     const page = await fetchJson(`${base}?limit=5&tier=${encodeURIComponent(tier)}`);
     expect(failures, tag, page.total === Number(count),
       `issue evidence audit tier filter total (${page.total}) must match ${tier} count (${count})`);
+    expect(failures, tag, page.totals?.unfilteredRows === countSum,
+      `issue evidence audit tier filter unfilteredRows (${page.totals?.unfilteredRows}) must match unfiltered total (${countSum})`);
+    expect(failures, tag, page.totals?.filteredRows === page.total,
+      `issue evidence audit tier filter filteredRows (${page.totals?.filteredRows}) must match total (${page.total})`);
+    expect(failures, tag, page.filteredCountsByTier?.[tier] === Number(count),
+      `issue evidence audit filteredCountsByTier.${tier} (${page.filteredCountsByTier?.[tier]}) must match ${count}`);
+    expect(failures, tag, page.filteredSummaryByTier?.[tier]?.count === Number(count),
+      `issue evidence audit filteredSummaryByTier.${tier}.count (${page.filteredSummaryByTier?.[tier]?.count}) must match ${count}`);
     expect(failures, tag, page.filters?.tier === tier,
       `issue evidence audit tier filter echo (${page.filters?.tier}) must equal ${tier}`);
     expect(failures, tag, Array.isArray(page.filters?.tiers) && page.filters.tiers.length === 1 && page.filters.tiers[0] === tier,
@@ -1944,6 +1978,10 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     const page = await fetchJson(`${base}?limit=5&tier=${encodeURIComponent(tierParam)}`);
     expect(failures, tag, page.total === expectedTotal,
       `issue evidence audit multi-tier filter total (${page.total}) must match selected tier counts (${expectedTotal})`);
+    expect(failures, tag, page.totals?.unfilteredRows === countSum,
+      `issue evidence audit multi-tier unfilteredRows (${page.totals?.unfilteredRows}) must match unfiltered total (${countSum})`);
+    expect(failures, tag, page.totals?.filteredRows === page.total,
+      `issue evidence audit multi-tier filteredRows (${page.totals?.filteredRows}) must match total (${page.total})`);
     expect(failures, tag, page.filters?.tier == null,
       'issue evidence audit multi-tier filter must not echo singular tier');
     expectJsonEqual(failures, tag, 'issue evidence audit multi-tier filter echo',
@@ -2108,6 +2146,24 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     `closure proof audit tag (${firstPage.tag}) must match release tag (${tag})`);
   expect(failures, tag, firstPage.total === proof.creditedCount + proof.notCreditedCount,
     `closure proof audit total (${firstPage.total}) must match analyzed proof count (${proof.creditedCount + proof.notCreditedCount})`);
+  expect(failures, tag, firstPage.totalRows === firstPage.total,
+    `closure proof audit totalRows (${firstPage.totalRows}) must match total (${firstPage.total})`);
+  expect(failures, tag, isObject(firstPage.totals),
+    'closure proof audit totals must be an object');
+  expect(failures, tag, firstPage.totals?.unfilteredRows === firstPage.total,
+    `closure proof audit totals.unfilteredRows (${firstPage.totals?.unfilteredRows}) must match total (${firstPage.total})`);
+  expect(failures, tag, firstPage.totals?.filteredRows === firstPage.total,
+    `closure proof audit totals.filteredRows (${firstPage.totals?.filteredRows}) must match total (${firstPage.total})`);
+  expect(failures, tag, firstPage.totals?.filteredDistinctIssues === firstPage.distinctIssueCount,
+    `closure proof audit filteredDistinctIssues (${firstPage.totals?.filteredDistinctIssues}) must match distinctIssueCount (${firstPage.distinctIssueCount})`);
+  expectJsonEqual(failures, tag, 'closure proof audit unfilteredCountsByStatus must match proof byStatus',
+    firstPage.unfilteredCountsByStatus ?? {}, proof.byStatus ?? {});
+  expectJsonEqual(failures, tag, 'closure proof audit filteredCountsByStatus must match proof byStatus without filters',
+    firstPage.filteredCountsByStatus ?? {}, proof.byStatus ?? {});
+  expectJsonEqual(failures, tag, 'closure proof audit unfilteredCountsByRiskDisposition must match proof byRiskDisposition',
+    firstPage.unfilteredCountsByRiskDisposition ?? {}, proof.byRiskDisposition ?? {});
+  expectJsonEqual(failures, tag, 'closure proof audit filteredCountsByRiskDisposition must match proof byRiskDisposition without filters',
+    firstPage.filteredCountsByRiskDisposition ?? {}, proof.byRiskDisposition ?? {});
   expect(failures, tag, firstPage.limit === 5, `closure proof audit limit must be 5, got ${firstPage.limit}`);
   expect(failures, tag, firstPage.cursor === 0, `closure proof audit cursor must be 0, got ${firstPage.cursor}`);
   expect(failures, tag, Array.isArray(firstPage.rows), 'closure proof audit rows must be an array');
@@ -2146,6 +2202,12 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     const page = await fetchJson(`${base}?limit=3&status=${encodeURIComponent(status)}`);
     expect(failures, tag, page.total === Number(statusCount ?? 0),
       `closure proof audit status filter total (${page.total}) must match ${status} count (${statusCount})`);
+    expect(failures, tag, page.totals?.unfilteredRows === firstPage.total,
+      `closure proof audit status filter unfilteredRows (${page.totals?.unfilteredRows}) must match unfiltered total (${firstPage.total})`);
+    expect(failures, tag, page.totals?.filteredRows === page.total,
+      `closure proof audit status filter filteredRows (${page.totals?.filteredRows}) must match total (${page.total})`);
+    expect(failures, tag, page.filteredCountsByStatus?.[status] === Number(statusCount ?? 0),
+      `closure proof audit filteredCountsByStatus.${status} (${page.filteredCountsByStatus?.[status]}) must match ${statusCount}`);
     expect(failures, tag, (page.rows ?? []).every((row) => row.status === status),
       `closure proof audit status filter must return only ${status} rows`);
   }
@@ -2155,6 +2217,8 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     const page = await fetchJson(`${base}?limit=3&riskDisposition=${encodeURIComponent(disposition)}`);
     expect(failures, tag, page.total === Number(dispositionCount ?? 0),
       `closure proof audit riskDisposition filter total (${page.total}) must match ${disposition} count (${dispositionCount})`);
+    expect(failures, tag, page.filteredCountsByRiskDisposition?.[disposition] === Number(dispositionCount ?? 0),
+      `closure proof audit filteredCountsByRiskDisposition.${disposition} (${page.filteredCountsByRiskDisposition?.[disposition]}) must match ${dispositionCount}`);
     expect(failures, tag, (page.rows ?? []).every((row) => row.riskDisposition === disposition),
       `closure proof audit riskDisposition filter must return only ${disposition} rows`);
   }
@@ -2171,6 +2235,14 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
     `PR reachability audit tag (${firstPage.tag}) must match release tag (${tag})`);
   expect(failures, tag, firstPage.total === rows.length,
     `PR reachability audit total (${firstPage.total}) must match DB rows (${rows.length})`);
+  expect(failures, tag, firstPage.totalRows === firstPage.total,
+    `PR reachability audit totalRows (${firstPage.totalRows}) must match total (${firstPage.total})`);
+  expect(failures, tag, isObject(firstPage.totals),
+    'PR reachability audit totals must be an object');
+  expect(failures, tag, firstPage.totals?.unfilteredRows === rows.length,
+    `PR reachability audit unfilteredRows (${firstPage.totals?.unfilteredRows}) must match DB rows (${rows.length})`);
+  expect(failures, tag, firstPage.totals?.filteredRows === firstPage.total,
+    `PR reachability audit filteredRows (${firstPage.totals?.filteredRows}) must match total (${firstPage.total})`);
   expect(failures, tag, firstPage.limit === 7,
     `PR reachability audit limit must be 7, got ${firstPage.limit}`);
   expect(failures, tag, firstPage.cursor === 0,
@@ -2181,6 +2253,10 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
   const expectedCounts = countBy(rows, (row) => row.status);
   expectJsonEqual(failures, tag, 'PR reachability audit countsByStatus must match DB rows',
     firstPage.countsByStatus ?? {}, expectedCounts);
+  expectJsonEqual(failures, tag, 'PR reachability audit unfilteredCountsByStatus must match DB rows',
+    firstPage.unfilteredCountsByStatus ?? {}, expectedCounts);
+  expectJsonEqual(failures, tag, 'PR reachability audit filteredCountsByStatus must match countsByStatus without filters',
+    firstPage.filteredCountsByStatus ?? {}, expectedCounts);
   for (const row of firstPage.rows ?? []) {
     expect(failures, tag, Number.isInteger(row.number) && row.number > 0,
       `PR reachability audit row number must be positive integer, got ${row.number}`);
@@ -2210,6 +2286,14 @@ async function verifyPrReachabilityAuditEndpoint({ apiBase, fetchJson, failures,
     const page = await fetchJson(`${base}?limit=5&status=${encodeURIComponent(status)}`);
     expect(failures, tag, page.total === statusCount,
       `PR reachability audit status filter total (${page.total}) must match ${status} count (${statusCount})`);
+    expect(failures, tag, page.totals?.unfilteredRows === rows.length,
+      `PR reachability audit status filter unfilteredRows (${page.totals?.unfilteredRows}) must match DB rows (${rows.length})`);
+    expect(failures, tag, page.totals?.filteredRows === page.total,
+      `PR reachability audit status filter filteredRows (${page.totals?.filteredRows}) must match total (${page.total})`);
+    expect(failures, tag, page.filteredCountsByStatus?.[status] === statusCount,
+      `PR reachability audit filteredCountsByStatus.${status} (${page.filteredCountsByStatus?.[status]}) must match ${statusCount}`);
+    expectJsonEqual(failures, tag, 'PR reachability audit status filter unfilteredCountsByStatus must match DB rows',
+      page.unfilteredCountsByStatus ?? {}, expectedCounts);
     expect(failures, tag, (page.rows ?? []).every((row) => row.status === status),
       `PR reachability audit status filter must return only ${status} rows`);
   }

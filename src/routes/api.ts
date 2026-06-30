@@ -27,6 +27,7 @@ import {
   enrichGateEvidenceWithClosureProof,
   CLOSURE_RISK_DISPOSITIONS,
 } from '../lib/closureProofPayload';
+import { CLOSURE_PROOF_STATUSES } from '../lib/closureProofTaxonomy';
 import { releaseLabelCutoff } from '../lib/labelCutoff';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, type InstallStatus } from '../lib/score';
@@ -425,6 +426,46 @@ function timestampValue(value: unknown): number | null {
   if (typeof value !== 'string') return null;
   const parsed = Date.parse(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function issueEvidenceCountsByTier(rows: Array<{ tier: ReleaseIssueEvidenceTier }>): Record<ReleaseIssueEvidenceTier, number> {
+  const counts = Object.fromEntries(RELEASE_ISSUE_EVIDENCE_TIERS.map((tier) => [tier, 0])) as Record<ReleaseIssueEvidenceTier, number>;
+  for (const row of rows) counts[row.tier] += 1;
+  return counts;
+}
+
+function issueEvidenceSummaryByTier(rows: any[]): Record<ReleaseIssueEvidenceTier, ReturnType<typeof summarizeIssueEvidenceRows>> {
+  return Object.fromEntries(RELEASE_ISSUE_EVIDENCE_TIERS.map((tier) => [
+    tier,
+    summarizeIssueEvidenceRows(rows.filter((row) => row.tier === tier)),
+  ])) as Record<ReleaseIssueEvidenceTier, ReturnType<typeof summarizeIssueEvidenceRows>>;
+}
+
+function distinctIssueCount(rows: Array<{ issue?: { number?: unknown }; number?: unknown; issueNumber?: unknown }>): number {
+  const numbers = new Set<number>();
+  for (const row of rows) {
+    const number = Number(row.issue?.number ?? row.number ?? row.issueNumber);
+    if (Number.isInteger(number) && number > 0) numbers.add(number);
+  }
+  return numbers.size;
+}
+
+function countByStringField<T>(rows: T[], getter: (row: T) => unknown): Record<string, number> {
+  return rows.reduce((acc, row) => {
+    const key = getter(row);
+    if (typeof key === 'string' && key) acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {} as Record<string, number>);
+}
+
+function distinctPullRequestCount(rows: Array<{ pr_repository_name_with_owner?: unknown; pr_number?: unknown }>): number {
+  const prs = new Set<string>();
+  for (const row of rows) {
+    const repo = typeof row.pr_repository_name_with_owner === 'string' ? row.pr_repository_name_with_owner : null;
+    const number = Number(row.pr_number);
+    if (repo && Number.isInteger(number) && number > 0) prs.add(`${repo.toLowerCase()}#${number}`);
+  }
+  return prs.size;
 }
 
 function reachabilityAuditResponseRow(row: ReturnType<typeof releasePrReachabilityRows>[number]) {
@@ -826,6 +867,8 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     .filter(({ row }) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
     .filter(({ row }) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
   const allRows = sortedIssueEvidenceRows(filteredRows, sort, direction).map(({ row }) => row);
+  const filteredCountsByTier = issueEvidenceCountsByTier(allRows);
+  const filteredSummaryByTier = issueEvidenceSummaryByTier(allRows);
   const pageRows = summaryOnly ? [] : allRows.slice(cursor, cursor + limit);
   const nextCursor = summaryOnly ? null : cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
@@ -858,9 +901,21 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     },
     countsByTier: evidence.countsByTier,
     summaryByTier: evidence.summaryByTier,
+    unfilteredCountsByTier: evidence.countsByTier,
+    unfilteredSummaryByTier: evidence.summaryByTier,
+    filteredCountsByTier,
+    filteredSummaryByTier,
     filteredSummary: summarizeIssueEvidenceRows(allRows),
     tierInfo: evidence.tierInfo,
+    totals: {
+      unfilteredRows: evidence.rows.length,
+      filteredRows: allRows.length,
+      unfilteredDistinctIssues: distinctIssueCount(evidence.rows),
+      filteredDistinctIssues: distinctIssueCount(allRows),
+    },
     total: allRows.length,
+    totalRows: allRows.length,
+    distinctIssueCount: distinctIssueCount(allRows),
     limit: summaryOnly ? 0 : limit,
     cursor: summaryOnly ? 0 : cursor,
     nextCursor,
@@ -881,13 +936,26 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
   const riskDispositionFilter = typeof req.query.riskDisposition === 'string' && req.query.riskDisposition.trim()
     ? req.query.riskDisposition.trim()
     : null;
+  if (statusFilter && !(CLOSURE_PROOF_STATUSES as readonly string[]).includes(statusFilter)) {
+    res.status(400).json({
+      error: 'invalid status',
+      status: statusFilter,
+      allowedStatuses: CLOSURE_PROOF_STATUSES,
+    });
+    return;
+  }
   if (riskDispositionFilter && !(CLOSURE_RISK_DISPOSITIONS as readonly string[]).includes(riskDispositionFilter)) {
-    res.status(400).json({ error: 'invalid riskDisposition', riskDisposition: riskDispositionFilter });
+    res.status(400).json({
+      error: 'invalid riskDisposition',
+      riskDisposition: riskDispositionFilter,
+      allowedRiskDispositions: CLOSURE_RISK_DISPOSITIONS,
+    });
     return;
   }
   const limit = boundedInteger(req.query.limit, CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT, 1, CLOSURE_PROOF_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
-  const allRows = closureProofAuditRows(tag)
+  const sourceRows = closureProofAuditRows(tag);
+  const allRows = sourceRows
     .filter((row) => !statusFilter || row.status === statusFilter)
     .filter((row) => !riskDispositionFilter || row.riskDisposition === riskDispositionFilter);
   const pageRows = allRows.slice(cursor, cursor + limit).map(closureProofAuditResponseRow);
@@ -899,7 +967,19 @@ api.get('/releases/:tag/review/closure-proofs', (req, res) => {
       status: statusFilter,
       riskDisposition: riskDispositionFilter,
     },
+    totals: {
+      unfilteredRows: sourceRows.length,
+      filteredRows: allRows.length,
+      unfilteredDistinctIssues: distinctIssueCount(sourceRows),
+      filteredDistinctIssues: distinctIssueCount(allRows),
+    },
     total: allRows.length,
+    totalRows: allRows.length,
+    distinctIssueCount: distinctIssueCount(allRows),
+    unfilteredCountsByStatus: countByStringField(sourceRows, (row) => row.status),
+    filteredCountsByStatus: countByStringField(allRows, (row) => row.status),
+    unfilteredCountsByRiskDisposition: countByStringField(sourceRows, (row) => row.riskDisposition),
+    filteredCountsByRiskDisposition: countByStringField(allRows, (row) => row.riskDisposition),
     limit,
     cursor,
     nextCursor,
@@ -928,16 +1008,15 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
   }
   const limit = boundedInteger(req.query.limit, PR_REACHABILITY_AUDIT_DEFAULT_LIMIT, 1, PR_REACHABILITY_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
-  const allRows = releasePrReachabilityRows(tag)
+  const sourceRows = releasePrReachabilityRows(tag);
+  const allRows = sourceRows
     .filter((row) => !statusFilter || row.status === statusFilter)
     .filter((row) => !prFilter || (
       row.pr_number === prFilter.number &&
       (!prFilter.repo || row.pr_repository_name_with_owner.toLowerCase() === prFilter.repo.toLowerCase())
     ));
-  const countsByStatus = allRows.reduce((acc, row) => {
-    acc[row.status] = (acc[row.status] ?? 0) + 1;
-    return acc;
-  }, {} as Record<string, number>);
+  const filteredCountsByStatus = countByStringField(allRows, (row) => row.status);
+  const unfilteredCountsByStatus = countByStringField(sourceRows, (row) => row.status);
   const pageRows = allRows.slice(cursor, cursor + limit).map(reachabilityAuditResponseRow);
   const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
@@ -947,8 +1026,18 @@ api.get('/releases/:tag/review/reachability', (req, res) => {
       status: statusFilter,
       pr: prFilter ? { repositoryNameWithOwner: prFilter.repo, number: prFilter.number } : null,
     },
+    totals: {
+      unfilteredRows: sourceRows.length,
+      filteredRows: allRows.length,
+      unfilteredPullRequests: distinctPullRequestCount(sourceRows),
+      filteredPullRequests: distinctPullRequestCount(allRows),
+    },
     total: allRows.length,
-    countsByStatus,
+    totalRows: allRows.length,
+    distinctPullRequestCount: distinctPullRequestCount(allRows),
+    countsByStatus: filteredCountsByStatus,
+    filteredCountsByStatus,
+    unfilteredCountsByStatus,
     limit,
     cursor,
     nextCursor,

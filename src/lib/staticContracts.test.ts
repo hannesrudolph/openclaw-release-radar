@@ -89,6 +89,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /`summaryOnly`/);
     assert.match(readme, /summaryByTier/);
     assert.match(readme, /filteredSummary/);
+    assert.match(readme, /filteredCountsByTier/);
+    assert.match(readme, /filteredSummaryByTier/);
+    assert.match(readme, /`totals`/);
     assert.match(html, /Source freshness/);
     assert.match(html, /dataFreshnessText/);
     assert.match(html, /Object\.entries\(value\)/);
@@ -341,6 +344,13 @@ describe('static scoring/UI contracts', () => {
     assert.match(api, /publicIssueSummariesForRelease/);
     assert.match(api, /PUBLIC_ISSUES_PER_RELEASE/);
     assert.match(api, /releaseLabelCutoff\(r,\s*audit\?\.scored_at/);
+    assert.match(api, /CLOSURE_PROOF_STATUSES/);
+    assert.match(api, /allowedStatuses/);
+    assert.match(api, /filteredCountsByTier/);
+    assert.match(api, /unfilteredCountsByStatus/);
+    assert.match(api, /filteredCountsByStatus/);
+    assert.match(api, /unfilteredCountsByRiskDisposition/);
+    assert.match(api, /filteredCountsByRiskDisposition/);
     const publicIssues = readFileSync(join(root, 'src/lib/publicIssueSummary.ts'), 'utf8');
     assert.match(publicIssues, /classifyIssueRowWithLabels/);
     assert.match(publicIssues, /labelsForIssueAt/);

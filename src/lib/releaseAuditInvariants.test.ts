@@ -353,6 +353,15 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 50);
     const pageRows = rows.slice(cursor, cursor + limit);
+    const sourceRows = [row];
+    const filteredCountsByStatus = rows.reduce((acc: any, item) => {
+      acc[item.status] = (acc[item.status] ?? 0) + 1;
+      return acc;
+    }, {});
+    const filteredCountsByRiskDisposition = rows.reduce((acc: any, item) => {
+      acc[item.riskDisposition] = (acc[item.riskDisposition] ?? 0) + 1;
+      return acc;
+    }, {});
     return {
       schemaVersion: 1,
       tag: 'v1',
@@ -360,7 +369,19 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         status: parsed.searchParams.get('status'),
         riskDisposition: parsed.searchParams.get('riskDisposition'),
       },
+      totals: {
+        unfilteredRows: sourceRows.length,
+        filteredRows: rows.length,
+        unfilteredDistinctIssues: sourceRows.length,
+        filteredDistinctIssues: rows.length,
+      },
       total: rows.length,
+      totalRows: rows.length,
+      distinctIssueCount: rows.length,
+      unfilteredCountsByStatus: { fixed_in_release: 1 },
+      filteredCountsByStatus,
+      unfilteredCountsByRiskDisposition: { credited_release_fix: 1 },
+      filteredCountsByRiskDisposition,
       limit,
       cursor,
       nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
@@ -394,6 +415,11 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 100);
     const pageRows = rows.slice(cursor, cursor + limit);
+    const sourceRows = [row];
+    const filteredCountsByStatus = rows.reduce((acc: any, item) => {
+      acc[item.status] = (acc[item.status] ?? 0) + 1;
+      return acc;
+    }, {});
     return {
       schemaVersion: 1,
       tag: 'v1',
@@ -401,11 +427,18 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         status: parsed.searchParams.get('status'),
         pr: prFilter ? { repositoryNameWithOwner: prFilter.includes('#') ? prFilter.split('#')[0] : null, number: Number(prFilter.split('#').pop()) } : null,
       },
+      totals: {
+        unfilteredRows: sourceRows.length,
+        filteredRows: rows.length,
+        unfilteredPullRequests: sourceRows.length,
+        filteredPullRequests: rows.length,
+      },
       total: rows.length,
-      countsByStatus: rows.reduce((acc: any, item) => {
-        acc[item.status] = (acc[item.status] ?? 0) + 1;
-        return acc;
-      }, {}),
+      totalRows: rows.length,
+      distinctPullRequestCount: rows.length,
+      countsByStatus: filteredCountsByStatus,
+      filteredCountsByStatus,
+      unfilteredCountsByStatus: { reachable: 1 },
       limit,
       cursor,
       nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
@@ -482,6 +515,37 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 50);
     const pageRows = summaryOnly ? [] : rows.slice(cursor, cursor + limit);
+    const summaryFor = (count: number) => ({
+      count,
+      weight: count ? 1 : 0,
+      fieldConfirmedCount: count ? 1 : 0,
+      openCount: 0,
+      closedCount: count,
+      otherStateCount: 0,
+      missingIssueCount: 0,
+      byInstallImpactClass: count ? { state_data: 1 } : {},
+      weightByInstallImpactClass: count ? { state_data: 1 } : {},
+    });
+    const countsByTier = {
+      verifiedDebt: 0,
+      carryoverDebt: 0,
+      staleDebt: 0,
+      openedFeltSerious: 0,
+      verifiedFixed: 1,
+      unverifiedClosed: 0,
+      unclassifiedIssues: 0,
+    };
+    const filteredCountsByTier = { ...countsByTier, verifiedFixed: rows.length };
+    const summaryByTier = {
+      verifiedDebt: summaryFor(0),
+      carryoverDebt: summaryFor(0),
+      staleDebt: summaryFor(0),
+      openedFeltSerious: summaryFor(0),
+      verifiedFixed: summaryFor(1),
+      unverifiedClosed: summaryFor(0),
+      unclassifiedIssues: summaryFor(0),
+    };
+    const filteredSummaryByTier = { ...summaryByTier, verifiedFixed: summaryFor(rows.length) };
     return {
       schemaVersion: 1,
       tag: 'v1',
@@ -510,24 +574,12 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         direction,
         summaryOnly,
       },
-      countsByTier: {
-        verifiedDebt: 0,
-        carryoverDebt: 0,
-        staleDebt: 0,
-        openedFeltSerious: 0,
-        verifiedFixed: 1,
-        unverifiedClosed: 0,
-        unclassifiedIssues: 0,
-      },
-      summaryByTier: {
-        verifiedDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        carryoverDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        staleDebt: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        openedFeltSerious: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        verifiedFixed: { count: 1, weight: 1, fieldConfirmedCount: 1, openCount: 0, closedCount: 1, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: { state_data: 1 }, weightByInstallImpactClass: { state_data: 1 } },
-        unverifiedClosed: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-        unclassifiedIssues: { count: 0, weight: 0, fieldConfirmedCount: 0, openCount: 0, closedCount: 0, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: {}, weightByInstallImpactClass: {} },
-      },
+      countsByTier,
+      summaryByTier,
+      unfilteredCountsByTier: countsByTier,
+      unfilteredSummaryByTier: summaryByTier,
+      filteredCountsByTier,
+      filteredSummaryByTier,
       tierInfo: {
         verifiedDebt: {
           label: 'Field blocker debt',
@@ -558,7 +610,15 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           description: 'Attributed issues missing current classification rows.',
         },
       },
+      totals: {
+        unfilteredRows: 1,
+        filteredRows: rows.length,
+        unfilteredDistinctIssues: 1,
+        filteredDistinctIssues: rows.length,
+      },
       total: rows.length,
+      totalRows: rows.length,
+      distinctIssueCount: rows.length,
       limit: summaryOnly ? 0 : limit,
       cursor: summaryOnly ? 0 : cursor,
       nextCursor: summaryOnly ? null : cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
