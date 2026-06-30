@@ -159,6 +159,7 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
 const BACKFILL_FLAG = 'backfill_completed_at';
 export const ISSUE_CRAWL_META_KEY = 'issue_crawl_last_run';
 type IssuePaginationStopReason = 'exhausted' | 'early_stop' | 'page_cap';
+const FAILURE_EXAMPLE_LIMIT = 25;
 
 let refreshing = false;
 let processLastRefreshAt: string | null = null;
@@ -382,6 +383,7 @@ export async function refresh(): Promise<{
     let monitoredIssuesFetched = 0;
     let commenterScanTruncatedCount = 0;
     let classifiedCount = 0;
+    const classificationFailures: string[] = [];
     let crossedOldestEver = false;
     let issuePaginationStopReason: IssuePaginationStopReason = 'exhausted';
 
@@ -480,7 +482,9 @@ export async function refresh(): Promise<{
           upsertClassification(issue.number, cls, issue.updated_at, PROMPT_VERSION);
           classifiedCount++;
         } catch (e) {
-          console.error(`[classify] issue #${issue.number} failed:`, (e as Error).message);
+          const message = `[classify] issue #${issue.number} failed: ${(e as Error).message}`;
+          classificationFailures.push(message);
+          console.error(message);
         }
       });
 
@@ -531,6 +535,7 @@ export async function refresh(): Promise<{
       stopReason: issuePaginationStopReason,
       crossedOldestEver,
       commenterScanTruncatedCount,
+      classificationFailures,
       evidenceRefreshFailures: [] as string[],
       scorePersisted: false,
       scorePersistedAt: null,
@@ -538,6 +543,14 @@ export async function refresh(): Promise<{
     persistIssueCrawlMeta(issueCrawlMeta);
     if (shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason)) {
       throw new Error(`Issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; refusing to persist scores from incomplete crawl`);
+    }
+    if (shouldRefuseScoreAfterClassificationFailures(classificationFailures)) {
+      const summarized = summarizeFailures(classificationFailures);
+      persistIssueCrawlMeta({
+        ...issueCrawlMeta,
+        classificationFailures: summarized,
+      });
+      throw new Error(`Classification failed for ${classificationFailures.length} issue(s); refusing to persist scores`);
     }
 
     // After a prompt-sweep that walked the full pagination: if any rows are
@@ -649,6 +662,18 @@ function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {
   return failures.length > 0;
 }
 
+function shouldRefuseScoreAfterClassificationFailures(failures: unknown[]): boolean {
+  return failures.length > 0;
+}
+
+function summarizeFailures(failures: string[]): string[] {
+  const examples = failures.slice(0, FAILURE_EXAMPLE_LIMIT);
+  const omitted = failures.length - examples.length;
+  return omitted > 0
+    ? [...examples, `[summary] ${omitted} additional failure(s) omitted`]
+    : examples;
+}
+
 function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
   setMeta(ISSUE_CRAWL_META_KEY, JSON.stringify(meta));
 }
@@ -656,8 +681,10 @@ function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
 export const __refreshTest = {
   shouldDropStaleClassificationsAfterPromptSweep,
   shouldMarkBackfillComplete,
+  shouldRefuseScoreAfterClassificationFailures,
   shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
+  summarizeFailures,
 };
 
 export {

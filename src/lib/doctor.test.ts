@@ -171,4 +171,54 @@ describe('doctor issue crawl health', () => {
 
     assert.ok(result.failures.some((failure) => /must be an array/.test(failure)));
   });
+
+  it('warns when failed classifications happened after the latest score', () => {
+    const result = assessIssueCrawlHealth({
+      schemaVersion: 1,
+      startedAt: '2026-06-30T02:00:00.000Z',
+      finishedAt: '2026-06-30T02:05:00.000Z',
+      stopReason: 'exhausted',
+      classificationFailures: ['[classify] issue #1 failed: timeout'],
+      scorePersisted: false,
+    }, latest);
+
+    assert.equal(result.failures.length, 0);
+    assert.ok(result.warnings.some((warning) => /classification failure/.test(warning)));
+    assert.ok(result.warnings.some((warning) => /current score predates/.test(warning)));
+  });
+
+  it('fails when classification failures persisted or could have produced the latest score', () => {
+    const persisted = assessIssueCrawlHealth({
+      schemaVersion: 1,
+      startedAt: '2026-06-30T00:30:00.000Z',
+      finishedAt: '2026-06-30T00:59:00.000Z',
+      stopReason: 'exhausted',
+      classificationFailures: ['[classify] issue #10 failed: rate limited'],
+      scorePersisted: true,
+    }, latest);
+    assert.ok(persisted.failures.some((failure) => /classification failure/.test(failure)));
+
+    const possibleLatest = assessIssueCrawlHealth({
+      schemaVersion: 1,
+      startedAt: '2026-06-30T00:30:00.000Z',
+      finishedAt: '2026-06-30T00:59:00.000Z',
+      stopReason: 'exhausted',
+      classificationFailures: ['[classify] issue #11 failed: bad response'],
+      scorePersisted: false,
+    }, latest);
+    assert.ok(possibleLatest.failures.some((failure) => /classification failure/.test(failure)));
+  });
+
+  it('fails when classification failure metadata is malformed', () => {
+    const result = assessIssueCrawlHealth({
+      schemaVersion: 1,
+      startedAt: '2026-06-30T02:00:00.000Z',
+      finishedAt: '2026-06-30T02:05:00.000Z',
+      stopReason: 'exhausted',
+      classificationFailures: 'classification failed',
+      scorePersisted: false,
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /classificationFailures must be an array/.test(failure)));
+  });
 });

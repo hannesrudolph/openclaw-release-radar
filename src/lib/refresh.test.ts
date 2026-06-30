@@ -62,4 +62,19 @@ describe('refresh backfill completion', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures([]), false);
     assert.equal(__refreshTest.shouldRefuseScoreAfterEvidenceFailures(['closure proof failed']), true);
   });
+
+  it('refuses to score after any issue classification failure', () => {
+    assert.equal(__refreshTest.shouldRefuseScoreAfterClassificationFailures([]), false);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterClassificationFailures(['[classify] issue #1 failed: timeout']), true);
+  });
+
+  it('summarizes long failure lists before storing crawl metadata', () => {
+    const failures = Array.from({ length: 27 }, (_, index) => `failure ${index + 1}`);
+    const summarized = __refreshTest.summarizeFailures(failures);
+
+    assert.equal(summarized.length, 26);
+    assert.equal(summarized[0], 'failure 1');
+    assert.equal(summarized[24], 'failure 25');
+    assert.equal(summarized[25], '[summary] 2 additional failure(s) omitted');
+  });
 });

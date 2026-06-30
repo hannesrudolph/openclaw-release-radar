@@ -66,11 +66,15 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
   const finishedAt = issueCrawl.finishedAt ?? null;
   const scorePersisted = issueCrawl.scorePersisted === true;
   const evidenceRefreshFailures = issueCrawl.evidenceRefreshFailures;
+  const classificationFailures = issueCrawl.classificationFailures;
   const crawlStartedAfterLatestScore = isAfter(startedAt, latestScoredAt);
   const crawlFinishedAfterLatestScore = isAfter(finishedAt, latestScoredAt);
 
   if (evidenceRefreshFailures != null && !Array.isArray(evidenceRefreshFailures)) {
     failures.push('issue crawl metadata evidenceRefreshFailures must be an array when present');
+  }
+  if (classificationFailures != null && !Array.isArray(classificationFailures)) {
+    failures.push('issue crawl metadata classificationFailures must be an array when present');
   }
 
   if (stopReason === 'page_cap') {
@@ -88,6 +92,15 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
       failures.push(message);
     } else {
       warnings.push(`${message}; current score predates that failed evidence refresh`);
+    }
+  }
+
+  if (Array.isArray(classificationFailures) && classificationFailures.length > 0) {
+    const message = `latest issue crawl recorded ${classificationFailures.length} issue classification failure(s); score persistence is unsafe until all score-attributed issues classify cleanly`;
+    if (scorePersisted || !crawlStartedAfterLatestScore) {
+      failures.push(message);
+    } else {
+      warnings.push(`${message}; current score predates that failed classification pass`);
     }
   }
 
