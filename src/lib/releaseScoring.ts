@@ -18,6 +18,7 @@ import { hasHotfixSuccessor } from './releaseNotes';
 import { isRangeParseable, stableDistance, matchesRange } from './versionMatch';
 import { topBrokenSurfaces } from './surfaces';
 import { closureProofPayload, closureRiskDisposition, enrichGateEvidenceWithClosureProof } from './closureProofPayload';
+import { closureRiskDispositionLabel } from './closureProofTaxonomy';
 import {
   getReleaseCommit,
   issueLabelEventCount,
@@ -1481,19 +1482,6 @@ function closureRiskSummaryText(closureProof: any): string {
     .filter(([count]) => Number(count ?? 0) > 0)
     .map(([count, label]) => `${count} ${label}`)
     .join(' · ');
-}
-
-function closureRiskDispositionLabel(disposition: string): string {
-  return ({
-    credited_release_fix: 'credited release fix',
-    resolved_by_canonical_release_fix: 'resolved by canonical release fix',
-    resolved_by_release_fix_proof: 'resolved by release fix proof',
-    known_not_in_release: 'known not in this tag',
-    open_canonical_risk: 'still open canonical/PR risk',
-    unsupported_closure_claim: 'unsupported closure claim',
-    neutral_or_non_actionable: 'not scored/non-actionable',
-    missing_evidence: 'missing evidence',
-  } as Record<string, string>)[disposition] ?? String(disposition ?? 'unknown').replace(/_/g, ' ');
 }
 
 function closureStatusLabel(status: string): string {

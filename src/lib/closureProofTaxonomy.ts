@@ -199,3 +199,22 @@ export const CLOSURE_RISK_DISPOSITION_WEIGHT: Record<ClosureRiskDisposition, num
 export function closureRiskDisposition(status: string): ClosureRiskDisposition {
   return CLOSURE_RISK_DISPOSITION_BY_STATUS[status as ClosureProofStatus] ?? 'missing_evidence';
 }
+
+export function closureRiskDispositionLabel(disposition: string): string {
+  return ({
+    credited_release_fix: 'credited release fix',
+    resolved_by_canonical_release_fix: 'resolved by canonical release fix',
+    resolved_by_release_fix_proof: 'resolved by release fix proof',
+    known_not_in_release: 'known not in this tag',
+    open_canonical_risk: 'still-open canonical/PR risk',
+    unsupported_closure_claim: 'unsupported closure/admin claim',
+    neutral_or_non_actionable: 'not-scored/non-actionable closure',
+    missing_evidence: 'missing proof evidence',
+  } as Record<string, string>)[disposition] ?? String(disposition ?? 'unknown closure risk');
+}
+
+export function closureRiskWeightLabel(weight: unknown): string {
+  return typeof weight === 'number' && Number.isFinite(weight)
+    ? `risk ${Math.round(weight * 100) / 100}`
+    : 'risk unknown';
+}

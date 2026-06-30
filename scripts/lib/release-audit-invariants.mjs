@@ -314,7 +314,9 @@ const closureProofAuditRowKeys = new Set([
   'status',
   'summary',
   'riskDisposition',
+  'riskDispositionLabel',
   'riskWeight',
+  'riskWeightLabel',
   'checkedAt',
   'labels',
   'classification',
@@ -2670,8 +2672,12 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
       `closure proof audit row #${row.issueNumber} summary must be present`);
     expect(failures, tag, typeof row.riskDisposition === 'string' && knownRiskDispositions.has(row.riskDisposition),
       `closure proof audit row #${row.issueNumber} riskDisposition must be known, got ${row.riskDisposition}`);
+    expect(failures, tag, typeof row.riskDispositionLabel === 'string' && row.riskDispositionLabel.length > 0,
+      `closure proof audit row #${row.issueNumber} riskDispositionLabel must be present`);
     expect(failures, tag, typeof row.riskWeight === 'number',
       `closure proof audit row #${row.issueNumber} riskWeight must be numeric`);
+    expect(failures, tag, typeof row.riskWeightLabel === 'string' && row.riskWeightLabel.length > 0,
+      `closure proof audit row #${row.issueNumber} riskWeightLabel must be present`);
     expect(failures, tag, isObject(row.evidence),
       `closure proof audit row #${row.issueNumber} evidence must be present`);
     verifyAllowedKeys({ failures, tag, label: 'closure proof audit row evidence', value: row.evidence, allowed: closureProofAuditEvidenceKeys });

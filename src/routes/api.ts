@@ -28,7 +28,7 @@ import {
   enrichGateEvidenceWithClosureProof,
   CLOSURE_RISK_DISPOSITIONS,
 } from '../lib/closureProofPayload';
-import { CLOSURE_PROOF_STATUSES } from '../lib/closureProofTaxonomy';
+import { CLOSURE_PROOF_STATUSES, closureRiskDispositionLabel, closureRiskWeightLabel } from '../lib/closureProofTaxonomy';
 import { releaseLabelCutoff } from '../lib/labelCutoff';
 import { matchesRange, firstPatchedVersion, stableDistance } from '../lib/versionMatch';
 import { bandFor, type InstallStatus } from '../lib/score';
@@ -150,7 +150,9 @@ function closureProofAuditResponseRow(row: ReturnType<typeof closureProofAuditRo
     status: row.status,
     summary: row.summary,
     riskDisposition: row.riskDisposition,
+    riskDispositionLabel: closureRiskDispositionLabel(row.riskDisposition),
     riskWeight: row.riskWeight,
+    riskWeightLabel: closureRiskWeightLabel(row.riskWeight),
     checkedAt: row.checkedAt,
     labels: row.labels,
     classification: row.classification,

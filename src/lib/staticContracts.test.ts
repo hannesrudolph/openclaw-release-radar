@@ -122,12 +122,21 @@ describe('static scoring/UI contracts', () => {
   it('frontend closure proof labels cover backend statuses and risk dispositions', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     const payload = readFileSync(join(root, 'src/lib/closureProofPayload.ts'), 'utf8');
+    const taxonomy = readFileSync(join(root, 'src/lib/closureProofTaxonomy.ts'), 'utf8');
+    const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    const verifier = readFileSync(join(root, 'scripts/lib/release-audit-invariants.mjs'), 'utf8');
     CLOSURE_PROOF_STATUSES.forEach((status) =>
       assert.match(html, new RegExp(`${status}:`), `missing frontend closure label for ${status}`));
     CLOSURE_RISK_DISPOSITIONS.forEach((disposition) =>
       assert.match(html, new RegExp(`${disposition}:`), `missing frontend closure risk label for ${disposition}`));
     assert.match(payload, /CLOSURE_PROOF_STATUS_RANK/);
     assert.match(payload, /satisfies Record<ClosureProofStatus, number>/);
+    assert.match(taxonomy, /function closureRiskDispositionLabel/);
+    assert.match(taxonomy, /function closureRiskWeightLabel/);
+    assert.match(api, /riskDispositionLabel: closureRiskDispositionLabel/);
+    assert.match(api, /riskWeightLabel: closureRiskWeightLabel/);
+    assert.match(verifier, /riskDispositionLabel/);
+    assert.match(verifier, /riskWeightLabel/);
     assert.match(html, /resolvedByCanonicalReleaseFixCount/);
     assert.match(html, /resolvedByReleaseFixProofCount/);
     assert.match(html, /neutralHighImpactCount/);

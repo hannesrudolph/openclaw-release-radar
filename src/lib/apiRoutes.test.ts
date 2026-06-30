@@ -232,6 +232,8 @@ describe('audit API routes', () => {
     assert.equal(filtered.body.rows[0].issueNumber, 104);
     assert.equal(filtered.body.rows[0].status, 'fixed_after_release');
     assert.equal(filtered.body.rows[0].riskDisposition, 'known_not_in_release');
+    assert.equal(filtered.body.rows[0].riskDispositionLabel, 'known not in this tag');
+    assert.equal(typeof filtered.body.rows[0].riskWeightLabel, 'string');
 
     const clamped = await getJson('/api/releases/v-test/review/closure-proofs?limit=999&cursor=-2');
     assert.equal(clamped.status, 200);
