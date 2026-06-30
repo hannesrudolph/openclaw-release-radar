@@ -1,6 +1,55 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { assessIssueCrawlHealth } from '../../scripts/lib/doctor-health.mjs';
+import { assessDataFreshnessHealth, assessIssueCrawlHealth } from '../../scripts/lib/doctor-health.mjs';
+
+describe('doctor data freshness health', () => {
+  const latest = { tag: 'v1', scoredAt: '2026-06-30T01:00:00.000Z' };
+
+  it('warns when issue evidence is stale at scoring time or now', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: latest.scoredAt,
+      issueUpdatedAtMax: '2026-06-27T01:00:00.000Z',
+      issueUpdatedAgeHoursAtScore: 72,
+      issueUpdatedAgeHoursNow: 73,
+      sourceFetchedAtMax: '2026-06-30T00:59:00.000Z',
+      sources: [],
+    }, latest, { maxIssueLagHours: 48 });
+
+    assert.equal(result.failures.length, 0);
+    assert.ok(result.warnings.some((warning) => /old at scoring time/.test(warning)));
+    assert.ok(result.warnings.some((warning) => /old now/.test(warning)));
+  });
+
+  it('fails when source evidence changed after the latest score', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: latest.scoredAt,
+      issueUpdatedAtMax: '2026-06-30T00:59:00.000Z',
+      issueUpdatedAgeHoursAtScore: 0.02,
+      issueUpdatedAgeHoursNow: 0.03,
+      sourceFetchedAtMax: '2026-06-30T01:05:00.000Z',
+      sources: [
+        { source: 'issues', maxAt: '2026-06-30T00:59:00.000Z' },
+        { source: 'issue_pr_links', maxAt: '2026-06-30T01:05:00.000Z' },
+      ],
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /source evidence changed after latest score/.test(failure)));
+    assert.ok(result.failures.some((failure) => /issue_pr_links/.test(failure)));
+  });
+
+  it('fails when issue rows include updates after the latest score', () => {
+    const result = assessDataFreshnessHealth({
+      scoredAt: latest.scoredAt,
+      issueUpdatedAtMax: '2026-06-30T01:05:00.000Z',
+      issueUpdatedAgeHoursAtScore: -0.08,
+      issueUpdatedAgeHoursNow: 0,
+      sourceFetchedAtMax: '2026-06-30T00:59:00.000Z',
+      sources: [],
+    }, latest);
+
+    assert.ok(result.failures.some((failure) => /issue data includes updates after latest score/.test(failure)));
+  });
+});
 
 describe('doctor issue crawl health', () => {
   const latest = { tag: 'v1', scoredAt: '2026-06-30T01:00:00.000Z' };

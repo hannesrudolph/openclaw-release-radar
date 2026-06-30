@@ -21,6 +21,12 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /rows\.find\(\(r\) => r\.status === 'eligible' && r\.finalScore != null\)/);
   });
 
+  it('public payload cache stores under the key used for lookup', () => {
+    const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    assert.match(api, /const cacheKey = publicCacheKey\(\);[\s\S]*setCached\(data, cacheKey\);/);
+    assert.doesNotMatch(api, /setCached\(data, publicCacheKey\(\)\)/);
+  });
+
   it('score color helper keeps weak scores below caution threshold', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     assert.match(html, /if \(n >= 5\.5\) return 'var\(--warn\)'/);
@@ -241,12 +247,20 @@ describe('static scoring/UI contracts', () => {
 
   it('offline score writers use the shared release scorer', () => {
     const populate = readFileSync(join(root, 'scripts/populate-db.mjs'), 'utf8');
+    const backfill = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
+    const verifier = readFileSync(join(root, 'scripts/verify-new-scoring.mjs'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
     assert.match(populate, /persistReleaseScoreRun/);
+    assert.match(backfill, /buildReleaseScoreRun/);
+    assert.match(backfill, /persistReleaseScoreRun/);
     assert.doesNotMatch(populate, /installConfidence/);
     assert.doesNotMatch(populate, /openDebtLoad/);
     assert.doesNotMatch(populate, /feltLoad/);
+    for (const script of [populate, backfill, verifier]) {
+      assert.doesNotMatch(script, /stableTagsNewestFirst\s*=/);
+      assert.doesNotMatch(script, /allFetchedTags\s*=/);
+    }
     assert.match(bridgeTest, /buildReleaseScoreRun/);
     assert.match(bridgeTest, /verifiedDebtWeight/);
     assert.match(bridgeTest, /unresolvedClosureRiskWeight/);

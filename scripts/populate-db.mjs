@@ -25,8 +25,6 @@ for (const release of allReleases) {
 const monitored = listReleasesDb(10);
 const scoreRun = buildReleaseScoreRun({
   releases: monitored,
-  allFetchedTags: allReleases.map((release) => release.tag),
-  stableTagsNewestFirst: allReleases.filter((release) => !release.prerelease).map((release) => release.tag),
 });
 persistReleaseScoreRun(scoreRun);
 

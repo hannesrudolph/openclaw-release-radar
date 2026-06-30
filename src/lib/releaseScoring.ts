@@ -42,8 +42,8 @@ export { PROMPT_VERSION, SCORE_MODEL_VERSION };
 export interface ReleaseScoreRunOptions {
   releases?: ReleaseRow[];
   releaseLimit?: number;
-  allFetchedTags: string[];
-  stableTagsNewestFirst: string[];
+  allFetchedTags?: string[];
+  stableTagsNewestFirst?: string[];
   nowForRelease?: (release: ReleaseRow) => number;
 }
 
@@ -185,6 +185,9 @@ type ScoreExplanationPositiveCode = (typeof SCORE_EXPLANATION_POSITIVE_CODES)[nu
 
 export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseScoreRun {
   const releases = options.releases ?? listReleasesDb(options.releaseLimit ?? 20);
+  const tagWindow = scoreTagWindow(releases);
+  const allFetchedTags = options.allFetchedTags ?? tagWindow.allFetchedTags;
+  const stableTagsNewestFirst = options.stableTagsNewestFirst ?? tagWindow.stableTagsNewestFirst;
   const advisories = listAdvisories();
   const cveFor = (tag: string): { affected: boolean; load: number } => {
     const matching = advisories.filter((a) => matchesRange(tag, a.vulnerable_version_range));
@@ -193,7 +196,7 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
       matching
         .map((a) => ({
           severity: a.severity,
-          distance: stableDistance(tag, a.patched_versions, options.stableTagsNewestFirst),
+          distance: stableDistance(tag, a.patched_versions, stableTagsNewestFirst),
         }))
         .filter((x) => x.distance <= 0),
     );
@@ -205,8 +208,8 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     return scoreRelease({
       release,
       idx,
-      allFetchedTags: options.allFetchedTags,
-      stableTagsNewestFirst: options.stableTagsNewestFirst,
+      allFetchedTags,
+      stableTagsNewestFirst,
       cveFor,
       now,
     });
@@ -219,6 +222,18 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     explanation: buildScoreExplanation(result, result.rel.tag === recommendedTag),
   }));
   return { scored, recommendedTag };
+}
+
+export function scoreTagWindow(releases: Array<{ tag: string; prerelease?: number | boolean | null }>): {
+  allFetchedTags: string[];
+  stableTagsNewestFirst: string[];
+} {
+  return {
+    allFetchedTags: releases.map((release) => release.tag),
+    stableTagsNewestFirst: releases
+      .filter((release) => release.prerelease !== true && release.prerelease !== 1)
+      .map((release) => release.tag),
+  };
 }
 
 export function persistReleaseScoreRun(run: ReleaseScoreRun): void {

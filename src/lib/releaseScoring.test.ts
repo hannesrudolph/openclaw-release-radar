@@ -12,10 +12,23 @@ import {
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_EXPLANATION_SCHEMA_VERSION,
   SCORE_INPUT_SCHEMA_VERSION,
+  scoreTagWindow,
   __releaseScoringTest,
 } from './releaseScoring.ts';
 
 describe('release score explanations', () => {
+  it('builds stable scoring tag windows from mixed release rows', () => {
+    assert.deepEqual(scoreTagWindow([
+      { tag: 'v3', prerelease: 0 },
+      { tag: 'v3-beta.1', prerelease: 1 },
+      { tag: 'v2', prerelease: false },
+      { tag: 'v1', prerelease: null },
+    ]), {
+      allFetchedTags: ['v3', 'v3-beta.1', 'v2', 'v1'],
+      stableTagsNewestFirst: ['v3', 'v2', 'v1'],
+    });
+  });
+
   it('truncates issue titles at useful boundaries', () => {
     const title = 'Normal tool text outputs can degrade to "(see attached image)" placeholders in agent transcript rendering';
     assert.equal(

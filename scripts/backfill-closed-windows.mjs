@@ -69,13 +69,8 @@ if (!dryRun && !skipProof) {
 let scored = 0;
 let recommendedTag = null;
 if (!dryRun && !skipScore) {
-  const allReleases = listReleasesDb(Math.max(limit, 20));
-  const allFetchedTags = allReleases.map((release) => release.tag);
-  const stableTagsNewestFirst = allFetchedTags;
   const scoreRun = buildReleaseScoreRun({
     releaseLimit: Math.max(limit, releases.length),
-    allFetchedTags,
-    stableTagsNewestFirst,
   });
   persistReleaseScoreRun(scoreRun);
   scored = scoreRun.scored.length;

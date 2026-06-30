@@ -1,3 +1,40 @@
+export function assessDataFreshnessHealth(freshness, latest, {
+  maxIssueLagHours = 48,
+} = {}) {
+  const warnings = [];
+  const failures = [];
+  if (!freshness) return { warnings, failures };
+
+  const tag = latest?.tag ?? freshness.tag ?? 'latest scored release';
+  const scoredAt = freshness.scoredAt ?? latest?.scoredAt ?? null;
+  const sourceFetchedAtMax = freshness.sourceFetchedAtMax ?? null;
+  const issueUpdatedAtMax = freshness.issueUpdatedAtMax ?? null;
+
+  if (isAfter(sourceFetchedAtMax, scoredAt)) {
+    const newerSources = Array.isArray(freshness.sources)
+      ? freshness.sources
+        .filter((source) => isAfter(source?.maxAt, scoredAt))
+        .map((source) => source.source)
+        .filter(Boolean)
+      : [];
+    const suffix = newerSources.length ? ` (${newerSources.join(', ')})` : '';
+    failures.push(`${tag}: source evidence changed after latest score${suffix}; rerun scoring after refresh completes`);
+  }
+
+  if (isAfter(issueUpdatedAtMax, scoredAt)) {
+    failures.push(`${tag}: issue data includes updates after latest score; rerun scoring after refresh completes`);
+  }
+
+  if (Number(freshness.issueUpdatedAgeHoursAtScore ?? 0) > maxIssueLagHours) {
+    warnings.push(`${tag}: issue data was ${freshness.issueUpdatedAgeHoursAtScore}h old at scoring time`);
+  }
+  if (Number(freshness.issueUpdatedAgeHoursNow ?? 0) > maxIssueLagHours) {
+    warnings.push(`${tag}: latest issue data is ${freshness.issueUpdatedAgeHoursNow}h old now`);
+  }
+
+  return { warnings, failures };
+}
+
 export function assessIssueCrawlHealth(issueCrawl, latest) {
   const warnings = [];
   const failures = [];

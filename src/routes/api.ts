@@ -1177,6 +1177,6 @@ api.get('/public', (_req, res) => {
   const hit = getCached(cacheKey);
   if (hit) { res.json(hit); return; }
   const data = buildPublicPayload();
-  setCached(data, publicCacheKey());
+  setCached(data, cacheKey);
   res.json(data);
 });

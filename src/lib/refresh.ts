@@ -598,13 +598,8 @@ export async function refresh(): Promise<{
     //    signals (CVE, settle age, hotfix succession, stable-to-stable survival, beta
     //    shakeout, serious-regression balance). No peer median, no carry-forward
     //    attribution in the score itself. See lib/score.ts for the full rationale.
-    const scoreTagWindow = scoringTagWindow(allReleases);
-    const allFetchedTags = scoreTagWindow.allFetchedTags;
-    const stableTagsNewestFirst = scoreTagWindow.stableTagsNewestFirst;
     const scoreRun = buildReleaseScoreRun({
       releases: allReleases,
-      allFetchedTags,
-      stableTagsNewestFirst,
     });
     persistReleaseScoreRun(scoreRun);
     persistIssueCrawlMeta({
@@ -654,18 +649,6 @@ function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {
   return failures.length > 0;
 }
 
-function scoringTagWindow(releases: Array<{ tag: string; prerelease?: number | boolean | null }>): {
-  allFetchedTags: string[];
-  stableTagsNewestFirst: string[];
-} {
-  return {
-    allFetchedTags: releases.map((release) => release.tag),
-    stableTagsNewestFirst: releases
-      .filter((release) => release.prerelease !== true && release.prerelease !== 1)
-      .map((release) => release.tag),
-  };
-}
-
 function persistIssueCrawlMeta(meta: Record<string, unknown>): void {
   setMeta(ISSUE_CRAWL_META_KEY, JSON.stringify(meta));
 }
@@ -675,7 +658,6 @@ export const __refreshTest = {
   shouldMarkBackfillComplete,
   shouldRefuseScoreAfterEvidenceFailures,
   shouldRefuseScoreAfterIssuePagination,
-  scoringTagWindow,
 };
 
 export {

@@ -19,12 +19,7 @@ const {
   SCORE_MODEL_VERSION,
 } = await import('../src/lib/releaseScoring.ts');
 
-const allRel = db.prepare(
-  `SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`,
-).all().map((r) => ({ tag: r.tag, published_at: r.published_at, prerelease: r.prerelease === 1 }));
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
-const allFetchedTags = allRel.map((r) => r.tag);
-const stableTagsNewestFirst = allRel.filter((r) => !r.prerelease).map((r) => r.tag);
 const auditedStableRows = db.prepare(`
   SELECT r.*
   FROM releases r
@@ -51,8 +46,6 @@ verifyScoredReleaseCoverage(failures);
 const { scored, recommendedTag } = buildReleaseScoreRun({
   releases: releasesToVerify,
   releaseLimit: effectiveLimit,
-  allFetchedTags,
-  stableTagsNewestFirst,
   nowForRelease: (rel) => scoredAtMillis(rel, auditStmt.get(rel.tag), failures),
 });
 const rows = scored.map((s) => {

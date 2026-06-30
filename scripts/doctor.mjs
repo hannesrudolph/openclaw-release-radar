@@ -2,7 +2,7 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { assessIssueCrawlHealth } from './lib/doctor-health.mjs';
+import { assessDataFreshnessHealth, assessIssueCrawlHealth } from './lib/doctor-health.mjs';
 
 const SCHEMA_VERSION = 1;
 const CORE_TABLES = [
@@ -108,12 +108,9 @@ export function buildDoctorReport({
     }
 
     report.freshness = freshnessSummary(db, latest.tag, latest.scoredAt, now);
-    if (Number(report.freshness.issueUpdatedAgeHoursAtScore ?? 0) > maxIssueLagHours) {
-      warnings.push(`${latest.tag}: issue data was ${report.freshness.issueUpdatedAgeHoursAtScore}h old at scoring time`);
-    }
-    if (Number(report.freshness.issueUpdatedAgeHoursNow ?? 0) > maxIssueLagHours) {
-      warnings.push(`${latest.tag}: latest issue data is ${report.freshness.issueUpdatedAgeHoursNow}h old now`);
-    }
+    const freshnessHealth = assessDataFreshnessHealth(report.freshness, latest, { maxIssueLagHours });
+    warnings.push(...freshnessHealth.warnings);
+    failures.push(...freshnessHealth.failures);
 
     report.ingestion = ingestionSummary(db, latest);
     const crawlHealth = assessIssueCrawlHealth(report.ingestion.issueCrawl, latest);
