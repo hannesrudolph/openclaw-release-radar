@@ -86,6 +86,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /`maxWeight`/);
     assert.match(readme, /`sort`/);
     assert.match(readme, /`direction`/);
+    assert.match(readme, /`summaryOnly`/);
     assert.match(readme, /summaryByTier/);
     assert.match(readme, /filteredSummary/);
     assert.match(html, /Source freshness/);

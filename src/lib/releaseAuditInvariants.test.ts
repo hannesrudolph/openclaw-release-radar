@@ -465,6 +465,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     const maxWeight = parsed.searchParams.get('maxWeight') == null ? null : Number(parsed.searchParams.get('maxWeight'));
     const sort = parsed.searchParams.get('sort') ?? 'rank';
     const direction = parsed.searchParams.get('direction') ?? (sort === 'rank' ? 'asc' : 'desc');
+    const summaryOnly = ['1', 'true', 'yes'].includes(String(parsed.searchParams.get('summaryOnly') ?? '').toLowerCase());
     const rows = (!tiers.length || tiers.includes(row.tier)) &&
       (!impacts.length || impacts.includes(row.installImpactClass)) &&
       (!states.length || states.includes(row.issue.state)) &&
@@ -480,7 +481,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       : [];
     const cursor = Number(parsed.searchParams.get('cursor') ?? 0);
     const limit = Number(parsed.searchParams.get('limit') ?? 50);
-    const pageRows = rows.slice(cursor, cursor + limit);
+    const pageRows = summaryOnly ? [] : rows.slice(cursor, cursor + limit);
     return {
       schemaVersion: 1,
       tag: 'v1',
@@ -507,6 +508,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         maxWeight,
         sort,
         direction,
+        summaryOnly,
       },
       countsByTier: {
         verifiedDebt: 0,
@@ -557,9 +559,9 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         },
       },
       total: rows.length,
-      limit,
-      cursor,
-      nextCursor: cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
+      limit: summaryOnly ? 0 : limit,
+      cursor: summaryOnly ? 0 : cursor,
+      nextCursor: summaryOnly ? null : cursor + pageRows.length < rows.length ? cursor + pageRows.length : null,
       filteredSummary: { count: rows.length, weight: rows.length ? 1 : 0, fieldConfirmedCount: rows.length ? 1 : 0, openCount: 0, closedCount: rows.length, otherStateCount: 0, missingIssueCount: 0, byInstallImpactClass: rows.length ? { state_data: 1 } : {}, weightByInstallImpactClass: rows.length ? { state_data: 1 } : {} },
       rows: pageRows,
     };

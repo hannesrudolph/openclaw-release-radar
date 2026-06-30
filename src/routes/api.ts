@@ -381,10 +381,9 @@ function sortedIssueEvidenceRows<T extends { row: any; rank: number }>(
   sort: IssueEvidenceSort,
   direction: SortDirection,
 ): T[] {
-  const multiplier = direction === 'asc' ? 1 : -1;
   return [...rows].sort((a, b) => {
-    const valueDiff = compareIssueEvidenceSortValue(a, b, sort);
-    if (valueDiff !== 0) return valueDiff * multiplier;
+    const valueDiff = compareIssueEvidenceSortValue(a, b, sort, direction);
+    if (valueDiff !== 0) return valueDiff;
     return a.rank - b.rank;
   });
 }
@@ -393,8 +392,9 @@ function compareIssueEvidenceSortValue(
   a: { row: any; rank: number },
   b: { row: any; rank: number },
   sort: IssueEvidenceSort,
+  direction: SortDirection,
 ): number {
-  if (sort === 'rank') return a.rank - b.rank;
+  if (sort === 'rank') return direction === 'asc' ? a.rank - b.rank : b.rank - a.rank;
   const av = issueEvidenceSortValue(a.row, sort);
   const bv = issueEvidenceSortValue(b.row, sort);
   const aMissing = av == null || Number.isNaN(av);
@@ -402,12 +402,19 @@ function compareIssueEvidenceSortValue(
   if (aMissing && bMissing) return 0;
   if (aMissing) return 1;
   if (bMissing) return -1;
-  return av === bv ? 0 : av < bv ? -1 : 1;
+  const diff = av === bv ? 0 : av < bv ? -1 : 1;
+  return direction === 'asc' ? diff : -diff;
 }
 
 function issueEvidenceSortValue(row: any, sort: IssueEvidenceSort): number | null {
-  if (sort === 'weight') return Number(row.weight ?? 0);
-  if (sort === 'number') return Number(row.issue?.number ?? 0);
+  if (sort === 'weight') {
+    const weight = Number(row.weight);
+    return Number.isFinite(weight) ? weight : null;
+  }
+  if (sort === 'number') {
+    const number = Number(row.issue?.number);
+    return Number.isInteger(number) && number > 0 ? number : null;
+  }
   if (sort === 'updated') return timestampValue(row.issue?.updatedAt);
   if (sort === 'created') return timestampValue(row.issue?.createdAt);
   if (sort === 'closed') return timestampValue(row.issue?.closedAt);
@@ -785,6 +792,11 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     res.status(400).json({ error: 'invalid direction', direction: req.query.direction });
     return;
   }
+  const summaryOnly = parseBooleanFilter(req.query.summaryOnly);
+  if (summaryOnly === undefined) {
+    res.status(400).json({ error: 'invalid summaryOnly', summaryOnly: req.query.summaryOnly });
+    return;
+  }
   const limit = boundedInteger(req.query.limit, ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT, 1, ISSUE_EVIDENCE_AUDIT_MAX_LIMIT);
   const cursor = boundedInteger(req.query.cursor, 0, 0, Number.MAX_SAFE_INTEGER);
   const evidence = releaseIssueEvidenceRows(tag);
@@ -814,8 +826,8 @@ api.get('/releases/:tag/review/issues', (req, res) => {
     .filter(({ row }) => minWeight == null || Number(row.weight ?? 0) >= minWeight)
     .filter(({ row }) => maxWeight == null || Number(row.weight ?? 0) <= maxWeight);
   const allRows = sortedIssueEvidenceRows(filteredRows, sort, direction).map(({ row }) => row);
-  const pageRows = allRows.slice(cursor, cursor + limit);
-  const nextCursor = cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
+  const pageRows = summaryOnly ? [] : allRows.slice(cursor, cursor + limit);
+  const nextCursor = summaryOnly ? null : cursor + pageRows.length < allRows.length ? cursor + pageRows.length : null;
   res.json({
     schemaVersion: RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION,
     tag,
@@ -842,14 +854,15 @@ api.get('/releases/:tag/review/issues', (req, res) => {
       maxWeight,
       sort,
       direction,
+      summaryOnly: summaryOnly === true,
     },
     countsByTier: evidence.countsByTier,
     summaryByTier: evidence.summaryByTier,
     filteredSummary: summarizeIssueEvidenceRows(allRows),
     tierInfo: evidence.tierInfo,
     total: allRows.length,
-    limit,
-    cursor,
+    limit: summaryOnly ? 0 : limit,
+    cursor: summaryOnly ? 0 : cursor,
     nextCursor,
     rows: pageRows,
   });

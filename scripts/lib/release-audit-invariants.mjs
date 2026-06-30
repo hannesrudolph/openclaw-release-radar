@@ -1805,6 +1805,8 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     `issue evidence audit default sort (${firstPage.filters?.sort}) must be rank`);
   expect(failures, tag, firstPage.filters?.direction === 'asc',
     `issue evidence audit default direction (${firstPage.filters?.direction}) must be asc`);
+  expect(failures, tag, firstPage.filters?.summaryOnly === false,
+    `issue evidence audit default summaryOnly (${firstPage.filters?.summaryOnly}) must be false`);
   expectJsonEqual(failures, tag, 'issue evidence audit tierInfo must match shared tier metadata',
     firstPage.tierInfo, RELEASE_ISSUE_EVIDENCE_TIER_INFO);
   for (const [tier, count] of Object.entries(firstPage.countsByTier ?? {})) {
@@ -1845,6 +1847,22 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     expect(failures, tag, firstPage.nextCursor == null,
       `issue evidence audit nextCursor must be null at end, got ${firstPage.nextCursor}`);
   }
+  const summaryOnlyPage = await fetchJson(`${base}?summaryOnly=true&tier=carryoverDebt,staleDebt`);
+  const expectedSummaryOnlyTotal = Number(firstPage.countsByTier?.carryoverDebt ?? 0) + Number(firstPage.countsByTier?.staleDebt ?? 0);
+  expect(failures, tag, summaryOnlyPage.filters?.summaryOnly === true,
+    `issue evidence audit summaryOnly echo (${summaryOnlyPage.filters?.summaryOnly}) must be true`);
+  expect(failures, tag, summaryOnlyPage.limit === 0,
+    `issue evidence audit summaryOnly limit (${summaryOnlyPage.limit}) must be 0`);
+  expect(failures, tag, summaryOnlyPage.cursor === 0,
+    `issue evidence audit summaryOnly cursor (${summaryOnlyPage.cursor}) must be 0`);
+  expect(failures, tag, summaryOnlyPage.nextCursor == null,
+    `issue evidence audit summaryOnly nextCursor (${summaryOnlyPage.nextCursor}) must be null`);
+  expect(failures, tag, Array.isArray(summaryOnlyPage.rows) && summaryOnlyPage.rows.length === 0,
+    'issue evidence audit summaryOnly rows must be empty');
+  expect(failures, tag, summaryOnlyPage.total === expectedSummaryOnlyTotal,
+    `issue evidence audit summaryOnly total (${summaryOnlyPage.total}) must match selected tier counts (${expectedSummaryOnlyTotal})`);
+  expect(failures, tag, summaryOnlyPage.filteredSummary?.count === summaryOnlyPage.total,
+    `issue evidence audit summaryOnly filteredSummary count (${summaryOnlyPage.filteredSummary?.count}) must match total (${summaryOnlyPage.total})`);
 
   for (const row of firstPage.rows ?? []) {
     expect(failures, tag, knownIssueEvidenceTiers.has(row.tier),
@@ -2023,6 +2041,22 @@ async function verifyIssueEvidenceAuditEndpoint({ apiBase, fetchJson, failures, 
     `issue evidence audit direction echo (${numberSorted.filters?.direction}) must be asc`);
   expect(failures, tag, isNonDecreasing((numberSorted.rows ?? []).map((row) => Number(row.issue?.number ?? 0))),
     'issue evidence audit number asc sort must be non-decreasing');
+  const closedSorted = await fetchJson(`${base}?limit=25&state=open,closed&sort=closed&direction=desc`);
+  expect(failures, tag, closedSorted.filters?.sort === 'closed',
+    `issue evidence audit sort echo (${closedSorted.filters?.sort}) must be closed`);
+  expect(failures, tag, closedSorted.filters?.direction === 'desc',
+    `issue evidence audit direction echo (${closedSorted.filters?.direction}) must be desc`);
+  const closedTimestamps = (closedSorted.rows ?? []).map((row) => timestampOrNull(row.issue?.closedAt));
+  expect(failures, tag, sortValuesKeepMissingLast(closedTimestamps, 'desc'),
+    'issue evidence audit closed desc sort must be non-increasing with missing closedAt values last');
+  if (
+    Number(closedSorted.filteredSummary?.openCount ?? 0) > 0 &&
+    Number(closedSorted.filteredSummary?.closedCount ?? 0) > 0 &&
+    (closedSorted.rows ?? []).length > 0
+  ) {
+    expect(failures, tag, closedTimestamps[0] != null,
+      'issue evidence audit closed desc sort must not put open issues before closed issues with close timestamps');
+  }
 }
 
 function isNonIncreasing(values) {
@@ -2037,6 +2071,31 @@ function isNonDecreasing(values) {
     if (values[i - 1] > values[i]) return false;
   }
   return true;
+}
+
+function sortValuesKeepMissingLast(values, direction) {
+  let sawMissing = false;
+  let previous = null;
+  for (const value of values) {
+    const missing = value == null || Number.isNaN(value);
+    if (missing) {
+      sawMissing = true;
+      continue;
+    }
+    if (sawMissing) return false;
+    if (previous != null) {
+      if (direction === 'asc' && previous > value) return false;
+      if (direction === 'desc' && previous < value) return false;
+    }
+    previous = value;
+  }
+  return true;
+}
+
+function timestampOrNull(value) {
+  if (typeof value !== 'string') return null;
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) ? timestamp : null;
 }
 
 async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, tag, proof }) {
