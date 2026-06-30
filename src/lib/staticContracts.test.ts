@@ -387,14 +387,22 @@ describe('static scoring/UI contracts', () => {
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.match(script, /insertIngestionEvidenceFailure/);
+    assert.match(script, /runInWriteTransaction/);
     assert.match(script, /recordBackfillEvidenceFailure/);
+    assert.match(script, /backfill-issue-state-events-write/);
     assert.match(script, /onMissingIssueAlias/);
     assert.match(script, /const evidenceByIssue = new Map/);
     assert.ok(
-      script.indexOf('const evidenceByIssue = new Map') < script.indexOf('snapshotCurrentLabels(issueNumbers, snapshotAt)'),
+      script.indexOf('const evidenceByIssue = new Map') < script.indexOf('runInWriteTransaction(() => {'),
       'issue-state backfill must fetch all evidence before snapshot writes',
     );
+    assert.ok(
+      script.indexOf('runInWriteTransaction(() => {') < script.indexOf('snapshotCurrentLabels(issueNumbers, snapshotAt)'),
+      'issue-state backfill must write snapshots/events inside one transaction',
+    );
     assert.match(readme, /fetches all GitHub state evidence before writing snapshots\/events/);
+    assert.match(readme, /writes snapshots, closure\/reopen events, PR links, and PR rows in one transaction/);
+    assert.match(scoringDoc, /writes the full snapshot\/event\/PR batch in one DB transaction/);
     assert.match(scoringDoc, /manual state backfills cannot leave partial evidence/);
   });
 

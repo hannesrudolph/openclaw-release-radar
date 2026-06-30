@@ -250,7 +250,7 @@ PR reachability evidence must cover the current merged linked-PR candidate set b
 
 Closure evidence refresh also stages comment-derived PR lookups before replacing link rows. Raw closure evidence and comment-link replacement delete and insert their affected link rows inside DB transactions, so failed PR detail fetches do not first wipe prior link evidence.
 
-`backfill:issue-state-events` fetches all GitHub fix/state evidence before writing label snapshots, closure events, reopen events, PR links, or PR rows. Missing aliases or fetch failures are recorded in `ingestion_evidence_failures` and abort the write so manual state backfills cannot leave partial evidence while appearing clean.
+`backfill:issue-state-events` fetches all GitHub fix/state evidence before writing label snapshots, closure events, reopen events, PR links, or PR rows. After fetch succeeds, it writes the full snapshot/event/PR batch in one DB transaction. Missing aliases, fetch failures, or write failures are recorded in `ingestion_evidence_failures` and abort or roll back the write so manual state backfills cannot leave partial evidence while appearing clean.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence. Manual score writers share the same clean-ingestion guard: before writing scores, they refuse dirty ingestion metadata such as missing/malformed `issue_crawl_last_run`, page-cap or evidence-failure stop reasons, recorded evidence/classification failures, durable ingestion failure rows newer than the latest score, or any durable score-blocking ingestion failure before the first score.
 

@@ -1,6 +1,7 @@
 import {
   db,
   insertIngestionEvidenceFailure,
+  runInWriteTransaction,
   upsertIssueClosureEvent,
   upsertIssueLabelSnapshot,
   upsertIssuePrLink,
@@ -73,66 +74,83 @@ if (!dryRun) {
     console.log(`[state-events:fetch] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
   }
 
-  snapshotCurrentLabels(issueNumbers, snapshotAt);
-  for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
-    const chunk = issueNumbers.slice(offset, offset + batchSize);
-    for (const evidence of evidenceByIssue.values()) {
-      if (!chunk.includes(evidence.issueNumber)) continue;
-      for (const event of evidence.closureEvents) {
-        upsertIssueClosureEvent({
-          issue_number: event.issueNumber,
-          event_id: event.eventId,
-          closed_at: event.closedAt,
-          actor_login: event.actorLogin,
-          state_reason: event.stateReason,
-          closer_type: event.closerType,
-          closer_number: event.closerNumber,
-          closer_oid: event.closerOid,
-          raw_json: JSON.stringify(event.raw),
-        });
-        closureEvents++;
+  try {
+    runInWriteTransaction(() => {
+      snapshotCurrentLabels(issueNumbers, snapshotAt);
+      for (let offset = 0; offset < issueNumbers.length; offset += batchSize) {
+        const chunk = issueNumbers.slice(offset, offset + batchSize);
+        for (const issueNumber of chunk) {
+          const evidence = evidenceByIssue.get(issueNumber);
+          if (!evidence) continue;
+          for (const event of evidence.closureEvents) {
+            upsertIssueClosureEvent({
+              issue_number: event.issueNumber,
+              event_id: event.eventId,
+              closed_at: event.closedAt,
+              actor_login: event.actorLogin,
+              state_reason: event.stateReason,
+              closer_type: event.closerType,
+              closer_number: event.closerNumber,
+              closer_oid: event.closerOid,
+              raw_json: JSON.stringify(event.raw),
+            });
+            closureEvents++;
+          }
+          for (const event of evidence.reopenEvents) {
+            upsertIssueReopenEvent({
+              issue_number: event.issueNumber,
+              event_id: event.eventId,
+              reopened_at: event.reopenedAt,
+              actor_login: event.actorLogin,
+              raw_json: JSON.stringify(event.raw),
+            });
+            reopenEvents++;
+          }
+          for (const link of evidence.prLinks) {
+            upsertIssuePrLink({
+              issue_number: link.issueNumber,
+              pr_repository_owner: link.prRepositoryOwner,
+              pr_repository_name: link.prRepositoryName,
+              pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
+              pr_number: link.prNumber,
+              source: link.source,
+              will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
+              referenced_at: link.referencedAt,
+            });
+            prLinks++;
+          }
+          for (const pr of evidence.pullRequests) {
+            upsertPullRequestFix({
+              pr_repository_owner: pr.repositoryOwner,
+              pr_repository_name: pr.repositoryName,
+              pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+              pr_number: pr.number,
+              title: pr.title,
+              url: pr.url,
+              state: pr.state,
+              merged: pr.merged ? 1 : 0,
+              merged_at: pr.mergedAt,
+              merge_commit_oid: pr.mergeCommitOid,
+              base_ref_name: pr.baseRefName,
+            });
+            pullRequests++;
+          }
+        }
+        console.log(`[state-events] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
       }
-      for (const event of evidence.reopenEvents) {
-        upsertIssueReopenEvent({
-          issue_number: event.issueNumber,
-          event_id: event.eventId,
-          reopened_at: event.reopenedAt,
-          actor_login: event.actorLogin,
-          raw_json: JSON.stringify(event.raw),
-        });
-        reopenEvents++;
-      }
-      for (const link of evidence.prLinks) {
-        upsertIssuePrLink({
-          issue_number: link.issueNumber,
-          pr_repository_owner: link.prRepositoryOwner,
-          pr_repository_name: link.prRepositoryName,
-          pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
-          pr_number: link.prNumber,
-          source: link.source,
-          will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
-          referenced_at: link.referencedAt,
-        });
-        prLinks++;
-      }
-      for (const pr of evidence.pullRequests) {
-        upsertPullRequestFix({
-          pr_repository_owner: pr.repositoryOwner,
-          pr_repository_name: pr.repositoryName,
-          pr_repository_name_with_owner: pr.repositoryNameWithOwner,
-          pr_number: pr.number,
-          title: pr.title,
-          url: pr.url,
-          state: pr.state,
-          merged: pr.merged ? 1 : 0,
-          merged_at: pr.mergedAt,
-          merge_commit_oid: pr.mergeCommitOid,
-          base_ref_name: pr.baseRefName,
-        });
-        pullRequests++;
-      }
-    }
-    console.log(`[state-events] ${Math.min(offset + chunk.length, issueNumbers.length)}/${issueNumbers.length}`);
+    });
+  } catch (error) {
+    const message = recordBackfillEvidenceFailure(
+      'backfill-issue-state-events-write',
+      'write phase',
+      error,
+      {
+        issueCount: issueNumbers.length,
+        batchSize,
+        snapshotAt,
+      },
+    );
+    throw new Error(`${message}; rolled back issue state evidence writes`);
   }
 }
 
