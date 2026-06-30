@@ -28,6 +28,7 @@ export function buildDoctorReport({
   dbPath = process.env.DB_PATH ?? './data/radar.db',
   now = new Date(),
   maxIssueLagHours = 48,
+  failOnWarnings = false,
 } = {}) {
   const resolvedPath = resolve(dbPath);
   const failures = [];
@@ -41,6 +42,10 @@ export function buildDoctorReport({
       exists: existsSync(resolvedPath),
       sizeBytes: null,
       readOnly: true,
+    },
+    strict: {
+      failOnWarnings: failOnWarnings === true,
+      maxIssueLagHours,
     },
     tables: {},
     latestScoredStable: null,
@@ -56,7 +61,7 @@ export function buildDoctorReport({
 
   if (!report.db.exists) {
     failures.push(`database not found: ${resolvedPath}`);
-    return finish(report);
+    return finish(report, { failOnWarnings });
   }
 
   report.db.sizeBytes = statSync(resolvedPath).size;
@@ -81,7 +86,7 @@ export function buildDoctorReport({
     report.latestScoredStable = latest;
     if (!latest) {
       failures.push('no scored stable release found');
-      return finish(report);
+      return finish(report, { failOnWarnings });
     }
     if (!latest.auditPresent) failures.push(`${latest.tag}: missing release_score_audits row`);
     if (latest.finalScore !== latest.auditFinalScore) {
@@ -123,7 +128,7 @@ export function buildDoctorReport({
     db.close();
   }
 
-  return finish(report);
+  return finish(report, { failOnWarnings });
 }
 
 async function main() {
@@ -131,18 +136,19 @@ async function main() {
   const report = buildDoctorReport({
     dbPath: args['db-path'] ?? process.env.DB_PATH ?? './data/radar.db',
     maxIssueLagHours: Number(args['max-issue-lag-hours'] ?? 48),
+    failOnWarnings: args['fail-on-warnings'] === true,
   });
   if (args['api-base']) {
     report.api = await apiSummary(String(args['api-base']).replace(/\/$/, ''));
     verifyApiAgainstDb(report);
   }
-  report.ok = report.failures.length === 0;
+  report.ok = report.failures.length === 0 && (args['fail-on-warnings'] !== true || report.warnings.length === 0);
   console.log(JSON.stringify(report, null, 2));
   if (!report.ok) process.exit(1);
 }
 
-function finish(report) {
-  report.ok = report.failures.length === 0;
+function finish(report, { failOnWarnings = false } = {}) {
+  report.ok = report.failures.length === 0 && (failOnWarnings !== true || report.warnings.length === 0);
   return report;
 }
 

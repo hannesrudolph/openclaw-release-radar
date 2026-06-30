@@ -149,14 +149,16 @@ describe('static scoring/UI contracts', () => {
     assert.equal(pkg.scripts['verify:score'], 'tsx scripts/verify-new-scoring.mjs --check');
     assert.equal(pkg.scripts['verify:scripts'], 'for f in scripts/*.mjs scripts/lib/*.mjs; do node --check "$f"; done');
     assert.equal(pkg.scripts['verify:ci'], 'npm run typecheck && npm test && npm run verify:scripts && npm run build');
-    assert.equal(pkg.scripts['verify:local'], 'npm run doctor && npm run verify:score -- --all && npm run verify:release-audit -- --all');
-    assert.equal(pkg.scripts['verify:live'], 'npm run doctor -- --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
+    assert.equal(pkg.scripts['verify:local'], 'npm run doctor -- --fail-on-warnings && npm run verify:score -- --all && npm run verify:release-audit -- --all');
+    assert.equal(pkg.scripts['verify:live'], 'npm run doctor -- --fail-on-warnings --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke');
     assert.equal(pkg.scripts.doctor, 'tsx scripts/doctor.mjs');
     const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
     assert.match(doctor, /readOnly: true/);
     assert.match(doctor, /PRAGMA query_only = ON/);
     assert.match(doctor, /closure proof rows/);
     assert.match(doctor, /expected exactly one recommended scored stable release/);
+    assert.match(doctor, /failOnWarnings/);
+    assert.match(doctor, /fail-on-warnings/);
     assert.match(doctor, /api-base/);
     assert.match(doctor, /api public recommended tag/);
     assert.match(doctor, /api status lastScoredAt/);
@@ -181,6 +183,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run verify:local/);
     assert.match(readme, /npm run verify:live/);
     assert.match(readme, /npm run doctor/);
+    assert.match(readme, /--fail-on-warnings/);
     assert.match(readme, /read-only SQLite health report/);
   });
 
