@@ -1195,6 +1195,31 @@ function verifyDataFreshness({ failures, tag, dataFreshness, releaseTag, scoredA
   }
 }
 
+function verifyReviewSourceProvenance({ failures, tag, sourceProvenance, dataFreshness, scoredAt }) {
+  expect(failures, tag, isObject(sourceProvenance), 'review sourceProvenance must be present');
+  if (!isObject(sourceProvenance)) return;
+  expect(failures, tag, sourceProvenance.sourceMode === 'current_db',
+    `review sourceProvenance sourceMode (${sourceProvenance.sourceMode}) must be current_db`);
+  expect(failures, tag, sourceProvenance.scoreTable === 'release_score_audits',
+    `review sourceProvenance scoreTable (${sourceProvenance.scoreTable}) must be release_score_audits`);
+  expect(failures, tag, sourceProvenance.scoredAt === scoredAt,
+    `review sourceProvenance scoredAt (${sourceProvenance.scoredAt}) must match DB scored_at (${scoredAt})`);
+  expect(failures, tag, sourceProvenance.dataFreshnessScoredAt === dataFreshness?.scoredAt,
+    `review sourceProvenance dataFreshnessScoredAt (${sourceProvenance.dataFreshnessScoredAt}) must match dataFreshness scoredAt (${dataFreshness?.scoredAt})`);
+  expect(failures, tag, sourceProvenance.scoreTimestampAligned === (scoredAt === dataFreshness?.scoredAt),
+    `review sourceProvenance scoreTimestampAligned (${sourceProvenance.scoreTimestampAligned}) must reflect scoredAt/dataFreshness alignment`);
+  expectJsonEqual(failures, tag, 'review sourceProvenance sources must match review dataFreshness sources',
+    sourceProvenance.sources, dataFreshness?.sources);
+  const encodedTag = encodeURIComponent(tag);
+  const expectedRawRows = {
+    issues: `/api/releases/${encodedTag}/review/issues`,
+    closureProofs: `/api/releases/${encodedTag}/review/closure-proofs`,
+    reachability: `/api/releases/${encodedTag}/review/reachability`,
+  };
+  expectJsonEqual(failures, tag, 'review sourceProvenance rawRows must point at review row endpoints',
+    sourceProvenance.rawRows, expectedRawRows);
+}
+
 function ageHoursAtScore(sourceAt, scoredAt) {
   if (!sourceAt || !scoredAt) return null;
   const sourceMs = Date.parse(sourceAt);
@@ -1860,6 +1885,13 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     expect(failures, release.tag, review.local?.scoredAt === release.scored_at,
       `review scoredAt (${review.local?.scoredAt}) must match DB scored_at (${release.scored_at})`);
     verifyDataFreshness({ failures, tag: release.tag, dataFreshness: review.local?.dataFreshness, releaseTag: release.tag, scoredAt: release.scored_at });
+    verifyReviewSourceProvenance({
+      failures,
+      tag: release.tag,
+      sourceProvenance: review.local?.sourceProvenance,
+      dataFreshness: review.local?.dataFreshness,
+      scoredAt: release.scored_at,
+    });
     if (releaseApi) {
       expect(failures, release.tag, releaseApi.band === review.local?.band,
         `releases band (${releaseApi.band}) must match review band (${review.local?.band})`);

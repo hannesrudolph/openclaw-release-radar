@@ -356,6 +356,19 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       affectedUsers: 'some',
     }],
   };
+  const sourceProvenance = {
+    sourceMode: 'current_db',
+    scoreTable: 'release_score_audits',
+    scoredAt: auditScoredAt,
+    dataFreshnessScoredAt: dataFreshness.scoredAt,
+    scoreTimestampAligned: true,
+    sources: dataFreshness.sources,
+    rawRows: {
+      issues: '/api/releases/v1/review/issues',
+      closureProofs: '/api/releases/v1/review/closure-proofs',
+      reachability: '/api/releases/v1/review/reachability',
+    },
+  };
   mutator?.(dataFreshness, publicRelease);
   const closurePage = (url: string) => {
     const parsed = new URL(url);
@@ -797,6 +810,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           positiveIssues: 0,
           scoredAt: auditScoredAt,
           dataFreshness,
+          sourceProvenance,
           input: { schemaVersion: 1, rawIssueCount: 1, classifiedIssueCount: 1 },
           issueEvidence: { schemaVersion: 1 },
           gateEvidence: {
@@ -978,6 +992,37 @@ describe('verifyReleaseAudit', () => {
     });
 
     assert.ok(result.failures.some((failure) => /evidence reason must be known/.test(failure)));
+  });
+
+  it('fails when review source provenance drifts from score freshness', async () => {
+    const fetchJson = apiFixtureFetchJson();
+    const result = await verifyReleaseAudit({
+      reader: reader(),
+      apiBase: 'http://example.test',
+      fetchJson: async (url: string) => {
+        const payload = await fetchJson(url);
+        if (url.endsWith('/api/releases/v1/review')) {
+          return {
+            ...payload,
+            local: {
+              ...payload.local,
+              sourceProvenance: {
+                ...payload.local.sourceProvenance,
+                scoreTimestampAligned: false,
+                rawRows: {
+                  ...payload.local.sourceProvenance.rawRows,
+                  issues: '/wrong/issues',
+                },
+              },
+            },
+          };
+        }
+        return payload;
+      },
+    });
+
+    assert.ok(result.failures.some((failure) => /scoreTimestampAligned/.test(failure)));
+    assert.ok(result.failures.some((failure) => /rawRows must point at review row endpoints/.test(failure)));
   });
 
   it('fails when review closure proof masks stale persisted audit proof payload', async () => {

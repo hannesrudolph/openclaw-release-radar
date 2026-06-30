@@ -656,6 +656,23 @@ function freshnessForRelease(
   };
 }
 
+function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshness: ReturnType<typeof freshnessForRelease>) {
+  const encodedTag = encodeURIComponent(tag);
+  return {
+    sourceMode: 'current_db',
+    scoreTable: 'release_score_audits',
+    scoredAt,
+    dataFreshnessScoredAt: dataFreshness.scoredAt,
+    scoreTimestampAligned: scoredAt === dataFreshness.scoredAt,
+    sources: dataFreshness.sources,
+    rawRows: {
+      issues: `/api/releases/${encodedTag}/review/issues`,
+      closureProofs: `/api/releases/${encodedTag}/review/closure-proofs`,
+      reachability: `/api/releases/${encodedTag}/review/reachability`,
+    },
+  };
+}
+
 api.get('/releases', (_req, res) => {
   const rows = listReleasesDb(config.limits.releases);
   const advisories = listAdvisories();
@@ -759,6 +776,7 @@ api.get('/releases/:tag/review', (req, res) => {
   }
   const audit = getReleaseScoreAudit(tag);
   const gateEvidence = enrichGateEvidenceWithClosureProof(tag, parseJson(audit?.gate_evidence_json, null));
+  const dataFreshness = freshnessForRelease(release, audit);
   const payload: Record<string, unknown> = {
     tag,
     local: {
@@ -771,7 +789,8 @@ api.get('/releases/:tag/review', (req, res) => {
       negativeIssues: release.negative_issues,
       positiveIssues: release.positive_issues,
       scoredAt: release.scored_at,
-      dataFreshness: freshnessForRelease(release, audit),
+      dataFreshness,
+      sourceProvenance: reviewSourceProvenance(tag, release.scored_at, dataFreshness),
       modelVersion: audit?.score_model_version ?? null,
       promptVersion: audit?.prompt_version ?? null,
       input: parseJson(audit?.input_json, null),

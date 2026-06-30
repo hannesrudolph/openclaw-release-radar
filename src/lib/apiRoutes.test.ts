@@ -115,6 +115,26 @@ after(async () => {
 });
 
 describe('audit API routes', () => {
+  it('exposes parent review source provenance and raw row links', async () => {
+    const response = await getJson('/api/releases/v-test/review');
+
+    assert.equal(response.status, 200);
+    assert.equal(response.body.local.sourceProvenance.sourceMode, 'current_db');
+    assert.equal(response.body.local.sourceProvenance.scoreTable, 'release_score_audits');
+    assert.equal(response.body.local.sourceProvenance.scoredAt, response.body.local.scoredAt);
+    assert.equal(response.body.local.sourceProvenance.dataFreshnessScoredAt, response.body.local.dataFreshness.scoredAt);
+    assert.equal(
+      response.body.local.sourceProvenance.scoreTimestampAligned,
+      response.body.local.scoredAt === response.body.local.dataFreshness.scoredAt,
+    );
+    assert.deepEqual(response.body.local.sourceProvenance.sources, response.body.local.dataFreshness.sources);
+    assert.deepEqual(response.body.local.sourceProvenance.rawRows, {
+      issues: '/api/releases/v-test/review/issues',
+      closureProofs: '/api/releases/v-test/review/closure-proofs',
+      reachability: '/api/releases/v-test/review/reachability',
+    });
+  });
+
   it('rejects invalid issue evidence filters at the route boundary', async () => {
     const cases = [
       ['/api/releases/v-test/review/issues?tier=not-a-tier', 'invalid tier'],
