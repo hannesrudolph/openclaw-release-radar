@@ -1,6 +1,6 @@
 # Scoring Model
 
-Current model: `evidence-v13-effective-closure-risk`
+Current model: `evidence-v14-closure-risk-ceilings`
 
 The score answers one question:
 
@@ -38,7 +38,7 @@ The normal score starts from a base value, then applies bounded components:
 
 Still-open release-local reports are not counted again in the opened-vs-fixed regression balance; they already score as active open debt. The regression component uses field-visible reports opened during the release window that are no longer open, plus verified fixes, so a single unresolved report does not lower the score twice.
 
-When unresolved closed-release risk is heavy, the model also applies a score ceiling of `7.9`. This prevents CI/artifact/survival bonuses from making a release look `solid` while many closed-window issues are known not to be fixed in the tag, moved to open canonicals, or still unsupported by release proof.
+When unresolved closed-release risk is meaningful, the model also applies score ceilings. Moderate unresolved closure risk caps very high scores at `8.4`; substantial unresolved closure risk, by weight or issue count, caps at `7.9` so the release cannot display as `solid` while many closed-window issues are known not to be fixed in the tag, moved to open canonicals, or still unsupported by release proof.
 
 ## Issue Evidence Rules
 
@@ -216,7 +216,7 @@ The closure proof payload also rolls status buckets into risk dispositions:
 - `neutral_or_non_actionable`: not-scored closure evidence such as non-bug reports, concrete non-actionable rationale, reporter replacement, withdrawal, or self-closure.
 - `missing_evidence`: missing closure timeline/proof evidence.
 
-`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, not-planned closures resolved by trusted release proof, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale or proof are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, a risk-only bug-evidence hint, then disposition weight times severity, functionality, scope, and affected-user reach. Neutral/stale/enhancement-shaped rows are treated as negative risk when concrete bug evidence is present, such as source-only repro plus impact labels, data-loss labels, explicit bug/regression labels, affected-version evidence, or bug-shaped titles. This prevents a manual/bot close or stale label from becoming zero-risk solely because the display classification is neutral. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty. Separately, if `unresolvedClosureRiskWeight` is at least 80, the final eligible score is capped at 7.9 so heavy unresolved closure risk cannot still display as `solid`.
+`unresolvedForReleaseCount` is the sum of `known_not_in_release`, `open_canonical_risk`, `unsupported_closure_claim`, and `missing_evidence`. It deliberately excludes direct fixes, duplicate reports resolved by canonical release fixes, not-planned closures resolved by trusted release proof, and not-scored/non-actionable closures so the UI does not imply every non-credited closure is a broken user report. Admin `NOT_PLANNED` closures without trusted rationale or proof are not in that not-scored bucket; they remain `unsupported_closure_claim`. The scorer converts the unresolved set into `unresolvedClosureRiskWeight` with the same effective classification path used by open-debt scoring: historical label reconstruction, deterministic title/label overrides, a risk-only bug-evidence hint, then disposition weight times severity, functionality, scope, and affected-user reach. Neutral/stale/enhancement-shaped rows are treated as negative risk when concrete bug evidence is present, such as source-only repro plus impact labels, data-loss labels, explicit bug/regression labels, affected-version evidence, or bug-shaped titles. This prevents a manual/bot close or stale label from becoming zero-risk solely because the display classification is neutral. Known-not-in-release counts as 1.0, open canonical risk as 1.2, unsupported closure/admin claim as 0.8, and missing proof evidence as 1.5 before issue severity/reach weighting. The resulting `closureRisk` score component is capped at a 0.5 point penalty. Separately, if `unresolvedClosureRiskWeight` is at least 40 or `unresolvedForReleaseCount` is at least 50, the final eligible score is capped at 8.4; if the weight is at least 60 or the count is at least 75, the cap is 7.9.
 
 The API exposes a coherent `releaseFixCredit` object:
 

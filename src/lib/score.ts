@@ -9,7 +9,7 @@ import type { IssueClassification } from './llm';
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v13-effective-closure-risk';
+export const SCORE_MODEL_VERSION = 'evidence-v14-closure-risk-ceilings';
 export const REC_THRESHOLD = 5.5;
 
 const SETTLE_HOURS = 24;
@@ -17,7 +17,11 @@ const HOTFIX_GAP_HOURS = 6;
 const PIVOT_HOURS = 24;
 const BASE = 7.5;
 const HOTFIX_SCORE_CAP = 4.9;
-const HEAVY_CLOSURE_RISK_THRESHOLD = 80;
+const NOTICEABLE_CLOSURE_RISK_THRESHOLD = 40;
+const NOTICEABLE_CLOSURE_ISSUE_THRESHOLD = 50;
+const NOTICEABLE_CLOSURE_SCORE_CAP = 8.4;
+const HEAVY_CLOSURE_RISK_THRESHOLD = 60;
+const HEAVY_CLOSURE_ISSUE_THRESHOLD = 75;
 const HEAVY_CLOSURE_SCORE_CAP = 7.9;
 
 const SURVIVAL_MIN = -2.5;
@@ -44,7 +48,11 @@ export const SCORE_COMPONENT_LIMITS = {
   carryoverDebtMaxPenalty: Math.abs(CARRYOVER_DEBT_MAX),
   staleDebtMaxPenalty: Math.abs(STALE_DEBT_MAX),
   closureRiskMaxPenalty: Math.abs(CLOSURE_RISK_MAX),
+  noticeableClosureRiskThreshold: NOTICEABLE_CLOSURE_RISK_THRESHOLD,
+  noticeableClosureIssueThreshold: NOTICEABLE_CLOSURE_ISSUE_THRESHOLD,
+  noticeableClosureScoreCap: NOTICEABLE_CLOSURE_SCORE_CAP,
   heavyClosureRiskThreshold: HEAVY_CLOSURE_RISK_THRESHOLD,
+  heavyClosureIssueThreshold: HEAVY_CLOSURE_ISSUE_THRESHOLD,
   heavyClosureScoreCap: HEAVY_CLOSURE_SCORE_CAP,
 } as const;
 
@@ -555,6 +563,18 @@ function closureRiskPoints(load: number): number {
   return clamp(-Math.log1p(Math.max(0, load)) * 0.08, CLOSURE_RISK_MAX, 0);
 }
 
+function closureRiskScoreCeiling(input: InstallInput): number {
+  const weight = Math.max(0, input.unresolvedClosureRiskWeight ?? 0);
+  const count = Math.max(0, input.unresolvedClosureIssueCount ?? 0);
+  if (weight >= HEAVY_CLOSURE_RISK_THRESHOLD || count >= HEAVY_CLOSURE_ISSUE_THRESHOLD) {
+    return HEAVY_CLOSURE_SCORE_CAP;
+  }
+  if (weight >= NOTICEABLE_CLOSURE_RISK_THRESHOLD || count >= NOTICEABLE_CLOSURE_ISSUE_THRESHOLD) {
+    return NOTICEABLE_CLOSURE_SCORE_CAP;
+  }
+  return 0;
+}
+
 function coveragePoints(rawIssueCount: number, classifiedIssueCount: number): {
   points: number;
   ratio: number;
@@ -763,14 +783,13 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
   const breaking = breakingPoints(input.breakingCount);
   const releaseVerification = releaseVerificationPoints(input);
   const artifactVerification = artifactVerificationPoints(input);
+  const closureRiskCeiling = closureRiskScoreCeiling(input);
   let score = clamp(
     BASE + verifiedDebt + carryoverDebt + staleDebt + closureRisk + coverage.points + survival + shakeout + regression + breaking + releaseVerification + artifactVerification,
     0,
     10,
   );
-  if (input.unresolvedClosureRiskWeight >= HEAVY_CLOSURE_RISK_THRESHOLD) {
-    score = Math.min(score, HEAVY_CLOSURE_SCORE_CAP);
-  }
+  if (closureRiskCeiling > 0) score = Math.min(score, closureRiskCeiling);
   if (hotfix) score = Math.min(score, HOTFIX_SCORE_CAP);
 
   const rounded = round1(score);
@@ -785,9 +804,7 @@ export function installConfidence(input: InstallInput, now: number = Date.now())
       carryoverDebt: round1(carryoverDebt),
       staleDebt: round1(staleDebt),
       closureRisk: round1(closureRisk),
-      closureRiskCeiling: input.unresolvedClosureRiskWeight >= HEAVY_CLOSURE_RISK_THRESHOLD
-        ? HEAVY_CLOSURE_SCORE_CAP
-        : 0,
+      closureRiskCeiling,
       coverage: round1(coverage.points),
       survival: round1(survival),
       shakeout: round1(shakeout),

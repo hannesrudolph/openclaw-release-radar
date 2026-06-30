@@ -244,6 +244,46 @@ describe('installConfidence — graded signals', () => {
     assert.equal(heavy.components?.closureRisk, -0.5);
   });
 
+  it('count-aware unresolved closure risk blocks solid scores before the old cliff', () => {
+    const risky = installConfidence(mk({
+      hoursToNextStable: 96,
+      betaCount: 10,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: 7,
+      releaseCheckSuccess: 7,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+      unresolvedClosureRiskWeight: 79.9,
+      unresolvedClosureIssueCount: 118,
+    }), NOW);
+
+    assert.equal(risky.score, 7.9);
+    assert.equal(risky.band, 'ok');
+    assert.equal(risky.components?.closureRiskCeiling, 7.9);
+  });
+
+  it('moderate unresolved closure risk caps very high scores without blocking solid outright', () => {
+    const risky = installConfidence(mk({
+      hoursToNextStable: 96,
+      betaCount: 10,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: 7,
+      releaseCheckSuccess: 7,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+      unresolvedClosureRiskWeight: 45,
+      unresolvedClosureIssueCount: 20,
+    }), NOW);
+
+    assert.equal(risky.score, 8.4);
+    assert.equal(risky.band, 'solid');
+    assert.equal(risky.components?.closureRiskCeiling, 8.4);
+  });
+
   it('heavy unresolved closed-release risk caps otherwise strong eligible scores below solid', () => {
     const strong = installConfidence(mk({
       hoursToNextStable: 96,

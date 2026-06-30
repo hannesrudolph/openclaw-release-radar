@@ -109,8 +109,12 @@ describe('release score explanations', () => {
     assert.equal(typeof closure.metrics?.unresolvedForReleaseCount, 'number');
     assert.equal(typeof closure.metrics?.unresolvedClosureRiskWeight, 'number');
     assert.equal(typeof closure.metrics?.cappedPenalty, 'number');
-    if ((closure.metrics?.unresolvedClosureRiskWeight ?? 0) >= 80) {
+    if (closure.metrics?.scoreCeiling != null) {
       assert.equal(typeof closure.metrics?.scoreCeiling, 'number');
+      assert.equal(typeof closure.metrics?.noticeableClosureRiskThreshold, 'number');
+      assert.equal(typeof closure.metrics?.noticeableClosureIssueThreshold, 'number');
+      assert.equal(typeof closure.metrics?.heavyClosureRiskThreshold, 'number');
+      assert.equal(typeof closure.metrics?.heavyClosureIssueThreshold, 'number');
     }
     assert.equal(typeof closure.metrics?.neutralOrNonActionableCount, 'number');
     assert.equal(typeof closure.metrics?.neutralHighImpactCount, 'number');

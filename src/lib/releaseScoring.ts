@@ -871,7 +871,7 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
       `${unresolvedClosureCount} closed issues in this release window still carry unresolved release risk after proof checks.` +
       ` ${closureProof.notCreditedCount} total closed issues are not direct release-fix credit, including not-scored or non-actionable closures.` +
       ` This contributes ${penaltyText(components.closureRisk)}; this bucket can contribute up to a ${SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty} point penalty.` +
-      ((components.closureRiskCeiling ?? 0) > 0 ? ` Because closure risk weight is at least ${SCORE_COMPONENT_LIMITS.heavyClosureRiskThreshold}, heavy unresolved closure risk caps the final score at ${components.closureRiskCeiling}.` : '') +
+      ((components.closureRiskCeiling ?? 0) > 0 ? ` Because unresolved closure risk is ${roundMetric(input.unresolvedClosureRiskWeight)} across ${unresolvedClosureCount} issue(s), the final score is capped at ${components.closureRiskCeiling}.` : '') +
       ((Number(riskSummary.neutralHighImpactCount ?? 0) > 0 || Number(riskSummary.neutralBugShapedCount ?? 0) > 0)
         ? ` Audit-only closure flags: ${Number(riskSummary.neutralHighImpactCount ?? 0)} high-impact and ${Number(riskSummary.neutralBugShapedCount ?? 0)} bug-shaped not-scored closures were left out of the scored closure penalty; review them separately.`
         : '') +
@@ -888,7 +888,11 @@ function buildScoreExplanation(result: ReleaseScoreResult, recommended: boolean)
           maxPenalty: SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty,
           capApplied: Math.abs(numberOrZero(components.closureRisk)) >= SCORE_COMPONENT_LIMITS.closureRiskMaxPenalty,
           scoreCeiling: Number(components.closureRiskCeiling ?? 0) || null,
+          noticeableClosureRiskThreshold: SCORE_COMPONENT_LIMITS.noticeableClosureRiskThreshold,
+          noticeableClosureIssueThreshold: SCORE_COMPONENT_LIMITS.noticeableClosureIssueThreshold,
+          noticeableClosureScoreCap: SCORE_COMPONENT_LIMITS.noticeableClosureScoreCap,
           heavyClosureRiskThreshold: SCORE_COMPONENT_LIMITS.heavyClosureRiskThreshold,
+          heavyClosureIssueThreshold: SCORE_COMPONENT_LIMITS.heavyClosureIssueThreshold,
           resolvedByCanonicalReleaseFixCount: Number(riskSummary.resolvedByCanonicalReleaseFixCount ?? 0),
           resolvedByReleaseFixProofCount: Number(riskSummary.resolvedByReleaseFixProofCount ?? 0),
           knownNotInReleaseCount: Number(riskSummary.knownNotInReleaseCount ?? 0),
@@ -1171,7 +1175,7 @@ function scoreLedgerCaps(result: ReleaseScoreResult, subtotalBeforeCaps: number)
       applied: scoreAfterCaps > components.closureRiskCeiling,
       before: scoreAfterCaps,
       after,
-      reason: 'Heavy unresolved closed-release risk prevents a solid score.',
+      reason: 'Unresolved closed-release risk limits confidence while release proof remains incomplete.',
     });
     scoreAfterCaps = after;
   }
