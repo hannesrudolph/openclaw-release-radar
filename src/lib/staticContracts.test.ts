@@ -473,6 +473,7 @@ describe('static scoring/UI contracts', () => {
 
   it('closure evidence refresh fetches PR mention evidence before replacing links', () => {
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
     const rawMentionFetch = analysis.indexOf('const mentionedPrs = await listPullRequestFixesBatch');
     const rawDelete = analysis.indexOf('deleteIssuePrLinksForIssues(chunk)');
     const commentMentionFetch = analysis.lastIndexOf('const mentionedPrs = await listPullRequestFixesBatch');
@@ -481,6 +482,8 @@ describe('static scoring/UI contracts', () => {
       'raw closure evidence must fetch comment PR details before replacing issue PR links');
     assert.ok(commentMentionFetch !== -1 && commentDelete !== -1 && commentMentionFetch < commentDelete,
       'comment-derived PR refresh must fetch replacement PR details before deleting old comment links');
+    assert.match(github, /missing pull request .* while resolving closure-comment PR evidence/);
+    assert.doesNotMatch(github, /chunk\.length === 1 && isMissingPullRequestError\(e\)\) continue/);
     assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteIssuePrLinksForIssues\(chunk\);/);
     assert.match(analysis, /runInWriteTransaction\(\(\) => \{\s*deleteCommentIssuePrLinksForIssues\(issueNumbers\);/);
   });

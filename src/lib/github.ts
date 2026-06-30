@@ -1350,7 +1350,9 @@ async function listPullRequestFixesForRepo(
         for (const [key, pr] of rest) all.set(key, pr);
         continue;
       }
-      if (chunk.length === 1 && isMissingPullRequestError(e)) continue;
+      if (chunk.length === 1 && isMissingPullRequestError(e)) {
+        throw new Error(`GitHub GraphQL missing pull request ${repo.nameWithOwner}#${chunk[0]} while resolving closure-comment PR evidence`);
+      }
       throw e;
     }
     const responseRepo = assertRepo(data.repository);
