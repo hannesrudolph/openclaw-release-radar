@@ -288,6 +288,8 @@ npm start
 
 `npm run backfill:issue-state-events -- --limit 10` fetches close/reopen timeline evidence and snapshots current labels for the current scored issue universe, so release attribution uses issue open intervals and latest-release scores have reproducible label evidence. It fetches all GitHub state evidence before writing snapshots/events; fetch failures or missing issue aliases are recorded in `ingestion_evidence_failures` and abort the write.
 
+`npm run check:release-pr-reachability -- v2026.6.10` rebuilds PR merge-commit reachability for one release tag. It stages the full replacement set before writing, then swaps rows in one transaction; git evidence failures leave the previous rows intact and are recorded as score-blocking `ingestion_evidence_failures`.
+
 `npm run backfill:closed-windows -- --all` classifies raw closed-window issues missing current classification rows, reruns closure proof/reachability for scored stable releases, and persists the refreshed score audit.
 
 `npm run dev` runs TypeScript directly with watch mode.

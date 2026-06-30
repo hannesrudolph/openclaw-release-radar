@@ -3,7 +3,7 @@ import { mkdir } from 'node:fs/promises';
 import { dirname, resolve } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { config } from '../config';
-import { db, deleteReleasePrReachabilityForRelease, upsertReleasePrReachability } from './db';
+import { db, replaceReleasePrReachabilityForRelease, type ReleasePrReachabilityInput } from './db';
 
 export interface ReleaseReachabilityResult {
   tag: string;
@@ -80,136 +80,76 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
   let reachable = 0;
   let unknown = 0;
   let notReachable = 0;
-  deleteReleasePrReachabilityForRelease(tag);
+  const rows: ReleasePrReachabilityInput[] = [];
 
   const release = releaseCommitStmt.get(tag) as { tag_commit_oid: string | null } | undefined;
   if (!release?.tag_commit_oid) {
-    for (const candidate of candidates) {
-      upsertReleasePrReachability({
-        tag,
-        pr_repository_owner: candidate.pr_repository_owner,
-        pr_repository_name: candidate.pr_repository_name,
-        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
-        pr_number: candidate.pr_number,
-        tag_commit_oid: null,
-        merge_commit_oid: candidate.merge_commit_oid ?? null,
-        base_ref_name: candidate.base_ref_name ?? null,
-        status: 'unknown',
-        evidence_json: JSON.stringify(reachabilityEvidence({
-          evidence: 'release_commit_unavailable',
-          tagCommitOid: null,
-          checkedCommitOid: candidate.merge_commit_oid ?? null,
-          baseRefName: candidate.base_ref_name ?? null,
-        })),
-      });
-      unknown++;
-    }
-    return { tag, releaseCommit: null, candidates: candidates.length, reachable: 0, notReachable: 0, unknown };
+    throw new Error(`Release ${tag} has no tag commit evidence; refusing to replace PR reachability rows`);
   }
 
   await ensureRepo();
   git(['remote', 'set-url', 'origin', remote], { allowFailure: true });
-  const releaseFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid], {
+  const releaseFetchArgs = ['fetch', '--filter=blob:none', '--no-tags', 'origin', release.tag_commit_oid];
+  const releaseFetch = git(releaseFetchArgs, {
     allowFailure: true,
     stdio: 'inherit',
   });
   if (releaseFetch.status !== 0) {
-    for (const candidate of candidates) {
-      upsertReleasePrReachability({
-        tag,
-        pr_repository_owner: candidate.pr_repository_owner,
-        pr_repository_name: candidate.pr_repository_name,
-        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
-        pr_number: candidate.pr_number,
-        tag_commit_oid: release.tag_commit_oid,
-        merge_commit_oid: candidate.merge_commit_oid ?? null,
-        base_ref_name: candidate.base_ref_name ?? null,
-        status: 'unknown',
-        evidence_json: JSON.stringify(reachabilityEvidence({
-          evidence: 'release_commit_fetch_failed',
-          tagCommitOid: release.tag_commit_oid,
-          checkedCommitOid: candidate.merge_commit_oid ?? null,
-          baseRefName: candidate.base_ref_name ?? null,
-          command: releaseFetch,
-        })),
-      });
-      unknown++;
-    }
-    return { tag, releaseCommit: release.tag_commit_oid, candidates: candidates.length, reachable: 0, notReachable: 0, unknown };
+    throw new Error(gitFailureMessage('release_commit_fetch_failed', releaseFetchArgs, releaseFetch));
   }
 
   for (const candidate of candidates) {
     const commit = candidate.merge_commit_oid;
     if (!commit) {
-      upsertReleasePrReachability({
-        tag,
-        pr_repository_owner: candidate.pr_repository_owner,
-        pr_repository_name: candidate.pr_repository_name,
-        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
-        pr_number: candidate.pr_number,
-        tag_commit_oid: release.tag_commit_oid,
-        merge_commit_oid: null,
-        base_ref_name: candidate.base_ref_name ?? null,
+      rows.push(reachabilityRow(candidate, tag, {
+        tagCommitOid: release.tag_commit_oid,
+        mergeCommitOid: null,
         status: 'unknown',
-        evidence_json: JSON.stringify(reachabilityEvidence({
+        evidence: reachabilityEvidence({
           evidence: 'merge_commit_oid_unavailable',
           tagCommitOid: release.tag_commit_oid,
           checkedCommitOid: null,
           baseRefName: candidate.base_ref_name ?? null,
-        })),
-      });
+        }),
+      }));
       unknown++;
       continue;
     }
-    const commitFetch = git(['fetch', '--filter=blob:none', '--no-tags', 'origin', commit], { allowFailure: true });
-    const exists = git(['cat-file', '-e', `${commit}^{commit}`], { allowFailure: true });
+    const commitFetchArgs = ['fetch', '--filter=blob:none', '--no-tags', 'origin', commit];
+    const commitFetch = git(commitFetchArgs, { allowFailure: true });
+    if (commitFetch.status !== 0) {
+      throw new Error(gitFailureMessage('commit_fetch_failed', commitFetchArgs, commitFetch));
+    }
+    const existsArgs = ['cat-file', '-e', `${commit}^{commit}`];
+    const exists = git(existsArgs, { allowFailure: true });
     if (exists.status !== 0) {
-      upsertReleasePrReachability({
-        tag,
-        pr_repository_owner: candidate.pr_repository_owner,
-        pr_repository_name: candidate.pr_repository_name,
-        pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
-        pr_number: candidate.pr_number,
-        tag_commit_oid: release.tag_commit_oid,
-        merge_commit_oid: commit,
-        base_ref_name: candidate.base_ref_name ?? null,
-        status: 'unknown',
-        evidence_json: JSON.stringify(reachabilityEvidence({
-          evidence: commitFetch.status === 0 ? 'commit_unavailable' : 'commit_fetch_failed',
-          tagCommitOid: release.tag_commit_oid,
-          checkedCommitOid: commit,
-          baseRefName: candidate.base_ref_name ?? null,
-          command: commitFetch.status === 0 ? exists : commitFetch,
-        })),
-      });
-      unknown++;
-      continue;
+      throw new Error(gitFailureMessage('commit_unavailable', existsArgs, exists));
     }
 
-    const res = git(['merge-base', '--is-ancestor', commit, release.tag_commit_oid], { allowFailure: true });
+    const mergeBaseArgs = ['merge-base', '--is-ancestor', commit, release.tag_commit_oid];
+    const res = git(mergeBaseArgs, { allowFailure: true });
+    if (res.status !== 0 && res.status !== 1) {
+      throw new Error(gitFailureMessage('merge_base_error', mergeBaseArgs, res));
+    }
     const interpreted = interpretMergeBaseResult(res, 'merge_commit_in_release_history');
-    upsertReleasePrReachability({
-      tag,
-      pr_repository_owner: candidate.pr_repository_owner,
-      pr_repository_name: candidate.pr_repository_name,
-      pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
-      pr_number: candidate.pr_number,
-      tag_commit_oid: release.tag_commit_oid,
-      merge_commit_oid: commit,
-      base_ref_name: candidate.base_ref_name ?? null,
+    rows.push(reachabilityRow(candidate, tag, {
+      tagCommitOid: release.tag_commit_oid,
+      mergeCommitOid: commit,
       status: interpreted.status,
-      evidence_json: JSON.stringify(reachabilityEvidence({
+      evidence: reachabilityEvidence({
         evidence: interpreted.evidence.evidence as ReachabilityEvidenceReason,
         tagCommitOid: release.tag_commit_oid,
         checkedCommitOid: commit,
         baseRefName: candidate.base_ref_name ?? null,
         command: res,
-      })),
-    });
+      }),
+    }));
     if (interpreted.status === 'reachable') reachable++;
     else if (interpreted.status === 'not_reachable') notReachable++;
     else unknown++;
   }
+
+  replaceReleasePrReachabilityForRelease(tag, rows);
 
   return {
     tag,
@@ -218,6 +158,32 @@ export async function checkReleasePrReachability(tag: string): Promise<ReleaseRe
     reachable,
     notReachable,
     unknown,
+  };
+}
+
+function reachabilityRow(candidate: {
+  pr_repository_owner: string;
+  pr_repository_name: string;
+  pr_repository_name_with_owner: string;
+  pr_number: number;
+  base_ref_name: string | null;
+}, tag: string, input: {
+  tagCommitOid: string | null;
+  mergeCommitOid: string | null;
+  status: ReachabilityStatus;
+  evidence: Record<string, unknown>;
+}): ReleasePrReachabilityInput {
+  return {
+    tag,
+    pr_repository_owner: candidate.pr_repository_owner,
+    pr_repository_name: candidate.pr_repository_name,
+    pr_repository_name_with_owner: candidate.pr_repository_name_with_owner,
+    pr_number: candidate.pr_number,
+    tag_commit_oid: input.tagCommitOid,
+    merge_commit_oid: input.mergeCommitOid,
+    base_ref_name: candidate.base_ref_name ?? null,
+    status: input.status,
+    evidence_json: JSON.stringify(input.evidence),
   };
 }
 
@@ -348,6 +314,19 @@ function reachabilityEvidence(input: {
 function trimProcessOutput(value: unknown): string | null {
   const text = String(value ?? '').trim();
   return text ? text.slice(0, 1000) : null;
+}
+
+function gitFailureMessage(reason: ReachabilityEvidenceReason, args: string[], res: ReturnType<typeof run>): string {
+  const stderr = trimProcessOutput(res.stderr);
+  const stdout = trimProcessOutput(res.stdout);
+  return [
+    reason,
+    `git ${args.join(' ')}`,
+    `exited ${res.status ?? 'null'}`,
+    stderr ? `stderr: ${stderr}` : null,
+    stdout ? `stdout: ${stdout}` : null,
+    res.signal ? `signal: ${res.signal}` : null,
+  ].filter(Boolean).join('; ');
 }
 
 function run(args: string[], opts: { allowFailure?: boolean; stdio?: any } = {}) {

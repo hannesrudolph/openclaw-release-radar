@@ -386,6 +386,90 @@ describe('release fix provenance', () => {
     ]);
   });
 
+  it('replaces release reachability rows atomically after validation', async () => {
+    const db = await freshDb('reachability-replace');
+    seedRelease(db, 'v-replace-1');
+    seedRelease(db, 'v-replace-2', '2026-06-03T00:00:00Z');
+    const tagOid = 'a'.repeat(40);
+    const mergeOne = 'b'.repeat(40);
+    const mergeTwo = 'c'.repeat(40);
+
+    db.upsertReleasePrReachability({
+      tag: 'v-replace-1',
+      pr_number: 10,
+      tag_commit_oid: 'old-tag',
+      merge_commit_oid: 'old-merge',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{"legacy":true}',
+    });
+    db.upsertReleasePrReachability({
+      tag: 'v-replace-2',
+      pr_number: 20,
+      tag_commit_oid: 'v-replace-2-commit',
+      merge_commit_oid: 'merge-20',
+      base_ref_name: 'main',
+      status: 'reachable',
+      evidence_json: '{"other":true}',
+    });
+
+    db.replaceReleasePrReachabilityForRelease('v-replace-1', [
+      {
+        tag: 'v-replace-1',
+        pr_number: 11,
+        tag_commit_oid: tagOid,
+        merge_commit_oid: mergeOne,
+        base_ref_name: 'main',
+        status: 'reachable',
+        evidence_json: JSON.stringify({ schemaVersion: 1, evidence: 'merge_commit_in_release_history' }),
+      },
+      {
+        tag: 'v-replace-1',
+        pr_number: 12,
+        tag_commit_oid: tagOid,
+        merge_commit_oid: null,
+        base_ref_name: 'main',
+        status: 'unknown',
+        evidence_json: JSON.stringify({ schemaVersion: 1, evidence: 'merge_commit_oid_unavailable' }),
+      },
+    ]);
+
+    const afterReplace = db.db.prepare(`
+      SELECT tag, pr_number, tag_commit_oid, merge_commit_oid, status, evidence_json
+      FROM release_pr_reachability
+      WHERE tag IN ('v-replace-1', 'v-replace-2')
+      ORDER BY tag, pr_number
+    `).all().map((row: any) => ({ ...row }));
+    assert.deepEqual(afterReplace, [
+      { tag: 'v-replace-1', pr_number: 11, tag_commit_oid: tagOid, merge_commit_oid: mergeOne, status: 'reachable', evidence_json: JSON.stringify({ schemaVersion: 1, evidence: 'merge_commit_in_release_history' }) },
+      { tag: 'v-replace-1', pr_number: 12, tag_commit_oid: tagOid, merge_commit_oid: null, status: 'unknown', evidence_json: JSON.stringify({ schemaVersion: 1, evidence: 'merge_commit_oid_unavailable' }) },
+      { tag: 'v-replace-2', pr_number: 20, tag_commit_oid: 'v-replace-2-commit', merge_commit_oid: 'merge-20', status: 'reachable', evidence_json: '{"other":true}' },
+    ]);
+
+    assert.throws(
+      () => db.replaceReleasePrReachabilityForRelease('v-replace-1', [
+        {
+          tag: 'v-replace-1',
+          pr_number: 13,
+          tag_commit_oid: tagOid,
+          merge_commit_oid: mergeTwo,
+          base_ref_name: 'main',
+          status: 'reachable',
+          evidence_json: '{}',
+        },
+      ]),
+      /invalid evidence JSON/,
+    );
+
+    const afterFailedReplace = db.db.prepare(`
+      SELECT tag, pr_number, tag_commit_oid, merge_commit_oid, status, evidence_json
+      FROM release_pr_reachability
+      WHERE tag IN ('v-replace-1', 'v-replace-2')
+      ORDER BY tag, pr_number
+    `).all().map((row: any) => ({ ...row }));
+    assert.deepEqual(afterFailedReplace, afterReplace);
+  });
+
   it('score audit freshness digest changes when audit payload changes', async () => {
     const db = await freshDb('score-audit-freshness');
     const audit = {

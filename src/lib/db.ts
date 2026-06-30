@@ -2080,6 +2080,20 @@ export interface ReleasePrReachabilityInput {
   evidence_json: string;
 }
 
+const reachabilityStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
+const reachabilityEvidenceReasons = new Set([
+  'merge_commit_in_release_history',
+  'fix_commit_in_release_history',
+  'not_reachable_from_release_tag',
+  'release_commit_unavailable',
+  'release_commit_fetch_failed',
+  'merge_commit_oid_unavailable',
+  'commit_fetch_failed',
+  'commit_unavailable',
+  'merge_base_error',
+]);
+const fullCommitOidRe = /^[0-9a-f]{40}$/;
+
 const upsertReleasePrReachabilityStmt = db.prepare(`
 INSERT INTO release_pr_reachability (
   tag, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
@@ -2113,6 +2127,60 @@ export function upsertReleasePrReachability(input: ReleasePrReachabilityInput): 
 const deleteReleasePrReachabilityForReleaseStmt = db.prepare(`DELETE FROM release_pr_reachability WHERE tag=?`);
 export function deleteReleasePrReachabilityForRelease(tag: string): void {
   deleteReleasePrReachabilityForReleaseStmt.run(tag);
+}
+
+export function replaceReleasePrReachabilityForRelease(tag: string, rows: ReleasePrReachabilityInput[]): void {
+  const prepared = rows.map((row) => validateReleasePrReachabilityInput(tag, row));
+  runInWriteTransaction(() => {
+    deleteReleasePrReachabilityForReleaseStmt.run(tag);
+    for (const row of prepared) {
+      upsertReleasePrReachabilityStmt.run({
+        ...row,
+        method: row.method ?? 'git-merge-base',
+        checked_at: new Date().toISOString(),
+      });
+    }
+  });
+}
+
+function validateReleasePrReachabilityInput(tag: string, input: ReleasePrReachabilityInput): ReleasePrReachabilityInput {
+  if (input.tag !== tag) {
+    throw new Error(`Reachability row tag ${JSON.stringify(input.tag)} does not match replacement tag ${JSON.stringify(tag)}`);
+  }
+  if (!reachabilityStatuses.has(input.status)) {
+    throw new Error(`Reachability row for ${tag} PR #${input.pr_number} has invalid status ${JSON.stringify(input.status)}`);
+  }
+  const normalized = normalizePrRepository(input);
+  if (!normalized.pr_repository_name_with_owner.includes('/')) {
+    throw new Error(`Reachability row for ${tag} PR #${input.pr_number} has invalid repository identity`);
+  }
+  if (!Number.isInteger(input.pr_number) || input.pr_number <= 0) {
+    throw new Error(`Reachability row for ${tag} has invalid PR number ${JSON.stringify(input.pr_number)}`);
+  }
+  const evidence = parseJsonObject(input.evidence_json);
+  if (evidence.schemaVersion !== 1 || typeof evidence.evidence !== 'string' || !reachabilityEvidenceReasons.has(evidence.evidence)) {
+    throw new Error(`Reachability row for ${tag} PR #${input.pr_number} has invalid evidence JSON`);
+  }
+  if ((input.status === 'reachable' || input.status === 'not_reachable') &&
+    (!input.tag_commit_oid || !fullCommitOidRe.test(input.tag_commit_oid) ||
+      !input.merge_commit_oid || !fullCommitOidRe.test(input.merge_commit_oid))) {
+    throw new Error(`Reachability row for ${tag} PR #${input.pr_number} is ${input.status} without full tag and merge commit OIDs`);
+  }
+  return {
+    ...input,
+    ...normalized,
+    method: input.method ?? 'git-merge-base',
+  };
+}
+
+function parseJsonObject(value: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) return parsed as Record<string, unknown>;
+  } catch {
+    // handled below
+  }
+  throw new Error('Expected JSON object');
 }
 
 export interface ReleasePrReachabilityRow {

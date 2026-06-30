@@ -385,9 +385,18 @@ describe('static scoring/UI contracts', () => {
   it('PR reachability covers related merged PR evidence, not only credited closing links', () => {
     const reachability = readFileSync(join(root, 'src/lib/releaseReachability.ts'), 'utf8');
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
+    const script = readFileSync(join(root, 'scripts/check-release-pr-reachability.mjs'), 'utf8');
     assert.match(reachability, /JOIN issue_pr_links l/);
     assert.match(reachability, /WHERE p\.merged = 1/);
     assert.doesNotMatch(reachability, /creditedFixLinkSql/);
+    assert.match(reachability, /replaceReleasePrReachabilityForRelease\(tag, rows\)/);
+    assert.doesNotMatch(reachability, /deleteReleasePrReachabilityForRelease/);
+    assert.match(db, /replaceReleasePrReachabilityForRelease/);
+    assert.match(db, /runInWriteTransaction\(\(\) => \{\s*deleteReleasePrReachabilityForReleaseStmt\.run\(tag\);/);
+    assert.match(script, /getRelease/);
+    assert.match(script, /insertIngestionEvidenceFailure/);
+    assert.match(script, /release_pr_reachability/);
     assert.match(analysis, /refreshClosureCommentPrMentionEvidence/);
     assert.match(analysis, /await checkReleasePrReachability\(releaseTag\);/);
     assert.match(analysis, /enrichLinkedPrReachability/);

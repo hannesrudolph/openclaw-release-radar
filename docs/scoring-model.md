@@ -238,6 +238,8 @@ GitHub partial responses for missing issue aliases are recovered only when a cal
 
 Refresh recomputes closure proof automatically for monitored releases. The manual command below reruns the same proof pass for a specific tag when debugging.
 
+PR reachability is staged before replacement. `checkReleasePrReachability` fetches the release commit, fetches and validates each candidate PR merge commit, builds the full replacement row set in memory, validates row evidence shape, then replaces `release_pr_reachability` for that tag inside one DB transaction. Run-level git evidence failures abort before deleting old reachability rows; refresh records them as score-blocking evidence failures, and the standalone reachability command records a durable `ingestion_evidence_failures` row before exiting.
+
 `backfill:issue-state-events` fetches all GitHub fix/state evidence before writing label snapshots, closure events, reopen events, PR links, or PR rows. Missing aliases or fetch failures are recorded in `ingestion_evidence_failures` and abort the write so manual state backfills cannot leave partial evidence while appearing clean.
 
 For historical scored releases, `npm run backfill:closed-windows -- --all` classifies raw closed-window issues that are missing current classification rows, then reruns closure evidence, PR reachability, closure proof, and score persistence. Manual score writers share the same clean-ingestion guard: before writing scores, they refuse dirty ingestion metadata such as missing/malformed `issue_crawl_last_run`, page-cap or evidence-failure stop reasons, recorded evidence/classification failures, durable ingestion failure rows newer than the latest score, or any durable score-blocking ingestion failure before the first score.
