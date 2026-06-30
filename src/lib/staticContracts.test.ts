@@ -269,8 +269,14 @@ describe('static scoring/UI contracts', () => {
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     const bridgeTest = readFileSync(join(root, 'src/lib/releaseScoringDbBridge.test.ts'), 'utf8');
     assert.match(populate, /buildReleaseScoreRun/);
-    assert.match(populate, /assertCleanIngestionMetadataBeforeScore\(monitored\)/);
+    assert.match(populate, /const initialMonitored = listReleasesDb\(10\);\s*assertCleanIngestionMetadataBeforeScore\(initialMonitored\);/);
+    assert.match(populate, /const setStableGap/);
+    assert.ok(
+      populate.indexOf('assertCleanIngestionMetadataBeforeScore(initialMonitored)') < populate.indexOf('const setStableGap'),
+      'populate-db must validate ingestion metadata before preparing DB mutations',
+    );
     assert.match(populate, /persistReleaseScoreRun/);
+    assert.doesNotMatch(populate, /new DatabaseSync/);
     assert.match(backfill, /buildReleaseScoreRun/);
     assert.match(backfill, /assertCleanIngestionMetadataBeforeScore\(releases\)/);
     assert.match(backfill, /persistReleaseScoreRun/);
