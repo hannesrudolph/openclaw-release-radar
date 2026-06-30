@@ -385,6 +385,21 @@ CREATE TABLE IF NOT EXISTS release_pr_reachability (
   PRIMARY KEY (tag, pr_repository_name_with_owner, pr_number)
 );
 
+CREATE TABLE IF NOT EXISTS ingestion_evidence_failures (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  occurred_at TEXT NOT NULL,
+  source TEXT NOT NULL,
+  scope TEXT,
+  release_tag TEXT,
+  issue_number INTEGER,
+  pr_repository_name_with_owner TEXT,
+  pr_number INTEGER,
+  message TEXT NOT NULL,
+  context_json TEXT,
+  scoring_blocking INTEGER NOT NULL DEFAULT 1
+);
+
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_reopen_events_issue_time ON issue_reopen_events(issue_number, reopened_at);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
@@ -393,6 +408,9 @@ CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_even
 CREATE INDEX IF NOT EXISTS idx_issue_label_snapshots_issue_time ON issue_label_snapshots(issue_number, snapshot_at);
 CREATE INDEX IF NOT EXISTS idx_issue_closure_proofs_release ON issue_closure_proofs(release_tag, status);
 CREATE INDEX IF NOT EXISTS idx_release_pr_reachability_tag ON release_pr_reachability(tag);
+CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_occurred ON ingestion_evidence_failures(occurred_at);
+CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_run ON ingestion_evidence_failures(run_id);
+CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_release ON ingestion_evidence_failures(release_tag, occurred_at);
 `);
 
 // Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
@@ -2134,6 +2152,116 @@ ORDER BY
 
 export function releasePrReachabilityRows(tag: string): ReleasePrReachabilityRow[] {
   return releasePrReachabilityRowsStmt.all(tag) as unknown as ReleasePrReachabilityRow[];
+}
+
+export interface IngestionEvidenceFailureInput {
+  run_id: string;
+  occurred_at?: string | null;
+  source: string;
+  scope?: string | null;
+  release_tag?: string | null;
+  issue_number?: number | null;
+  pr_repository_name_with_owner?: string | null;
+  pr_number?: number | null;
+  message: string;
+  context_json?: string | null;
+  scoring_blocking?: number | boolean | null;
+}
+
+export interface IngestionEvidenceFailureRow {
+  id: number;
+  run_id: string;
+  occurred_at: string;
+  source: string;
+  scope: string | null;
+  release_tag: string | null;
+  issue_number: number | null;
+  pr_repository_name_with_owner: string | null;
+  pr_number: number | null;
+  message: string;
+  context_json: string | null;
+  scoring_blocking: number;
+}
+
+const hasIngestionEvidenceFailuresTable = tableHasColumns('ingestion_evidence_failures', [
+  'id',
+  'run_id',
+  'occurred_at',
+  'source',
+  'message',
+  'scoring_blocking',
+]);
+
+const insertIngestionEvidenceFailureStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+INSERT INTO ingestion_evidence_failures (
+  run_id, occurred_at, source, scope, release_tag, issue_number,
+  pr_repository_name_with_owner, pr_number, message, context_json, scoring_blocking
+)
+VALUES (
+  :run_id, :occurred_at, :source, :scope, :release_tag, :issue_number,
+  :pr_repository_name_with_owner, :pr_number, :message, :context_json, :scoring_blocking
+)
+`) : null;
+
+export function insertIngestionEvidenceFailure(input: IngestionEvidenceFailureInput): void {
+  if (!insertIngestionEvidenceFailureStmt) return;
+  insertIngestionEvidenceFailureStmt.run({
+    run_id: input.run_id,
+    occurred_at: input.occurred_at ?? new Date().toISOString(),
+    source: input.source,
+    scope: input.scope ?? null,
+    release_tag: input.release_tag ?? null,
+    issue_number: Number.isInteger(input.issue_number) ? input.issue_number : null,
+    pr_repository_name_with_owner: input.pr_repository_name_with_owner ?? null,
+    pr_number: Number.isInteger(input.pr_number) ? input.pr_number : null,
+    message: input.message,
+    context_json: input.context_json ?? null,
+    scoring_blocking: input.scoring_blocking === false || input.scoring_blocking === 0 ? 0 : 1,
+  } as any);
+}
+
+const listRecentIngestionEvidenceFailuresStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+SELECT *
+FROM ingestion_evidence_failures
+ORDER BY occurred_at DESC, id DESC
+LIMIT ?
+`) : null;
+
+export function listRecentIngestionEvidenceFailures(limit = 25): IngestionEvidenceFailureRow[] {
+  if (!listRecentIngestionEvidenceFailuresStmt) return [];
+  return listRecentIngestionEvidenceFailuresStmt.all(Math.max(1, Math.floor(limit))) as unknown as IngestionEvidenceFailureRow[];
+}
+
+const ingestionEvidenceFailuresAfterStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+SELECT *
+FROM ingestion_evidence_failures
+WHERE scoring_blocking = 1
+  AND occurred_at > ?
+ORDER BY occurred_at DESC, id DESC
+LIMIT ?
+`) : null;
+
+export function ingestionEvidenceFailuresAfter(timestamp: string, limit = 25): IngestionEvidenceFailureRow[] {
+  if (!ingestionEvidenceFailuresAfterStmt) return [];
+  return ingestionEvidenceFailuresAfterStmt.all(timestamp, Math.max(1, Math.floor(limit))) as unknown as IngestionEvidenceFailureRow[];
+}
+
+const ingestionEvidenceFailureSourceCountsAfterStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+SELECT source, COUNT(*) AS count, MAX(occurred_at) AS maxAt
+FROM ingestion_evidence_failures
+WHERE scoring_blocking = 1
+  AND occurred_at > ?
+GROUP BY source
+ORDER BY count DESC, source
+`) : null;
+
+export function ingestionEvidenceFailureSourceCountsAfter(timestamp: string): Array<{ source: string; count: number; maxAt: string | null }> {
+  if (!ingestionEvidenceFailureSourceCountsAfterStmt) return [];
+  return ingestionEvidenceFailureSourceCountsAfterStmt.all(timestamp).map((row: any) => ({
+    source: String(row.source),
+    count: Number(row.count ?? 0),
+    maxAt: row.maxAt ?? null,
+  }));
 }
 
 // Stable-only view. Prereleases live in the DB for derived-stat computation

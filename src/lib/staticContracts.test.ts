@@ -241,7 +241,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(readme, /npm run doctor/);
     assert.match(readme, /classification failures/);
     assert.match(readme, /release-check\/advisory\/monitored-release evidence refresh failures/);
+    assert.match(readme, /durable `ingestion_evidence_failures` rows/);
     assert.match(readme, /Release commit checks and security advisories are score-affecting evidence/);
+    assert.match(readme, /stopReason: "evidence_failure"/);
     assert.match(readme, /malformed nested evidence connections/);
     assert.match(readme, /hasNextPage` without `endCursor/);
     assert.match(readme, /newest audited stable release/);
@@ -379,8 +381,12 @@ describe('static scoring/UI contracts', () => {
   it('refresh treats release checks and advisories as score-blocking evidence', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     assert.match(refresh, /const evidenceRefreshFailures: string\[\] = \[\]/);
-    assert.match(refresh, /evidenceRefreshFailureMessage\('release-checks', r\.tag_name, e\)/);
-    assert.match(refresh, /evidenceRefreshFailureMessage\('advisories', null, e\)/);
+    assert.match(refresh, /insertIngestionEvidenceFailure/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('release-checks', r\.tag_name, e/);
+    assert.match(refresh, /recordEvidenceRefreshFailure\('advisories', advisoryScope, e/);
+    assert.match(refresh, /Promise\.allSettled/);
+    assert.match(refresh, /issuePaginationStopReason = 'evidence_failure'/);
+    assert.match(refresh, /persistIssueCrawlMeta\(buildIssueCrawlMeta\(\)\)/);
     assert.match(refresh, /evidenceRefreshFailures\.push\(message\)/);
     assert.match(refresh, /evidenceRefreshFailures: summarizeFailures\(evidenceRefreshFailures\)/);
     assert.doesNotMatch(refresh, /release-checks[\s\S]{0,120}continuing/);
@@ -402,6 +408,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /limitDetails/);
     assert.match(scoringDoc, /release-check\/advisory\/monitored-release evidence refresh failures/);
     assert.match(scoringDoc, /release commit checks, advisories, closure evidence, PR reachability, or closure-proof refresh fails/);
+    assert.match(scoringDoc, /stopReason: "evidence_failure"/);
+    assert.match(scoringDoc, /ingestion_evidence_failures` is append-only provenance/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(readme, /structured `explanation` object/);
@@ -457,6 +465,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(db, /release_metadata_fetched_at TEXT/);
     assert.match(db, /release_derived_fetched_at TEXT/);
     assert.match(db, /release_artifact_checked_at TEXT/);
+    assert.match(db, /CREATE TABLE IF NOT EXISTS ingestion_evidence_failures/);
+    assert.match(db, /insertIngestionEvidenceFailure/);
     assert.match(db, /release_metadata_fetched_at AS updated_at/);
     assert.match(db, /'release_rows'/);
     assert.match(api, /publicIssueSummariesForRelease/);

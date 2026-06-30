@@ -113,6 +113,55 @@ function seedReopen(db: any, issue: number, reopenedAt = '2026-06-02T12:00:00Z')
 }
 
 describe('release fix provenance', () => {
+  it('stores append-only ingestion evidence failures for durable fetch provenance', async () => {
+    const db = await freshDb('ingestion-evidence-failures');
+
+    const table = db.db.prepare(`
+      SELECT name FROM sqlite_master WHERE type='table' AND name='ingestion_evidence_failures'
+    `).get();
+    assert.equal(table?.name, 'ingestion_evidence_failures');
+
+    db.insertIngestionEvidenceFailure({
+      run_id: 'run-1',
+      occurred_at: '2026-06-30T01:00:00Z',
+      source: 'issue-comments',
+      scope: 'page 1',
+      message: '[issue-comments] page 1 failed: timeout',
+      context_json: '{"page":1}',
+    });
+    db.insertIngestionEvidenceFailure({
+      run_id: 'run-1',
+      occurred_at: '2026-06-30T01:01:00Z',
+      source: 'issue-comments',
+      scope: 'page 1',
+      message: '[issue-comments] page 1 failed: retry timeout',
+      context_json: '{"page":1,"retry":true}',
+    });
+    db.insertIngestionEvidenceFailure({
+      run_id: 'run-2',
+      occurred_at: '2026-06-30T01:02:00Z',
+      source: 'advisories',
+      scope: 'npm:openclaw',
+      message: '[advisories] npm:openclaw failed: unavailable',
+      scoring_blocking: false,
+    });
+
+    const recent = db.listRecentIngestionEvidenceFailures(5);
+    assert.equal(recent.length, 3);
+    assert.deepEqual(recent.map((row: any) => row.source), ['advisories', 'issue-comments', 'issue-comments']);
+    assert.notEqual(recent[1].id, recent[2].id);
+
+    const blockingAfter = db.ingestionEvidenceFailuresAfter('2026-06-30T00:59:00Z', 10);
+    assert.equal(blockingAfter.length, 2);
+    assert.deepEqual(blockingAfter.map((row: any) => row.message), [
+      '[issue-comments] page 1 failed: retry timeout',
+      '[issue-comments] page 1 failed: timeout',
+    ]);
+
+    const bySource = db.ingestionEvidenceFailureSourceCountsAfter('2026-06-30T00:59:00Z');
+    assert.deepEqual(bySource, [{ source: 'issue-comments', count: 2, maxAt: '2026-06-30T01:01:00Z' }]);
+  });
+
   it('tracks release-row source freshness for score-affecting metadata', async () => {
     const db = await freshDb('release-row-freshness');
     seedRelease(db, 'v1', '2026-06-01T00:00:00Z');

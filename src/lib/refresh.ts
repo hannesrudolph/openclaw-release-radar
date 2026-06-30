@@ -46,6 +46,11 @@ async function runWithConcurrency<T>(
   await Promise.all(pool);
 }
 
+function settledValue<T>(result: PromiseSettledResult<T>): T {
+  if (result.status === 'fulfilled') return result.value;
+  throw result.reason;
+}
+
 import {
   countStaleClassifications,
   deleteStaleClassifications,
@@ -53,6 +58,7 @@ import {
   getClassification,
   getMeta,
   getRelease,
+  insertIngestionEvidenceFailure,
   issuesForVersion,
   listReleasesDb,
   openedDuringReign,
@@ -158,7 +164,7 @@ function commentStats(issue: GhIssue, comments: GhComment[]): {
 
 const BACKFILL_FLAG = 'backfill_completed_at';
 export const ISSUE_CRAWL_META_KEY = 'issue_crawl_last_run';
-type IssuePaginationStopReason = 'exhausted' | 'early_stop' | 'page_cap';
+type IssuePaginationStopReason = 'exhausted' | 'early_stop' | 'page_cap' | 'evidence_failure';
 const FAILURE_EXAMPLE_LIMIT = 25;
 
 let refreshing = false;
@@ -181,7 +187,30 @@ export async function refresh(): Promise<{
 
   try {
     const refreshStartedAt = new Date(t0).toISOString();
+    const runId = refreshStartedAt;
     const evidenceRefreshFailures: string[] = [];
+    const recordEvidenceRefreshFailure = (
+      source: string,
+      scope: string | null,
+      error: unknown,
+      context: Record<string, unknown> = {},
+    ): string => {
+      const message = evidenceRefreshFailureMessage(source, scope, error);
+      evidenceRefreshFailures.push(message);
+      insertIngestionEvidenceFailure({
+        run_id: runId,
+        source,
+        scope,
+        release_tag: typeof context.releaseTag === 'string' ? context.releaseTag : null,
+        issue_number: typeof context.issueNumber === 'number' ? context.issueNumber : null,
+        pr_repository_name_with_owner: typeof context.prRepositoryNameWithOwner === 'string' ? context.prRepositoryNameWithOwner : null,
+        pr_number: typeof context.prNumber === 'number' ? context.prNumber : null,
+        message,
+        context_json: JSON.stringify(context),
+        scoring_blocking: 1,
+      });
+      return message;
+    };
     // 1. Pull releases. We over-fetch (×6) because openclaw's prerelease:stable
     // ratio is ~3:1; from this wider window we keep ALL entries for derived-stat
     // computation (betaCount, hoursToNextRelease, aggregate breaking) but only
@@ -302,8 +331,9 @@ export async function refresh(): Promise<{
           check_contexts_json: JSON.stringify(commit.checkContexts),
         });
       } catch (e) {
-        const message = evidenceRefreshFailureMessage('release-checks', r.tag_name, e);
-        evidenceRefreshFailures.push(message);
+        const message = recordEvidenceRefreshFailure('release-checks', r.tag_name, e, {
+          releaseTag: r.tag_name,
+        });
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
     }
@@ -331,8 +361,11 @@ export async function refresh(): Promise<{
         });
       }
     } catch (e) {
-      const message = evidenceRefreshFailureMessage('advisories', null, e);
-      evidenceRefreshFailures.push(message);
+      const advisoryScope = `npm:${config.github.repo}`;
+      const message = recordEvidenceRefreshFailure('advisories', advisoryScope, e, {
+        package: config.github.repo,
+        ecosystem: 'npm',
+      });
       console.warn(`${message}; refusing score persistence after evidence refresh failures`);
     }
 
@@ -391,6 +424,29 @@ export async function refresh(): Promise<{
     const classificationFailures: string[] = [];
     let crossedOldestEver = false;
     let issuePaginationStopReason: IssuePaginationStopReason = 'exhausted';
+    const buildIssueCrawlMeta = () => ({
+      schemaVersion: 1,
+      startedAt: refreshStartedAt,
+      finishedAt: new Date().toISOString(),
+      fullIssueBackfill,
+      backfillCompleteAtStart: backfillDone,
+      backfillCompleteAfterRun: getMeta(BACKFILL_FLAG) !== null,
+      promptSweep,
+      staleClassificationsAtStart: staleRows,
+      monitoredReleaseCount,
+      oldestMonitoredAt: Number.isFinite(oldestMonitoredMs) ? new Date(oldestMonitoredMs).toISOString() : null,
+      pagesFetched,
+      issuesFetched,
+      monitoredIssuesFetched,
+      maxIssuePages: MAX_PAGES,
+      stopReason: issuePaginationStopReason,
+      crossedOldestEver,
+      commenterScanTruncatedCount,
+      classificationFailures,
+      evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
+      scorePersisted: false,
+      scorePersistedAt: null,
+    });
 
     paginate: for await (const page of paginateIssues(100)) {
       pagesFetched++;
@@ -405,11 +461,46 @@ export async function refresh(): Promise<{
         .filter((issue) => issueOverlapsMonitoredWindow(issue))
         .map((issue) => issue.number);
       monitoredIssuesFetched += monitoredIssueNumbers.length;
-      const [commentsByIssue, labelEventsByIssue, stateEvidenceByIssue] = await Promise.all([
-        listIssueCommentsBatch(page.filter((issue) => issue.comments > 0).map((issue) => issue.number)),
+      const commentIssueNumbers = page.filter((issue) => issue.comments > 0).map((issue) => issue.number);
+      const [commentsResult, labelEventsResult, stateEvidenceResult] = await Promise.allSettled([
+        listIssueCommentsBatch(commentIssueNumbers),
         listIssueLabelEventsBatch(monitoredIssueNumbers),
         listIssueFixEvidenceBatch(monitoredIssueNumbers),
       ]);
+      const pageEvidenceScope = `page ${pagesFetched}`;
+      const pageEvidenceContext = {
+        page: pagesFetched,
+        issueCount: page.length,
+        monitoredIssueCount: monitoredIssueNumbers.length,
+        commentIssueCount: commentIssueNumbers.length,
+        firstIssueNumber: page[0]?.number ?? null,
+        lastIssueNumber: page[page.length - 1]?.number ?? null,
+      };
+      let pageEvidenceFailureCount = 0;
+      if (commentsResult.status === 'rejected') {
+        pageEvidenceFailureCount++;
+        const message = recordEvidenceRefreshFailure('issue-comments', pageEvidenceScope, commentsResult.reason, pageEvidenceContext);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+      }
+      if (labelEventsResult.status === 'rejected') {
+        pageEvidenceFailureCount++;
+        const message = recordEvidenceRefreshFailure('issue-label-events', pageEvidenceScope, labelEventsResult.reason, pageEvidenceContext);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+      }
+      if (stateEvidenceResult.status === 'rejected') {
+        pageEvidenceFailureCount++;
+        const message = recordEvidenceRefreshFailure('issue-fix-evidence', pageEvidenceScope, stateEvidenceResult.reason, pageEvidenceContext);
+        console.warn(`${message}; refusing score persistence after evidence refresh failures`);
+      }
+      if (pageEvidenceFailureCount > 0) {
+        issuePaginationStopReason = 'evidence_failure';
+        persistIssueCrawlMeta(buildIssueCrawlMeta());
+        throw new Error(`Issue page evidence refresh failed for ${pageEvidenceFailureCount} source(s); refusing to persist scores`);
+      }
+
+      const commentsByIssue = settledValue(commentsResult);
+      const labelEventsByIssue = settledValue(labelEventsResult);
+      const stateEvidenceByIssue = settledValue(stateEvidenceResult);
 
       // Pass 1: upsert + decide what needs LLM. SQLite writes are cheap and sequential.
       for (const issue of page) {
@@ -522,32 +613,13 @@ export async function refresh(): Promise<{
       console.warn(`[refresh] issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; backfill remains incomplete`);
     }
 
-    const issueCrawlMeta = {
-      schemaVersion: 1,
-      startedAt: refreshStartedAt,
-      finishedAt: new Date().toISOString(),
-      fullIssueBackfill,
-      backfillCompleteAtStart: backfillDone,
-      backfillCompleteAfterRun: getMeta(BACKFILL_FLAG) !== null,
-      promptSweep,
-      staleClassificationsAtStart: staleRows,
-      monitoredReleaseCount,
-      oldestMonitoredAt: Number.isFinite(oldestMonitoredMs) ? new Date(oldestMonitoredMs).toISOString() : null,
-      pagesFetched,
-      issuesFetched,
-      monitoredIssuesFetched,
-      maxIssuePages: MAX_PAGES,
-      stopReason: issuePaginationStopReason,
-      crossedOldestEver,
-      commenterScanTruncatedCount,
-      classificationFailures,
-      evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
-      scorePersisted: false,
-      scorePersistedAt: null,
-    };
+    const issueCrawlMeta = buildIssueCrawlMeta();
     persistIssueCrawlMeta(issueCrawlMeta);
     if (shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason)) {
-      throw new Error(`Issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}; refusing to persist scores from incomplete crawl`);
+      const reason = issuePaginationStopReason === 'page_cap'
+        ? `Issue pagination stopped at MAX_ISSUE_PAGES=${MAX_PAGES}`
+        : 'Issue pagination stopped after evidence refresh failure';
+      throw new Error(`${reason}; refusing to persist scores from incomplete crawl`);
     }
     if (shouldRefuseScoreAfterClassificationFailures(classificationFailures)) {
       const summarized = summarizeFailures(classificationFailures);
@@ -581,24 +653,27 @@ export async function refresh(): Promise<{
         const closure = await refreshClosureEvidenceForRelease(rel.tag);
         console.log(`[closure-evidence] ${rel.tag}: ${closure.issueCount} closed issues inspected`);
       } catch (e) {
-        const message = evidenceRefreshFailureMessage('closure-evidence', rel.tag, e);
-        evidenceRefreshFailures.push(message);
+        const message = recordEvidenceRefreshFailure('closure-evidence', rel.tag, e, {
+          releaseTag: rel.tag,
+        });
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
       try {
         const reachability = await checkReleasePrReachability(rel.tag);
         console.log(`[reachability] ${rel.tag}: ${reachability.reachable}/${reachability.candidates} reachable`);
       } catch (e) {
-        const message = evidenceRefreshFailureMessage('reachability', rel.tag, e);
-        evidenceRefreshFailures.push(message);
+        const message = recordEvidenceRefreshFailure('reachability', rel.tag, e, {
+          releaseTag: rel.tag,
+        });
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
       try {
         const proof = await analyzeClosureProofsForRelease(rel.tag);
         console.log(`[closure-proof] ${rel.tag}: ${proof.analyzed} analyzed`);
       } catch (e) {
-        const message = evidenceRefreshFailureMessage('closure-proof', rel.tag, e);
-        evidenceRefreshFailures.push(message);
+        const message = recordEvidenceRefreshFailure('closure-proof', rel.tag, e, {
+          releaseTag: rel.tag,
+        });
         console.warn(`${message}; refusing score persistence after evidence refresh failures`);
       }
     }
@@ -649,7 +724,7 @@ function shouldMarkBackfillComplete({
   crossedOldestEver: boolean;
   issuePaginationStopReason: IssuePaginationStopReason;
 }): boolean {
-  if (issuePaginationStopReason === 'page_cap') return false;
+  if (issuePaginationStopReason === 'page_cap' || issuePaginationStopReason === 'evidence_failure') return false;
   if (fullIssueBackfill) return issuePaginationStopReason === 'exhausted';
   return crossedOldestEver || issuePaginationStopReason === 'exhausted';
 }
@@ -659,7 +734,7 @@ function shouldDropStaleClassificationsAfterPromptSweep(issuePaginationStopReaso
 }
 
 function shouldRefuseScoreAfterIssuePagination(issuePaginationStopReason: IssuePaginationStopReason): boolean {
-  return issuePaginationStopReason === 'page_cap';
+  return issuePaginationStopReason === 'page_cap' || issuePaginationStopReason === 'evidence_failure';
 }
 
 function shouldRefuseScoreAfterEvidenceFailures(failures: unknown[]): boolean {

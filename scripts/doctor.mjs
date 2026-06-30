@@ -2,7 +2,11 @@ import { existsSync, statSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { assessDataFreshnessHealth, assessIssueCrawlHealth } from './lib/doctor-health.mjs';
+import {
+  assessDataFreshnessHealth,
+  assessDurableIngestionEvidenceFailureHealth,
+  assessIssueCrawlHealth,
+} from './lib/doctor-health.mjs';
 
 const SCHEMA_VERSION = 1;
 const CORE_TABLES = [
@@ -21,6 +25,7 @@ const CORE_TABLES = [
   'issue_label_events',
   'issue_label_snapshots',
   'advisories',
+  'ingestion_evidence_failures',
   'comparison_snapshots',
   'comparison_releases',
 ];
@@ -116,6 +121,9 @@ export function buildDoctorReport({
     const crawlHealth = assessIssueCrawlHealth(report.ingestion.issueCrawl, latest);
     warnings.push(...crawlHealth.warnings);
     failures.push(...crawlHealth.failures);
+    const durableFailureHealth = assessDurableIngestionEvidenceFailureHealth(report.ingestion.durableEvidenceFailures, latest);
+    warnings.push(...durableFailureHealth.warnings);
+    failures.push(...durableFailureHealth.failures);
     if (report.ingestion.commenterScanTruncatedIssueCount > 0) {
       warnings.push(`${latest.tag}: ${report.ingestion.commenterScanTruncatedIssueCount} issue row(s) have truncated comment scans`);
     }
@@ -456,6 +464,64 @@ function ingestionSummary(db, latest) {
   return {
     issueCrawl: parseJson(getMetaValue(db, 'issue_crawl_last_run'), null),
     commenterScanTruncatedIssueCount: latest?.tag ? commenterScanTruncatedIssueCount(db, latest.tag) : 0,
+    durableEvidenceFailures: durableIngestionEvidenceFailureSummary(db, latest),
+  };
+}
+
+function durableIngestionEvidenceFailureSummary(db, latest) {
+  const present = tableHasColumns(db, 'ingestion_evidence_failures', [
+    'id',
+    'run_id',
+    'occurred_at',
+    'source',
+    'message',
+    'scoring_blocking',
+  ]);
+  const empty = {
+    present,
+    blockingAfterLatestScoreCount: 0,
+    bySource: {},
+    recentAfterLatestScore: [],
+  };
+  if (!present || !latest?.scoredAt) return empty;
+  const rows = db.prepare(`
+    SELECT id, run_id, occurred_at, source, scope, release_tag, issue_number,
+           pr_repository_name_with_owner, pr_number, message, context_json
+    FROM ingestion_evidence_failures
+    WHERE scoring_blocking = 1
+      AND occurred_at > ?
+    ORDER BY occurred_at DESC, id DESC
+    LIMIT 10
+  `).all(latest.scoredAt);
+  const bySourceRows = db.prepare(`
+    SELECT source, COUNT(*) AS count, MAX(occurred_at) AS maxAt
+    FROM ingestion_evidence_failures
+    WHERE scoring_blocking = 1
+      AND occurred_at > ?
+    GROUP BY source
+    ORDER BY count DESC, source
+  `).all(latest.scoredAt);
+  const total = bySourceRows.reduce((sum, row) => sum + Number(row.count ?? 0), 0);
+  return {
+    present,
+    blockingAfterLatestScoreCount: total,
+    bySource: Object.fromEntries(bySourceRows.map((row) => [
+      row.source,
+      { count: Number(row.count ?? 0), maxAt: row.maxAt ?? null },
+    ])),
+    recentAfterLatestScore: rows.map((row) => ({
+      id: Number(row.id),
+      runId: row.run_id,
+      occurredAt: row.occurred_at,
+      source: row.source,
+      scope: row.scope ?? null,
+      releaseTag: row.release_tag ?? null,
+      issueNumber: row.issue_number ?? null,
+      prRepositoryNameWithOwner: row.pr_repository_name_with_owner ?? null,
+      prNumber: row.pr_number ?? null,
+      message: row.message,
+      context: parseJson(row.context_json, null),
+    })),
   };
 }
 

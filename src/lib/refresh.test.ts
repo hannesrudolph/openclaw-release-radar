@@ -15,6 +15,19 @@ describe('refresh backfill completion', () => {
     }
   });
 
+  it('does not mark issue backfill complete when page evidence fetching fails', () => {
+    assert.equal(__refreshTest.shouldMarkBackfillComplete({
+      fullIssueBackfill: false,
+      crossedOldestEver: true,
+      issuePaginationStopReason: 'evidence_failure',
+    }), false);
+    assert.equal(__refreshTest.shouldMarkBackfillComplete({
+      fullIssueBackfill: true,
+      crossedOldestEver: true,
+      issuePaginationStopReason: 'evidence_failure',
+    }), false);
+  });
+
   it('marks full issue backfill complete only after exhausting the issue connection', () => {
     assert.equal(__refreshTest.shouldMarkBackfillComplete({
       fullIssueBackfill: true,
@@ -54,6 +67,7 @@ describe('refresh backfill completion', () => {
 
   it('refuses to score after page-capped issue pagination', () => {
     assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('page_cap'), true);
+    assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('evidence_failure'), true);
     assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('exhausted'), false);
     assert.equal(__refreshTest.shouldRefuseScoreAfterIssuePagination('early_stop'), false);
   });

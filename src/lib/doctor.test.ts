@@ -1,6 +1,10 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { assessDataFreshnessHealth, assessIssueCrawlHealth } from '../../scripts/lib/doctor-health.mjs';
+import {
+  assessDataFreshnessHealth,
+  assessDurableIngestionEvidenceFailureHealth,
+  assessIssueCrawlHealth,
+} from '../../scripts/lib/doctor-health.mjs';
 
 describe('doctor data freshness health', () => {
   const latest = { tag: 'v1', scoredAt: '2026-06-30T01:00:00.000Z' };
@@ -187,6 +191,19 @@ describe('doctor issue crawl health', () => {
     assert.ok(result.failures.some((failure) => /must be an array/.test(failure)));
   });
 
+  it('warns on evidence-failure stop reason even when failure examples are absent', () => {
+    const result = assessIssueCrawlHealth({
+      schemaVersion: 1,
+      startedAt: '2026-06-30T02:00:00.000Z',
+      finishedAt: '2026-06-30T02:05:00.000Z',
+      stopReason: 'evidence_failure',
+      scorePersisted: false,
+    }, latest);
+
+    assert.equal(result.failures.length, 0);
+    assert.ok(result.warnings.some((warning) => /stopped during score-affecting evidence refresh/.test(warning)));
+  });
+
   it('warns when failed classifications happened after the latest score', () => {
     const result = assessIssueCrawlHealth({
       schemaVersion: 1,
@@ -235,5 +252,33 @@ describe('doctor issue crawl health', () => {
     }, latest);
 
     assert.ok(result.failures.some((failure) => /classificationFailures must be an array/.test(failure)));
+  });
+});
+
+describe('doctor durable ingestion evidence failure health', () => {
+  const latest = { tag: 'v1', scoredAt: '2026-06-30T01:00:00.000Z' };
+
+  it('ignores absent durable ingestion failure table summaries', () => {
+    assert.deepEqual(assessDurableIngestionEvidenceFailureHealth({ present: false }, latest), {
+      warnings: [],
+      failures: [],
+    });
+  });
+
+  it('warns when durable score-affecting ingestion failures exist after the latest score', () => {
+    const result = assessDurableIngestionEvidenceFailureHealth({
+      present: true,
+      blockingAfterLatestScoreCount: 3,
+      bySource: {
+        'issue-comments': { count: 2, maxAt: '2026-06-30T02:00:00Z' },
+        advisories: { count: 1, maxAt: '2026-06-30T02:01:00Z' },
+      },
+      recentAfterLatestScore: [],
+    }, latest);
+
+    assert.equal(result.failures.length, 0);
+    assert.ok(result.warnings.some((warning) => /3 durable score-affecting ingestion evidence failure/.test(warning)));
+    assert.ok(result.warnings.some((warning) => /issue-comments:2/.test(warning)));
+    assert.ok(result.warnings.some((warning) => /advisories:1/.test(warning)));
   });
 });

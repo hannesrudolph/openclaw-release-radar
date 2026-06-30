@@ -90,7 +90,16 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
   }
 
   if (Array.isArray(evidenceRefreshFailures) && evidenceRefreshFailures.length > 0) {
-    const message = `latest issue crawl recorded ${evidenceRefreshFailures.length} monitored-release evidence refresh failure(s); score persistence is unsafe until closure evidence, PR reachability, and closure proof all refresh cleanly`;
+    const message = `latest issue crawl recorded ${evidenceRefreshFailures.length} score-affecting evidence refresh failure(s); score persistence is unsafe until release checks, advisories, closure evidence, PR reachability, and closure proof all refresh cleanly`;
+    if (scorePersisted || !crawlStartedAfterLatestScore) {
+      failures.push(message);
+    } else {
+      warnings.push(`${message}; current score predates that failed evidence refresh`);
+    }
+  }
+
+  if (stopReason === 'evidence_failure' && !(Array.isArray(evidenceRefreshFailures) && evidenceRefreshFailures.length > 0)) {
+    const message = 'latest issue crawl stopped during score-affecting evidence refresh; score persistence is unsafe until evidence refresh completes cleanly';
     if (scorePersisted || !crawlStartedAfterLatestScore) {
       failures.push(message);
     } else {
@@ -115,6 +124,23 @@ export function assessIssueCrawlHealth(issueCrawl, latest) {
     warnings.push('latest issue crawl finished after the latest score without persisting a new score');
   }
 
+  return { warnings, failures };
+}
+
+export function assessDurableIngestionEvidenceFailureHealth(durableFailures, latest) {
+  const warnings = [];
+  const failures = [];
+  if (!durableFailures?.present) return { warnings, failures };
+  const count = Number(durableFailures.blockingAfterLatestScoreCount ?? 0);
+  if (count <= 0) return { warnings, failures };
+  const tag = latest?.tag ?? 'latest scored release';
+  const sources = durableFailures.bySource && typeof durableFailures.bySource === 'object'
+    ? Object.entries(durableFailures.bySource)
+      .map(([source, value]) => `${source}:${Number(value?.count ?? value ?? 0)}`)
+      .join(', ')
+    : '';
+  const suffix = sources ? ` (${sources})` : '';
+  warnings.push(`${tag}: ${count} durable score-affecting ingestion evidence failure(s) recorded after latest score${suffix}; rerun a clean refresh before trusting current ingestion health`);
   return { warnings, failures };
 }
 
