@@ -29,6 +29,7 @@ import {
   SCORE_EXPLANATION_POSITIVE_CODES,
   SCORE_INPUT_SCHEMA_VERSION,
 } from '../../src/lib/releaseScoring.ts';
+import { SCORE_SOURCE_IDENTITY_SCHEMA_VERSION } from '../../src/lib/scoreSourceIdentity.ts';
 import { verifyScoreAuditPayloadContracts } from './score-audit-contracts.mjs';
 
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
@@ -532,6 +533,9 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   const releases = reader.listReleases(limit, { scoredOnly });
   const failures = [];
   const rows = [];
+  const currentSourceIdentity = typeof reader.scoreSourceIdentity === 'function'
+    ? reader.scoreSourceIdentity()
+    : null;
   const latestScoredStableRelease = releases.find((release) =>
     release.final_score != null || release.score != null || release.scored_at != null || release.scoredAt != null);
   verifyRecommendedReleaseInvariant({ failures, releases });
@@ -1044,6 +1048,12 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
         },
       }));
       verifyPersistedAuditTuple({ failures, tag, release, audit, scoreInput, scoreComponents });
+      verifyScoreSourceIdentity({
+        failures,
+        tag,
+        persisted: parseJson(audit.source_identity_json, null),
+        current: currentSourceIdentity,
+      });
       expect(failures, tag, scoreInput.schemaVersion === scoreInputSchemaVersion,
         `persisted score input schemaVersion (${scoreInput.schemaVersion}) must equal ${scoreInputSchemaVersion}`);
       expect(failures, tag, scoreComponents.schemaVersion === scoreComponentsSchemaVersion,
@@ -1112,8 +1122,49 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   if (apiBase) {
     await verifyApi({ apiBase: apiBase.replace(/\/$/, ''), fetchJson, reader, releases, failures });
   }
+  if (currentSourceIdentity && typeof reader.scoreSourceIdentity === 'function') {
+    const finalSourceIdentity = reader.scoreSourceIdentity({ refresh: true });
+    expectJsonEqual(failures, 'source-identity', 'score source identity must remain stable during audit verification',
+      finalSourceIdentity, currentSourceIdentity);
+  }
 
   return { releases, rows, failures };
+}
+
+function verifyScoreSourceIdentity({ failures, tag, persisted, current }) {
+  expect(failures, tag, isObject(persisted), 'persisted audit source identity must be present');
+  if (!isObject(persisted)) return;
+  expect(failures, tag, persisted.schemaVersion === SCORE_SOURCE_IDENTITY_SCHEMA_VERSION,
+    `source identity schemaVersion (${persisted.schemaVersion}) must equal ${SCORE_SOURCE_IDENTITY_SCHEMA_VERSION}`);
+  expect(failures, tag, persisted.sourceMode === 'current_db',
+    `source identity sourceMode (${persisted.sourceMode}) must be current_db`);
+  expect(failures, tag, persisted.scope === 'score_input_database',
+    `source identity scope (${persisted.scope}) must be score_input_database`);
+  expect(failures, tag, persisted.algorithm === 'sha256',
+    `source identity algorithm (${persisted.algorithm}) must be sha256`);
+  expect(failures, tag, typeof persisted.digest === 'string' && /^[0-9a-f]{64}$/.test(persisted.digest),
+    'source identity digest must be a lowercase SHA-256 hex string');
+  expect(failures, tag, Number.isInteger(persisted.rowCount) && persisted.rowCount >= 0,
+    'source identity rowCount must be a non-negative integer');
+  expect(failures, tag, Number.isInteger(persisted.sourceCount) && persisted.sourceCount > 0,
+    'source identity sourceCount must be a positive integer');
+  expect(failures, tag, Array.isArray(persisted.sources) && persisted.sources.length === persisted.sourceCount,
+    'source identity sources must match sourceCount');
+  for (const source of persisted.sources ?? []) {
+    expect(failures, tag, isObject(source), 'source identity source entries must be objects');
+    if (!isObject(source)) continue;
+    expect(failures, tag, typeof source.source === 'string' && source.source.length > 0,
+      'source identity source name must be present');
+    expect(failures, tag, Number.isInteger(source.count) && source.count >= 0,
+      `source identity ${source.source} count must be a non-negative integer`);
+    expect(failures, tag, typeof source.digest === 'string' && /^[0-9a-f]{64}$/.test(source.digest),
+      `source identity ${source.source} digest must be a lowercase SHA-256 hex string`);
+  }
+  expect(failures, tag, isObject(current), 'current score source identity must be available');
+  if (isObject(current)) {
+    expectJsonEqual(failures, tag, 'persisted score source identity must match current score-input rows',
+      persisted, current);
+  }
 }
 
 function verifySourceFreshness({ failures, tag, sourceFreshnessRows, audit }) {
@@ -1482,7 +1533,7 @@ function verifyPersistedAuditTuple({ failures, tag, release, audit, scoreInput, 
   }
 }
 
-function verifyReviewSourceProvenance({ failures, tag, sourceProvenance, dataFreshness, scoredAt }) {
+function verifyReviewSourceProvenance({ failures, tag, sourceProvenance, dataFreshness, scoredAt, scoreSourceIdentity }) {
   expect(failures, tag, isObject(sourceProvenance), 'review sourceProvenance must be present');
   if (!isObject(sourceProvenance)) return;
   expect(failures, tag, sourceProvenance.sourceMode === 'current_db',
@@ -1495,6 +1546,8 @@ function verifyReviewSourceProvenance({ failures, tag, sourceProvenance, dataFre
     `review sourceProvenance dataFreshnessScoredAt (${sourceProvenance.dataFreshnessScoredAt}) must match dataFreshness scoredAt (${dataFreshness?.scoredAt})`);
   expect(failures, tag, sourceProvenance.scoreTimestampAligned === (scoredAt === dataFreshness?.scoredAt),
     `review sourceProvenance scoreTimestampAligned (${sourceProvenance.scoreTimestampAligned}) must reflect scoredAt/dataFreshness alignment`);
+  expectJsonEqual(failures, tag, 'review sourceProvenance scoreSourceIdentity must match persisted audit identity',
+    sourceProvenance.scoreSourceIdentity, scoreSourceIdentity);
   expectJsonEqual(failures, tag, 'review sourceProvenance sources must match review dataFreshness sources',
     sourceProvenance.sources, dataFreshness?.sources);
   const encodedTag = encodeURIComponent(tag);
@@ -2321,6 +2374,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
     const persistedComponents = parseJson(persistedAuditForReview?.components_json, null);
     const persistedIssueEvidence = parseJson(persistedAuditForReview?.issue_evidence_json, null);
     const persistedGateEvidence = parseJson(persistedAuditForReview?.gate_evidence_json, null);
+    const persistedSourceIdentity = parseJson(persistedAuditForReview?.source_identity_json, null);
     verifyNoForbiddenPublicKeys({
       failures,
       tag: release.tag,
@@ -2355,6 +2409,7 @@ async function verifyApi({ apiBase, fetchJson, reader, releases, failures }) {
       sourceProvenance: review.local?.sourceProvenance,
       dataFreshness: review.local?.dataFreshness,
       scoredAt: release.scored_at,
+      scoreSourceIdentity: persistedSourceIdentity,
     });
     if (releaseApi) {
       expect(failures, release.tag, releaseApi.band === review.local?.band,

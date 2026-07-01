@@ -183,6 +183,7 @@ describe('audit API routes', () => {
       response.body.local.sourceProvenance.scoreTimestampAligned,
       response.body.local.scoredAt === response.body.local.dataFreshness.scoredAt,
     );
+    assert.equal(response.body.local.sourceProvenance.scoreSourceIdentity, null);
     assert.deepEqual(response.body.local.sourceProvenance.sources, response.body.local.dataFreshness.sources);
     assert.deepEqual(response.body.local.sourceProvenance.rawRows, {
       issues: '/api/releases/v-test/review/issues',

@@ -37,12 +37,14 @@ import {
   releaseClosureProofIntegrity,
   releaseIssueTimelineIntegrity,
   releasePrReachabilityIntegrity,
+  scoreSourceIdentity,
   setMeta,
   stableReleaseWindowIntegrity,
   unclassifiedIssuesForVersion,
   updateReleaseScore,
   upsertReleaseScoreAudit,
   runInWriteTransaction,
+  runInReadTransaction,
   unverifiedClosedForRelease,
   verifiedFixedForRelease,
   type JoinedIssue,
@@ -77,6 +79,7 @@ export interface ReleaseScoreResult {
 export interface ReleaseScoreRun {
   scored: ReleaseScoreResult[];
   recommendedTag: string | null;
+  sourceIdentity: ReturnType<typeof scoreSourceIdentity>;
 }
 
 export interface ReleaseScorePersistenceContext {
@@ -225,6 +228,11 @@ export const SCORE_EXPLANATION_DETAIL_LABELS: Record<ScoreExplanationLimitCode |
 };
 
 export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseScoreRun {
+  return runInReadTransaction(() => buildReleaseScoreRunSnapshot(options));
+}
+
+function buildReleaseScoreRunSnapshot(options: ReleaseScoreRunOptions): ReleaseScoreRun {
+  const sourceIdentityBefore = scoreSourceIdentity();
   const releases = options.releases ?? listReleasesDb(options.releaseLimit ?? 20);
   const tagWindow = scoreTagWindow(releases);
   const allFetchedTags = options.allFetchedTags ?? tagWindow.allFetchedTags;
@@ -263,7 +271,9 @@ export function buildReleaseScoreRun(options: ReleaseScoreRunOptions): ReleaseSc
     ...result,
     explanation: buildScoreExplanation(result, result.rel.tag === recommendedTag),
   }));
-  return { scored, recommendedTag };
+  const sourceIdentity = scoreSourceIdentity();
+  assertScoreSourceIdentityEqual(sourceIdentityBefore, sourceIdentity, 'source rows changed while scores were being built');
+  return { scored, recommendedTag, sourceIdentity };
 }
 
 function assertAdvisoryRangesParseable(advisories: Array<{ ghsa_id?: string | null; vulnerable_version_range?: string | null }>): void {
@@ -297,7 +307,7 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun, context: ReleaseSco
   const previousIssueCrawl = parseScorePersistenceJson(getMeta('issue_crawl_last_run'), null);
   const issueCrawl = context.issueCrawl ?? previousIssueCrawl;
   const meta = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: context.source ?? 'unknown',
     scope: context.scope ?? null,
     persistedAt,
@@ -314,8 +324,18 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun, context: ReleaseSco
     issueCrawlScorePersistedAt: context.source === 'refresh'
       ? persistedAt
       : typeof issueCrawl?.scorePersistedAt === 'string' ? issueCrawl.scorePersistedAt : null,
+    sourceIdentitySchemaVersion: run.sourceIdentity.schemaVersion,
+    sourceIdentityDigest: run.sourceIdentity.digest,
+    sourceIdentityRowCount: run.sourceIdentity.rowCount,
+    sourceIdentitySourceCount: run.sourceIdentity.sourceCount,
   };
   runInWriteTransaction(() => {
+    const currentSourceIdentity = scoreSourceIdentity();
+    assertScoreSourceIdentityEqual(
+      run.sourceIdentity,
+      currentSourceIdentity,
+      'source rows changed after scores were built and before persistence',
+    );
     for (const result of run.scored) {
       const scoredAt = result.scoredAt;
       const recommended = result.rel.tag === run.recommendedTag ? 1 : 0;
@@ -352,6 +372,7 @@ export function persistReleaseScoreRun(run: ReleaseScoreRun, context: ReleaseSco
         }),
         issue_evidence_json: JSON.stringify(result.debtEvidence),
         gate_evidence_json: JSON.stringify(result.gateEvidence),
+        source_identity_json: JSON.stringify(run.sourceIdentity),
       });
     }
     setMeta('score_persistence_last_run', JSON.stringify(meta));
@@ -372,6 +393,9 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
   const incomplete = run.scored.filter((result) =>
     Number(result.input.classifiedIssueCount ?? 0) !== Number(result.input.rawIssueCount ?? 0));
   const failures: string[] = [];
+  if (!run.sourceIdentity || typeof run.sourceIdentity.digest !== 'string' || !run.sourceIdentity.digest) {
+    failures.push('score source identity is missing or malformed');
+  }
   const stableWindowFailure = formatStableReleaseWindowIntegrityFailure(stableReleaseWindowIntegrity(3));
   if (stableWindowFailure) failures.push(stableWindowFailure);
   if (incomplete.length > 0) {
@@ -399,6 +423,17 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
   if (failures.length > 0) {
     throw new Error(`Refusing to persist scores until score evidence is complete: ${failures.join('; ')}`);
   }
+}
+
+function assertScoreSourceIdentityEqual(
+  expected: ReturnType<typeof scoreSourceIdentity>,
+  actual: ReturnType<typeof scoreSourceIdentity>,
+  message: string,
+): void {
+  if (JSON.stringify(expected) === JSON.stringify(actual)) return;
+  throw new Error(
+    `Refusing to persist scores because ${message}: expected ${expected.digest}, got ${actual.digest}`,
+  );
 }
 
 export const __releaseScorePersistenceTest = {

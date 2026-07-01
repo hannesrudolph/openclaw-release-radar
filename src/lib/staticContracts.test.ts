@@ -443,6 +443,9 @@ describe('static scoring/UI contracts', () => {
     assert.match(script, /refreshClosureEvidenceForRelease/);
     assert.match(script, /checkReleasePrReachability/);
     assert.match(script, /analyzeClosureProofsForRelease/);
+    assert.match(script, /persistScoreAuditPayload: false/);
+    assert.match(script, /buildReleaseScoreRun/);
+    assert.match(script, /persistReleaseScoreRun/);
     assert.doesNotMatch(script, /listIssueFixEvidenceBatch/);
     assert.doesNotMatch(script, /upsertIssueClosureEvent/);
   });
@@ -469,6 +472,8 @@ describe('static scoring/UI contracts', () => {
       const script = readFileSync(join(root, file), 'utf8');
       assert.match(script, /assertCleanIngestionMetadataBeforeScore\(listReleasesDb\(10\)\)/, `${file} must refuse dirty ingestion metadata before mutation`);
       assert.match(script, /insertIngestionEvidenceFailure/, `${file} must record durable failure provenance`);
+      assert.match(script, /persistScoreAuditPayload: false/, `${file} must keep proof writes side-table-only before final scoring`);
+      assert.match(script, /persistReleaseScoreRun/, `${file} must rebuild audited scores after proof mutation`);
     }
   });
 
@@ -739,7 +744,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoringDoc, /Other callers fail closed on the GraphQL error/);
     assert.match(scoringDoc, /Manual score writers share the same clean-ingestion guard/);
     assert.match(scoringDoc, /score_persistence_last_run/);
-    assert.match(scoringDoc, /exact release-tag set, model version, and prompt version/);
+    assert.match(scoringDoc, /exact release-tag set, model version, prompt version, or source identity/);
     assert.match(scoringDoc, /GraphQL nested evidence connections/);
     assert.match(scoringDoc, /interpreted as empty evidence/);
     assert.match(scoringDoc, /PR reachability evidence must cover the current merged linked-PR candidate set/);
@@ -873,5 +878,23 @@ describe('static scoring/UI contracts', () => {
     assert.match(publicIssues, /classification\.severity/);
     assert.match(publicIssues, /affectedUsers: classification\.affectedUsers/);
     assert.doesNotMatch(api, /SEVERITY_RANK\[a\.severity\]/);
+  });
+
+  it('score source identity excludes comparison and score-output state', () => {
+    const identity = readFileSync(join(root, 'src/lib/scoreSourceIdentity.ts'), 'utf8');
+    const scoring = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
+    const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
+    assert.match(identity, /SCORE_SOURCE_IDENTITY_SCHEMA_VERSION = 1/);
+    assert.match(identity, /'issue_closure_proofs'/);
+    assert.match(identity, /'release_pr_reachability'/);
+    assert.doesNotMatch(identity, /comparison_snapshots|comparison_releases/);
+    assert.doesNotMatch(identity, /release_score_audits/);
+    assert.match(identity, /RELEASE_SCORE_OUTPUT_COLUMNS/);
+    assert.match(readFileSync(join(root, 'src/lib/db.ts'), 'utf8'), /export function runInReadTransaction/);
+    assert.match(scoring, /return runInReadTransaction\(\(\) => buildReleaseScoreRunSnapshot\(options\)\)/);
+    assert.match(scoring, /sourceIdentityBefore = scoreSourceIdentity\(\)/);
+    assert.match(scoring, /source rows changed while scores were being built/);
+    assert.match(scoring, /source rows changed after scores were built and before persistence/);
+    assert.match(doctor, /score source identity drift/);
   });
 });

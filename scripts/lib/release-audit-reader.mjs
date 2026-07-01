@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
+import { scoreSourceIdentityForDb } from '../../src/lib/scoreSourceIdentity.ts';
 
 const CREDITED_FIX_LINK_SQL =
   "(l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer', 'ClosureComment.fixProof'))";
@@ -16,10 +17,18 @@ export function openReleaseAuditReader(dbPath) {
 export class ReleaseAuditReader {
   constructor(db) {
     this.db = db;
+    this.cachedScoreSourceIdentity = null;
   }
 
   close() {
     this.db.close();
+  }
+
+  scoreSourceIdentity({ refresh = false } = {}) {
+    if (refresh || !this.cachedScoreSourceIdentity) {
+      this.cachedScoreSourceIdentity = scoreSourceIdentityForDb(this.db);
+    }
+    return this.cachedScoreSourceIdentity;
   }
 
   listReleases(limit = 10, options = {}) {

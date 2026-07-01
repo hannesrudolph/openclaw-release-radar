@@ -797,13 +797,19 @@ function roundMetric(value: unknown): number {
   return Number.isFinite(num) ? Math.round(num * 1000) / 1000 : 0;
 }
 
-function reviewSourceProvenance(tag: string, scoredAt: string | null, dataFreshness: ReturnType<typeof freshnessForRelease>) {
+function reviewSourceProvenance(
+  tag: string,
+  scoredAt: string | null,
+  dataFreshness: ReturnType<typeof freshnessForRelease>,
+  audit: ReturnType<typeof getReleaseScoreAudit>,
+) {
   return {
     sourceMode: 'current_db',
     scoreTable: 'release_score_audits',
     scoredAt,
     dataFreshnessScoredAt: dataFreshness.scoredAt,
     scoreTimestampAligned: scoredAt === dataFreshness.scoredAt,
+    scoreSourceIdentity: parseJson(audit?.source_identity_json, null),
     sources: dataFreshness.sources,
     rawRows: releaseAuditRawRows(tag),
   };
@@ -937,7 +943,7 @@ api.get('/releases/:tag/review', (req, res) => {
       positiveIssues: release.positive_issues,
       scoredAt: release.scored_at,
       dataFreshness,
-      sourceProvenance: reviewSourceProvenance(tag, release.scored_at, dataFreshness),
+      sourceProvenance: reviewSourceProvenance(tag, release.scored_at, dataFreshness, audit),
       modelVersion: audit?.score_model_version ?? null,
       promptVersion: audit?.prompt_version ?? null,
       input: parseJson(audit?.input_json, null),

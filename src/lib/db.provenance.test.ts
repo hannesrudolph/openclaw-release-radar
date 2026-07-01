@@ -758,6 +758,56 @@ describe('release fix provenance', () => {
     assert.notEqual(first.digest, second.digest);
   });
 
+  it('tracks deterministic score source identity while excluding score outputs and comparison data', async () => {
+    const db = await freshDb('score-source-identity');
+    seedRelease(db, 'v1');
+    seedIssue(db, 9501, null);
+
+    const first = db.scoreSourceIdentity();
+    const repeated = db.scoreSourceIdentity();
+    assert.deepEqual(repeated, first);
+    assert.equal(first.sourceCount, 15);
+    assert.ok(first.rowCount > 0);
+
+    db.db.prepare(`UPDATE issues SET title='changed without timestamp movement' WHERE number=9501`).run();
+    const sourceChanged = db.scoreSourceIdentity();
+    assert.notEqual(sourceChanged.digest, first.digest);
+    assert.equal(
+      sourceChanged.sources.find((source: any) => source.source === 'issues')?.count,
+      first.sources.find((source: any) => source.source === 'issues')?.count,
+    );
+
+    db.db.prepare(`UPDATE releases SET final_score=8.8, scored_at='2026-06-03T00:00:00Z' WHERE tag='v1'`).run();
+    const scoreOutputChanged = db.scoreSourceIdentity();
+    assert.deepEqual(scoreOutputChanged, sourceChanged);
+
+    db.saveComparisonSnapshot({
+      source_url: 'https://example.test/source',
+      captured_at: '2026-06-03T00:00:00Z',
+      page_title: 'Comparison source',
+      page_text: 'comparison text',
+      raw_html: '<html></html>',
+      releases: [{
+        tag: 'v1',
+        name: 'v1',
+        published_at: '2026-06-01T00:00:00Z',
+        html_url: 'https://example.test/releases/v1',
+        displayed_date: 'Jun 1',
+        score: 9.9,
+        band: 'solid',
+        status: 'eligible',
+        recommended: true,
+        reason: 'comparison only',
+        negative_issues: 0,
+        positive_issues: 1,
+        total_attributed_issues: 1,
+        visible_issues: [],
+        raw_card_text: 'comparison card',
+      }],
+    });
+    assert.deepEqual(db.scoreSourceIdentity(), scoreOutputChanged);
+  });
+
   it('validates closure-proof gate evidence audit updates', async () => {
     const db = await freshDb('closure-proof-gate-update');
     seedRelease(db, 'v-proof');

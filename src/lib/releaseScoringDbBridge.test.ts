@@ -250,14 +250,34 @@ describe('release scoring DB bridge', () => {
       const rawScoreMeta = db.getMeta('score_persistence_last_run');
       assert.equal(typeof rawScoreMeta, 'string');
       const scoreMeta = JSON.parse(rawScoreMeta);
-      assert.equal(scoreMeta.schemaVersion, 1);
+      assert.equal(scoreMeta.schemaVersion, 2);
       assert.equal(scoreMeta.source, 'bridge-test');
       assert.equal(scoreMeta.scope, 'v-tx');
       assert.equal(scoreMeta.scoredReleaseCount, 1);
       assert.deepEqual(scoreMeta.releaseTags, ['v-tx']);
       assert.equal(scoreMeta.recommendedTag, txRun.recommendedTag);
       assert.equal(scoreMeta.maxScoredAt, txRun.scored[0].scoredAt);
+      assert.equal(scoreMeta.sourceIdentitySchemaVersion, txRun.sourceIdentity.schemaVersion);
+      assert.equal(scoreMeta.sourceIdentityDigest, txRun.sourceIdentity.digest);
+      assert.equal(scoreMeta.sourceIdentityRowCount, txRun.sourceIdentity.rowCount);
+      assert.equal(scoreMeta.sourceIdentitySourceCount, txRun.sourceIdentity.sourceCount);
       assert.equal(db.getMeta('last_scored_at'), txRun.scored[0].scoredAt);
+      assert.deepEqual(
+        JSON.parse(db.getReleaseScoreAudit('v-tx')?.source_identity_json ?? 'null'),
+        txRun.sourceIdentity,
+      );
+
+      const staleRun = scoring.buildReleaseScoreRun({
+        releases: [db.getRelease('v-tx')],
+        allFetchedTags: ['v-tx'],
+        stableTagsNewestFirst: ['v-tx'],
+        nowForRelease: () => Date.parse('2026-06-11T00:00:00Z'),
+      });
+      db.db.prepare(`UPDATE releases SET name='changed after scoring' WHERE tag='v-tx'`).run();
+      assert.throws(
+        () => scoring.persistReleaseScoreRun(staleRun),
+        /source rows changed after scores were built and before persistence/,
+      );
 
       db.upsertAdvisory({
         advisory_key: 'GHSA-malformed:npm:openclaw:^2026.6.0',

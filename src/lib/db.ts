@@ -5,6 +5,10 @@ import { createHash } from 'node:crypto';
 import { config } from '../config';
 import type { IssueClassification } from './llm';
 import { creditedFixLinkSql } from './fixProvenance';
+import {
+  scoreSourceIdentityForDb,
+  type ScoreSourceIdentity,
+} from './scoreSourceIdentity';
 
 // node:sqlite is built into Node ≥ 22.5 (stable since 24). No native build, no prebuilds.
 
@@ -70,11 +74,17 @@ export const db = dbReadOnly
   ? new DatabaseSync(config.db.path, { readOnly: true })
   : new DatabaseSync(config.db.path);
 
+export function scoreSourceIdentity(): ScoreSourceIdentity {
+  return scoreSourceIdentityForDb(db);
+}
+
 let writeTransactionDepth = 0;
 let writeTransactionSequence = 0;
+let readTransactionDepth = 0;
+let readTransactionSequence = 0;
 
 export function runInWriteTransaction<T>(fn: () => T): T {
-  const nested = writeTransactionDepth > 0;
+  const nested = writeTransactionDepth > 0 || readTransactionDepth > 0;
   const savepoint = nested ? `radar_write_tx_${++writeTransactionSequence}` : null;
   db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
   writeTransactionDepth++;
@@ -92,6 +102,28 @@ export function runInWriteTransaction<T>(fn: () => T): T {
     throw error;
   } finally {
     writeTransactionDepth--;
+  }
+}
+
+export function runInReadTransaction<T>(fn: () => T): T {
+  const nested = writeTransactionDepth > 0 || readTransactionDepth > 0;
+  const savepoint = nested ? `radar_read_tx_${++readTransactionSequence}` : null;
+  db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+  readTransactionDepth++;
+  try {
+    const result = fn();
+    db.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
+    return result;
+  } catch (error) {
+    if (nested) {
+      db.exec(`ROLLBACK TO SAVEPOINT ${savepoint}`);
+      db.exec(`RELEASE SAVEPOINT ${savepoint}`);
+    } else {
+      db.exec('ROLLBACK');
+    }
+    throw error;
+  } finally {
+    readTransactionDepth--;
   }
 }
 // WAL improves concurrent reads but isn't supported on every mount (FUSE, some NFS).
@@ -296,6 +328,7 @@ CREATE TABLE IF NOT EXISTS release_score_audits (
   components_json TEXT,
   issue_evidence_json TEXT NOT NULL,
   gate_evidence_json TEXT NOT NULL,
+  source_identity_json TEXT,
   FOREIGN KEY (release_tag) REFERENCES releases(tag) ON DELETE CASCADE
 );
 
@@ -509,6 +542,7 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN release_artifact_checked_at TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
   `ALTER TABLE issue_commit_references ADD COLUMN commit_message_headline TEXT`,
+  `ALTER TABLE release_score_audits ADD COLUMN source_identity_json TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -1045,18 +1079,19 @@ export interface ReleaseScoreAuditInput {
   components_json: string | null;
   issue_evidence_json: string;
   gate_evidence_json: string;
+  source_identity_json?: string | null;
 }
 
 const upsertReleaseScoreAuditStmt = db.prepare(`
 INSERT INTO release_score_audits (
   release_tag, scored_at, score_model_version, prompt_version, final_score,
   status, band, recommended, input_json, components_json, issue_evidence_json,
-  gate_evidence_json
+  gate_evidence_json, source_identity_json
 )
 VALUES (
   :release_tag, :scored_at, :score_model_version, :prompt_version, :final_score,
   :status, :band, :recommended, :input_json, :components_json, :issue_evidence_json,
-  :gate_evidence_json
+  :gate_evidence_json, :source_identity_json
 )
 ON CONFLICT(release_tag) DO UPDATE SET
   scored_at=excluded.scored_at,
@@ -1069,11 +1104,15 @@ ON CONFLICT(release_tag) DO UPDATE SET
   input_json=excluded.input_json,
   components_json=excluded.components_json,
   issue_evidence_json=excluded.issue_evidence_json,
-  gate_evidence_json=excluded.gate_evidence_json
+  gate_evidence_json=excluded.gate_evidence_json,
+  source_identity_json=excluded.source_identity_json
 `);
 
 export function upsertReleaseScoreAudit(input: ReleaseScoreAuditInput): void {
-  upsertReleaseScoreAuditStmt.run(input as unknown as Record<string, string | number | null>);
+  upsertReleaseScoreAuditStmt.run({
+    ...input,
+    source_identity_json: input.source_identity_json ?? null,
+  } as unknown as Record<string, string | number | null>);
 }
 
 export interface ReleaseScoreAuditRow extends ReleaseScoreAuditInput {}
@@ -1096,7 +1135,8 @@ SELECT
   input_json,
   components_json,
   issue_evidence_json,
-  gate_evidence_json
+  gate_evidence_json,
+  source_identity_json
 FROM release_score_audits
 ORDER BY release_tag
 `);

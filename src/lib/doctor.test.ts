@@ -312,7 +312,7 @@ describe('doctor score persistence release/audit parity', () => {
   it('passes a coherent scored release/audit fixture', () => {
     const { dbPath, cleanup } = freshDoctorDb();
     try {
-      const report = buildDoctorReport({ dbPath });
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
 
       assert.deepEqual(report.failures, []);
       assert.deepEqual(report.scorePersistence.scoredStableTags, ['v2', 'v1']);
@@ -331,7 +331,7 @@ describe('doctor score persistence release/audit parity', () => {
       db.prepare(`DELETE FROM release_score_audits WHERE release_tag='v1'`).run();
       writeScorePersistenceMeta(db, ['v2']);
 
-      const report = buildDoctorReport({ dbPath });
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
 
       assert.ok(report.failures.some((failure) => /scored stable row count \(2\) does not match audited stable rows \(1\)/.test(failure)));
       assert.ok(report.failures.some((failure) => /releaseTags do not match scored stable release rows/.test(failure)));
@@ -346,7 +346,7 @@ describe('doctor score persistence release/audit parity', () => {
     try {
       db.prepare(`UPDATE release_score_audits SET final_score=6.6, scored_at='2026-06-01T02:00:00Z', status='wait', recommended=1 WHERE release_tag='v1'`).run();
 
-      const report = buildDoctorReport({ dbPath });
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
 
       assert.ok(report.failures.some((failure) => /release\/audit field mismatch/.test(failure)));
       assert.deepEqual(
@@ -363,10 +363,74 @@ describe('doctor score persistence release/audit parity', () => {
     try {
       db.prepare(`UPDATE releases SET final_score=NULL, scored_at=NULL, recommended=0 WHERE tag='v1'`).run();
 
-      const report = buildDoctorReport({ dbPath });
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
 
       assert.ok(report.failures.some((failure) => /scored stable row count \(1\) does not match audited stable rows \(2\)/.test(failure)));
       assert.ok(report.failures.some((failure) => /orphan audit rows.*v1|audit rows without scored stable release rows.*v1/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('fails when an audit source identity is missing', () => {
+    const { db, dbPath, cleanup } = freshDoctorDb();
+    try {
+      db.prepare(`UPDATE release_score_audits SET source_identity_json=NULL WHERE release_tag='v1'`).run();
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
+      assert.ok(report.failures.some((failure) => /source identity missing.*v1/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('reports a missing source identity column instead of crashing on a pre-migration DB', () => {
+    const { db, dbPath, cleanup } = freshDoctorDb();
+    try {
+      db.exec(`
+        ALTER TABLE release_score_audits RENAME TO release_score_audits_with_identity;
+        CREATE TABLE release_score_audits (
+          release_tag TEXT PRIMARY KEY,
+          scored_at TEXT NOT NULL,
+          score_model_version TEXT NOT NULL,
+          prompt_version INTEGER NOT NULL,
+          final_score REAL,
+          status TEXT NOT NULL,
+          band TEXT NOT NULL,
+          recommended INTEGER NOT NULL DEFAULT 0,
+          input_json TEXT NOT NULL,
+          components_json TEXT,
+          issue_evidence_json TEXT NOT NULL,
+          gate_evidence_json TEXT NOT NULL
+        );
+        INSERT INTO release_score_audits (
+          release_tag, scored_at, score_model_version, prompt_version, final_score, status, band,
+          recommended, input_json, components_json, issue_evidence_json, gate_evidence_json
+        )
+        SELECT
+          release_tag, scored_at, score_model_version, prompt_version, final_score, status, band,
+          recommended, input_json, components_json, issue_evidence_json, gate_evidence_json
+        FROM release_score_audits_with_identity;
+        DROP TABLE release_score_audits_with_identity;
+      `);
+      const report = buildDoctorReport({ dbPath, sourceIdentityForDb: () => doctorSourceIdentityFixture });
+      assert.ok(report.failures.some((failure) => /source_identity_json is missing/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
+
+  it('fails when current source identity differs from persisted audits', () => {
+    const { dbPath, cleanup } = freshDoctorDb();
+    try {
+      const report = buildDoctorReport({
+        dbPath,
+        sourceIdentityForDb: () => ({
+          ...doctorSourceIdentityFixture,
+          digest: 'c'.repeat(64),
+          sources: [{ source: 'issues', count: 1, digest: 'd'.repeat(64) }],
+        }),
+      });
+      assert.ok(report.failures.some((failure) => /score source identity drift/.test(failure)));
     } finally {
       cleanup();
     }
@@ -413,7 +477,8 @@ function freshDoctorDb() {
       input_json TEXT NOT NULL,
       components_json TEXT,
       issue_evidence_json TEXT NOT NULL,
-      gate_evidence_json TEXT NOT NULL
+      gate_evidence_json TEXT NOT NULL,
+      source_identity_json TEXT
     );
     CREATE TABLE release_commits (tag TEXT PRIMARY KEY, fetched_at TEXT);
     CREATE TABLE issue_comment_snapshots (
@@ -491,8 +556,8 @@ function seedDoctorFixture(db: DatabaseSync) {
   const insertAudit = db.prepare(`
     INSERT INTO release_score_audits (
       release_tag, scored_at, score_model_version, prompt_version, final_score, status, band, recommended,
-      input_json, components_json, issue_evidence_json, gate_evidence_json
-    ) VALUES (?, ?, 'test-model', 6, ?, ?, 'ok', ?, ?, '{}', ?, ?)
+      input_json, components_json, issue_evidence_json, gate_evidence_json, source_identity_json
+    ) VALUES (?, ?, 'test-model', 6, ?, ?, 'ok', ?, ?, '{}', ?, ?, ?)
   `);
   for (const [tag, publishedAt, score, status, recommended, scoredAt] of releaseRows) {
     insertRelease.run(tag, publishedAt, score, status, recommended, scoredAt);
@@ -505,6 +570,7 @@ function seedDoctorFixture(db: DatabaseSync) {
       JSON.stringify({ rawIssueCount: 1, classifiedIssueCount: 1 }),
       JSON.stringify({ debtSummary: {}, verifiedDebt: [], carryoverDebt: [], staleDebt: [], openedFeltSerious: [], verifiedFixed: [], unverifiedClosed: [], unclassifiedIssues: [] }),
       JSON.stringify({ fixProvenance: { closureProof: { analyzedClosedCount: 0, riskSummary: {} }, releaseFixCredit: { analyzedClosedCount: 0 } } }),
+      JSON.stringify(doctorSourceIdentityFixture),
     );
     db.prepare(`INSERT INTO release_commits (tag, fetched_at) VALUES (?, '2026-05-31T00:00:00Z')`).run(tag);
   }
@@ -522,7 +588,7 @@ function writeScorePersistenceMeta(db: DatabaseSync, releaseTags: string[]) {
     VALUES ('score_persistence_last_run', ?)
     ON CONFLICT(key) DO UPDATE SET value=excluded.value
   `).run(JSON.stringify({
-    schemaVersion: 1,
+    schemaVersion: 2,
     source: 'test',
     scope: null,
     persistedAt: '2026-06-02T01:05:00Z',
@@ -533,5 +599,20 @@ function writeScorePersistenceMeta(db: DatabaseSync, releaseTags: string[]) {
     releaseTags,
     minScoredAt: '2026-06-01T01:00:00Z',
     maxScoredAt: '2026-06-02T01:00:00Z',
+    sourceIdentitySchemaVersion: doctorSourceIdentityFixture.schemaVersion,
+    sourceIdentityDigest: doctorSourceIdentityFixture.digest,
+    sourceIdentityRowCount: doctorSourceIdentityFixture.rowCount,
+    sourceIdentitySourceCount: doctorSourceIdentityFixture.sourceCount,
   }));
 }
+
+const doctorSourceIdentityFixture = {
+  schemaVersion: 1,
+  sourceMode: 'current_db',
+  scope: 'score_input_database',
+  algorithm: 'sha256',
+  rowCount: 1,
+  sourceCount: 1,
+  digest: 'a'.repeat(64),
+  sources: [{ source: 'issues', count: 1, digest: 'b'.repeat(64) }],
+};

@@ -49,7 +49,7 @@ const effectiveLimit = args.all ? undefined : limit;
 
 const failures = [];
 verifyScoredReleaseCoverage(failures);
-const { scored, recommendedTag } = buildReleaseScoreRun({
+const { scored, recommendedTag, sourceIdentity } = buildReleaseScoreRun({
   releases: releasesToVerify,
   releaseLimit: effectiveLimit,
   nowForRelease: (rel) => scoredAtMillis(rel, auditStmt.get(rel.tag), failures),
@@ -57,7 +57,7 @@ const { scored, recommendedTag } = buildReleaseScoreRun({
 const rows = scored.map((s) => {
   const audit = auditStmt.get(s.rel.tag);
   const recommended = s.rel.tag === recommendedTag;
-  comparePersisted({ failures, result: s, audit, recommended });
+  comparePersisted({ failures, result: s, audit, recommended, sourceIdentity });
   return {
     tag: s.rel.tag,
     score: s.conf.score == null ? '-' : s.conf.score,
@@ -114,7 +114,7 @@ function verifyScoredReleaseCoverage(failures) {
   }
 }
 
-function comparePersisted({ failures, result, audit, recommended }) {
+function comparePersisted({ failures, result, audit, recommended, sourceIdentity }) {
   const { rel, conf, input } = result;
   const tag = rel.tag;
   if (!audit) {
@@ -153,6 +153,7 @@ function comparePersisted({ failures, result, audit, recommended }) {
   const persistedInput = parseJson(audit.input_json, null);
   const persistedIssueEvidence = parseJson(audit.issue_evidence_json, null);
   const persistedGateEvidence = parseJson(audit.gate_evidence_json, null);
+  const persistedSourceIdentity = parseJson(audit.source_identity_json, null);
   const components = parseJson(audit.components_json, null);
   failures.push(...verifyScoreAuditPayloadContracts({
     tag,
@@ -170,6 +171,7 @@ function comparePersisted({ failures, result, audit, recommended }) {
   expectJson(failures, tag, 'audit input_json', persistedInput, normalizeJson(input));
   expectJson(failures, tag, 'audit issue_evidence_json', persistedIssueEvidence, normalizeJson(result.debtEvidence));
   expectJson(failures, tag, 'audit gate_evidence_json', persistedGateEvidence, normalizeJson(result.gateEvidence));
+  expectJson(failures, tag, 'audit source_identity_json', persistedSourceIdentity, normalizeJson(sourceIdentity));
   expectJson(failures, tag, 'audit components', components?.components ?? null, normalizeJson(conf.components));
   expectJson(failures, tag, 'audit explanation', components?.explanation ?? null, normalizeJson(result.explanation));
   expectEqual(failures, tag, 'audit evidenceCoverage', components?.evidenceCoverage, conf.evidenceCoverage);

@@ -39,6 +39,16 @@ const proofCheckedAt = '2026-01-02T00:00:00Z';
 const auditScoredAt = '2026-01-02T00:00:01Z';
 const tagOid = 'a'.repeat(40);
 const mergeOid = 'b'.repeat(40);
+const sourceIdentityFixture = {
+  schemaVersion: 1,
+  sourceMode: 'current_db',
+  scope: 'score_input_database',
+  algorithm: 'sha256',
+  rowCount: 1,
+  sourceCount: 1,
+  digest: 'c'.repeat(64),
+  sources: [{ source: 'issues', count: 1, digest: 'd'.repeat(64) }],
+};
 const defaultScoreInput = {
   schemaVersion: 1,
   rawIssueCount: 1,
@@ -184,6 +194,7 @@ function reader(overrides: Partial<{
         explanation: scoreExplanationFixture(),
       }),
       issue_evidence_json: JSON.stringify({ schemaVersion: 1 }),
+      source_identity_json: JSON.stringify(sourceIdentityFixture),
       gate_evidence_json: JSON.stringify({
         schemaVersion: 1,
         labelTimeline: labelTimelineFixture,
@@ -217,6 +228,9 @@ function reader(overrides: Partial<{
         explanation: scoreExplanationFixture(),
       }),
     };
+  }
+  if (data.audit && data.audit.source_identity_json === undefined) {
+    data.audit = { ...data.audit, source_identity_json: JSON.stringify(sourceIdentityFixture) };
   }
   if (data.audit?.gate_evidence_json) {
     const gate = JSON.parse(data.audit.gate_evidence_json);
@@ -301,6 +315,7 @@ function reader(overrides: Partial<{
       checked_at: proofCheckedAt,
     })),
     getReleaseScoreAudit: () => data.audit,
+    scoreSourceIdentity: () => sourceIdentityFixture,
     sourceFreshnessFor: () => [],
   };
 }
@@ -428,6 +443,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     scoredAt: auditScoredAt,
     dataFreshnessScoredAt: dataFreshness.scoredAt,
     scoreTimestampAligned: true,
+    scoreSourceIdentity: sourceIdentityFixture,
     sources: dataFreshness.sources,
     rawRows: {
       issues: '/api/releases/v1/review/issues',
@@ -1722,6 +1738,47 @@ describe('verifyReleaseAudit', () => {
     }];
     const result = await verifyReleaseAudit({ reader: staleReader });
     assert.ok(result.failures.some((failure) => /issue_rows changed/.test(failure)));
+  });
+
+  it('fails when persisted score source identity is missing', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        audit: {
+          prompt_version: 6,
+          scored_at: auditScoredAt,
+          source_identity_json: null,
+        },
+      }),
+    });
+    assert.ok(result.failures.some((failure) => /source identity must be present/.test(failure)));
+  });
+
+  it('fails when current source rows drift without timestamp or count changes', async () => {
+    const driftedReader = reader();
+    driftedReader.scoreSourceIdentity = () => ({
+      ...sourceIdentityFixture,
+      digest: 'e'.repeat(64),
+      sources: [{ source: 'issues', count: 1, digest: 'f'.repeat(64) }],
+    });
+    const result = await verifyReleaseAudit({ reader: driftedReader });
+    assert.ok(result.failures.some((failure) => /must match current score-input rows/.test(failure)));
+  });
+
+  it('fails when score source rows change during audit verification', async () => {
+    const unstableReader = reader();
+    let calls = 0;
+    unstableReader.scoreSourceIdentity = () => {
+      calls++;
+      return calls === 1
+        ? sourceIdentityFixture
+        : {
+          ...sourceIdentityFixture,
+          digest: 'e'.repeat(64),
+          sources: [{ source: 'issues', count: 1, digest: 'f'.repeat(64) }],
+        };
+    };
+    const result = await verifyReleaseAudit({ reader: unstableReader });
+    assert.ok(result.failures.some((failure) => /must remain stable during audit verification/.test(failure)));
   });
 
   it('allows one-second GitHub closure event timestamp skew', async () => {

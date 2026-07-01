@@ -7,6 +7,10 @@ import {
   assessDurableIngestionEvidenceFailureHealth,
   assessIssueCrawlHealth,
 } from './lib/doctor-health.mjs';
+import {
+  SCORE_SOURCE_IDENTITY_SCHEMA_VERSION,
+  scoreSourceIdentityForDb,
+} from '../src/lib/scoreSourceIdentity.ts';
 
 const SCHEMA_VERSION = 1;
 const TRACKED_PR_REPOSITORY = `${process.env.GITHUB_OWNER ?? 'openclaw'}/${process.env.GITHUB_REPO ?? 'openclaw'}`;
@@ -37,6 +41,7 @@ export function buildDoctorReport({
   now = new Date(),
   maxIssueLagHours = 48,
   failOnWarnings = false,
+  sourceIdentityForDb = scoreSourceIdentityForDb,
 } = {}) {
   const resolvedPath = resolve(dbPath);
   const failures = [];
@@ -107,6 +112,9 @@ export function buildDoctorReport({
     }
 
     report.scorePersistence = scorePersistenceSummary(db, report.recommendation);
+    if (!report.scorePersistence.sourceIdentityColumnPresent) {
+      failures.push('release_score_audits.source_identity_json is missing; start the writable app once to run migrations, then rescore');
+    }
     if (!report.scorePersistence.present) {
       failures.push('score persistence metadata is missing');
     } else if (!report.scorePersistence.valid) {
@@ -153,6 +161,34 @@ export function buildDoctorReport({
           .map((row) => `${row.tag} ${row.field} release=${JSON.stringify(row.release)} audit=${JSON.stringify(row.audit)}`)
           .join('; ');
         failures.push(`score persistence release/audit field mismatch: ${examples}`);
+      }
+      const currentSourceIdentity = sourceIdentityForDb(db);
+      report.scorePersistence.sourceIdentity.current = sourceIdentitySummary(currentSourceIdentity);
+      report.scorePersistence.sourceIdentity.matchesCurrent =
+        report.scorePersistence.sourceIdentity.persisted?.digest === currentSourceIdentity.digest;
+      if (report.scorePersistence.sourceIdentity.missingTags.length > 0) {
+        failures.push(`score persistence source identity missing for: ${report.scorePersistence.sourceIdentity.missingTags.join(', ')}`);
+      }
+      if (report.scorePersistence.sourceIdentity.malformedTags.length > 0) {
+        failures.push(`score persistence source identity malformed for: ${report.scorePersistence.sourceIdentity.malformedTags.join(', ')}`);
+      }
+      if (report.scorePersistence.sourceIdentity.persistedIdentityCount !== 1) {
+        failures.push(`score persistence audits must share one source identity manifest, found ${report.scorePersistence.sourceIdentity.persistedIdentityCount}`);
+      }
+      if (report.scorePersistence.meta.sourceIdentitySchemaVersion !== SCORE_SOURCE_IDENTITY_SCHEMA_VERSION) {
+        failures.push(`score persistence sourceIdentitySchemaVersion (${report.scorePersistence.meta.sourceIdentitySchemaVersion}) must equal ${SCORE_SOURCE_IDENTITY_SCHEMA_VERSION}`);
+      }
+      if (report.scorePersistence.meta.sourceIdentityDigest !== report.scorePersistence.sourceIdentity.persisted?.digest) {
+        failures.push(`score persistence sourceIdentityDigest (${report.scorePersistence.meta.sourceIdentityDigest}) does not match audit rows (${report.scorePersistence.sourceIdentity.persisted?.digest ?? 'missing'})`);
+      }
+      if (report.scorePersistence.meta.sourceIdentityRowCount !== report.scorePersistence.sourceIdentity.persisted?.rowCount) {
+        failures.push(`score persistence sourceIdentityRowCount (${report.scorePersistence.meta.sourceIdentityRowCount}) does not match audit rows (${report.scorePersistence.sourceIdentity.persisted?.rowCount ?? 'missing'})`);
+      }
+      if (report.scorePersistence.meta.sourceIdentitySourceCount !== report.scorePersistence.sourceIdentity.persisted?.sourceCount) {
+        failures.push(`score persistence sourceIdentitySourceCount (${report.scorePersistence.meta.sourceIdentitySourceCount}) does not match audit rows (${report.scorePersistence.sourceIdentity.persisted?.sourceCount ?? 'missing'})`);
+      }
+      if (!report.scorePersistence.sourceIdentity.matchesCurrent) {
+        failures.push(`score source identity drift: persisted ${report.scorePersistence.sourceIdentity.persisted?.digest ?? 'missing'}, current ${currentSourceIdentity.digest}`);
       }
     }
 
@@ -678,6 +714,7 @@ function ingestionSummary(db, latest) {
 function scorePersistenceSummary(db) {
   const raw = getMetaValue(db, 'score_persistence_last_run');
   const meta = parseJson(raw, null);
+  const sourceIdentityColumnPresent = tableHasColumns(db, 'release_score_audits', ['source_identity_json']);
   const releaseStats = db.prepare(`
     SELECT COUNT(*) AS count, MAX(scored_at) AS maxScoredAt
     FROM releases
@@ -694,7 +731,8 @@ function scorePersistenceSummary(db) {
     WHERE r.prerelease=0
   `).get();
   const auditRows = db.prepare(`
-    SELECT a.release_tag, a.score_model_version, a.prompt_version
+    SELECT a.release_tag, a.score_model_version, a.prompt_version,
+           ${sourceIdentityColumnPresent ? 'a.source_identity_json' : 'NULL'} AS source_identity_json
     FROM release_score_audits a
     JOIN releases r ON r.tag=a.release_tag
     WHERE r.prerelease=0
@@ -754,9 +792,17 @@ function scorePersistenceSummary(db) {
     ORDER BY r.published_at IS NULL, r.published_at DESC
   `).all();
   const releaseAuditMismatches = parityRows.flatMap((row) => releaseAuditMismatchesForRow(row));
+  const sourceIdentityRows = auditRows.map((row) => ({
+    tag: row.release_tag,
+    identity: parseJson(row.source_identity_json, null),
+  }));
+  const validSourceIdentityRows = sourceIdentityRows.filter((row) => isScoreSourceIdentity(row.identity));
+  const persistedSourceIdentity = validSourceIdentityRows[0]?.identity ?? null;
+  const persistedIdentities = [...new Set(validSourceIdentityRows.map((row) => JSON.stringify(row.identity)))];
   return {
     present: typeof raw === 'string' && raw.length > 0,
-    valid: !!meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schemaVersion === 1,
+    valid: !!meta && typeof meta === 'object' && !Array.isArray(meta) && meta.schemaVersion === 2,
+    sourceIdentityColumnPresent,
     meta,
     auditedStableCount: Number(auditStats?.count ?? 0),
     scoredStableCount: Number(releaseStats?.count ?? 0),
@@ -769,6 +815,58 @@ function scorePersistenceSummary(db) {
     missingAuditTags,
     orphanAuditTags,
     releaseAuditMismatches,
+    sourceIdentity: {
+      persisted: sourceIdentitySummary(persistedSourceIdentity),
+      current: null,
+      matchesCurrent: false,
+      persistedIdentityCount: persistedIdentities.length,
+      persistedDigests: [...new Set(validSourceIdentityRows.map((row) => row.identity.digest))],
+      missingTags: sourceIdentityRows.filter((row) => row.identity == null).map((row) => row.tag),
+      malformedTags: sourceIdentityRows
+        .filter((row) => row.identity != null && !isScoreSourceIdentity(row.identity))
+        .map((row) => row.tag),
+    },
+  };
+}
+
+function isScoreSourceIdentity(value) {
+  return !!value &&
+    typeof value === 'object' &&
+    !Array.isArray(value) &&
+    value.schemaVersion === SCORE_SOURCE_IDENTITY_SCHEMA_VERSION &&
+    value.sourceMode === 'current_db' &&
+    value.scope === 'score_input_database' &&
+    value.algorithm === 'sha256' &&
+    typeof value.digest === 'string' &&
+    /^[0-9a-f]{64}$/.test(value.digest) &&
+    Number.isInteger(value.rowCount) &&
+    value.rowCount >= 0 &&
+    Number.isInteger(value.sourceCount) &&
+    value.sourceCount > 0 &&
+    Array.isArray(value.sources) &&
+    value.sources.length === value.sourceCount &&
+    value.sources.every((source) =>
+      source &&
+      typeof source === 'object' &&
+      !Array.isArray(source) &&
+      typeof source.source === 'string' &&
+      source.source.length > 0 &&
+      Number.isInteger(source.count) &&
+      source.count >= 0 &&
+      typeof source.digest === 'string' &&
+      /^[0-9a-f]{64}$/.test(source.digest));
+}
+
+function sourceIdentitySummary(identity) {
+  if (!isScoreSourceIdentity(identity)) return null;
+  return {
+    schemaVersion: identity.schemaVersion,
+    sourceMode: identity.sourceMode,
+    scope: identity.scope,
+    algorithm: identity.algorithm,
+    digest: identity.digest,
+    rowCount: identity.rowCount,
+    sourceCount: identity.sourceCount,
   };
 }
 
