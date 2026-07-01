@@ -194,7 +194,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /neutralBugShapedCount/);
     assert.match(html, /closureProofExamplesWithStatusCoverage/);
     assert.match(html, /examplesByStatus/);
-    assert.match(html, /Non-actionable rationale:/);
+    assert.match(html, /commentEvidenceHtml\('Non-actionable rationale'/);
   });
 
   it('release audit verifier uses shared closure proof taxonomy', () => {
@@ -506,6 +506,7 @@ describe('static scoring/UI contracts', () => {
     const script = readFileSync(join(root, 'scripts/backfill-closed-windows.mjs'), 'utf8');
     const guard = readFileSync(join(root, 'scripts/lib/score-ingestion-guard.mjs'), 'utf8');
     const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const provenance = readFileSync(join(root, 'src/lib/fixProvenance.ts'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
     assert.equal(pkg.scripts['backfill:closed-windows'], 'tsx scripts/backfill-closed-windows.mjs');
@@ -772,7 +773,7 @@ describe('static scoring/UI contracts', () => {
     const scorer = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     assert.match(scorer, /export const SCORE_INPUT_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const SCORE_COMPONENTS_SCHEMA_VERSION = 1/);
-    assert.match(scorer, /export const SCORE_EXPLANATION_SCHEMA_VERSION = 1/);
+    assert.match(scorer, /export const SCORE_EXPLANATION_SCHEMA_VERSION = 2/);
     assert.match(scorer, /export const GATE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const LABEL_TIMELINE_SCHEMA_VERSION = 1/);
@@ -884,7 +885,7 @@ describe('static scoring/UI contracts', () => {
     const identity = readFileSync(join(root, 'src/lib/scoreSourceIdentity.ts'), 'utf8');
     const scoring = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     const doctor = readFileSync(join(root, 'scripts/doctor.mjs'), 'utf8');
-    assert.match(identity, /SCORE_SOURCE_IDENTITY_SCHEMA_VERSION = 1/);
+    assert.match(identity, /SCORE_SOURCE_IDENTITY_SCHEMA_VERSION = 2/);
     assert.match(identity, /'issue_closure_proofs'/);
     assert.match(identity, /'release_pr_reachability'/);
     assert.doesNotMatch(identity, /comparison_snapshots|comparison_releases/);
@@ -896,5 +897,31 @@ describe('static scoring/UI contracts', () => {
     assert.match(scoring, /source rows changed while scores were being built/);
     assert.match(scoring, /source rows changed after scores were built and before persistence/);
     assert.match(doctor, /score source identity drift/);
+  });
+
+  it('closure proof evidence keeps exact GitHub links', () => {
+    const github = readFileSync(join(root, 'src/lib/github.ts'), 'utf8');
+    const db = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
+    const analysis = readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8');
+    const provenance = readFileSync(join(root, 'src/lib/fixProvenance.ts'), 'utf8');
+    const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    assert.match(github, /databaseId\s+url\s+author/);
+    assert.match(github, /sourceCommentDatabaseId/);
+    assert.match(github, /onMissingPullRequest/);
+    assert.match(provenance, /source != '\$\{CLOSURE_COMMENT_FIX_PROOF_SOURCE\}'.*\$\{prAlias\}\.pr_number IS NOT NULL/);
+    assert.match(db, /source_comment_database_id INTEGER/);
+    assert.match(db, /source_comment_url TEXT/);
+    assert.match(analysis, /metadataMissing/);
+    assert.match(analysis, /creditedFixLinkSql\('l', 'p'\)/);
+    assert.match(analysis, /\{ onMissingPullRequest: \(\) => \{\} \}/);
+    assert.match(analysis, /source_comment_database_id: mention\.sourceCommentDatabaseId/);
+    assert.match(api, /sourceCommentUrl/);
+    assert.match(api, /commitUrl/);
+    assert.match(api, /referencedCommitContext: arrayOf/);
+    assert.match(html, /function safeEvidenceUrl/);
+    assert.match(html, /function closureCommitEvidenceHtml/);
+    assert.match(html, /function commentEvidenceHtml/);
+    assert.match(html, /function canonicalPathHtml/);
   });
 });

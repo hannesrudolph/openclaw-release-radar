@@ -1596,6 +1596,17 @@ function safeExternalUrl(url) {
   }
 }
 
+function safeEvidenceUrl(url) {
+  if (typeof url !== 'string' || !url) return '';
+  if (/^\/(?!\/)/.test(url)) return url;
+  try {
+    const parsed = new URL(url);
+    return parsed.protocol === 'https:' ? parsed.href : '';
+  } catch {
+    return '';
+  }
+}
+
 const ADVISORY_PREVIEW_LIMIT = 3;
 
 function advisoryEvidenceHtml(r) {
@@ -1984,8 +1995,9 @@ function scoreDetailIssueRefsHtml(issueRefs, releaseTag = null) {
       : '';
     const weight = Number.isFinite(issue.weight) ? ` · w ${metricValue(issue.weight)}` : '';
     const label = `#${issue.number} ${shortIssueTitle(issue)}${impact}${weight}`;
-    return issue.url
-      ? `<a class="score-explain__ref" href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+    const href = safeExternalUrl(issue.url);
+    return href
+      ? `<a class="score-explain__ref" href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
       : `<span class="score-explain__ref">${esc(label)}</span>`;
   }).join('')}</div>`;
   const proofs = refs
@@ -2007,8 +2019,17 @@ function scoreDetailIssueReasonHtml(issue, releaseTag = null) {
 }
 
 function evidenceLink(url, label) {
-  if (typeof url !== 'string' || !/^(?:https?:\/\/|\/)/i.test(url)) return '';
-  return `<a class="score-explain__ref" href="${esc(url)}" target="_blank" rel="noopener">${esc(label)}</a>`;
+  const href = safeEvidenceUrl(url);
+  if (!href) return '';
+  const external = href.startsWith('https://');
+  return `<a class="score-explain__ref" href="${esc(href)}"${external ? ' target="_blank" rel="noopener"' : ''}>${esc(label)}</a>`;
+}
+
+function githubEvidenceLink(url, label) {
+  const href = safeExternalUrl(url);
+  return href
+    ? `<a class="score-explain__ref" href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
+    : '';
 }
 
 function issueAuditLinksHtml(releaseTag, issueNumber, { closureProof = false } = {}) {
@@ -2136,23 +2157,58 @@ function scoreDetailIssueProofHtml(issue) {
   if (heading) parts.push(heading);
   if (proof.summary) parts.push(proof.summary);
   if (Number.isFinite(proof.riskWeight)) parts.push(`risk ${metricValue(proof.riskWeight)}`);
+  const refs = [];
   if (proof.canonicalIssue?.number) {
     const path = Array.isArray(proof.canonicalPath) && proof.canonicalPath.length > 1
       ? ` · path ${proof.canonicalPath.map((n) => `#${n}`).join(' -> ')}`
       : '';
     parts.push(`canonical #${proof.canonicalIssue.number}${proof.canonicalIssue.state ? ` ${proof.canonicalIssue.state}` : ''}${path}`);
+    const canonicalLink = githubEvidenceLink(
+      proof.canonicalIssue.url,
+      `canonical #${proof.canonicalIssue.number}${proof.canonicalIssue.state ? ` ${proof.canonicalIssue.state}` : ''}`,
+    );
+    if (canonicalLink) refs.push(canonicalLink);
   }
-  if (Array.isArray(proof.openPrs) && proof.openPrs.length) {
-    parts.push(`open PR ${proof.openPrs.map((pr) => `#${pr.number}`).join(', ')}`);
-  }
-  if (Array.isArray(proof.reachablePrs) && proof.reachablePrs.length) {
-    parts.push(`reachable PR ${proof.reachablePrs.map((pr) => `#${pr.number}`).join(', ')}`);
-  }
-  if (Array.isArray(proof.notReachablePrs) && proof.notReachablePrs.length) {
-    parts.push(`not in tag PR ${proof.notReachablePrs.map((pr) => `#${pr.number}`).join(', ')}`);
+  for (const [label, values] of [
+    ['open PR', proof.openPrs],
+    ['reachable PR', proof.reachablePrs],
+    ['not in tag PR', proof.notReachablePrs],
+    ['unknown reachability PR', proof.unknownReachabilityPrs],
+    ['closed unmerged PR', proof.closedUnmergedPrs],
+    ['external closing PR', proof.externalClosingPrs],
+  ]) {
+    if (!Array.isArray(values) || !values.length) continue;
+    parts.push(`${label} ${values.map((pr) => `#${pr.number}`).join(', ')}`);
+    refs.push(...scoreProofRefLinks(label, values));
   }
   if (!parts.length) return '';
-  return `<div class="score-explain__proof">#${esc(issue.number)}: ${esc(parts.join(' · '))}</div>`;
+  return `<div class="score-explain__proof">#${esc(issue.number)}: ${esc(parts.join(' · '))}`
+    + (refs.length ? `<div class="score-explain__refs">${refs.join('')}</div>` : '')
+    + '</div>';
+}
+
+function scoreProofRefLinks(groupLabel, refs) {
+  const links = [];
+  for (const ref of refs.slice(0, 3)) {
+    const identity = ref.repositoryNameWithOwner
+      ? `${ref.repositoryNameWithOwner}#${ref.number}`
+      : `#${ref.number}`;
+    const status = ref.status ? ` ${String(ref.status).replace(/_/g, ' ')}` : '';
+    const link = githubEvidenceLink(ref.url, `${groupLabel}: ${identity}${status}`);
+    if (link) links.push(link);
+    if (ref.sourceCommentUrl) {
+      const source = githubEvidenceLink(ref.sourceCommentUrl, `${identity} source comment`);
+      if (source) links.push(source);
+    }
+    if (ref.mergeCommitOid && ref.repositoryNameWithOwner) {
+      const commit = githubEvidenceLink(
+        `https://github.com/${ref.repositoryNameWithOwner}/commit/${ref.mergeCommitOid}`,
+        `${identity} merge ${String(ref.mergeCommitOid).slice(0, 10)}`,
+      );
+      if (commit) links.push(commit);
+    }
+  }
+  return links;
 }
 
 function scoreExplanationDetailsHtml(details, fallbackText, releaseTag = null) {
@@ -2324,33 +2380,39 @@ function closureProofExamplesWithStatusCoverage(closureProof, riskLimit = 12) {
 function closureProofHtml(closureProof) {
   if (!closureProof?.examples?.length) return '';
   const rows = closureProofExamplesWithStatusCoverage(closureProof, 12).map((item) => {
-    const link = item.url
-      ? `<a href="${esc(item.url)}" target="_blank" rel="noopener">#${esc(item.number)} ${esc(shortIssueTitle(item))}</a>`
+    const issueHref = safeExternalUrl(item.url);
+    const link = issueHref
+      ? `<a href="${esc(issueHref)}" target="_blank" rel="noopener">#${esc(item.number)} ${esc(shortIssueTitle(item))}</a>`
       : `<span>#${esc(item.number)} ${esc(shortIssueTitle(item))}</span>`;
-    const prLine = (item.evidence?.closingPrs ?? []).length
-      ? ` · PRs: ${(item.evidence.closingPrs ?? []).slice(0, 3).map((pr) => String(pr).split(':')[0]).join(', ')}`
-      : '';
+    const prLine = closurePrEvidenceHtml(item.evidence?.linkedPrs ?? []);
+    const commitLine = closureCommitEvidenceHtml([
+      ...(item.evidence?.fixCommitProof ?? []),
+      ...(item.evidence?.canonicalFixCommitProof ?? []),
+    ]);
     const openPrLine = (item.evidence?.canonicalOpenPrs ?? []).length
       ? `Canonical PR: ${(item.evidence.canonicalOpenPrs ?? []).slice(0, 3).map((pr) => {
           const label = `#${pr.number}${pr.state ? ` ${String(pr.state).toLowerCase()}` : ''}`;
-          return pr.url
-            ? `<a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+          const href = safeExternalUrl(pr.url);
+          return href
+            ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
             : esc(label);
         }).join(', ')}`
       : '';
     const relatedPrLine = (item.evidence?.relatedOpenPrs ?? []).length
       ? `Related open PR: ${(item.evidence.relatedOpenPrs ?? []).slice(0, 3).map((pr) => {
           const label = `#${pr.number}${pr.state ? ` ${String(pr.state).toLowerCase()}` : ''}`;
-          return pr.url
-            ? `<a href="${esc(pr.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+          const href = safeExternalUrl(pr.url);
+          return href
+            ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
             : esc(label);
         }).join(', ')}`
       : '';
     const canonicalLine = (item.evidence?.canonicalIssueDetails ?? []).length
       ? `Canonical: ${(item.evidence.canonicalIssueDetails ?? []).slice(0, 3).map((issue) => {
           const label = `#${issue.number}${issue.state ? ` ${issue.state}` : ''}`;
-          return issue.url
-            ? `<a href="${esc(issue.url)}" target="_blank" rel="noopener">${esc(label)}</a>`
+          const href = safeExternalUrl(issue.url);
+          return href
+            ? `<a href="${esc(href)}" target="_blank" rel="noopener">${esc(label)}</a>`
             : esc(label);
         }).join(', ')}`
       : '';
@@ -2358,9 +2420,9 @@ function closureProofHtml(closureProof) {
     const terminal = resolution?.terminalIssue;
     const terminalProof = resolution?.terminalProof;
     const resolutionLine = terminal
-      ? `Canonical resolution: ${terminal.url
-          ? `<a href="${esc(terminal.url)}" target="_blank" rel="noopener">#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}</a>`
-          : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${Array.isArray(resolution.path) && resolution.path.length > 1 ? ` · path ${resolution.path.map((n) => `#${esc(n)}`).join(' → ')}` : ''}`
+      ? `Canonical resolution: ${safeExternalUrl(terminal.url)
+          ? `<a href="${esc(safeExternalUrl(terminal.url))}" target="_blank" rel="noopener">#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}</a>`
+          : `#${esc(terminal.number)} ${esc(terminal.state ?? 'unknown')}`}${canonicalPathHtml(resolution.path, item.evidence?.canonicalIssueDetails ?? [], terminal)}`
       : '';
     const terminalProofMeta = terminalProof?.releaseTag
       ? ` · ${terminalProof.crossRelease ? 'from ' : ''}${esc(terminalProof.releaseTag)}${terminalProof.timing ? ` (${esc(String(terminalProof.timing).replace(/_/g, ' '))})` : ''}`
@@ -2368,8 +2430,8 @@ function closureProofHtml(closureProof) {
     const terminalProofLine = terminalProof
       ? `Canonical proof: ${esc(closureStatusLabel(terminalProof.status))}${terminalProofMeta}${terminalProof.summary ? ` · ${esc(terminalProof.summary)}` : ''}`
       : '';
-    const claim = (item.evidence?.matchingComments ?? [])[0]?.snippet;
-    const nonActionableClaim = (item.evidence?.nonActionableRationaleComments ?? [])[0]?.snippet;
+    const claim = (item.evidence?.matchingComments ?? [])[0];
+    const nonActionableClaim = (item.evidence?.nonActionableRationaleComments ?? [])[0];
     const disposition = item.riskDisposition ? closureRiskDispositionLabel(item.riskDisposition) : null;
     const classification = item.classification;
     const classificationLine = classification
@@ -2385,7 +2447,9 @@ function closureProofHtml(closureProof) {
         }).join('; ')}`
       : '';
     return `<li class="evidence__item">${link}`
-      + `<span class="evidence__meta">${disposition ? `${esc(disposition)} · ` : ''}${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}${esc(prLine)}</span>`
+      + `<span class="evidence__meta">${disposition ? `${esc(disposition)} · ` : ''}${esc(closureStatusLabel(item.status))}: ${esc(item.summary)}</span>`
+      + (prLine ? `<span class="evidence__meta">${prLine}</span>` : '')
+      + (commitLine ? `<span class="evidence__meta">${commitLine}</span>` : '')
       + (classificationLine ? `<span class="evidence__meta">${classificationLine}</span>` : '')
       + (diffLine ? `<span class="evidence__meta">${esc(diffLine)}</span>` : '')
       + (canonicalLine ? `<span class="evidence__meta">${canonicalLine}</span>` : '')
@@ -2393,8 +2457,8 @@ function closureProofHtml(closureProof) {
       + (relatedPrLine ? `<span class="evidence__meta">${relatedPrLine}</span>` : '')
       + (resolutionLine ? `<span class="evidence__meta">${resolutionLine}</span>` : '')
       + (terminalProofLine ? `<span class="evidence__meta">${terminalProofLine}</span>` : '')
-      + (nonActionableClaim ? `<span class="evidence__meta">Non-actionable rationale: ${esc(nonActionableClaim)}</span>` : '')
-      + (claim ? `<span class="evidence__meta">Closure note: ${esc(claim)}</span>` : '')
+      + (nonActionableClaim ? `<span class="evidence__meta">${commentEvidenceHtml('Non-actionable rationale', nonActionableClaim)}</span>` : '')
+      + (claim ? `<span class="evidence__meta">${commentEvidenceHtml('Closure note', claim)}</span>` : '')
       + `</li>`;
   }).join('');
   return evidenceSectionHtml(
@@ -2402,6 +2466,59 @@ function closureProofHtml(closureProof) {
     rows,
     'Closed issues get score credit only when a merged linked PR or named fix/source commit is reachable from this release tag.',
   );
+}
+
+function closurePrEvidenceHtml(prs) {
+  if (!Array.isArray(prs) || !prs.length) return '';
+  const refs = prs.slice(0, 5).map((pr) => {
+    const identity = pr.repositoryNameWithOwner ? `${pr.repositoryNameWithOwner}#${pr.number}` : `#${pr.number}`;
+    const state = pr.state ? ` ${String(pr.state).toLowerCase()}` : '';
+    const reachability = pr.reachabilityStatus ? ` ${String(pr.reachabilityStatus).replace(/_/g, ' ')}` : '';
+    const missing = pr.metadataMissing ? ' metadata missing' : '';
+    const link = githubEvidenceLink(pr.url, `${identity}${state}${reachability}${missing}`) || esc(`${identity}${state}${reachability}${missing}`);
+    const source = pr.sourceCommentUrl ? githubEvidenceLink(pr.sourceCommentUrl, 'source comment') : '';
+    return source ? `${link} ${source}` : link;
+  });
+  return `PR evidence: ${refs.join(', ')}`;
+}
+
+function closureCommitEvidenceHtml(proofs) {
+  if (!Array.isArray(proofs) || !proofs.length) return '';
+  const refs = proofs.slice(0, 5).map((proof) => {
+    const oid = String(proof.commitOid ?? '');
+    const short = oid ? oid.slice(0, 10) : 'unknown';
+    const status = proof.status ? ` ${String(proof.status).replace(/_/g, ' ')}` : '';
+    const commitUrl = proof.commitUrl || (/^[0-9a-f]{40}$/i.test(oid)
+      ? `https://github.com/openclaw/openclaw/commit/${oid}`
+      : null);
+    const link = githubEvidenceLink(commitUrl, `${short}${status}`) || esc(`${short}${status}`);
+    const source = proof.sourceCommentUrl ? githubEvidenceLink(proof.sourceCommentUrl, 'source comment') : '';
+    return source ? `${link} ${source}` : link;
+  });
+  return `Commit evidence: ${refs.join(', ')}`;
+}
+
+function commentEvidenceHtml(label, comment) {
+  const author = comment.author ? ` by ${comment.author}` : '';
+  const text = `${label}${author}: ${comment.snippet ?? ''}`;
+  return githubEvidenceLink(comment.url, text) || esc(text);
+}
+
+function canonicalPathHtml(path, issueDetails, terminal) {
+  if (!Array.isArray(path) || path.length <= 1) return '';
+  const byNumber = new Map(
+    [...issueDetails, terminal]
+      .filter((issue) => issue && Number.isInteger(Number(issue.number)))
+      .map((issue) => [Number(issue.number), issue]),
+  );
+  const hops = path.map((number) => {
+    const issue = byNumber.get(Number(number));
+    const href = safeExternalUrl(issue?.url);
+    return href
+      ? `<a href="${esc(href)}" target="_blank" rel="noopener">#${esc(number)}</a>`
+      : `#${esc(number)}`;
+  });
+  return ` · path ${hops.join(' → ')}`;
 }
 
 function installVerdictText(local) {

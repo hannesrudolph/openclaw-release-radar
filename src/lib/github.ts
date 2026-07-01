@@ -41,6 +41,7 @@ export interface GhIssue {
 
 export interface GhComment {
   id: number;
+  url?: string | null;
   user: { login: string } | null;
   author_association?: string | null;
   body: string;
@@ -96,6 +97,7 @@ interface IssueNode {
 
 interface CommentNode {
   databaseId: number | null;
+  url: string;
   author: ActorNode | null;
   authorAssociation: string | null;
   body: string;
@@ -262,6 +264,8 @@ export interface ClosureCommentPrMention {
   prRepositoryNameWithOwner: string | null;
   source: typeof CLOSURE_COMMENT_FIX_PROOF_SOURCE | typeof CLOSURE_COMMENT_PR_MENTION_SOURCE;
   referencedAt: string | null;
+  sourceCommentDatabaseId?: number | null;
+  sourceCommentUrl?: string | null;
   author: string | null;
   authorAssociation: string | null;
   trustedSource: boolean;
@@ -272,6 +276,8 @@ export interface ClosureCommentCommitMention {
   commitOid: string;
   referencedAt: string | null;
   sourceIssueNumber: number;
+  sourceCommentDatabaseId?: number | null;
+  sourceCommentUrl?: string | null;
   snippet: string;
   source: 'ClosureComment.fixProof' | 'ClosedEvent.closer' | 'ReferencedEvent.commit';
   author: string | null;
@@ -558,6 +564,7 @@ function mapIssue(node: IssueNode, extraLabelNodes: Array<{ name: string }> = []
 function mapComment(node: CommentNode): GhComment {
   return {
     id: node.databaseId ?? 0,
+    url: node.url,
     user: node.author ? { login: node.author.login } : null,
     author_association: node.authorAssociation,
     body: node.body,
@@ -911,6 +918,7 @@ function buildIssueCommentsBatchQuery(size: number): string {
       comments(first: $first, after: $after${idx}, orderBy: {field: UPDATED_AT, direction: ASC}) {
         nodes {
           databaseId
+          url
           author { login }
           authorAssociation
           body
@@ -1294,11 +1302,18 @@ export interface PullRequestLookup {
   prRepositoryNameWithOwner?: string | null;
 }
 
+export interface PullRequestLookupOptions {
+  onMissingPullRequest?: (event: { repositoryNameWithOwner: string; prNumber: number }) => void;
+}
+
 export function pullRequestKey(repositoryNameWithOwner: string | null | undefined, prNumber: number): string {
   return `${normalizePrRepositoryIdentity({ nameWithOwner: repositoryNameWithOwner }).nameWithOwner}#${prNumber}`;
 }
 
-export async function listPullRequestFixesBatch(prLookups: PullRequestLookup[]): Promise<Map<string, GhPullRequestFix>> {
+export async function listPullRequestFixesBatch(
+  prLookups: PullRequestLookup[],
+  options: PullRequestLookupOptions = {},
+): Promise<Map<string, GhPullRequestFix>> {
   const byRepo = new Map<string, { owner: string; name: string; nameWithOwner: string; numbers: Set<number> }>();
   for (const lookup of prLookups) {
     if (!Number.isInteger(lookup.prNumber) || lookup.prNumber <= 0) continue;
@@ -1314,7 +1329,7 @@ export async function listPullRequestFixesBatch(prLookups: PullRequestLookup[]):
 
   const all = new Map<string, GhPullRequestFix>();
   for (const repo of byRepo.values()) {
-    const fetched = await listPullRequestFixesForRepo(repo, [...repo.numbers]);
+    const fetched = await listPullRequestFixesForRepo(repo, [...repo.numbers], options);
     for (const [key, pr] of fetched) all.set(key, pr);
   }
   return all;
@@ -1323,6 +1338,7 @@ export async function listPullRequestFixesBatch(prLookups: PullRequestLookup[]):
 async function listPullRequestFixesForRepo(
   repo: { owner: string; name: string; nameWithOwner: string },
   prNumbers: number[],
+  options: PullRequestLookupOptions,
 ): Promise<Map<string, GhPullRequestFix>> {
   const uniquePrNumbers = [...new Set(prNumbers)].filter((n) => Number.isInteger(n) && n > 0);
   const all = new Map<string, GhPullRequestFix>();
@@ -1341,13 +1357,17 @@ async function listPullRequestFixesForRepo(
       );
     } catch (e) {
       if (chunk.length > 1 && isMissingPullRequestError(e)) {
-        const fallback = await listPullRequestFixesForRepo(repo, chunk.slice(0, Math.ceil(chunk.length / 2)));
+        const fallback = await listPullRequestFixesForRepo(repo, chunk.slice(0, Math.ceil(chunk.length / 2)), options);
         for (const [key, pr] of fallback) all.set(key, pr);
-        const rest = await listPullRequestFixesForRepo(repo, chunk.slice(Math.ceil(chunk.length / 2)));
+        const rest = await listPullRequestFixesForRepo(repo, chunk.slice(Math.ceil(chunk.length / 2)), options);
         for (const [key, pr] of rest) all.set(key, pr);
         continue;
       }
       if (chunk.length === 1 && isMissingPullRequestError(e)) {
+        if (options.onMissingPullRequest) {
+          options.onMissingPullRequest({ repositoryNameWithOwner: repo.nameWithOwner, prNumber: chunk[0] });
+          continue;
+        }
         throw new Error(`GitHub GraphQL missing pull request ${repo.nameWithOwner}#${chunk[0]} while resolving closure-comment PR evidence`);
       }
       throw e;
@@ -1356,6 +1376,10 @@ async function listPullRequestFixesForRepo(
     for (let idx = 0; idx < chunk.length; idx++) {
       const pr = responseRepo[`pr${idx}`];
       if (!pr?.number) {
+        if (options.onMissingPullRequest) {
+          options.onMissingPullRequest({ repositoryNameWithOwner: repo.nameWithOwner, prNumber: chunk[idx] });
+          continue;
+        }
         throw new Error(`GitHub GraphQL missing ${repo.nameWithOwner}#${chunk[idx]} pull request without a missing-PR error`);
       }
       const mapped = mapPullRequestFix(pr);
@@ -1378,6 +1402,9 @@ export function closureCommentPrMentions(
     createdAt?: string | null;
     updated_at?: string | null;
     updatedAt?: string | null;
+    id?: number | null;
+    databaseId?: number | null;
+    url?: string | null;
     user?: { login?: string | null } | null;
     author?: string | null;
     author_association?: string | null;
@@ -1398,6 +1425,7 @@ export function closureCommentPrMentions(
       const existing = byPr.get(key);
       const referencedAt = commentEffectiveAt(comment);
       if (shouldReplacePrMention(existing, source, referencedAt)) {
+        const commentSource = closureCommentSource(comment, issueNumber);
         byPr.set(key, {
           issueNumber,
           prNumber: ref.prNumber,
@@ -1406,6 +1434,7 @@ export function closureCommentPrMentions(
           prRepositoryNameWithOwner: ref.prRepositoryNameWithOwner,
           source,
           referencedAt,
+          ...commentSource,
           ...trust,
         });
       }
@@ -1424,6 +1453,9 @@ export function closureCommentCommitMentions(
     createdAt?: string | null;
     updated_at?: string | null;
     updatedAt?: string | null;
+    id?: number | null;
+    databaseId?: number | null;
+    url?: string | null;
     user?: { login?: string | null } | null;
     author?: string | null;
     author_association?: string | null;
@@ -1443,11 +1475,13 @@ export function closureCommentCommitMentions(
     for (const commitOid of extractCommitOids(text, resolveCommitOid)) {
       const existing = byCommit.get(commitOid);
       if (!existing || (referencedAt && (!existing.referencedAt || referencedAt < existing.referencedAt))) {
+        const commentSource = closureCommentSource(comment, sourceIssueNumber);
         byCommit.set(commitOid, {
           issueNumber,
           commitOid,
           referencedAt,
           sourceIssueNumber,
+          ...commentSource,
           snippet: text.slice(0, 500),
           source: 'ClosureComment.fixProof',
           ...trust,
@@ -1472,6 +1506,25 @@ function closureProofCommentTrust(comment: {
   const trustedSource = TRUSTED_CLOSURE_PROOF_ASSOCIATIONS.has(authorAssociation ?? '') ||
     TRUSTED_CLOSURE_PROOF_AUTHORS.has(String(author ?? '').toLowerCase());
   return { author, authorAssociation, trustedSource };
+}
+
+function closureCommentSource(comment: {
+  id?: number | null;
+  databaseId?: number | null;
+  url?: string | null;
+}, issueNumber: number): {
+  sourceCommentDatabaseId?: number | null;
+  sourceCommentUrl?: string | null;
+} {
+  const rawId = Number(comment.id ?? comment.databaseId ?? 0);
+  const sourceCommentDatabaseId = Number.isInteger(rawId) && rawId > 0 ? rawId : null;
+  const explicitUrl = typeof comment.url === 'string' && comment.url ? comment.url : null;
+  const sourceCommentUrl = explicitUrl ?? (sourceCommentDatabaseId
+    ? `https://github.com/${config.github.owner}/${config.github.repo}/issues/${issueNumber}#issuecomment-${sourceCommentDatabaseId}`
+    : null);
+  return sourceCommentDatabaseId || sourceCommentUrl
+    ? { sourceCommentDatabaseId, sourceCommentUrl }
+    : {};
 }
 
 function extractClosureCommentPrRefs(body: string): Array<{

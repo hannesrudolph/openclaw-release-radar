@@ -609,6 +609,26 @@ describe('release fix provenance', () => {
     assert.deepEqual(afterFailedReplace, afterReplace);
   });
 
+  it('persists exact source comments for closure-comment PR links', async () => {
+    const db = await freshDb('pr-link-source-comment');
+    db.upsertIssuePrLink({
+      issue_number: 9300,
+      pr_number: 9400,
+      source: 'ClosureComment.fixProof',
+      will_close_target: null,
+      referenced_at: '2026-06-02T00:00:00Z',
+      source_comment_database_id: 123456,
+      source_comment_url: 'https://github.com/openclaw/openclaw/issues/9300#issuecomment-123456',
+    });
+    const row = db.db.prepare(`
+      SELECT source_comment_database_id, source_comment_url
+      FROM issue_pr_links
+      WHERE issue_number=9300 AND pr_number=9400
+    `).get() as any;
+    assert.equal(row.source_comment_database_id, 123456);
+    assert.equal(row.source_comment_url, 'https://github.com/openclaw/openclaw/issues/9300#issuecomment-123456');
+  });
+
   it('reports stale or missing release reachability evidence', async () => {
     const db = await freshDb('reachability-integrity');
     seedRelease(db, 'v-integrity');

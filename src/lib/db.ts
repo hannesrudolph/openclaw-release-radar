@@ -377,6 +377,8 @@ CREATE TABLE IF NOT EXISTS issue_pr_links (
   source TEXT NOT NULL,
   will_close_target INTEGER,
   referenced_at TEXT,
+  source_comment_database_id INTEGER,
+  source_comment_url TEXT,
   fetched_at TEXT NOT NULL,
   PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
 );
@@ -543,6 +545,8 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
   `ALTER TABLE issue_commit_references ADD COLUMN commit_message_headline TEXT`,
   `ALTER TABLE release_score_audits ADD COLUMN source_identity_json TEXT`,
+  `ALTER TABLE issue_pr_links ADD COLUMN source_comment_database_id INTEGER`,
+  `ALTER TABLE issue_pr_links ADD COLUMN source_comment_url TEXT`,
 ]) {
   try { db.exec(sql); } catch { /* column already exists */ }
 }
@@ -677,17 +681,19 @@ try {
       source TEXT NOT NULL,
       will_close_target INTEGER,
       referenced_at TEXT,
+      source_comment_database_id INTEGER,
+      source_comment_url TEXT,
       fetched_at TEXT NOT NULL,
       PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
     )`);
     const insert = db.prepare(`
       INSERT OR REPLACE INTO issue_pr_links_next (
         issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-        pr_number, source, will_close_target, referenced_at, fetched_at
+        pr_number, source, will_close_target, referenced_at, source_comment_database_id, source_comment_url, fetched_at
       )
       VALUES (
         :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-        :pr_number, :source, :will_close_target, :referenced_at, :fetched_at
+        :pr_number, :source, :will_close_target, :referenced_at, :source_comment_database_id, :source_comment_url, :fetched_at
       )
     `);
     for (const row of rows) {
@@ -704,6 +710,8 @@ try {
         source: row.source,
         will_close_target: row.will_close_target ?? null,
         referenced_at: row.referenced_at ?? null,
+        source_comment_database_id: row.source_comment_database_id ?? null,
+        source_comment_url: row.source_comment_url ?? null,
         fetched_at: row.fetched_at ?? new Date().toISOString(),
       });
     }
@@ -2133,22 +2141,26 @@ export interface IssuePrLinkInput {
   source: string;
   will_close_target: number | null;
   referenced_at: string | null;
+  source_comment_database_id?: number | null;
+  source_comment_url?: string | null;
 }
 
 const upsertIssuePrLinkStmt = db.prepare(`
 INSERT INTO issue_pr_links (
   issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-  pr_number, source, will_close_target, referenced_at, fetched_at
+  pr_number, source, will_close_target, referenced_at, source_comment_database_id, source_comment_url, fetched_at
 )
 VALUES (
   :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-  :pr_number, :source, :will_close_target, :referenced_at, :fetched_at
+  :pr_number, :source, :will_close_target, :referenced_at, :source_comment_database_id, :source_comment_url, :fetched_at
 )
 ON CONFLICT(issue_number, pr_repository_name_with_owner, pr_number, source) DO UPDATE SET
   pr_repository_owner=excluded.pr_repository_owner,
   pr_repository_name=excluded.pr_repository_name,
   will_close_target=excluded.will_close_target,
   referenced_at=excluded.referenced_at,
+  source_comment_database_id=excluded.source_comment_database_id,
+  source_comment_url=excluded.source_comment_url,
   fetched_at=excluded.fetched_at
 `);
 
@@ -2156,6 +2168,8 @@ export function upsertIssuePrLink(input: IssuePrLinkInput): void {
   upsertIssuePrLinkStmt.run({
     ...input,
     ...normalizePrRepository(input),
+    source_comment_database_id: input.source_comment_database_id ?? null,
+    source_comment_url: input.source_comment_url ?? null,
     fetched_at: new Date().toISOString(),
   });
 }

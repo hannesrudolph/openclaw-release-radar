@@ -24,6 +24,7 @@ import {
   LABEL_TIMELINE_SCHEMA_VERSION,
   RELEASE_CHECKS_SCHEMA_VERSION,
   SCORE_COMPONENTS_SCHEMA_VERSION,
+  SCORE_EXPLANATION_SCHEMA_VERSION,
   SCORE_EXPLANATION_DETAIL_LABELS,
   SCORE_EXPLANATION_LIMIT_CODES,
   SCORE_EXPLANATION_POSITIVE_CODES,
@@ -33,6 +34,7 @@ import { SCORE_SOURCE_IDENTITY_SCHEMA_VERSION } from '../../src/lib/scoreSourceI
 import { verifyScoreAuditPayloadContracts } from './score-audit-contracts.mjs';
 
 export const knownProofStatuses = new Set(CLOSURE_PROOF_STATUSES);
+const trackedRepositoryNameWithOwner = `${process.env.GITHUB_OWNER ?? 'openclaw'}/${process.env.GITHUB_REPO ?? 'openclaw'}`;
 
 const directUnknownFixCommitStatuses = new Set([
   'not_planned_direct_fix_commit_reachability_unknown',
@@ -115,7 +117,7 @@ const issueEvidenceAuditSchemaVersion = RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION;
 const labelTimelineSchemaVersion = LABEL_TIMELINE_SCHEMA_VERSION;
 const releaseChecksSchemaVersion = RELEASE_CHECKS_SCHEMA_VERSION;
 const artifactVerificationSchemaVersion = ARTIFACT_VERIFICATION_SCHEMA_VERSION;
-const scoreExplanationSchemaVersion = 1;
+const scoreExplanationSchemaVersion = SCORE_EXPLANATION_SCHEMA_VERSION;
 const publicPayloadSchemaVersion = 4;
 const knownIssueEvidenceTiers = new Set(RELEASE_ISSUE_EVIDENCE_TIERS);
 const knownExplanationLimitCodes = new Set(SCORE_EXPLANATION_LIMIT_CODES);
@@ -433,6 +435,19 @@ const closureProofAuditEvidenceKeys = new Set([
   'notReachableFixCommits',
   'unknownFixCommits',
 ]);
+const closureProofAuditPrRefKeys = new Set([
+  'number', 'repositoryNameWithOwner', 'source', 'willCloseTarget', 'referencedAt',
+  'sourceCommentDatabaseId', 'sourceCommentUrl', 'title', 'url', 'state', 'merged', 'mergedAt',
+  'reachabilityStatus', 'reachabilityMethod', 'reachabilityEvidence', 'mergeCommitOid', 'metadataMissing',
+]);
+const closureProofAuditCommentRefKeys = new Set([
+  'databaseId', 'issueNumber', 'url', 'author', 'createdAt', 'updatedAt', 'snippet',
+]);
+const closureProofAuditCommitRefKeys = new Set([
+  'issueNumber', 'sourceIssueNumber', 'sourceIssueUrl', 'commitOid', 'shortOid', 'commitUrl',
+  'status', 'source', 'referencedAt', 'author', 'authorAssociation', 'trustedSource',
+  'tagCommitOid', 'sourceCommentDatabaseId', 'sourceCommentUrl', 'evidence', 'snippet',
+]);
 const reachabilityAuditKeys = new Set([
   'schemaVersion',
   'tag',
@@ -507,8 +522,16 @@ const ledgerRowKeys = new Set(['key', 'label', 'points', 'kind', 'metric', 'note
 const ledgerCapKeys = new Set(['key', 'label', 'ceiling', 'applied', 'before', 'after', 'reason']);
 const explanationDetailKeys = new Set(['code', 'label', 'text', 'metrics', 'buckets', 'riskBuckets', 'issueRefs']);
 const explanationIssueRefKeys = new Set(['number', 'title', 'url', 'state', 'status', 'tier', 'weight', 'fieldConfirmed', 'releaseLocal', 'scoringReason', 'installImpactClass', 'installImpactMultiplier', 'proof']);
-const explanationIssueProofKeys = new Set(['status', 'statusLabel', 'riskDisposition', 'riskDispositionLabel', 'summary', 'riskWeight', 'canonicalIssue', 'canonicalPath', 'openPrs', 'reachablePrs', 'notReachablePrs']);
-const explanationLinkedRefKeys = new Set(['number', 'title', 'url', 'state', 'status']);
+const explanationIssueProofKeys = new Set([
+  'status', 'statusLabel', 'riskDisposition', 'riskDispositionLabel', 'summary', 'riskWeight',
+  'canonicalIssue', 'canonicalPath', 'openPrs', 'reachablePrs', 'notReachablePrs',
+  'unknownReachabilityPrs', 'closedUnmergedPrs', 'externalClosingPrs',
+]);
+const explanationLinkedRefKeys = new Set([
+  'number', 'title', 'url', 'state', 'status', 'repositoryNameWithOwner', 'source', 'merged',
+  'mergedAt', 'referencedAt', 'willCloseTarget', 'reachabilityMethod', 'mergeCommitOid',
+  'sourceCommentUrl',
+]);
 const forbiddenPublicKeys = new Set([
   'comparison',
   'delta',
@@ -533,9 +556,14 @@ export async function verifyReleaseAudit({ reader, apiBase = null, fetchJson = d
   const releases = reader.listReleases(limit, { scoredOnly });
   const failures = [];
   const rows = [];
-  const currentSourceIdentity = typeof reader.scoreSourceIdentity === 'function'
-    ? reader.scoreSourceIdentity()
-    : null;
+  let currentSourceIdentity = null;
+  if (typeof reader.scoreSourceIdentity === 'function') {
+    try {
+      currentSourceIdentity = reader.scoreSourceIdentity();
+    } catch (error) {
+      failures.push(`source-identity: current score source identity could not be computed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
   const latestScoredStableRelease = releases.find((release) =>
     release.final_score != null || release.score != null || release.scored_at != null || release.scoredAt != null);
   verifyRecommendedReleaseInvariant({ failures, releases });
@@ -1395,16 +1423,22 @@ function verifyEmbeddedProofPr({ failures, tag, row, pr, label }) {
   const state = String(pr.state ?? '');
   const merged = pr.merged;
   const source = String(pr.source ?? '');
+  const metadataMissing = pr.metadataMissing === true || pr.metadataMissing === 1;
   expect(failures, tag, Number.isInteger(number) && number > 0,
     `proof issue #${row.issue_number} ${label} must include a positive PR number`);
   expect(failures, tag, repo.includes('/'),
     `proof issue #${row.issue_number} ${label} PR #${number || 'unknown'} must include repositoryNameWithOwner`);
   expect(failures, tag, source.length > 0,
     `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include source`);
-  expect(failures, tag, ['OPEN', 'CLOSED', 'MERGED'].includes(state),
-    `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include known state`);
-  expect(failures, tag, merged === 0 || merged === 1 || merged === false || merged === true,
-    `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include merged flag`);
+  if (metadataMissing) {
+    expect(failures, tag, isExpectedGitHubCommentUrl(pr.sourceCommentUrl, row.issue_number, pr.sourceCommentDatabaseId),
+      `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} missing metadata must link its source comment`);
+  } else {
+    expect(failures, tag, ['OPEN', 'CLOSED', 'MERGED'].includes(state),
+      `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include known state`);
+    expect(failures, tag, merged === 0 || merged === 1 || merged === false || merged === true,
+      `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} must include merged flag`);
+  }
   if (merged === 1 || merged === true) {
     expect(failures, tag, state === 'MERGED',
       `proof issue #${row.issue_number} ${label} ${repo || 'unknown-repo'}#${number || 'unknown'} merged PR must have MERGED state`);
@@ -3166,6 +3200,40 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
     expect(failures, tag, isObject(row.evidence),
       `closure proof audit row #${row.issueNumber} evidence must be present`);
     verifyAllowedKeys({ failures, tag, label: 'closure proof audit row evidence', value: row.evidence, allowed: closureProofAuditEvidenceKeys });
+    for (const pr of row.evidence?.linkedPrs ?? []) {
+      verifyAllowedKeys({ failures, tag, label: 'closure proof audit linked PR', value: pr, allowed: closureProofAuditPrRefKeys });
+      expect(failures, tag, Number.isInteger(pr?.number) && pr.number > 0,
+        `closure proof audit linked PR number must be positive for issue #${row.issueNumber}`);
+      if (pr?.sourceCommentDatabaseId != null) {
+        expect(failures, tag, isExpectedGitHubCommentUrl(pr.sourceCommentUrl, row.issueNumber, pr.sourceCommentDatabaseId),
+          `closure proof audit linked PR source comment URL must match its database ID for issue #${row.issueNumber}`);
+      }
+    }
+    for (const field of ['matchingComments', 'nonActionableRationaleComments']) {
+      for (const comment of row.evidence?.[field] ?? []) {
+        verifyAllowedKeys({ failures, tag, label: `closure proof audit ${field}`, value: comment, allowed: closureProofAuditCommentRefKeys });
+        if (comment?.databaseId != null) {
+          expect(failures, tag, isExpectedGitHubCommentUrl(comment.url, comment.issueNumber ?? row.issueNumber, comment.databaseId),
+            `closure proof audit ${field} URL must match its database ID for issue #${row.issueNumber}`);
+        }
+      }
+    }
+    for (const field of ['fixCommitProof', 'canonicalFixCommitProof', 'referencedCommitContext']) {
+      for (const commit of row.evidence?.[field] ?? []) {
+        verifyAllowedKeys({ failures, tag, label: `closure proof audit ${field}`, value: commit, allowed: closureProofAuditCommitRefKeys });
+        if (typeof commit?.commitOid === 'string' && fullCommitOidRe.test(commit.commitOid)) {
+          expect(failures, tag, typeof commit.commitUrl === 'string' && commit.commitUrl.endsWith(`/commit/${commit.commitOid}`),
+            `closure proof audit ${field} commit URL must match commit OID for issue #${row.issueNumber}`);
+        }
+        if (commit?.sourceCommentDatabaseId != null) {
+          expect(failures, tag, isExpectedGitHubCommentUrl(
+            commit.sourceCommentUrl,
+            commit.sourceIssueNumber ?? row.issueNumber,
+            commit.sourceCommentDatabaseId,
+          ), `closure proof audit ${field} source comment URL must match its database ID for issue #${row.issueNumber}`);
+        }
+      }
+    }
   }
 
   const [status, statusCount] = Object.entries(proof.byStatus ?? {}).find(([, count]) => Number(count ?? 0) > 0) ?? [];
@@ -3208,6 +3276,21 @@ async function verifyClosureProofAuditEndpoint({ apiBase, fetchJson, failures, t
       `closure proof audit filteredCountsByRiskDisposition.${disposition} (${page.filteredCountsByRiskDisposition?.[disposition]}) must match ${dispositionCount}`);
     expect(failures, tag, (page.rows ?? []).every((row) => row.riskDisposition === disposition),
       `closure proof audit riskDisposition filter must return only ${disposition} rows`);
+  }
+}
+
+function isExpectedGitHubCommentUrl(url, issueNumber, databaseId) {
+  const issue = Number(issueNumber);
+  const comment = Number(databaseId);
+  if (!Number.isInteger(issue) || issue <= 0 || !Number.isInteger(comment) || comment <= 0) return false;
+  try {
+    const parsed = new URL(String(url ?? ''));
+    return parsed.protocol === 'https:' &&
+      parsed.hostname === 'github.com' &&
+      parsed.pathname.toLowerCase() === `/${trackedRepositoryNameWithOwner}/issues/${issue}`.toLowerCase() &&
+      parsed.hash === `#issuecomment-${comment}`;
+  } catch {
+    return false;
   }
 }
 
@@ -3749,7 +3832,14 @@ function verifyExplanationIssueProof({ failures, tag, source, label, idx, proof 
     if (key === 'canonicalIssue' && value != null) {
       verifyLinkedExplanationRef({ failures, tag, source, label, idx, key, value });
     }
-    if (['openPrs', 'reachablePrs', 'notReachablePrs'].includes(key) && value != null) {
+    if ([
+      'openPrs',
+      'reachablePrs',
+      'notReachablePrs',
+      'unknownReachabilityPrs',
+      'closedUnmergedPrs',
+      'externalClosingPrs',
+    ].includes(key) && value != null) {
       expect(failures, tag, Array.isArray(value),
         `${source} score explanation ${label}[${idx}] issueRef proof ${key} must be an array`);
       if (Array.isArray(value)) {

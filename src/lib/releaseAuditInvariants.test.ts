@@ -40,7 +40,7 @@ const auditScoredAt = '2026-01-02T00:00:01Z';
 const tagOid = 'a'.repeat(40);
 const mergeOid = 'b'.repeat(40);
 const sourceIdentityFixture = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   sourceMode: 'current_db',
   scope: 'score_input_database',
   algorithm: 'sha256',
@@ -322,7 +322,7 @@ function reader(overrides: Partial<{
 
 function scoreExplanationFixture() {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     title: 'Why not 10?',
     scoreLedger: {
       schemaVersion: 1,
@@ -1764,6 +1764,15 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /must match current score-input rows/.test(failure)));
   });
 
+  it('reports source identity schema errors instead of crashing', async () => {
+    const invalidReader = reader();
+    invalidReader.scoreSourceIdentity = () => {
+      throw new Error('no such column: issue_pr_links.source_comment_url');
+    };
+    const result = await verifyReleaseAudit({ reader: invalidReader });
+    assert.ok(result.failures.some((failure) => /could not be computed.*source_comment_url/.test(failure)));
+  });
+
   it('fails when score source rows change during audit verification', async () => {
     const unstableReader = reader();
     let calls = 0;
@@ -1870,6 +1879,49 @@ describe('verifyReleaseAudit', () => {
     assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*repositoryNameWithOwner/.test(failure)));
     assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*must include source/.test(failure)));
     assert.ok(result.failures.some((failure) => /linkedPrs\[0\].*must include known state/.test(failure)));
+  });
+
+  it('accepts explicit missing PR metadata when the source comment is linked', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        proofRows: [{
+          release_tag: 'v1',
+          issue_number: 1,
+          status: 'fixed_in_release',
+          checked_at: proofCheckedAt,
+          evidence_json: JSON.stringify({
+            hasReachableClosingPr: true,
+            hasReachableFixCommit: false,
+            hasNotReachableFixCommit: false,
+            reachableFixCommits: [],
+            notReachableFixCommits: [],
+            fixCommitProof: [],
+            linkedPrs: [{
+              number: 1,
+              repositoryNameWithOwner: 'openclaw/openclaw',
+              source: 'closedByPullRequestsReferences',
+              willCloseTarget: 1,
+              state: 'MERGED',
+              merged: 1,
+              mergedAt: '2026-01-01T12:00:00Z',
+              reachabilityStatus: 'reachable',
+              reachabilityMethod: 'git-merge-base',
+              reachabilityEvidence: 'merge_commit_in_release_history',
+              mergeCommitOid: mergeOid,
+            }, {
+              number: 88894,
+              repositoryNameWithOwner: 'openclaw/openclaw',
+              source: 'ClosureComment.fixProof',
+              metadataMissing: 1,
+              sourceCommentDatabaseId: 123456,
+              sourceCommentUrl: 'https://github.com/openclaw/openclaw/issues/1#issuecomment-123456',
+            }],
+            stateReasons: ['COMPLETED'],
+          }),
+        }],
+      }),
+    });
+    assert.deepEqual(result.failures, []);
   });
 
   it('fails when related PR context proof is missing identity fields', async () => {

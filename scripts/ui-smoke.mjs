@@ -19,6 +19,9 @@ let explanationMetricText = null;
 let explanationProofText = null;
 let expectedCheckLinkText = null;
 let expectedArtifactLinkText = null;
+let expectedProofPrUrl = null;
+let expectedSourceCommentUrl = null;
+let expectedCommitUrl = null;
 const reviewByTag = new Map();
 for (const release of releases) {
   const review = await json(`/api/releases/${encodeURIComponent(release.tag)}/review`);
@@ -47,6 +50,24 @@ for (const release of releases) {
     expectedCheckLinkText = checkContext?.name ?? null;
     const artifact = review.local?.gateEvidence?.artifactVerification;
     expectedArtifactLinkText = artifact?.npmPackageUrl ? 'npm package' : artifact?.ciReportUrl ? 'evidence report' : null;
+    const proofRefs = [
+      ...(explanationIssueRef?.proof?.openPrs ?? []),
+      ...(explanationIssueRef?.proof?.reachablePrs ?? []),
+      ...(explanationIssueRef?.proof?.notReachablePrs ?? []),
+      ...(explanationIssueRef?.proof?.unknownReachabilityPrs ?? []),
+      ...(explanationIssueRef?.proof?.closedUnmergedPrs ?? []),
+      ...(explanationIssueRef?.proof?.externalClosingPrs ?? []),
+    ];
+    expectedProofPrUrl = proofRefs.find((ref) => ref?.url)?.url ?? null;
+    expectedSourceCommentUrl = proofRefs.find((ref) => ref?.sourceCommentUrl)?.sourceCommentUrl ?? null;
+    const closureExamples = review.local?.gateEvidence?.fixProvenance?.closureProof?.examples ?? [];
+    expectedCommitUrl = closureExamples
+      .flatMap((example) => [
+        ...(example?.evidence?.fixCommitProof ?? []),
+        ...(example?.evidence?.canonicalFixCommitProof ?? []),
+      ])
+      .find((commit) => commit?.commitOid)?.commitOid;
+    if (expectedCommitUrl) expectedCommitUrl = `https://github.com/openclaw/openclaw/commit/${expectedCommitUrl}`;
     break;
   }
 }
@@ -58,6 +79,9 @@ if (!explanationMetricText) throw new Error(`No explanation metric available for
 if (!explanationProofText) throw new Error(`No explanation proof context available for ${fixCreditTag}`);
 if (!expectedCheckLinkText) throw new Error(`No release check link available for ${fixCreditTag}`);
 if (!expectedArtifactLinkText) throw new Error(`No artifact link available for ${fixCreditTag}`);
+if (!expectedProofPrUrl) throw new Error(`No linked proof PR available for ${fixCreditTag}`);
+if (!expectedSourceCommentUrl) throw new Error(`No linked source comment available for ${fixCreditTag}`);
+if (!expectedCommitUrl) throw new Error(`No linked commit proof available for ${fixCreditTag}`);
 const publicDetail = publicByTag.get(fixCreditTag);
 const relatedIssue = (publicDetail?.watchIssues?.length ? publicDetail.watchIssues : publicDetail?.issues ?? [])[0];
 if (!relatedIssue?.number || !relatedIssue?.url) {
@@ -119,6 +143,9 @@ try {
   await fixPanel.getByText(closureRiskText).waitFor();
   await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedCheckLinkText }).first().waitFor();
   await fixPanel.locator('a.score-explain__ref').filter({ hasText: expectedArtifactLinkText }).first().waitFor();
+  await fixPanel.locator(`a[href="${expectedProofPrUrl}"]`).first().waitFor();
+  await fixPanel.locator(`a[href="${expectedSourceCommentUrl}"]`).first().waitFor();
+  await fixPanel.locator(`a[href="${expectedCommitUrl}"]`).first().waitFor();
   const fixPanelText = await fixPanel.innerText();
   if (!fixPanelText.includes(explanationText)) {
     throw new Error(`Score explanation text not rendered for ${fixCreditTag}: ${explanationText}`);

@@ -200,6 +200,7 @@ function compactClosureProofEvidence(evidence: unknown) {
     unscoredFixProof: compactUnscoredFixProof(raw.unscoredFixProof),
     fixCommitProof: arrayOf(raw.fixCommitProof, compactCommitProof),
     canonicalFixCommitProof: arrayOf(raw.canonicalFixCommitProof, compactCommitProof),
+    referencedCommitContext: arrayOf(raw.referencedCommitContext, compactCommitProof),
     reachableFixCommits: arrayOf(raw.reachableFixCommits, compactScalar),
     notReachableFixCommits: arrayOf(raw.notReachableFixCommits, compactScalar),
     unknownFixCommits: arrayOf(raw.unknownFixCommits, compactScalar),
@@ -270,6 +271,17 @@ function compactPrRef(value: unknown) {
     number,
     repositoryNameWithOwner: typeof raw.repositoryNameWithOwner === 'string' ? raw.repositoryNameWithOwner : null,
     source: typeof raw.source === 'string' ? raw.source : null,
+    willCloseTarget: raw.willCloseTarget === true || raw.willCloseTarget === 1
+      ? true
+      : raw.willCloseTarget === false || raw.willCloseTarget === 0
+        ? false
+        : null,
+    referencedAt: typeof raw.referencedAt === 'string' ? raw.referencedAt : null,
+    sourceCommentDatabaseId: Number.isInteger(Number(raw.sourceCommentDatabaseId)) && Number(raw.sourceCommentDatabaseId) > 0
+      ? Number(raw.sourceCommentDatabaseId)
+      : null,
+    sourceCommentUrl: typeof raw.sourceCommentUrl === 'string' ? raw.sourceCommentUrl : null,
+    metadataMissing: raw.metadataMissing === true || raw.metadataMissing === 1,
     title: typeof raw.title === 'string' ? raw.title : null,
     url: typeof raw.url === 'string' ? raw.url : null,
     state: typeof raw.state === 'string' ? raw.state : null,
@@ -286,6 +298,13 @@ function compactCommentRef(value: unknown) {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
   return {
+    databaseId: Number.isInteger(Number(raw.databaseId)) && Number(raw.databaseId) > 0
+      ? Number(raw.databaseId)
+      : null,
+    issueNumber: Number.isInteger(Number(raw.issueNumber)) && Number(raw.issueNumber) > 0
+      ? Number(raw.issueNumber)
+      : null,
+    url: typeof raw.url === 'string' ? raw.url : null,
     author: typeof raw.author === 'string' ? raw.author : null,
     createdAt: typeof raw.createdAt === 'string' ? raw.createdAt : null,
     updatedAt: typeof raw.updatedAt === 'string' ? raw.updatedAt : null,
@@ -296,11 +315,32 @@ function compactCommentRef(value: unknown) {
 function compactCommitProof(value: unknown) {
   if (!value || typeof value !== 'object') return null;
   const raw = value as Record<string, unknown>;
+  const commitOid = typeof raw.commitOid === 'string' ? raw.commitOid : null;
+  const sourceIssueNumber = Number(raw.sourceIssueNumber);
   return {
-    commitOid: typeof raw.commitOid === 'string' ? raw.commitOid : null,
+    issueNumber: Number.isInteger(Number(raw.issueNumber)) && Number(raw.issueNumber) > 0
+      ? Number(raw.issueNumber)
+      : null,
+    sourceIssueNumber: Number.isInteger(sourceIssueNumber) && sourceIssueNumber > 0 ? sourceIssueNumber : null,
+    sourceIssueUrl: Number.isInteger(sourceIssueNumber) && sourceIssueNumber > 0
+      ? `https://github.com/${config.github.owner}/${config.github.repo}/issues/${sourceIssueNumber}`
+      : null,
+    commitOid,
     shortOid: typeof raw.shortOid === 'string' ? raw.shortOid : null,
+    commitUrl: commitOid && /^[0-9a-f]{40}$/i.test(commitOid)
+      ? `https://github.com/${config.github.owner}/${config.github.repo}/commit/${commitOid}`
+      : null,
     status: typeof raw.status === 'string' ? raw.status : null,
     source: typeof raw.source === 'string' ? raw.source : null,
+    referencedAt: typeof raw.referencedAt === 'string' ? raw.referencedAt : null,
+    author: typeof raw.author === 'string' ? raw.author : null,
+    authorAssociation: typeof raw.authorAssociation === 'string' ? raw.authorAssociation : null,
+    trustedSource: raw.trustedSource === true,
+    tagCommitOid: typeof raw.tagCommitOid === 'string' ? raw.tagCommitOid : null,
+    sourceCommentDatabaseId: Number.isInteger(Number(raw.sourceCommentDatabaseId)) && Number(raw.sourceCommentDatabaseId) > 0
+      ? Number(raw.sourceCommentDatabaseId)
+      : null,
+    sourceCommentUrl: typeof raw.sourceCommentUrl === 'string' ? raw.sourceCommentUrl : null,
     evidence: typeof raw.evidence === 'string' ? raw.evidence : null,
     snippet: typeof raw.snippet === 'string' ? raw.snippet : null,
   };

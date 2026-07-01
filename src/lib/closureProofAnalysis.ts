@@ -133,20 +133,20 @@ SELECT
   COUNT(DISTINCT e.event_id) AS closure_events,
     COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l')}
+       AND ${creditedFixLinkSql('l', 'p')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
       THEN l.pr_repository_name_with_owner || '#' || l.pr_number END
   ) AS closing_links,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l')}
+       AND ${creditedFixLinkSql('l', 'p')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
       THEN p.pr_repository_name_with_owner || '#' || p.pr_number END
   ) AS merged_closing_prs,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l')}
+       AND ${creditedFixLinkSql('l', 'p')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
        AND rpr.status='reachable'
@@ -154,7 +154,7 @@ SELECT
   ) AS reachable_closing_prs,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l')}
+       AND ${creditedFixLinkSql('l', 'p')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
        AND rpr.status='not_reachable'
@@ -162,7 +162,7 @@ SELECT
   ) AS not_reachable_closing_prs,
   GROUP_CONCAT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l')}
+       AND ${creditedFixLinkSql('l', 'p')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
       THEN p.pr_repository_name_with_owner || '#' || p.pr_number || ':' || COALESCE(p.title, '')
     END
@@ -183,6 +183,9 @@ SELECT
         'source', linked.source,
       'willCloseTarget', linked.will_close_target,
       'referencedAt', linked.referenced_at,
+      'sourceCommentDatabaseId', linked.source_comment_database_id,
+      'sourceCommentUrl', linked.source_comment_url,
+      'metadataMissing', CASE WHEN linked.metadata_pr_number IS NULL THEN 1 ELSE 0 END,
       'title', linked.title,
       'url', linked.url,
       'state', linked.state,
@@ -198,6 +201,9 @@ SELECT
         l2.source,
         l2.will_close_target,
         l2.referenced_at,
+        l2.source_comment_database_id,
+        l2.source_comment_url,
+        p2.pr_number AS metadata_pr_number,
         p2.title,
         p2.url,
         p2.state,
@@ -406,6 +412,9 @@ export async function analyzeClosureProofsForRelease(
 
   for (const row of aggregateRows) {
     const comments = (allCommentsByIssue.get(row.number) ?? []).map((comment) => ({
+      id: comment.id,
+      issueNumber: row.number,
+      url: comment.url ?? null,
       author: comment.user?.login ?? null,
       body: comment.body,
       createdAt: comment.created_at,
@@ -2137,12 +2146,15 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
     const commentMentions = chunk.flatMap((issueNumber) =>
       closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
     );
-    const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
-      prNumber: mention.prNumber,
-      prRepositoryOwner: mention.prRepositoryOwner,
-      prRepositoryName: mention.prRepositoryName,
-      prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
-    })));
+    const mentionedPrs = await listPullRequestFixesBatch(
+      commentMentions.map((mention) => ({
+        prNumber: mention.prNumber,
+        prRepositoryOwner: mention.prRepositoryOwner,
+        prRepositoryName: mention.prRepositoryName,
+        prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+      })),
+      { onMissingPullRequest: () => {} },
+    );
     runInWriteTransaction(() => {
       deleteIssuePrLinksForIssues(chunk);
       for (const item of evidence.values()) {
@@ -2219,7 +2231,6 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
       }
       for (const mention of commentMentions) {
         const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
-        if (!pr) continue;
         upsertIssuePrLink({
           issue_number: mention.issueNumber,
           pr_repository_owner: mention.prRepositoryOwner,
@@ -2227,10 +2238,13 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
           pr_repository_name_with_owner: mention.prRepositoryNameWithOwner,
           pr_number: mention.prNumber,
           source: mention.source,
-          will_close_target: null,
-          referenced_at: mention.referencedAt,
+            will_close_target: null,
+            referenced_at: mention.referencedAt,
+            source_comment_database_id: mention.sourceCommentDatabaseId ?? null,
+            source_comment_url: mention.sourceCommentUrl ?? null,
         });
         prLinks++;
+        if (!pr) continue;
         upsertPullRequestFix({
           pr_repository_owner: pr.repositoryOwner,
           pr_repository_name: pr.repositoryName,
@@ -2258,17 +2272,19 @@ async function refreshClosureCommentPrMentionEvidence(
   const commentMentions = issueNumbers.flatMap((issueNumber) =>
     closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
   );
-  const mentionedPrs = await listPullRequestFixesBatch(commentMentions.map((mention) => ({
-    prNumber: mention.prNumber,
-    prRepositoryOwner: mention.prRepositoryOwner,
-    prRepositoryName: mention.prRepositoryName,
-    prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
-  })));
+  const mentionedPrs = await listPullRequestFixesBatch(
+    commentMentions.map((mention) => ({
+      prNumber: mention.prNumber,
+      prRepositoryOwner: mention.prRepositoryOwner,
+      prRepositoryName: mention.prRepositoryName,
+      prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
+    })),
+    { onMissingPullRequest: () => {} },
+  );
   runInWriteTransaction(() => {
     deleteCommentIssuePrLinksForIssues(issueNumbers);
     for (const mention of commentMentions) {
       const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
-      if (!pr) continue;
       upsertIssuePrLink({
         issue_number: mention.issueNumber,
         pr_repository_owner: mention.prRepositoryOwner,
@@ -2278,7 +2294,10 @@ async function refreshClosureCommentPrMentionEvidence(
         source: mention.source,
         will_close_target: null,
         referenced_at: mention.referencedAt,
+        source_comment_database_id: mention.sourceCommentDatabaseId ?? null,
+        source_comment_url: mention.sourceCommentUrl ?? null,
       });
+      if (!pr) continue;
       upsertPullRequestFix({
         pr_repository_owner: pr.repositoryOwner,
         pr_repository_name: pr.repositoryName,

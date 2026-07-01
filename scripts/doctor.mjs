@@ -162,10 +162,15 @@ export function buildDoctorReport({
           .join('; ');
         failures.push(`score persistence release/audit field mismatch: ${examples}`);
       }
-      const currentSourceIdentity = sourceIdentityForDb(db);
-      report.scorePersistence.sourceIdentity.current = sourceIdentitySummary(currentSourceIdentity);
-      report.scorePersistence.sourceIdentity.matchesCurrent =
-        report.scorePersistence.sourceIdentity.persisted?.digest === currentSourceIdentity.digest;
+      let currentSourceIdentity = null;
+      try {
+        currentSourceIdentity = sourceIdentityForDb(db);
+        report.scorePersistence.sourceIdentity.current = sourceIdentitySummary(currentSourceIdentity);
+        report.scorePersistence.sourceIdentity.matchesCurrent =
+          report.scorePersistence.sourceIdentity.persisted?.digest === currentSourceIdentity.digest;
+      } catch (error) {
+        failures.push(`score source identity could not be computed: ${error instanceof Error ? error.message : String(error)}`);
+      }
       if (report.scorePersistence.sourceIdentity.missingTags.length > 0) {
         failures.push(`score persistence source identity missing for: ${report.scorePersistence.sourceIdentity.missingTags.join(', ')}`);
       }
@@ -187,7 +192,7 @@ export function buildDoctorReport({
       if (report.scorePersistence.meta.sourceIdentitySourceCount !== report.scorePersistence.sourceIdentity.persisted?.sourceCount) {
         failures.push(`score persistence sourceIdentitySourceCount (${report.scorePersistence.meta.sourceIdentitySourceCount}) does not match audit rows (${report.scorePersistence.sourceIdentity.persisted?.sourceCount ?? 'missing'})`);
       }
-      if (!report.scorePersistence.sourceIdentity.matchesCurrent) {
+      if (currentSourceIdentity && !report.scorePersistence.sourceIdentity.matchesCurrent) {
         failures.push(`score source identity drift: persisted ${report.scorePersistence.sourceIdentity.persisted?.digest ?? 'missing'}, current ${currentSourceIdentity.digest}`);
       }
     }

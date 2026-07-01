@@ -417,17 +417,29 @@ describe('classifyClosureProof', () => {
     const result = classifyClosureProof(input({
       closedAt: '2026-06-19T16:03:19Z',
       comments: [{
+        id: 123456,
+        issueNumber: 9001,
+        url: 'https://github.com/openclaw/openclaw/issues/9001#issuecomment-123456',
         author: 'bot',
         createdAt: '2026-06-07T15:44:06Z',
         updatedAt: '2026-06-19T15:29:09Z',
         body: 'Close: current main and v2026.6.8 implement the required behavior.',
       }],
     }));
-    const matching = result.evidence.matchingComments as Array<{ createdAt: string | null; updatedAt: string | null }>;
+    const matching = result.evidence.matchingComments as Array<{
+      databaseId: number;
+      issueNumber: number;
+      url: string;
+      createdAt: string | null;
+      updatedAt: string | null;
+    }>;
     assert.equal(result.status, 'already_present_claim');
     assert.equal(result.evidence.closureContextCommentCount, 1);
     assert.equal(matching[0].createdAt, '2026-06-07T15:44:06Z');
     assert.equal(matching[0].updatedAt, '2026-06-19T15:29:09Z');
+    assert.equal(matching[0].databaseId, 123456);
+    assert.equal(matching[0].issueNumber, 9001);
+    assert.equal(matching[0].url, 'https://github.com/openclaw/openclaw/issues/9001#issuecomment-123456');
   });
 
   it('keeps stale not-planned admin closures as unsupported risk when no close-time rationale exists', () => {

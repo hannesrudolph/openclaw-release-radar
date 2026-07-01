@@ -167,6 +167,9 @@ export interface ScoreExplanationIssueProof {
   openPrs?: ScoreExplanationLinkedRef[];
   reachablePrs?: ScoreExplanationLinkedRef[];
   notReachablePrs?: ScoreExplanationLinkedRef[];
+  unknownReachabilityPrs?: ScoreExplanationLinkedRef[];
+  closedUnmergedPrs?: ScoreExplanationLinkedRef[];
+  externalClosingPrs?: ScoreExplanationLinkedRef[];
 }
 
 export interface ScoreExplanationLinkedRef {
@@ -175,13 +178,22 @@ export interface ScoreExplanationLinkedRef {
   url?: string | null;
   state?: string | null;
   status?: string | null;
+  repositoryNameWithOwner?: string | null;
+  source?: string | null;
+  merged?: boolean | null;
+  mergedAt?: string | null;
+  referencedAt?: string | null;
+  willCloseTarget?: boolean | null;
+  reachabilityMethod?: string | null;
+  mergeCommitOid?: string | null;
+  sourceCommentUrl?: string | null;
 }
 
 const SEV_RANK: Record<string, number> = { critical: 4, high: 3, medium: 2, low: 1 };
 const SHORT_ISSUE_TITLE_LENGTH = 110;
 export const SCORE_INPUT_SCHEMA_VERSION = 1;
 export const SCORE_COMPONENTS_SCHEMA_VERSION = 1;
-export const SCORE_EXPLANATION_SCHEMA_VERSION = 1;
+export const SCORE_EXPLANATION_SCHEMA_VERSION = 2;
 export const GATE_EVIDENCE_SCHEMA_VERSION = 1;
 export const ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
 export const LABEL_TIMELINE_SCHEMA_VERSION = 1;
@@ -1333,9 +1345,22 @@ function issueRefProof(item: any): ScoreExplanationIssueProof | null {
   ], 3);
   const reachablePrs = linkedRefs(Array.isArray(relatedPrContext.reachable) ? relatedPrContext.reachable : [], 3);
   const notReachablePrs = linkedRefs(Array.isArray(relatedPrContext.notReachable) ? relatedPrContext.notReachable : [], 3);
+  const unknownReachabilityPrs = linkedRefs(
+    Array.isArray(relatedPrContext.unknownReachability) ? relatedPrContext.unknownReachability : [],
+    3,
+  );
+  const closedUnmergedPrs = linkedRefs(
+    Array.isArray(relatedPrContext.closedUnmerged) ? relatedPrContext.closedUnmerged : [],
+    3,
+  );
+  const externalClosingPrs = linkedRefs(
+    Array.isArray(relatedPrContext.externalClosing) ? relatedPrContext.externalClosing : [],
+    3,
+  );
   const riskWeight = typeof item?.riskWeight === 'number' ? roundMetric(item.riskWeight) : null;
   if (!status && !summary && !riskDisposition && riskWeight == null && !canonicalIssue &&
-    !openPrs.length && !reachablePrs.length && !notReachablePrs.length) {
+    !openPrs.length && !reachablePrs.length && !notReachablePrs.length &&
+    !unknownReachabilityPrs.length && !closedUnmergedPrs.length && !externalClosingPrs.length) {
     return null;
   }
   return {
@@ -1350,16 +1375,21 @@ function issueRefProof(item: any): ScoreExplanationIssueProof | null {
     openPrs,
     reachablePrs,
     notReachablePrs,
+    unknownReachabilityPrs,
+    closedUnmergedPrs,
+    externalClosingPrs,
   };
 }
 
 function linkedRefs(values: unknown[], limit: number): ScoreExplanationLinkedRef[] {
-  const seen = new Set<number>();
+  const seen = new Set<string>();
   const refs: ScoreExplanationLinkedRef[] = [];
   for (const value of values) {
     const ref = linkedIssueRef(value);
-    if (!ref || seen.has(ref.number)) continue;
-    seen.add(ref.number);
+    if (!ref) continue;
+    const key = `${ref.repositoryNameWithOwner ?? ''}#${ref.number}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     refs.push(ref);
     if (refs.length >= limit) break;
   }
@@ -1377,6 +1407,23 @@ function linkedIssueRef(value: unknown): ScoreExplanationLinkedRef | null {
     url: typeof raw.url === 'string' ? raw.url : typeof raw.html_url === 'string' ? raw.html_url : null,
     state: typeof raw.state === 'string' ? raw.state : null,
     status: typeof raw.reachabilityStatus === 'string' ? raw.reachabilityStatus : typeof raw.status === 'string' ? raw.status : null,
+    repositoryNameWithOwner: typeof raw.repositoryNameWithOwner === 'string' ? raw.repositoryNameWithOwner : null,
+    source: typeof raw.source === 'string' ? raw.source : null,
+    merged: raw.merged === true || raw.merged === 1
+      ? true
+      : raw.merged === false || raw.merged === 0
+        ? false
+        : null,
+    mergedAt: typeof raw.mergedAt === 'string' ? raw.mergedAt : null,
+    referencedAt: typeof raw.referencedAt === 'string' ? raw.referencedAt : null,
+    willCloseTarget: raw.willCloseTarget === true || raw.willCloseTarget === 1
+      ? true
+      : raw.willCloseTarget === false || raw.willCloseTarget === 0
+        ? false
+        : null,
+    reachabilityMethod: typeof raw.reachabilityMethod === 'string' ? raw.reachabilityMethod : null,
+    mergeCommitOid: typeof raw.mergeCommitOid === 'string' ? raw.mergeCommitOid : null,
+    sourceCommentUrl: typeof raw.sourceCommentUrl === 'string' ? raw.sourceCommentUrl : null,
   };
 }
 

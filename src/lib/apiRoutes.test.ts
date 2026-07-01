@@ -111,11 +111,23 @@ before(async () => {
     reachableFixCommits: [],
     notReachableFixCommits: [],
     unknownFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+    matchingComments: [{
+      databaseId: 123456,
+      issueNumber: 105,
+      url: 'https://github.com/openclaw/openclaw/issues/105#issuecomment-123456',
+      author: 'maintainer',
+      createdAt: '2026-06-05T00:00:00Z',
+      updatedAt: '2026-06-05T00:00:00Z',
+      snippet: 'Fixed by commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a.',
+    }],
     fixCommitProof: [{
       issueNumber: 105,
       sourceIssueNumber: 105,
       commitOid: 'cfeaf6897fd89201b71ff7d5285e48c5a382ac9a',
       source: 'ClosureComment.fixProof',
+      referencedAt: '2026-06-05T00:00:00Z',
+      sourceCommentDatabaseId: 123456,
+      sourceCommentUrl: 'https://github.com/openclaw/openclaw/issues/105#issuecomment-123456',
       status: 'unknown',
       tagCommitOid: null,
       evidence: 'commit_unavailable',
@@ -397,6 +409,11 @@ describe('audit API routes', () => {
     assert.equal(unknownCommit.body.rows[0].evidence.hasUnknownFixCommit, true);
     assert.deepEqual(unknownCommit.body.rows[0].evidence.unknownFixCommits, ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a']);
     assert.equal(unknownCommit.body.rows[0].evidence.fixCommitProof[0].status, 'unknown');
+    assert.equal(unknownCommit.body.rows[0].evidence.fixCommitProof[0].commitUrl, 'https://github.com/openclaw/openclaw/commit/cfeaf6897fd89201b71ff7d5285e48c5a382ac9a');
+    assert.equal(unknownCommit.body.rows[0].evidence.fixCommitProof[0].sourceIssueUrl, 'https://github.com/openclaw/openclaw/issues/105');
+    assert.equal(unknownCommit.body.rows[0].evidence.fixCommitProof[0].sourceCommentUrl, 'https://github.com/openclaw/openclaw/issues/105#issuecomment-123456');
+    assert.equal(unknownCommit.body.rows[0].evidence.matchingComments[0].databaseId, 123456);
+    assert.equal(unknownCommit.body.rows[0].evidence.matchingComments[0].url, 'https://github.com/openclaw/openclaw/issues/105#issuecomment-123456');
 
     const issueFiltered = await getJson('/api/releases/v-test/review/closure-proofs?issue=103');
     assert.equal(issueFiltered.status, 200);

@@ -435,6 +435,21 @@ describe('doctor score persistence release/audit parity', () => {
       cleanup();
     }
   });
+
+  it('reports source identity schema errors instead of crashing', () => {
+    const { dbPath, cleanup } = freshDoctorDb();
+    try {
+      const report = buildDoctorReport({
+        dbPath,
+        sourceIdentityForDb: () => {
+          throw new Error('no such column: issue_pr_links.source_comment_url');
+        },
+      });
+      assert.ok(report.failures.some((failure) => /source identity could not be computed.*source_comment_url/.test(failure)));
+    } finally {
+      cleanup();
+    }
+  });
 });
 
 function freshDoctorDb() {
@@ -607,7 +622,7 @@ function writeScorePersistenceMeta(db: DatabaseSync, releaseTags: string[]) {
 }
 
 const doctorSourceIdentityFixture = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   sourceMode: 'current_db',
   scope: 'score_input_database',
   algorithm: 'sha256',

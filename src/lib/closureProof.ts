@@ -19,7 +19,15 @@ export interface ClosureProofInput {
   reachableFixCommits?: string[];
   notReachableFixCommits?: string[];
   unknownFixCommits?: string[];
-  comments: Array<{ author?: string | null; body?: string | null; createdAt?: string | null; updatedAt?: string | null }>;
+  comments: Array<{
+    id?: number | null;
+    issueNumber?: number | null;
+    url?: string | null;
+    author?: string | null;
+    body?: string | null;
+    createdAt?: string | null;
+    updatedAt?: string | null;
+  }>;
 }
 
 export interface ClosureProofResult {
@@ -386,6 +394,9 @@ function hasDuplicateOrSupersededSignal(text: string, reasons: Set<string>): boo
 }
 
 function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array<{
+  databaseId?: number | null;
+  issueNumber?: number | null;
+  url?: string | null;
   author: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -400,6 +411,7 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
     })
     .slice(-3)
     .map((comment) => ({
+      ...commentReferenceFields(comment),
       author: comment.author ?? null,
       createdAt: comment.createdAt ?? null,
       updatedAt: comment.updatedAt ?? null,
@@ -408,6 +420,9 @@ function matchingCommentSnippets(comments: ClosureProofInput['comments']): Array
 }
 
 function nonActionableRationaleSnippets(comments: ClosureProofInput['comments']): Array<{
+  databaseId?: number | null;
+  issueNumber?: number | null;
+  url?: string | null;
   author: string | null;
   createdAt: string | null;
   updatedAt: string | null;
@@ -417,9 +432,24 @@ function nonActionableRationaleSnippets(comments: ClosureProofInput['comments'])
     .filter((comment) => NON_ACTIONABLE_RATIONALE_RE.test(comment.body ?? ''))
     .slice(-3)
     .map((comment) => ({
+      ...commentReferenceFields(comment),
       author: comment.author ?? null,
       createdAt: comment.createdAt ?? null,
       updatedAt: comment.updatedAt ?? null,
       snippet: (comment.body ?? '').replace(/\s+/g, ' ').slice(0, 500),
     }));
+}
+
+function commentReferenceFields(comment: ClosureProofInput['comments'][number]): {
+  databaseId?: number | null;
+  issueNumber?: number | null;
+  url?: string | null;
+} {
+  const databaseId = Number(comment.id ?? 0);
+  const issueNumber = Number(comment.issueNumber ?? 0);
+  const fields: { databaseId?: number; issueNumber?: number; url?: string } = {};
+  if (Number.isInteger(databaseId) && databaseId > 0) fields.databaseId = databaseId;
+  if (Number.isInteger(issueNumber) && issueNumber > 0) fields.issueNumber = issueNumber;
+  if (typeof comment.url === 'string' && comment.url) fields.url = comment.url;
+  return fields;
 }

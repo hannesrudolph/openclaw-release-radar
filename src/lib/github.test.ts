@@ -130,6 +130,7 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(query, /issue1: issue\(number: \$number1\)/);
     assert.match(query, /comments\(first: \$first, after: \$after0, orderBy: \{field: UPDATED_AT, direction: ASC\}\)/);
     assert.match(query, /pageInfo \{ hasNextPage endCursor \}/);
+    assert.match(query, /databaseId\s+url/);
     assert.match(query, /authorAssociation/);
     assert.match(query, /updatedAt/);
   });
@@ -137,6 +138,7 @@ describe('GitHub GraphQL mapping', () => {
   it('maps issue comments with edit timestamps', () => {
     const comment = __githubTest.mapComment({
       databaseId: 42,
+      url: 'https://github.com/openclaw/openclaw/issues/1#issuecomment-42',
       author: { login: 'clawsweeper' },
       authorAssociation: 'CONTRIBUTOR',
       body: 'Close: current main and v2026.6.8 implement this behavior.',
@@ -146,6 +148,7 @@ describe('GitHub GraphQL mapping', () => {
 
     assert.deepEqual(comment, {
       id: 42,
+      url: 'https://github.com/openclaw/openclaw/issues/1#issuecomment-42',
       user: { login: 'clawsweeper' },
       author_association: 'CONTRIBUTOR',
       body: 'Close: current main and v2026.6.8 implement this behavior.',
@@ -438,6 +441,28 @@ describe('GitHub GraphQL mapping', () => {
         trustedSource: true,
       },
     ]);
+  });
+
+  it('preserves exact source comment anchors for PR and commit proof', () => {
+    const prComment = {
+      id: 123456,
+      url: 'https://github.com/openclaw/openclaw/issues/97222#issuecomment-123456',
+      body: 'The merged PR #95532 fixes this report.',
+      created_at: '2026-06-27T09:04:25Z',
+      user: { login: 'maintainer' },
+      author_association: 'MEMBER',
+    };
+    const commitComment = {
+      ...prComment,
+      body: 'Fixed on main by commit cfeaf6897fd89201b71ff7d5285e48c5a382ac9a.',
+    };
+    const pr = __githubTest.closureCommentPrMentions(97222, [prComment])[0];
+    const commit = __githubTest.closureCommentCommitMentions(97222, [commitComment])[0];
+
+    assert.equal(pr.sourceCommentDatabaseId, 123456);
+    assert.equal(pr.sourceCommentUrl, prComment.url);
+    assert.equal(commit.sourceCommentDatabaseId, 123456);
+    assert.equal(commit.sourceCommentUrl, commitComment.url);
   });
 
   it('does not extract fix proof from keep-open review comments', () => {

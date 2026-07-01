@@ -115,6 +115,8 @@ Reachability has three states: `reachable`, `not_reachable`, and `unknown`. `not
 
 Broad PR/commit mentions in comments are stored for audit context, but they do not reduce release risk. Comment-derived fix credit requires explicit closure/fix/provenance wording from a trusted source, such as a maintainer or the known ClawSweeper reviewer account, identifying the merged PR or fix/source commit that closed, fixed, or proves the reported behavior is present in the release source.
 
+Closure-comment provenance is durable and directly reviewable. Matching comments persist their GitHub database ID, issue number, URL, author, timestamps, and capped snippet in closure proof evidence. Comment-derived PR links persist the source comment ID/URL beside the PR reference, and direct commit proof exposes a canonical commit URL plus source issue/comment context. If GitHub reports a referenced PR as missing, the reference is retained as `metadataMissing` evidence linked to the source comment instead of aborting the entire release; missing PR metadata never earns fix credit. Score-source identity schema v2 includes the PR source-comment columns.
+
 GitHub `ReferencedEvent` commit references are stored separately from closure events. Fork/cross-repository references and same-repo direct references are audit context only; they do not create release fix credit by themselves, even when the commit headline is fix-shaped. Trusted close-time comments may name abbreviated commit hashes, but the proof analyzer accepts them only after the local OpenClaw git clone resolves the prefix uniquely to a full 40-character commit SHA.
 
 Every same-repo merged PR stored in closure proof `linkedPrs` carries release-tag reachability metadata: `reachabilityStatus`, `reachabilityMethod`, `tagCommitOid`, `mergeCommitOid`, and `reachabilityEvidence`. This makes each proof row self-auditing instead of requiring reviewers to cross-reference `release_pr_reachability` manually. Merged PRs from external repositories are marked `external_repo_unchecked` with `external_repository_not_checked_against_openclaw_release_tag`; they remain visible as context but are not release inclusion proof.
@@ -327,7 +329,8 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
 
 `components.explanation` is the stable "Why not 10?" contract:
 
-- `schemaVersion`: explanation contract version. Current value: `1`.
+- `schemaVersion`: explanation contract version. Current value: `2`.
+- closure proof PR references retain repository, source, merge/reachability metadata, and source-comment links where available.
 - `scoreLedger`: ordered score math rows (`base`, evidence penalties, survival/shakeout/release/artifact bonuses), cap rows such as heavy closure-risk ceiling and hotfix ceiling, subtotal before caps, score after caps, and final rounded score. The audit verifier treats ledger row keys, labels, order, cap keys, and cap order as part of the contract.
 - `positives`: human-readable favorable evidence lines.
 - `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.

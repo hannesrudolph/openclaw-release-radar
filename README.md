@@ -190,6 +190,8 @@ Score writers also enforce complete classification coverage, unambiguous stable 
 
 GitHub GraphQL ingestion also fails closed on malformed nested evidence connections. Missing `nodes`, null nodes, missing `pageInfo`, or `hasNextPage` without `endCursor` on issue labels, comments, label timelines, fix evidence, release check contexts, release pages, issue pages, or advisory pages is treated as an ingestion failure, not as empty evidence.
 
+Closure-proof review rows preserve exact GitHub evidence links. Matching closure comments and non-actionable rationale include the comment database ID and URL; comment-derived PR links retain their source-comment URL; commit proof exposes the full commit URL, source issue, author, timestamp, and reachability result. A deleted or mistyped PR reference no longer aborts the release: it remains visible as `metadataMissing` evidence linked to the exact source comment and receives no fix credit unless separate reachable proof exists. Score-source identity schema v2 includes these PR source-comment columns.
+
 Score-blocking ingestion failures are appended to `ingestion_evidence_failures` with run/source/scope/message context as soon as they happen. If issue-page comments, label timelines, or fix evidence fail before normal crawl metadata can be completed, refresh writes `stopReason: "evidence_failure"`, persists the failure examples, and refuses score persistence.
 
 When GitHub returns a partial GraphQL response because an issue alias cannot be resolved, batch helpers recover only when the caller provides an explicit missing-alias reporter. Refresh records the skipped alias as a durable score-blocking evidence failure. Other callers fail closed instead of silently treating comments, labels, or fix evidence as empty.
@@ -246,7 +248,7 @@ The structured score explanation appears at these paths:
 
 That structured `explanation` object contains:
 
-- `schemaVersion`: explanation contract version. Current value: `1`.
+- `schemaVersion`: explanation contract version. Current value: `2`. Closure proof references include linked PR source/reachability/merge metadata and source-comment URLs where available.
 - `scoreLedger`: canonical score math rows with stable row keys/labels, subtotal, cap rows, score after caps, and final rounded score.
 - `positives` / `limits`: human-readable evidence lines for the UI.
 - `positiveDetails` / `limitDetails`: matching machine-readable entries with stable reason `code`, mandatory canonical `label`, optional `metrics`, `buckets` / `riskBuckets`, and `issueRefs`.

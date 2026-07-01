@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-export const SCORE_SOURCE_IDENTITY_SCHEMA_VERSION = 1;
+export const SCORE_SOURCE_IDENTITY_SCHEMA_VERSION = 2;
 
 export type ScoreSourceIdentitySchemaVersion = typeof SCORE_SOURCE_IDENTITY_SCHEMA_VERSION;
 export type ScoreSourceIdentityAlgorithm = 'sha256';
@@ -278,6 +278,8 @@ const SCORE_SOURCE_TABLES = [
       'source',
       'will_close_target',
       'referenced_at',
+      'source_comment_database_id',
+      'source_comment_url',
       'fetched_at',
     ],
   },
