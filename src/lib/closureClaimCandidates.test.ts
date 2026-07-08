@@ -424,6 +424,32 @@ describe('immutable authority-neutral closure claim candidates', () => {
     );
   });
 
+  it('keeps actor-attributed manual closure rationale without fabricating fix proof', () => {
+    const result = extractClosureClaimCandidates(input({
+      closureEvents: [{
+        nodeId: 'CE_lADOQb6kR87neGc5zwAAAAZUHWvV',
+        url: 'https://github.com/openclaw/openclaw/issues/6731#event-1',
+        actor: actor('BOT_kgDOEFkMNA', 'clawsweeper', 'Bot'),
+        occurredAt: '2026-06-25T06:35:15Z',
+        stateReason: 'NOT_PLANNED',
+        closer: null,
+      }],
+    }));
+
+    assert.deepEqual(
+      result.candidates.map((candidate) => candidate.claimKind),
+      ['closure_rationale'],
+    );
+    assert.deepEqual(
+      claims(result, 'closure_rationale')[0].claim,
+      {
+        kind: 'closure_rationale',
+        rationale: 'not_planned',
+      },
+    );
+    assert.deepEqual(claims(result, 'fix_proof'), []);
+  });
+
   it('detects candidate tampering and produces stable set replay digests', () => {
     const result = extractClosureClaimCandidates(input({
       comments: [comment('COMMENT_60', 'Closing as duplicate of #9600.')],

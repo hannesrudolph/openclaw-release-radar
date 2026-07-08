@@ -460,7 +460,21 @@ describe('issue state event snapshots', { concurrency: false }, () => {
         ...legacy,
         closerNodeId: 'PR-node-42',
       }]),
-      /closer node ID requires a canonical closer type/,
+      /closer identity must include both canonical node ID and node type/,
+    );
+    assert.throws(
+      () => normalizeIssueStateEvents([{
+        ...legacy,
+        closerType: 'PullRequest',
+      }]),
+      /closer identity must include both canonical node ID and node type/,
+    );
+    assert.throws(
+      () => normalizeIssueStateEvents([{
+        ...legacy,
+        closerNumber: 42,
+      }]),
+      /closer details require a canonical closer identity/,
     );
     assert.throws(
       () => normalizeIssueStateEvents([{
@@ -481,6 +495,36 @@ describe('issue state event snapshots', { concurrency: false }, () => {
       }]),
       /contains closer-only evidence/,
     );
+  });
+
+  it('accepts authoritative actor-attributed closures without a closer resource', () => {
+    const event: NormalizedIssueStateEvent = {
+      eventId: 'CE_lADOQb6kR87neGc5zwAAAAZUHWvV',
+      eventNodeType: 'ClosedEvent',
+      type: 'closed',
+      occurredAt: '2026-06-25T06:35:15Z',
+      connectionOrdinal: 0,
+      actorNodeId: 'BOT_kgDOEFkMNA',
+      actorLogin: 'clawsweeper',
+      actorType: 'Bot',
+      stateReason: 'NOT_PLANNED',
+      closerNodeId: null,
+      closerType: null,
+      closerNumber: null,
+      closerOid: null,
+    };
+    assert.equal(canonicalStateEventCloserIdentity(event), null);
+    assert.doesNotThrow(() => issueStateEventSweepIdentity({
+      sweepOrdinal: 1,
+      repositoryNodeId: 'REPO-node-openclaw',
+      issueNumber: 6731,
+      issueNodeId: 'ISSUE-node-6731',
+      issueNodeType: 'Issue',
+      issueState: 'closed',
+      issueUpdatedAt: '2026-06-25T06:35:15Z',
+      totalCount: 1,
+      events: [event],
+    }));
   });
 
   it('keeps equal-time ordering deterministic and sweep tokens identity-bound', () => {
@@ -631,7 +675,7 @@ describe('issue state event snapshots', { concurrency: false }, () => {
           ? { ...event, closerNodeId: null }
           : event),
       }),
-      /requires a canonical closer identity/,
+      /closer identity must include both canonical node ID and node type/,
     );
   });
 

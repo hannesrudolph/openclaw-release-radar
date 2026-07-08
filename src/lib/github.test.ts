@@ -5649,6 +5649,58 @@ describe('GitHub GraphQL mapping', () => {
     assert.equal(evidence.prLinks.some((link) => link.source === 'ClosedEvent.closer'), true);
   });
 
+  it('preserves actor-attributed manual closures without inventing a closer', async () => {
+    const event = {
+      ...closedEvent(
+        'CE_lADOQb6kR87neGc5zwAAAAZUHWvV',
+        '2026-06-25T06:35:15Z',
+        null,
+      ),
+      stateReason: 'NOT_PLANNED',
+      actor: {
+        id: 'BOT_kgDOEFkMNA',
+        __typename: 'Bot',
+        login: 'clawsweeper',
+      },
+    };
+    const result = await listIssueFixEvidenceBatch([6731], {
+      request: async <T>(): Promise<T> => ({
+        repository: {
+          id: TEST_REPOSITORY_NODE_ID,
+          issue0: fixEvidenceIssue({
+            issueNumber: 6731,
+            state: 'CLOSED',
+            updatedAt: '2026-06-25T06:35:15Z',
+            totalCount: 1,
+            stateNodes: [event],
+          }),
+        },
+      }) as T,
+    });
+
+    const evidence = result.get(6731)!;
+    assert.equal(evidence.stateSnapshot.stabilized, true);
+    assert.equal(evidence.stateSnapshot.totalCount, 1);
+    assert.deepEqual(evidence.closureEvents, [{
+      issueNumber: 6731,
+      eventId: 'CE_lADOQb6kR87neGc5zwAAAAZUHWvV',
+      eventType: 'ClosedEvent',
+      closedAt: '2026-06-25T06:35:15Z',
+      connectionOrdinal: 0,
+      actorNodeId: 'BOT_kgDOEFkMNA',
+      actorLogin: 'clawsweeper',
+      actorType: 'Bot',
+      stateReason: 'NOT_PLANNED',
+      closerType: null,
+      closerNumber: null,
+      closerNodeId: null,
+      closerOid: null,
+      raw: event,
+    }]);
+    assert.deepEqual(evidence.prLinks, []);
+    assert.deepEqual(evidence.pullRequests, []);
+  });
+
   it('fails closed before stabilization when issue or state-event authority identities are incomplete', async () => {
     const scenarios = [
       {
@@ -5685,11 +5737,37 @@ describe('GitHub GraphQL mapping', () => {
         issue: fixEvidenceIssue({
           state: 'CLOSED',
           totalCount: 1,
-          stateNodes: [
-            closedEvent('close-missing-closer', '2026-07-03T01:00:00Z', null),
-          ],
+          stateNodes: [{
+            __typename: 'ClosedEvent',
+            id: 'close-missing-closer-field',
+            createdAt: '2026-07-03T01:00:00Z',
+            stateReason: 'COMPLETED',
+            actor: {
+              id: 'ACTOR-maintainer',
+              __typename: 'User',
+              login: 'maintainer',
+            },
+          }],
         }),
-        expected: /requires a canonical closer identity/,
+        expected: /missing the requested closer field/,
+      },
+      {
+        issue: fixEvidenceIssue({
+          state: 'CLOSED',
+          totalCount: 1,
+          stateNodes: [{
+            ...closedEvent(
+              'close-partial-closer',
+              '2026-07-03T01:00:00Z',
+              null,
+            ),
+            closer: {
+              __typename: 'Commit',
+              oid: 'a'.repeat(40),
+            },
+          }],
+        }),
+        expected: /closer node ID/,
       },
       {
         issue: fixEvidenceIssue({

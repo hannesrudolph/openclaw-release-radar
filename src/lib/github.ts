@@ -6123,7 +6123,16 @@ function appendStateTimelineNodes(
     seen.add(node.id);
     if (node.__typename === 'ClosedEvent') {
       const connectionOrdinal = evidence.closureEvents.length + evidence.reopenEvents.length;
-      const closer = node.closer ?? null;
+      if (
+        !Object.prototype.hasOwnProperty.call(node, 'closer') ||
+        node.closer === undefined
+      ) {
+        throw new Error(
+          `GitHub GraphQL issue #${issueNumber} closed event ${node.id} ` +
+          'is missing the requested closer field',
+        );
+      }
+      const closer = node.closer;
       const actorIdentity = stateTimelineActorIdentity(
         node.actor,
         `issue #${issueNumber} closed event ${node.id} actor`,

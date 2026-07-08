@@ -113,9 +113,18 @@ export function normalizeIssueStateEvents(
       event.closerType ?? null,
       `Issue state event ${event.eventId} closer type`,
     );
-    if (closerNodeId != null && closerType == null) {
+    if ((closerNodeId == null) !== (closerType == null)) {
       throw new Error(
-        `Issue state event ${event.eventId} closer node ID requires a canonical closer type`,
+        `Issue state event ${event.eventId} closer identity must include both ` +
+        'canonical node ID and node type',
+      );
+    }
+    if (
+      closerNodeId == null &&
+      (event.closerNumber != null || event.closerOid != null)
+    ) {
+      throw new Error(
+        `Issue state event ${event.eventId} closer details require a canonical closer identity`,
       );
     }
     if (event.type === 'reopened' && (
@@ -358,14 +367,6 @@ export function assertAuthoritativeIssueStateEvents(
     if (event.actorNodeId == null || event.actorType == null) {
       throw new Error(
         `Authoritative issue state event ${event.eventId} requires a canonical actor identity`,
-      );
-    }
-    if (
-      event.type === 'closed' &&
-      (event.closerNodeId == null || event.closerType == null)
-    ) {
-      throw new Error(
-        `Authoritative closed event ${event.eventId} requires a canonical closer identity`,
       );
     }
   }
