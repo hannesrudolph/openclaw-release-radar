@@ -2517,6 +2517,42 @@ describe('refresh backfill completion', () => {
     );
   });
 
+  it('reports classification-only reconciliation so callers can refresh staged revisions', async () => {
+    const issueNumber = 42010;
+    const stableSnapshot = snapshot(0, [], { issueNumber });
+    const stableFixEvidence = fixEvidence(issueNumber);
+    dbModule.upsertIssue(
+      issueRow(issueNumber, 0, stableSnapshot.issueUpdatedAt),
+    );
+    dbModule.upsertIssueCommentSnapshot(
+      __refreshTest.issueCommentSnapshot(stableSnapshot),
+    );
+    __refreshTest.persistIssueStateEvidence(stableFixEvidence);
+
+    const result = await reconcileIssueCommentSnapshots({
+      issueNumbers: [issueNumber],
+      classifyIssueNumbers: [issueNumber],
+      releaseTags: ['v2099.7.1'],
+      snapshotsByIssue: new Map([[issueNumber, stableSnapshot]]),
+      dependencies: reconciliationDependencies({
+        issueNumber,
+        issue: issue(0, {
+          number: issueNumber,
+          updated_at: stableSnapshot.issueUpdatedAt,
+        }),
+        snapshot: stableSnapshot,
+        labelEvents: [],
+        fixEvidence: stableFixEvidence,
+        async classify() {
+          return classification();
+        },
+      }),
+    });
+
+    assert.deepEqual(result.classifiedIssueNumbers, [issueNumber]);
+    assert.deepEqual(result.reconciledIssueNumbers, [issueNumber]);
+  });
+
   it('replays the exact closure candidate and source set idempotently', () => {
     const issueNumber = 4240;
     const sourceIssue = issue(0, {

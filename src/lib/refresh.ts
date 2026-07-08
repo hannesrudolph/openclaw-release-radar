@@ -1811,10 +1811,7 @@ export async function reconcileIssueCommentSnapshots(args: {
       item.labelEvidenceSnapshot,
     ])),
     stateEvidenceByIssue: new Map([...evidence].map(([issueNumber, item]) => [issueNumber, item.fixEvidence])),
-    reconciledIssueNumbers: [...new Set([
-      ...persistedMismatches,
-      ...stateSnapshotMismatches,
-    ])]
+    reconciledIssueNumbers: [...evidence.keys()]
       .filter((issueNumber) => persistableIssueNumberSet.has(issueNumber))
       .sort((a, b) => a - b),
     classifiedIssueNumbers: [...classifications.keys()].sort((a, b) => a - b),
