@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 15;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 16;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2643,6 +2643,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:broad|widespread|systemwide|multi-(?:os|provider|platform))\\b',
           '\\bacross\\s+(?:multiple|several|all)\\s+(?:operating systems?|oses|providers?|platforms?|surfaces?|channels?|integrations?|configurations?)\\b',
           '\\bmultiple\\s+(?:operating systems?|oses|providers?|platforms?|surfaces?|channels?|integrations?|configurations?)\\b',
+          '\\b(?:exec|filesystem|session|cli|slash|startup[- ]readiness|cron|gateway|node)\\b(?:.{0,80}\\b(?:exec|filesystem|session|cli|slash|startup[- ]readiness|cron|gateway|node)\\b){2}',
           '\\bboth\\s+(?:windows|macos|linux|android|ios)\\b.{0,60}\\b(?:and|,)\\s*(?:windows|macos|linux|android|ios)\\b',
           '\\b(?:all|every|most)\\b.{0,60}\\b(?:users?|installs?|platforms?|systems?|providers?|operating systems?|deployments?|surfaces?|configurations?)\\b',
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
