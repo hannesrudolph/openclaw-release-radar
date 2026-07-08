@@ -3803,6 +3803,42 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'moderate');
   });
 
+  it('accepts issue #26926 Synology Chat integration evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?synology-chat-integration=${Date.now()}`
+    );
+    const scopeEvidence =
+      'Support images, CSV files, and PDFs in Synology chat.';
+    const functionalityEvidence = '[Feature]: Synology chat attachment support';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${scopeEvidence}`,
+        functionalityEvidence,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.scope = 'moderate';
+    raw.functionality = 'integration';
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:title',
+      excerpt: functionalityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.scope, 'moderate');
+    assert.equal(accepted.functionality, 'integration');
+  });
+
   it('accepts issue #35835 read-tool audio failure evidence', async () => {
     const { __llmTest } = await import(
       `./llm.ts?read-tool-audio=${Date.now()}`

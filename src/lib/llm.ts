@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 22;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 23;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2651,7 +2651,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
         ],
         moderate: [
-          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix)\\b',
+          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|synology)\\b',
           '\\b(?:webui|control ui)\\b',
           '\\b(?:audio files?|read tool)\\b',
           '(?:\\u98de\\u4e66\\u63d2\\u4ef6|feishu_wiki|@openclaw/feishu)',
@@ -2678,7 +2678,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         integration: [
           '\\b(?:(?:tray|menu bar|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\s+)?(?:integration|channel|plugin|extension|ui|tui|webchat|webhook)\\b',
           '\\b(?:webui|control ui)\\b',
-          '\\b(?:discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\b',
+          '\\b(?:discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|synology|ide)\\b',
           '(?:\\u98de\\u4e66\\u63d2\\u4ef6|feishu_wiki|@openclaw/feishu)',
           '\\b(?:language|locale)\\s+(?:selector|picker|ids?|identifiers?)\\b',
         ],
