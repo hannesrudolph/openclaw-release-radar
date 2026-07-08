@@ -245,7 +245,7 @@ export const PROMPT_VERSION = 9;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 1;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 2;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -389,7 +389,7 @@ const OPENAI_RESPONSE_BODY_MAX_BYTES = 1_048_576;
 const OPENAI_ERROR_BODY_MAX_BYTES = 65_536;
 
 const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   eligibility:
     'ClassificationGroundingError containing only model-correctable grounding diagnostics within the feedback envelope from a complete schema-valid response with verifiable identity and usage',
   eligibleDiagnosticCodes:
@@ -413,13 +413,24 @@ const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
   feedbackStart: 'BEGIN CLASSIFIER RETRY FEEDBACK JSON',
   feedbackEnd: 'END CLASSIFIER RETRY FEEDBACK JSON',
   instruction:
-    'Return one complete replacement JSON object. Correct every diagnostic using only exact citations from the original included sources.',
+    'Return one complete replacement JSON object. Correct every diagnostic using only exact citations from the original included sources. If a citation does not support the selected enum value, either cite different exact evidence that satisfies that value or change the value and its citations to a supported alternative. Do not repeat an unsupported field/value/citation combination.',
+  messageHistoryPolicy:
+    'system prompt plus original user input plus latest semantic retry feedback only',
   payloadFieldOrder: [
     'schema_version',
     'retry_ordinal',
+    'repeated_output_count',
     'instruction',
+    'correction_requirements',
     'rejected_assistant_output',
     'semantic_diagnostics',
+  ],
+  correctionRequirementFieldOrder: [
+    'field',
+    'diagnostic_code',
+    'rejected_value',
+    'repeated_unchanged_output',
+    'required_action',
   ],
   rejectedAssistantOutputFieldOrder: [
     'text',
@@ -752,10 +763,11 @@ export async function classifyIssueTerminalResult(
   options: ClassifyIssueAttemptLedgerOptions = {},
 ): Promise<ClassifyIssueTerminalResult> {
   const promptInput = buildClassifierPromptInput(issue, comments, knownTags);
-  let messages = [
+  const initialMessages = [
     { role: 'system', content: SYSTEM_PROMPT },
     { role: 'user', content: promptInput.userMessage },
   ];
+  let messages = initialMessages;
   let body = buildClassificationRequest(messages);
   let serializedRequestBody = JSON.stringify(body);
   const initialRequestHash = sha256(serializedRequestBody);
@@ -834,6 +846,7 @@ export async function classifyIssueTerminalResult(
     assertClassificationRequestIdentity(body);
 
     let semanticRetryOrdinal = 0;
+    const semanticRejectedOutputCounts = new Map<string, number>();
     while (hasOpenAIAttemptsRemaining(attemptBudget)) {
       const currentRequestHash = sha256(serializedRequestBody);
       const completedAttempt = await requestChatCompletionAttempt(body, {
@@ -976,6 +989,12 @@ export async function classifyIssueTerminalResult(
         const semanticDiagnostics = semanticDiagnosticsFor(error);
         const retryableGroundingError =
           isRetryableClassificationGroundingError(error);
+        const rejectedOutputHash = typeof rawModelOutput === 'string'
+          ? sha256(rawModelOutput)
+          : null;
+        const repeatedOutputCount = rejectedOutputHash === null
+          ? 0
+          : semanticRejectedOutputCounts.get(rejectedOutputHash) ?? 0;
         const retryCandidate =
           !callerAborted &&
           retryableGroundingError &&
@@ -990,13 +1009,14 @@ export async function classifyIssueTerminalResult(
         if (retryCandidate) {
           const nextOrdinal = semanticRetryOrdinal + 1;
           const nextMessages = [
-            ...messages,
+            ...initialMessages,
             {
               role: CLASSIFICATION_REQUEST_RULES.semanticRetryMessageRole,
               content: buildSemanticRetryFeedback(
                 rawModelOutput as string,
                 semanticDiagnostics,
                 nextOrdinal,
+                repeatedOutputCount,
               ),
             },
           ];
@@ -1054,6 +1074,12 @@ export async function classifyIssueTerminalResult(
           usage,
           cost: classifierCostForUsage(usage),
         });
+        if (rejectedOutputHash !== null) {
+          semanticRejectedOutputCounts.set(
+            rejectedOutputHash,
+            repeatedOutputCount + 1,
+          );
+        }
         if (callerAborted) throw classifierAbortError(options.signal!);
         if (semanticRetryPreparationError) {
           throw semanticRetryPreparationError;
@@ -1574,6 +1600,7 @@ function buildSemanticRetryFeedback(
   rejectedAssistantOutput: string,
   diagnostics: readonly ClassifierAttemptSemanticDiagnostic[],
   retryOrdinal: number,
+  repeatedOutputCount: number,
 ): string {
   const boundedOutput = boundedSemanticRetryText(
     rejectedAssistantOutput,
@@ -1586,7 +1613,25 @@ function buildSemanticRetryFeedback(
   const payload = {
     schema_version: CLASSIFICATION_SEMANTIC_RETRY_RULES.schemaVersion,
     retry_ordinal: retryOrdinal,
+    repeated_output_count: repeatedOutputCount,
     instruction: CLASSIFICATION_SEMANTIC_RETRY_RULES.instruction,
+    correction_requirements: retainedDiagnostics.map((diagnostic) => {
+      const rejectedValue = semanticRetryRejectedValue(
+        rejectedAssistantOutput,
+        diagnostic.field,
+      );
+      return {
+        field: diagnostic.field,
+        diagnostic_code: diagnostic.code,
+        rejected_value: rejectedValue,
+        repeated_unchanged_output: repeatedOutputCount > 0,
+        required_action: semanticRetryRequiredAction(
+          diagnostic.field,
+          rejectedValue,
+          repeatedOutputCount > 0,
+        ),
+      };
+    }),
     rejected_assistant_output: {
       text: boundedOutput.text,
       original_byte_length: boundedOutput.originalByteLength,
@@ -1622,6 +1667,45 @@ function buildSemanticRetryFeedback(
     JSON.stringify(payload),
     CLASSIFICATION_SEMANTIC_RETRY_RULES.feedbackEnd,
   ].join('\n');
+}
+
+function semanticRetryRejectedValue(
+  rejectedAssistantOutput: string,
+  field: string | null,
+): string | null {
+  if (field === null || field === 'evidence') return null;
+  try {
+    const parsed = JSON.parse(rejectedAssistantOutput) as Record<string, unknown>;
+    const value = parsed[field];
+    return typeof value === 'string' ? value : null;
+  } catch {
+    return null;
+  }
+}
+
+function semanticRetryRequiredAction(
+  field: string | null,
+  rejectedValue: string | null,
+  repeatedUnchangedOutput: boolean,
+): string {
+  const progressRequirement = repeatedUnchangedOutput
+    ? ' The prior unsupported output was repeated unchanged; this field must now use different supporting evidence or a different supported value.'
+    : '';
+  if (field === 'scope' && rejectedValue === 'broad') {
+    return (
+      'Keep scope=broad only with exact text explicitly showing impact across multiple ' +
+      'operating systems, providers, platforms, channels, integrations, or product surfaces. ' +
+      'Words such as "multiple sessions", "both options", or "across a workflow" do not qualify. ' +
+      'If that evidence is absent, choose scope=moderate only with exact evidence for one common ' +
+      'surface or configuration, or scope=niche only with exact evidence for a specialized or ' +
+      `non-default case.${progressRequirement}`
+    );
+  }
+  return (
+    'Either replace the citation with exact included-source evidence that supports the selected ' +
+    'value, or change the value and citations to an alternative that the exact source text supports.' +
+    progressRequirement
+  );
 }
 
 function boundedSemanticRetryText(
@@ -2027,7 +2111,10 @@ const CLASSIFICATION_SCHEMA_RULES = {
       },
       scope: {
         broad: [
-          '\\b(?:broad|widespread|systemwide|across|multiple|multi-(?:os|provider|platform)|both|everyone)\\b',
+          '\\b(?:broad|widespread|systemwide|multi-(?:os|provider|platform))\\b',
+          '\\bacross\\s+(?:multiple|several|all)\\s+(?:operating systems?|oses|providers?|platforms?|surfaces?|channels?|integrations?|configurations?)\\b',
+          '\\bmultiple\\s+(?:operating systems?|oses|providers?|platforms?|surfaces?|channels?|integrations?|configurations?)\\b',
+          '\\bboth\\s+(?:windows|macos|linux|android|ios)\\b.{0,60}\\b(?:and|,)\\s*(?:windows|macos|linux|android|ios)\\b',
           '\\b(?:all|every|most)\\b.{0,60}\\b(?:users?|installs?|platforms?|systems?|providers?|operating systems?|deployments?|surfaces?|configurations?)\\b',
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
         ],

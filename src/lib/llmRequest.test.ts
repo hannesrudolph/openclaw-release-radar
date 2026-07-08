@@ -1894,6 +1894,112 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('uses latest-only, value-specific feedback to repair repeated unsupported broad scope', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 3;
+    const unsupported = groundedOutput({ scope: 'broad' });
+    const corrected = groundedOutput();
+    let attempts = 0;
+    const requestBodies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      attempts++;
+      requestBodies.push(String(init?.body ?? ''));
+      return new Response(JSON.stringify({
+        id: `chatcmpl-scope-repair-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          message: {
+            content: JSON.stringify(attempts < 3 ? unsupported : corrected),
+          },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?repeated-scope-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        groundingIssue(DEFAULT_GROUNDING_BODY) as any,
+        [],
+        [],
+      );
+      assert.equal(result.classification.scope, 'moderate');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['semantic_rejection', 'semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts.slice(0, 2).map((attempt) =>
+          attempt.semanticDiagnostics.map((diagnostic) => [
+            diagnostic.field,
+            diagnostic.code,
+          ])),
+        [
+          [['scope', 'excerpt_not_field_relevant']],
+          [['scope', 'excerpt_not_field_relevant']],
+        ],
+      );
+      const parsedBodies = requestBodies.map((body) => JSON.parse(body));
+      assert.deepEqual(
+        parsedBodies.map((body) => body.messages.length),
+        [2, 3, 3],
+      );
+      const feedbackPayloads = parsedBodies.slice(1).map((body) => {
+        const feedbackText = body.messages[2].content as string;
+        const feedbackJson = feedbackText
+          .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+          ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+        assert.ok(feedbackJson);
+        return JSON.parse(feedbackJson);
+      });
+      assert.equal(feedbackPayloads[0].schema_version, 2);
+      assert.equal(feedbackPayloads[0].repeated_output_count, 0);
+      assert.equal(feedbackPayloads[1].repeated_output_count, 1);
+      assert.deepEqual(
+        feedbackPayloads.map((payload) => payload.correction_requirements[0]),
+        [
+          {
+            field: 'scope',
+            diagnostic_code: 'excerpt_not_field_relevant',
+            rejected_value: 'broad',
+            repeated_unchanged_output: false,
+            required_action: feedbackPayloads[0].correction_requirements[0].required_action,
+          },
+          {
+            field: 'scope',
+            diagnostic_code: 'excerpt_not_field_relevant',
+            rejected_value: 'broad',
+            repeated_unchanged_output: true,
+            required_action: feedbackPayloads[1].correction_requirements[0].required_action,
+          },
+        ],
+      );
+      assert.match(
+        feedbackPayloads[0].correction_requirements[0].required_action,
+        /multiple operating systems, providers, platforms, channels, integrations, or product surfaces/,
+      );
+      assert.match(
+        feedbackPayloads[1].correction_requirements[0].required_action,
+        /must now use different supporting evidence or a different supported value/,
+      );
+      assert.equal(
+        result.ledger.attempts[0].rawModelOutput?.text,
+        JSON.stringify(unsupported),
+      );
+      assert.equal(
+        result.ledger.attempts[1].rawModelOutput?.text,
+        JSON.stringify(unsupported),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('retries semantically malformed model JSON and persists exact raw provenance', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');
@@ -2271,6 +2377,58 @@ describe('LLM source grounding', () => {
         },
       );
     }
+  });
+
+  it('does not treat multiple sessions or both options as broad-scope evidence', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?generic-broad-scope=${Date.now()}`);
+    const genericScopeText = 'Multiple sessions can use both options across a workflow.';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${genericScopeText}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.scope = 'broad';
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: genericScopeText,
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'scope' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
+
+    const explicitBroadText = 'Multiple providers are affected.';
+    const explicitPrompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${explicitBroadText}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: explicitBroadText,
+    }];
+    const explicit = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      explicitPrompt.groundingSources,
+      explicitPrompt.inputTruncation,
+    );
+    assert.equal(explicit.scope, 'broad');
   });
 
   it('requires independent support when one rich citation is reused across fields', async () => {
