@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 29;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 30;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -467,6 +467,14 @@ const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
     enumOrdering:
       'merge and validate response enum constraints before deriving or filtering active requirements',
     ordering: 'CLASSIFICATION_EVIDENCE_FIELDS canonical order',
+  },
+  candidateSourcePolicy: {
+    preferred:
+      'derive supported values from the diagnosed source when it yields at least one exact validator-approved candidate',
+    fallback:
+      'when the diagnosed source yields no supported value, derive candidates from every other included grounding source in canonical source order',
+    affectedUsersUnknown:
+      'append affected_users=unknown only after explicit candidate source selection',
   },
   payloadFieldOrder: [
     'schema_version',
@@ -2404,6 +2412,11 @@ interface SemanticRetrySupportedValue {
   candidate_citations: Array<{ source_id: string; excerpt: string }>;
 }
 
+interface SemanticRetryMandatoryFieldBinding {
+  readonly field: MandatoryEvidenceField;
+  readonly values: readonly string[];
+}
+
 function semanticRetrySupportedValues(
   field: string | null,
   groundingSources: readonly ClassifierSource[],
@@ -2421,10 +2434,30 @@ function semanticRetrySupportedValues(
     groundingSources,
   );
   if (reboundSeverity !== null) return [reboundSeverity];
-  const candidateSources = sourceId === null
+  const preferredSources = sourceId === null
     ? groundingSources
     : groundingSources.filter((source) => source.sourceId === sourceId);
-  const supported = binding.values.flatMap((value) => {
+  let supported = semanticRetrySupportedValuesFromSources(
+    binding,
+    preferredSources,
+  );
+  if (sourceId !== null && supported.length === 0) {
+    supported = semanticRetrySupportedValuesFromSources(
+      binding,
+      groundingSources.filter((source) => source.sourceId !== sourceId),
+    );
+  }
+  if (binding.field === 'affected_users') {
+    supported.push({ value: 'unknown', candidate_citations: [] });
+  }
+  return supported;
+}
+
+function semanticRetrySupportedValuesFromSources(
+  binding: SemanticRetryMandatoryFieldBinding,
+  candidateSources: readonly ClassifierSource[],
+): SemanticRetrySupportedValue[] {
+  return binding.values.flatMap((value) => {
     const candidateCitations: Array<{ source_id: string; excerpt: string }> = [];
     const identities = new Set<string>();
     for (const source of candidateSources) {
@@ -2447,10 +2480,6 @@ function semanticRetrySupportedValues(
       ? []
       : [{ value, candidate_citations: candidateCitations }];
   });
-  if (binding.field === 'affected_users') {
-    supported.push({ value: 'unknown', candidate_citations: [] });
-  }
-  return supported;
 }
 
 function semanticRetrySeverityRebinding(
@@ -2551,10 +2580,7 @@ function semanticRetryResponseEnumConstraints(
 
 function semanticRetryMandatoryBinding(
   field: string | null,
-): {
-  field: MandatoryEvidenceField;
-  values: readonly string[];
-} | null {
+): SemanticRetryMandatoryFieldBinding | null {
   switch (field) {
     case 'sentiment':
       return { field, values: CLASSIFICATION_SCHEMA_RULES.enums.sentiment };

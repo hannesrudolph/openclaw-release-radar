@@ -2547,6 +2547,141 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('repairs issue #31379 from exact low-severity evidence in another included source', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const title =
+      '[Feature]: Channels settings page should always show built-in channels alongside custom channels';
+    const rejectedSeverityEvidence =
+      'Risk: Minimal \u2014 only touches the frontend channel ordering function.';
+    const body = [
+      'This is frustrating.',
+      'When one custom setup is active, all built-in channels vanish from the Control UI.',
+      rejectedSeverityEvidence,
+    ].join(' ');
+    const sharedEvidence = {
+      sentiment: [{
+        source_id: 'issue:body',
+        excerpt: 'This is frustrating.',
+      }],
+      scope: [{
+        source_id: 'issue:body',
+        excerpt: 'one custom setup',
+      }],
+      functionality: [{
+        source_id: 'issue:body',
+        excerpt: 'Control UI',
+      }],
+      affected_users: [],
+      workaroundStatus: [],
+      duplicateCluster: [],
+      affectsVersion: [],
+    };
+    const rejected = groundedOutput({
+      sentiment: 'negative',
+      severity: 'low',
+      scope: 'niche',
+      functionality: 'integration',
+      affected_users: 'unknown',
+      evidence: {
+        ...sharedEvidence,
+        severity: [{
+          source_id: 'issue:body',
+          excerpt: rejectedSeverityEvidence,
+        }],
+      },
+    });
+    const corrected = groundedOutput({
+      sentiment: 'negative',
+      severity: 'low',
+      scope: 'niche',
+      functionality: 'integration',
+      affected_users: 'unknown',
+      evidence: {
+        ...sharedEvidence,
+        severity: [{
+          source_id: 'issue:title',
+          excerpt: title,
+        }],
+      },
+    });
+    const outputs = [rejected, corrected];
+    const requestBodies: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
+      return new Response(JSON.stringify({
+        id: `chatcmpl-31379-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(output) },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-31379-cross-source-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(body, title),
+          number: 31379,
+        } as any,
+        [],
+        [],
+      );
+      assert.equal(attempts, 2);
+      assert.equal(result.classification.severity, 'low');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+          diagnostic.sourceId,
+          diagnostic.citationIndex,
+        ]),
+        [['severity', 'excerpt_not_field_relevant', 'issue:body', 0]],
+      );
+      const retryBody = JSON.parse(requestBodies[1]);
+      assert.deepEqual(
+        retryBody.response_format.json_schema.schema.properties.severity.enum,
+        ['low'],
+      );
+      const feedbackText = retryBody.messages[2].content as string;
+      const feedbackJson = feedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(feedbackJson);
+      const feedback = JSON.parse(feedbackJson);
+      const severityRequirement = feedback.correction_requirements[0];
+      assert.equal(severityRequirement.field, 'severity');
+      assert.equal(severityRequirement.rejected_value, 'low');
+      assert.deepEqual(severityRequirement.supported_values, [{
+        value: 'low',
+        candidate_citations: [{
+          source_id: 'issue:title',
+          excerpt: title,
+        }],
+      }]);
+      assert.deepEqual(result.classification.evidence?.severity, [{
+        sourceId: 'issue:title',
+        excerpt: title,
+      }]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('narrows issue #9658 retries away from unsupported broad scope', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');
@@ -2728,6 +2863,11 @@ describe('OpenAI classification request', () => {
         secondRetryBody.response_format.json_schema.schema.properties.severity.enum
           .includes('medium'),
         true,
+      );
+      assert.equal(
+        secondRetryBody.response_format.json_schema.schema.properties.severity.enum
+          .includes('low'),
+        false,
       );
       assert.deepEqual(
         result.ledger.attempts.map((attempt) => attempt.provenance.requestHash),
