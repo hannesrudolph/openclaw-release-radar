@@ -2221,6 +2221,13 @@ function validateRepositoryObservation(
       const rangeError = rangeValidationError(vulnerableVersionRange);
       const missingPackageIdentity =
         !packageIdentity.ecosystem || !packageIdentity.packageName;
+      const explicitForeignPackageEvidence =
+        !packageIdentity.ecosystem &&
+        Boolean(packageIdentity.packageName) &&
+        packageIdentity.packageName !== target.packageName &&
+        rangeError == null;
+      const blockingMissingPackageIdentity =
+        missingPackageIdentity && !explicitForeignPackageEvidence;
       if (
         missingPackageIdentity ||
         !vulnerableVersionRange.trim()
@@ -2230,7 +2237,7 @@ function validateRepositoryObservation(
           severity:
             targetPackage ||
             (
-              missingPackageIdentity &&
+              blockingMissingPackageIdentity &&
               state === 'active' &&
               observation.completeness.terminalPageProven
             )

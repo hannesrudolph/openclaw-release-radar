@@ -1443,6 +1443,36 @@ describe('GitHub GraphQL mapping', () => {
     );
   });
 
+  it('accepts bounded GitHub closedAt skew without rewriting timestamps', () => {
+    const liveIssue = {
+      ...issueLookupNode(96622),
+      state: 'CLOSED' as const,
+      createdAt: '2026-06-25T01:42:52Z',
+      updatedAt: '2026-06-25T01:59:23Z',
+      closedAt: '2026-06-25T01:59:24Z',
+    };
+    const mapped = __githubTest.mapIssue(liveIssue);
+
+    assert.equal(mapped.state, 'closed');
+    assert.equal(mapped.created_at, liveIssue.createdAt);
+    assert.equal(mapped.updated_at, liveIssue.updatedAt);
+    assert.equal(mapped.closed_at, liveIssue.closedAt);
+    assert.equal(
+      __githubTest.mapIssue({
+        ...liveIssue,
+        closedAt: '2026-06-25T01:59:25Z',
+      }).closed_at,
+      '2026-06-25T01:59:25Z',
+    );
+    assert.throws(
+      () => __githubTest.mapIssue({
+        ...liveIssue,
+        closedAt: '2026-06-25T01:59:26Z',
+      }),
+      /inconsistent closedAt chronology/,
+    );
+  });
+
   it('validates GraphQL connections and pagination cursors', () => {
     const connection = __githubTest.requireGraphqlConnection(
       { nodes: [{ name: 'bug' }], pageInfo: { hasNextPage: false, endCursor: null } },
@@ -1579,6 +1609,34 @@ describe('GitHub GraphQL mapping', () => {
     assert.deepEqual(requestedSizes, [2, 2]);
     assert.equal(catalog.metadata.pageCount, 1);
     assert.equal(catalog.metadata.sweepCount, 2);
+  });
+
+  it('stabilizes a catalog containing bounded GitHub closedAt skew', async () => {
+    const liveIssue = {
+      ...issueLookupNode(96622),
+      state: 'CLOSED' as const,
+      createdAt: '2026-06-25T01:42:52Z',
+      updatedAt: '2026-06-25T01:59:23Z',
+      closedAt: '2026-06-25T01:59:24Z',
+    };
+    const catalog = await __githubTest.fetchIssueCatalog({
+      pageDelayMs: 0,
+      request: async <T>(): Promise<T> => ({
+        repository: {
+          id: TEST_REPOSITORY_NODE_ID,
+          issues: {
+            totalCount: 1,
+            nodes: [liveIssue],
+            pageInfo: { hasNextPage: false, endCursor: null },
+          },
+        },
+      } as T),
+    });
+
+    assert.equal(catalog.metadata.sweepCount, 2);
+    assert.equal(catalog.issues.length, 1);
+    assert.equal(catalog.issues[0]?.updated_at, liveIssue.updatedAt);
+    assert.equal(catalog.issues[0]?.closed_at, liveIssue.closedAt);
   });
 
   it('rejects a terminal issue page with fewer unique rows than totalCount', async () => {

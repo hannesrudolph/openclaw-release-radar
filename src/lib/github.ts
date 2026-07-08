@@ -41,6 +41,7 @@ const COMMENT_SNAPSHOT_RETRY_MAX_MS = 2_000;
 const RELEASE_CATALOG_MAX_SWEEPS = 3;
 const ISSUE_CATALOG_MAX_SWEEPS = 3;
 const ISSUE_CATALOG_MAX_BOUNDARY_RESTARTS = 3;
+const ISSUE_CLOSED_AT_SKEW_TOLERANCE_MS = 2_000;
 const ISSUE_LABEL_MAX_SWEEPS = 3;
 const ADVISORY_CATALOG_MAX_SWEEPS = 3;
 const SECURITY_VULNERABILITY_MAX_SWEEPS = 3;
@@ -2517,7 +2518,10 @@ function requireIssueLifecycle(node: IssueNode): {
     throw new Error(`GitHub GraphQL issue #${node.number} is CLOSED but closedAt is invalid`);
   }
   const closedAtMs = Date.parse(node.closedAt);
-  if (closedAtMs < Date.parse(node.createdAt) || closedAtMs > Date.parse(node.updatedAt)) {
+  if (
+    closedAtMs < Date.parse(node.createdAt) ||
+    closedAtMs > Date.parse(node.updatedAt) + ISSUE_CLOSED_AT_SKEW_TOLERANCE_MS
+  ) {
     throw new Error(`GitHub GraphQL issue #${node.number} has inconsistent closedAt chronology`);
   }
   return { state: 'closed', closedAt: node.closedAt };

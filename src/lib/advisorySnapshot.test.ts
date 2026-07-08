@@ -1180,6 +1180,67 @@ describe('compound advisory snapshot v2', () => {
     assert.equal(snapshot.rows.filter((row) => row.auditOnly).length, 1);
   });
 
+  it('retains the live clawdbot advisory shape as foreign audit evidence', () => {
+    const clawdbotAdvisory = advisory({
+      ghsa_id: 'GHSA-q284-4pvr-m585',
+      summary: 'Command injection through SSH host configuration',
+      html_url:
+        'https://github.com/openclaw/openclaw/security/advisories/' +
+        'GHSA-q284-4pvr-m585',
+      vulnerabilities: [{
+        package: { ecosystem: '', name: 'clawdbot/clawdbot' },
+        vulnerable_version_range: '<v2026.1.29',
+        patched_versions: '2026.1.29',
+      }],
+    });
+    const snapshot = buildCompoundAdvisorySnapshot(compoundInput(
+      graphqlObservation([]),
+      repositoryObservation([clawdbotAdvisory], { proven: true }),
+    ));
+
+    assert.equal(snapshot.blockingProblems.length, 0);
+    assert.ok(snapshot.auditProblems.some((problem) =>
+      problem.code === 'invalid_source_observation' &&
+      problem.source === 'repository-security-advisories-rest'));
+    assert.ok(!snapshot.auditProblems.some((problem) =>
+      problem.code === 'malformed_foreign_range'));
+    assert.equal(snapshot.counts.foreignRangeCount, 1);
+    assert.equal(snapshot.score.ready, true);
+    assert.equal(snapshot.score.rangeCount, 0);
+    assert.equal(snapshot.rows.length, 1);
+    assert.equal(snapshot.rows[0]?.ecosystem, '');
+    assert.equal(snapshot.rows[0]?.packageName, 'clawdbot/clawdbot');
+    assert.equal(snapshot.rows[0]?.targetPackage, false);
+    assert.equal(snapshot.rows[0]?.repositoryOwned, true);
+    assert.equal(snapshot.rows[0]?.auditOnly, true);
+  });
+
+  it('keeps incomplete target advisory identities blocking', () => {
+    for (const vulnerabilities of [
+      [{
+        package: { ecosystem: '', name: 'openclaw' },
+        vulnerable_version_range: '< 2.0.0',
+        patched_versions: '2.0.0',
+      }],
+      [{
+        package: { ecosystem: 'npm', name: 'openclaw' },
+        vulnerable_version_range: '',
+        patched_versions: '2.0.0',
+      }],
+    ]) {
+      const snapshot = buildCompoundAdvisorySnapshot(compoundInput(
+        graphqlObservation([]),
+        repositoryObservation([advisory({ vulnerabilities })], { proven: true }),
+      ));
+
+      assert.ok(snapshot.blockingProblems.some((problem) =>
+        problem.code === 'invalid_source_observation' &&
+        problem.source === 'repository-security-advisories-rest'));
+      assert.equal(snapshot.score.ready, false);
+      assert.equal(snapshot.score.rangeCount, 0);
+    }
+  });
+
   it('blocks an uncovered active package-less advisory in a complete REST catalog', () => {
     const packageLessAdvisory = advisory({
       ghsa_id: 'GHSA-package-less-uncovered',
