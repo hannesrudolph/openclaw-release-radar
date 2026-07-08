@@ -3908,6 +3908,32 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'integration');
   });
 
+  it('accepts issue #37625 runtime workspace write evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?workspace-write-runtime=${Date.now()}`
+    );
+    const functionalityEvidence =
+      'Integrated into `writeTrackedDoc` / `beginDocSession.commit`';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${functionalityEvidence}.`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.functionality = 'core';
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: functionalityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.functionality, 'core');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,

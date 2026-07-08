@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 17;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 18;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2670,6 +2670,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         core: [
           '\\b(?:core|install(?:er|ation)?|update|upgrade|gateway|startup|boot|cli|chat|session|auth(?:entication)?|oauth|token refresh|login|exec|approval|doctor|command|daemon|storage)\\b',
           '\\bread tool\\b',
+          '\\b(?:writeTrackedDoc|beginDocSession\\.commit)\\b',
         ],
         integration: [
           '\\b(?:(?:tray|menu bar|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\s+)?(?:integration|channel|plugin|extension|ui|tui|webchat|webhook)\\b',
