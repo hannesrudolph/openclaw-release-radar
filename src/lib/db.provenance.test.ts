@@ -7630,6 +7630,48 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.scoreSourceIdentity(), sourceIdentityBeforeStaleMutation);
   });
 
+  it('does not let prerelease scores advance the last scored stable timestamp', async () => {
+    const db = await freshDb('last-scored-at-stable-only');
+    const stableTag = 'v-last-scored-stable';
+    const prereleaseTag = 'v-last-scored-beta';
+    const stableScoredAt = '2042-06-01T12:00:00Z';
+    const prereleaseScoredAt = '2042-06-02T12:00:00Z';
+    seedAuthorizedReleaseCatalog(db, [
+      catalogRelease(
+        prereleaseTag,
+        '2042-06-02T00:00:00Z',
+        true,
+        testReleaseCommitOid(prereleaseTag),
+      ),
+      catalogRelease(
+        stableTag,
+        '2042-06-01T00:00:00Z',
+        false,
+        testReleaseCommitOid(stableTag),
+      ),
+    ]);
+    const scoreRelease = (tag: string, scoredAt: string) => db.updateReleaseScore({
+      tag,
+      final_score: 8,
+      negative_issues: 0,
+      positive_issues: 1,
+      state: 'eligible',
+      recommended: 0,
+      score_reason: 'last scored timestamp fixture',
+      broken_surfaces: '[]',
+      closed_serious_fixed: 0,
+      opened_serious_during_reign: 0,
+      scored_at: scoredAt,
+    });
+
+    scoreRelease(stableTag, stableScoredAt);
+    assert.equal(db.getLastScoredAt(), stableScoredAt);
+
+    scoreRelease(prereleaseTag, prereleaseScoredAt);
+    assert.equal(db.getRelease(prereleaseTag)?.scored_at, prereleaseScoredAt);
+    assert.equal(db.getLastScoredAt(), stableScoredAt);
+  });
+
   it('uses open intervals for audit source freshness issue universes', async () => {
     const db = await freshDb('source-freshness-reopen-interval');
     seedAuthorizedReleaseCatalog(db, [
@@ -8133,6 +8175,63 @@ describe('release fix provenance', () => {
     assert.equal(auditReport.missingCount, 1);
     assert.equal(auditReport.referencedIssueMissingCount, 1);
     assert.equal(auditReport.failedCount, 2);
+  });
+
+  it('excludes prerelease cross-release proofs and tracks active stable proof releases in closure dependency digests', async () => {
+    const db = await freshDb('closure-dependency-active-stable-cross-proof');
+    const targetRelease = catalogRelease(
+      'v-dependency-target',
+      '2031-03-01T00:00:00Z',
+      false,
+      testReleaseCommitOid('v-dependency-target'),
+    );
+    const prereleaseProofRelease = catalogRelease(
+      'v-dependency-beta',
+      '2031-02-15T00:00:00Z',
+      true,
+      testReleaseCommitOid('v-dependency-beta'),
+    );
+    const stableProofRelease = catalogRelease(
+      'v-dependency-proof',
+      '2031-02-01T00:00:00Z',
+      false,
+      testReleaseCommitOid('v-dependency-proof'),
+    );
+    const issueNumber = 9698;
+    seedAuthorizedReleaseCatalog(db, [
+      targetRelease,
+      prereleaseProofRelease,
+      stableProofRelease,
+    ]);
+    seedIssue(db, issueNumber, null, '2031-03-01T12:00:00Z');
+    seedClosureProof(db, stableProofRelease.tag, issueNumber, 'fixed_in_release', {
+      proofAnalyzerVersion: CLOSURE_PROOF_ANALYZER_VERSION,
+    });
+
+    const withStableProof = db.releaseClosureDependencyIdentity(
+      targetRelease.tag,
+      [issueNumber],
+    );
+    seedClosureProof(db, prereleaseProofRelease.tag, issueNumber, 'fixed_in_release', {
+      proofAnalyzerVersion: CLOSURE_PROOF_ANALYZER_VERSION,
+    });
+    const withPrereleaseProof = db.releaseClosureDependencyIdentity(
+      targetRelease.tag,
+      [issueNumber],
+    );
+    assert.equal(withPrereleaseProof.digest, withStableProof.digest);
+    assert.equal(withPrereleaseProof.rowCount, withStableProof.rowCount);
+
+    db.replaceActiveReleaseCatalog([
+      targetRelease,
+      prereleaseProofRelease,
+    ]);
+    const withoutActiveStableProof = db.releaseClosureDependencyIdentity(
+      targetRelease.tag,
+      [issueNumber],
+    );
+    assert.notEqual(withoutActiveStableProof.digest, withStableProof.digest);
+    assert.equal(withoutActiveStableProof.rowCount, withStableProof.rowCount - 1);
   });
 
   it('binds closure dependency snapshots to canonical provenance in both integrity engines', async () => {

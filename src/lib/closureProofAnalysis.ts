@@ -743,7 +743,11 @@ ORDER BY r.referenced_at
 `);
 
 const releasePublishedAtStmt = db.prepare(`
-SELECT published_at FROM releases WHERE tag=? AND catalog_active=1
+SELECT published_at
+FROM releases
+WHERE tag=?
+  AND catalog_active=1
+  AND prerelease=0
 `);
 
 const activeStableReleaseBoundaryRowsStmt = db.prepare(`
@@ -763,10 +767,11 @@ function immediateStablePredecessorTag(targetTag: string): string | null {
 const crossReleaseTerminalProofRowsStmt = db.prepare(`
 SELECT p.release_tag, p.status, p.summary, p.evidence_json, r.published_at
 FROM issue_closure_proofs p
-LEFT JOIN releases r ON r.tag=p.release_tag
+JOIN releases r ON r.tag=p.release_tag
 WHERE p.issue_number=?
   AND p.release_tag!=?
   AND r.catalog_active=1
+  AND r.prerelease=0
 ORDER BY r.published_at IS NULL, r.published_at DESC, p.release_tag DESC
 `);
 

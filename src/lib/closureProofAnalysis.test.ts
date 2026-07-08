@@ -351,6 +351,7 @@ function runIsolatedAnalysisScript(name: string, body: string): void {
         tag,
         publishedAt = '2026-07-01T00:00:00Z',
         catalogTagCommitOid = createHash('sha1').update('release:' + tag).digest('hex'),
+        prerelease = false,
       ) {
         releaseCatalog.set(tag, {
           node_id: 'R_' + createHash('sha256').update(tag).digest('hex'),
@@ -361,7 +362,7 @@ function runIsolatedAnalysisScript(name: string, body: string): void {
           created_at: publishedAt,
           updated_at: publishedAt,
           html_url: 'https://example.test/releases/' + tag,
-          prerelease: false,
+          prerelease,
           body: '',
         });
         db.replaceActiveReleaseCatalog(
@@ -3233,6 +3234,41 @@ describe('closure proof canonical roll-up', () => {
       db.db.prepare(
         'UPDATE issues SET updated_at=? WHERE number=?'
       ).run('2099-01-01T00:00:00Z', 20);
+      assert.equal(
+        analysis.__closureProofAnalysisTest.crossReleaseTerminalProofForIssue(
+          sourceTag,
+          20,
+        ),
+        null,
+      );
+    `);
+  });
+
+  it('rejects prerelease cross-release fallback proof', () => {
+    runIsolatedAnalysisScript('cross-release-proof-prerelease', `
+      const versionsModule = await import('./src/lib/analysisVersions.ts');
+      const versions = versionsModule.default ?? versionsModule;
+      const sourceTag = 'v-source';
+      const proofTag = 'v-proof-beta';
+      seedRelease(sourceTag, '2026-07-01T00:00:00Z');
+      seedRelease(proofTag, '2026-07-02T00:00:00Z', undefined, true);
+      seedRelease('v-next', '2026-07-03T00:00:00Z');
+      seedIssue(20, '2026-07-02T12:00:00Z');
+      seedClosure(20, 'close-proof-20', '2026-07-02T12:00:00Z');
+
+      db.upsertIssueClosureProof({
+        release_tag: proofTag,
+        issue_number: 20,
+        status: 'fixed_in_release',
+        summary: 'Prerelease cross-release proof.',
+        evidence_json: JSON.stringify({
+          proofAnalyzerVersion: versions.CLOSURE_PROOF_ANALYZER_VERSION,
+        }),
+      });
+      db.replaceReleaseClosureDependencySnapshot(
+        db.releaseClosureDependencyIdentity(proofTag, [20]),
+      );
+
       assert.equal(
         analysis.__closureProofAnalysisTest.crossReleaseTerminalProofForIssue(
           sourceTag,

@@ -18101,7 +18101,7 @@ export function formatReleasePrReachabilityIntegrityFailure(report: ReleasePrRea
     `invalidEvidence=${report.invalidEvidenceCount})${suffix}`;
 }
 
-export const RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION = 2;
+export const RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION = 3;
 
 export interface ReleaseClosureDependencyIdentity {
   schemaVersion: typeof RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION;
@@ -18456,10 +18456,18 @@ WITH selected(issue_number) AS (
 )
 SELECT
   proof.release_tag, proof.issue_number, proof.status,
-  proof.summary, proof.evidence_json
+  proof.summary, proof.evidence_json,
+  release.node_id AS release_node_id,
+  release.catalog_tag_commit_oid,
+  release.published_at AS release_published_at,
+  release.prerelease,
+  release.catalog_active
 FROM issue_closure_proofs proof
 JOIN selected ON selected.issue_number=proof.issue_number
+JOIN releases release ON release.tag=proof.release_tag
 WHERE proof.release_tag != ?
+  AND release.catalog_active=1
+  AND release.prerelease=0
 ORDER BY proof.issue_number, proof.release_tag
 `);
 const releaseClosureDependencyReleaseStmt = db.prepare(`
@@ -18470,6 +18478,7 @@ FROM releases release
 LEFT JOIN release_commits release_commit ON release_commit.tag=release.tag
 WHERE release.tag=?
   AND release.catalog_active=1
+  AND release.prerelease=0
 `);
 
 export function releaseClosureDependencyIdentity(
@@ -19772,6 +19781,7 @@ const lastScoredAtStmt = db.prepare(`
 SELECT MAX(scored_at) AS ts
 FROM releases
 WHERE catalog_active=1
+  AND prerelease=0
 `);
 export function getLastScoredAt(): string | null {
   return withAuthorizedReleaseCatalogRead(() => {

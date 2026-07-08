@@ -4037,6 +4037,31 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.hasWorkaround, true);
   });
 
+  it('accepts issue #23926 explicit compromised-skill severity evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?compromised-skill-severity=${Date.now()}`
+    );
+    const severityEvidence = '341 skills on ClawHub were compromised';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${severityEvidence}.`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.severity = 'critical';
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: severityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.severity, 'critical');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,

@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 21;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 22;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2619,7 +2619,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
       },
       severity: {
         critical: [
-          '\\b(?:critical|p0|release blocker|beta blocker|data loss|message loss|security|vulnerab(?:ility|le)|cve(?:-\\d+)*|auth(?:entication)? bypass|remote code execution|total outage|systemwide outage|crash loop)\\b',
+          '\\b(?:critical|p0|release blocker|beta blocker|data loss|message loss|security|compromis(?:e|ed|es|ing)|vulnerab(?:ility|le)|cve(?:-\\d+)*|auth(?:entication)? bypass|remote code execution|total outage|systemwide outage|crash loop)\\b',
           '\\b(?:all|every|default)\\b.{0,80}\\b(?:fail(?:s|ed|ing|ure)?|broken|unusable|down|outage)\\b',
           '\\b(?:all|any)\\b.{0,40}\\b(?:unsaved\\s+)?(?:work|progress|state|content|code|research|analysis|data)\\b.{0,40}\\b(?:lost|destroyed|discarded)\\b',
         ],

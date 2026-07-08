@@ -53,7 +53,7 @@ const CREDITED_FIX_LINK_SQL =
   "(l.will_close_target = 1 OR l.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer', 'ClosureComment.fixProof'))";
 const CREDITED_FIX_LINK_SQL_FOR_LINK =
   "(link.will_close_target = 1 OR link.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer', 'ClosureComment.fixProof'))";
-const RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION = 2;
+const RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION = 3;
 
 function assertAuditDatabasePath(db, dbPath) {
   const main = db.prepare('PRAGMA database_list').all()
@@ -2132,6 +2132,7 @@ function releaseClosureDependencyIdentity(db, releaseTag, issueNumbers) {
       LEFT JOIN release_commits release_commit ON release_commit.tag=release.tag
       WHERE release.tag=?
         AND release.catalog_active=1
+        AND release.prerelease=0
     `).all(releaseTag)],
     ['issues', db.prepare(`
       WITH selected(issue_number) AS (
@@ -2277,10 +2278,18 @@ function releaseClosureDependencyIdentity(db, releaseTag, issueNumbers) {
       )
       SELECT
         proof.release_tag, proof.issue_number, proof.status,
-        proof.summary, proof.evidence_json
+        proof.summary, proof.evidence_json,
+        release.node_id AS release_node_id,
+        release.catalog_tag_commit_oid,
+        release.published_at AS release_published_at,
+        release.prerelease,
+        release.catalog_active
       FROM issue_closure_proofs proof
       JOIN selected ON selected.issue_number=proof.issue_number
+      JOIN releases release ON release.tag=proof.release_tag
       WHERE proof.release_tag != ?
+        AND release.catalog_active=1
+        AND release.prerelease=0
       ORDER BY proof.issue_number, proof.release_tag
     `).all(selectedJson, releaseTag)],
   ];
