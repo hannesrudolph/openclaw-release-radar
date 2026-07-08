@@ -3874,6 +3874,40 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'broad');
   });
 
+  it('accepts issue #20237 WebUI surface evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?webui-surface=${Date.now()}`
+    );
+    const scopeEvidence =
+      'WebUI notification system, cron job management popups, and context monitor integration';
+    const functionalityEvidence =
+      'Add a native notification/toast system to the WebUI';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${scopeEvidence}. ${functionalityEvidence}.`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.scope = 'moderate';
+    raw.functionality = 'integration';
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: functionalityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.scope, 'moderate');
+    assert.equal(accepted.functionality, 'integration');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
