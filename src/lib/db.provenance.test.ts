@@ -7630,7 +7630,7 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.scoreSourceIdentity(), sourceIdentityBeforeStaleMutation);
   });
 
-  it('does not let prerelease scores advance the last scored stable timestamp', async () => {
+  it('rejects prerelease score writes and preserves the last scored stable timestamp', async () => {
     const db = await freshDb('last-scored-at-stable-only');
     const stableTag = 'v-last-scored-stable';
     const prereleaseTag = 'v-last-scored-beta';
@@ -7667,8 +7667,36 @@ describe('release fix provenance', () => {
     scoreRelease(stableTag, stableScoredAt);
     assert.equal(db.getLastScoredAt(), stableScoredAt);
 
-    scoreRelease(prereleaseTag, prereleaseScoredAt);
-    assert.equal(db.getRelease(prereleaseTag)?.scored_at, prereleaseScoredAt);
+    assert.throws(
+      () => scoreRelease(prereleaseTag, prereleaseScoredAt),
+      /Cannot persist score for prerelease v-last-scored-beta/,
+    );
+    assert.throws(
+      () => db.upsertReleaseScoreAudit({
+        release_tag: prereleaseTag,
+        scored_at: prereleaseScoredAt,
+        score_model_version: 'test-model',
+        prompt_version: 1,
+        final_score: 8,
+        status: 'eligible',
+        band: 'green',
+        recommended: 0,
+        input_json: '{}',
+        components_json: null,
+        issue_evidence_json: '{}',
+        gate_evidence_json: '{}',
+      }),
+      /Cannot persist score for prerelease v-last-scored-beta/,
+    );
+    assert.equal(db.getRelease(prereleaseTag)?.scored_at, null);
+    assert.equal(
+      db.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM release_score_audits
+        WHERE release_tag=?
+      `).get(prereleaseTag).count,
+      0,
+    );
     assert.equal(db.getLastScoredAt(), stableScoredAt);
   });
 
@@ -11123,14 +11151,14 @@ describe('release fix provenance', () => {
 
   it('opens identity-pre-v2 rows read-only without migrating or sealing them', async () => {
     const current = await freshDbWithPath('authority-v2-read-only-source');
-    current.db.upsertRelease({
-      tag: 'v-legacy-authority',
-      name: 'v-legacy-authority',
-      published_at: '2026-07-04T08:00:00Z',
-      html_url: 'https://example.test/v-legacy-authority',
-      prerelease: false,
-      body: '',
-    });
+    seedAuthorizedReleaseCatalog(current.db, [
+      catalogRelease(
+        'v-legacy-authority',
+        '2026-07-04T08:00:00Z',
+        false,
+        testReleaseCommitOid('v-legacy-authority'),
+      ),
+    ]);
     current.db.upsertReleaseScoreAudit({
       release_tag: 'v-legacy-authority',
       scored_at: '2026-07-04T09:00:00Z',
@@ -11250,13 +11278,19 @@ describe('release fix provenance', () => {
         process.env.DB_PATH = ${JSON.stringify(path)};
         const imported = await import('./src/lib/db.ts');
         const database = imported.default ?? imported;
-        database.upsertRelease({
+        database.replaceActiveReleaseCatalog([{
+          node_id: 'R_v-baseline',
+          catalog_tag_commit_oid: '1111111111111111111111111111111111111111',
           tag: 'v-baseline',
           name: 'v-baseline',
           published_at: '2026-06-01T00:00:00Z',
+          created_at: '2026-06-01T00:00:00Z',
+          updated_at: '2026-06-01T00:00:00Z',
           html_url: 'https://example.test/v-baseline',
           prerelease: false,
           body: '',
+        }], {
+          capture: { source: 'test_fixture' },
         });
         database.upsertReleaseScoreAudit({
           release_tag: 'v-baseline',
@@ -11352,6 +11386,9 @@ describe('release fix provenance', () => {
           /upsertRelease is allowed only for test fixtures in fresh private test databases/,
         );
         assert.equal(database.getRelease('v-phantom'), undefined);
+        database.db.prepare(
+          "UPDATE releases SET catalog_active=1 WHERE tag='v-later'"
+        ).run();
         database.upsertReleaseScoreAudit({
           release_tag: 'v-later',
           scored_at: '2026-06-04T00:00:00Z',

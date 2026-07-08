@@ -38,7 +38,12 @@ import {
   type IssueClassification,
 } from './llm.ts';
 import {
+  appendClassifierAttempt,
+  captureClassifierRawModelOutput,
+  captureClassifierRawResponse,
   captureClassifierError,
+  captureClassifierSemanticDiagnostics,
+  createClassifierAttemptLedger,
   createClassifierAttemptRun,
   createClassifierAttemptTerminalReceipt,
 } from './classifierAttemptLedger.ts';
@@ -2240,6 +2245,7 @@ describe('refresh backfill completion', () => {
           stateEvidenceByIssue: new Map(),
           reconciledIssueNumbers: issueNumbers,
           classifiedIssueNumbers: issueNumbers,
+          classificationFailures: [],
         };
       }) as any,
       onChunk: (value) => progress.push(value),
@@ -2280,6 +2286,7 @@ describe('refresh backfill completion', () => {
         ])),
         reconciledIssueNumbers: issueNumbers,
         classifiedIssueNumbers: issueNumbers,
+        classificationFailures: [],
       })) as any,
       async rerunAffected(issueNumbers, attempt) {
         reruns.push({ issueNumbers, attempt });
@@ -2317,6 +2324,7 @@ describe('refresh backfill completion', () => {
           stateEvidenceByIssue: new Map(),
           reconciledIssueNumbers: [issueNumber],
           classifiedIssueNumbers: [],
+          classificationFailures: [],
         })) as any,
         async rerunAffected() {
           reruns++;
@@ -2601,6 +2609,7 @@ describe('refresh backfill completion', () => {
       reconcileIssueCommentSnapshots({
         issueNumbers: [issueNumber],
         releaseTags: ['v2099.7.1'],
+        accumulateGroundingFailures: true,
         snapshotsByIssue: new Map([[issueNumber, stableSnapshot]]),
         dependencies: reconciliationDependencies({
           issueNumber,
@@ -3220,6 +3229,79 @@ describe('refresh backfill completion', () => {
       0,
     );
     assert.equal(dbModule.getClassification(issueNumber), undefined);
+  });
+
+  it('accumulates deterministic grounding failures while persisting successful siblings', async () => {
+    const issueNumbers = [4230, 4231, 4232];
+    const snapshots = new Map(issueNumbers.map((issueNumber, index) => [
+      issueNumber,
+      snapshot(1, [comment(230 + index)], { issueNumber }),
+    ]));
+    for (const issueNumber of issueNumbers) {
+      dbModule.upsertIssue(issueRow(
+        issueNumber,
+        0,
+        '2026-07-01T00:00:00.000Z',
+      ));
+    }
+
+    const result = await reconcileIssueCommentSnapshots({
+      issueNumbers,
+      releaseTags: ['v2099.7.1'],
+      accumulateGroundingFailures: true,
+      classificationConcurrency: 3,
+      snapshotsByIssue: snapshots,
+      dependencies: {
+        async listIssues() {
+          return new Map(issueNumbers.map((issueNumber) => [
+            issueNumber,
+            issue(1, { number: issueNumber }),
+          ]));
+        },
+        async listSnapshots() {
+          return snapshots;
+        },
+        async listLabelEvidence() {
+          return new Map(issueNumbers.map((issueNumber) => [
+            issueNumber,
+            labelEvidenceSnapshot(issue(1, { number: issueNumber }), []),
+          ]));
+        },
+        async listFixEvidence() {
+          return new Map(issueNumbers.map((issueNumber) => [
+            issueNumber,
+            fixEvidence(issueNumber),
+          ]));
+        },
+        async classify(candidate) {
+          if (candidate.number === 4230) return classification();
+          throw semanticGroundingTerminalError(
+            candidate.number,
+            candidate.number === 4232
+              ? 'attempt_budget_exhausted'
+              : 'deterministic_semantic_rejection',
+          );
+        },
+      },
+    });
+
+    assert.deepEqual(result.classifiedIssueNumbers, [4230]);
+    assert.deepEqual(result.reconciledIssueNumbers, [4230]);
+    assert.deepEqual(
+      result.classificationFailures.map((failure) => failure.issueNumber),
+      [4231, 4232],
+    );
+    assert.ok(dbModule.getClassification(4230));
+    assert.equal(dbModule.getClassification(4231), undefined);
+    assert.equal(dbModule.getClassification(4232), undefined);
+    assert.equal(
+      (db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM issue_comment_snapshots
+        WHERE issue_number IN (4230, 4231, 4232)
+      `).get() as { count: number }).count,
+      1,
+    );
   });
 
   it('rejects a raw classifier result that omits its accepted terminal receipt', async () => {
@@ -4935,6 +5017,104 @@ function reconciliationDependencies(input: {
     },
     classify: input.classify,
   };
+}
+
+function semanticGroundingTerminalError(
+  issueNumber: number,
+  reason:
+    | 'deterministic_semantic_rejection'
+    | 'attempt_budget_exhausted' = 'deterministic_semantic_rejection',
+): ClassifierAttemptLedgerTerminalError {
+  const requestHash = createHash('sha256')
+    .update(`semantic-grounding-request-${issueNumber}`)
+    .digest('hex');
+  const run = createClassifierAttemptRun({
+    runId: `semantic-grounding-run-${issueNumber}`,
+    issueNumber,
+    startedAt: '2026-07-04T00:00:00.000Z',
+    maxAttempts: 1,
+    classifierIdentityHash: 'c'.repeat(64),
+    requestHash,
+  });
+  const rawModelOutput = JSON.stringify({
+    sentiment: 'negative',
+    severity: 'medium',
+    scope: 'moderate',
+    functionality: 'core',
+    affected_users: 'unknown',
+    workaroundStatus: 'unknown',
+    duplicateCluster: null,
+    affectsVersion: null,
+    evidence: {
+      sentiment: [],
+      severity: [],
+      scope: [],
+      functionality: [],
+      affected_users: [],
+      workaroundStatus: [],
+      duplicateCluster: [],
+      affectsVersion: [],
+    },
+    rationale: 'Grounding fixture for refresh failure accumulation.',
+  });
+  const responseId = `semantic-grounding-response-${issueNumber}`;
+  const cause = new Error(
+    'classification grounding failed: severity:excerpt_not_field_relevant',
+  );
+  cause.name = 'ClassificationGroundingError';
+  const attempt = appendClassifierAttempt(run, [], {
+    attemptId: `semantic-grounding-attempt-${issueNumber}`,
+    status: 'semantic_rejection',
+    startedAt: '2026-07-04T00:00:00.100Z',
+    finishedAt: '2026-07-04T00:00:00.200Z',
+    rawResponse: captureClassifierRawResponse(JSON.stringify({
+      id: responseId,
+      model: 'classifier-model-1',
+      service_tier: 'standard',
+      choices: [{
+        finish_reason: 'stop',
+        message: {
+          content: rawModelOutput,
+          refusal: null,
+        },
+      }],
+    })),
+    rawModelOutput: captureClassifierRawModelOutput(rawModelOutput),
+    error: captureClassifierError(cause),
+    retry: {
+      decision: 'stop',
+      retryable: reason === 'attempt_budget_exhausted',
+      delayMs: null,
+      reason,
+    },
+    semanticDiagnostics: captureClassifierSemanticDiagnostics([{
+      field: 'severity',
+      code: 'excerpt_not_field_relevant',
+      message: 'cited excerpt does not support severity=medium',
+      citationIndex: 0,
+      sourceId: 'issue:body',
+    }]),
+    provenance: {
+      requestHash,
+      responseId,
+      responseModel: 'classifier-model-1',
+      responseServiceTier: 'standard',
+    },
+  });
+  const receipt = createClassifierAttemptTerminalReceipt(run, [attempt], {
+    receiptId: `semantic-grounding-receipt-${issueNumber}`,
+    status: 'terminal_failure',
+    reason,
+    finishedAt: '2026-07-04T00:00:00.300Z',
+    error: attempt.error,
+  });
+  const ledger = createClassifierAttemptLedger(run, [attempt], receipt);
+  return new ClassifierAttemptLedgerTerminalError(
+    cause.message,
+    'terminal_failure',
+    ledger,
+    cause,
+  );
 }
 
 function closureRunContext(

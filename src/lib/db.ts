@@ -6925,6 +6925,28 @@ UPDATE releases SET final_score=:final_score,
   scored_at=:scored_at
 WHERE tag=:tag
 `);
+const releaseScoreTargetStmt = db.prepare(`
+SELECT tag, prerelease, catalog_active
+FROM releases
+WHERE tag=?
+`);
+
+function assertActiveStableReleaseScoreTarget(tag: string): void {
+  const release = releaseScoreTargetStmt.get(tag) as {
+    tag: string;
+    prerelease: number;
+    catalog_active: number;
+  } | undefined;
+  if (!release) {
+    throw new Error(`Cannot persist score for missing release ${tag}`);
+  }
+  if (release.catalog_active !== 1) {
+    throw new Error(`Cannot persist score for inactive release ${tag}`);
+  }
+  if (release.prerelease !== 0) {
+    throw new Error(`Cannot persist score for prerelease ${tag}`);
+  }
+}
 
 export function updateReleaseScore(args: {
   tag: string;
@@ -6939,6 +6961,7 @@ export function updateReleaseScore(args: {
   opened_serious_during_reign: number;
   scored_at?: string;
 }): void {
+  assertActiveStableReleaseScoreTarget(args.tag);
   updateScoreStmt.run({ ...args, scored_at: args.scored_at ?? new Date().toISOString() });
 }
 
@@ -7037,6 +7060,7 @@ export function upsertReleaseScoreAudit(input: ReleaseScoreAuditInput): void {
   if (!upsertReleaseScoreAuditStmt) {
     throw new Error('Release score audit storage is unavailable or read-only');
   }
+  assertActiveStableReleaseScoreTarget(input.release_tag);
   upsertReleaseScoreAuditStmt.run({
     ...input,
     source_identity_json: input.source_identity_json ?? null,

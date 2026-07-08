@@ -446,6 +446,13 @@ describe('release score explanations', () => {
     const canonicalLatest =
       scoring.__releaseScoringTest.canonicalLatestStableRelease(activeCatalog);
 
+    assert.throws(
+      () => scoring.__releaseScoringTest.bindSuppliedScoreReleases(
+        [{ ...beta }],
+        activeCatalog,
+      ),
+      /v2026\.6\.12-beta\.1: release is not an active stable release/,
+    );
     assert.deepEqual(reordered.map((release: any) => release.tag), [
       latest.tag,
       older.tag,

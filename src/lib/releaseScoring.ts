@@ -599,7 +599,7 @@ function buildReleaseScoreRunSnapshot(options: ReleaseScoreRunOptions): ReleaseS
   const activeTagWindow = {
     allFetchedTags: activeCatalog.map((release) => release.tag),
     stableTagsNewestFirst: activeCatalog
-      .filter((release) => release.prerelease !== 1)
+      .filter((release) => release.prerelease === 0)
       .map((release) => release.tag),
   };
   const canonicalLatestStable = canonicalLatestStableRelease(activeCatalog);
@@ -616,7 +616,7 @@ function buildReleaseScoreRunSnapshot(options: ReleaseScoreRunOptions): ReleaseS
   );
   const allFetchedTags = activeTagWindow.allFetchedTags;
   const oldestScoredStableTag = releases
-    .filter((release) => release.prerelease !== 1)
+    .filter((release) => release.prerelease === 0)
     .at(-1)?.tag ?? null;
   const oldestScoredStableIndex = oldestScoredStableTag == null
     ? -1
@@ -772,6 +772,11 @@ function bindSuppliedScoreReleases(
         `Refusing supplied score release ${tag}: release is not in the active catalog`,
       );
     }
+    if (canonical.prerelease !== 0) {
+      throw new Error(
+        `Refusing supplied score release ${tag}: release is not an active stable release`,
+      );
+    }
     const mismatchedFields = RELEASE_SCORE_BINDING_FIELDS.filter((field) =>
       !Object.is(supplied[field], canonical[field]));
     if (mismatchedFields.length > 0) {
@@ -787,7 +792,7 @@ function bindSuppliedScoreReleases(
 function canonicalLatestStableRelease(
   activeCatalog: ReleaseRow[],
 ): ReleaseRow | null {
-  return activeCatalog.find((release) => release.prerelease !== 1) ?? null;
+  return activeCatalog.find((release) => release.prerelease === 0) ?? null;
 }
 
 function isCanonicalLatestStableRelease(
@@ -805,7 +810,7 @@ function validateSuppliedStableCatalog(
   suppliedStableTagsNewestFirst: string[] | undefined,
 ): void {
   if (!Array.isArray(suppliedStableTagsNewestFirst)) return;
-  for (const release of releases.filter((candidate) => candidate.prerelease !== 1)) {
+  for (const release of releases.filter((candidate) => candidate.prerelease === 0)) {
     const activeIndex = activeStableTagsNewestFirst.indexOf(release.tag);
     const suppliedIndex = suppliedStableTagsNewestFirst.indexOf(release.tag);
     const activePredecessor = activeIndex >= 0
@@ -848,7 +853,7 @@ function deriveReleasePredecessors(
     problems.push('stableTagsNewestFirst must contain unique non-empty tags');
   }
   const scoredStableTags = releases
-    .filter((release) => release.prerelease !== 1)
+    .filter((release) => release.prerelease === 0)
     .map((release) => release.tag);
   const oldestScoredStableTag = scoredStableTags.at(-1) ?? null;
   const predecessorByReleaseTag: Record<string, string | null> = {};
@@ -2993,7 +2998,7 @@ function assertReleaseScoreRunPersistable(run: ReleaseScoreRun): void {
     Number(result.input.classifiedIssueCount ?? 0) !== Number(result.input.rawIssueCount ?? 0));
   const failures: string[] = [];
   const activeStableTagsNewestFirst = listActiveReleaseCatalogDb()
-    .filter((release) => release.prerelease !== 1)
+    .filter((release) => release.prerelease === 0)
     .map((release) => release.tag);
   const classifierKnownTags = run.scored.map((result) => result.rel.tag);
   const currentClassifierIdentity = classifierSourceIdentity(

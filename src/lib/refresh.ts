@@ -44,6 +44,9 @@ import {
   PROMPT_VERSION,
 } from './llm';
 import {
+  CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES,
+} from './classifierAttemptLedger';
+import {
   computeAggregateBreaking,
   computeBetaCount,
   computeHoursToNextRelease,
@@ -1130,6 +1133,35 @@ function cooperativeClassifierAbort(error: unknown): Error | null {
   return null;
 }
 
+const ACCUMULABLE_CLASSIFIER_GROUNDING_DIAGNOSTIC_CODES = new Set<string>(
+  CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES,
+);
+
+function accumulableClassifierGroundingFailure(error: unknown): boolean {
+  if (
+    !(error instanceof ClassifierAttemptLedgerTerminalError) ||
+    error.terminalStatus !== 'terminal_failure'
+  ) {
+    return false;
+  }
+  const lastAttempt = error.ledger.attempts.at(-1);
+  if (
+    lastAttempt?.status !== 'semantic_rejection' ||
+    lastAttempt.semanticDiagnostics.length === 0
+  ) {
+    return false;
+  }
+  if (
+    error.ledger.receipt.reason !== 'deterministic_semantic_rejection' &&
+    error.ledger.receipt.reason !== 'attempt_budget_exhausted'
+  ) {
+    return false;
+  }
+  return lastAttempt.semanticDiagnostics.every((diagnostic) =>
+    ACCUMULABLE_CLASSIFIER_GROUNDING_DIAGNOSTIC_CODES.has(diagnostic.code)
+  );
+}
+
 function stagedIssueClassification(
   result: RefreshClassifierResult,
 ): StagedIssueClassification {
@@ -1584,6 +1616,7 @@ export async function reconcileIssueCommentSnapshots(args: {
   releaseTags: string[];
   snapshotsByIssue?: Map<number, GhIssueCommentSnapshot>;
   classifyIssueNumbers?: number[];
+  accumulateGroundingFailures?: boolean;
   classificationConcurrency?: number;
   snapshotAt?: string;
   maxAttempts?: number;
@@ -1599,6 +1632,11 @@ export async function reconcileIssueCommentSnapshots(args: {
   stateEvidenceByIssue: Map<number, GhIssueFixEvidence>;
   reconciledIssueNumbers: number[];
   classifiedIssueNumbers: number[];
+  classificationFailures: Array<{
+    issueNumber: number;
+    issue: GhIssue;
+    error: unknown;
+  }>;
 }> {
   const requested = [...new Set(args.issueNumbers)].filter((number) => Number.isInteger(number) && number > 0);
   const expectedRevisions = args.expectedRevisions ?? issueEvidenceRevisions(requested);
@@ -1667,6 +1705,11 @@ export async function reconcileIssueCommentSnapshots(args: {
   const classificationNumbers = [...evidence.keys()]
     .filter((issueNumber) => classificationTargets.has(issueNumber));
   const classifications = new Map<number, StagedIssueClassification>();
+  const classificationFailures = new Map<number, {
+    issueNumber: number;
+    issue: GhIssue;
+    error: unknown;
+  }>();
   const classificationConcurrency = args.classificationConcurrency ?? CLASSIFY_CONCURRENCY;
   if (!Number.isInteger(classificationConcurrency) || classificationConcurrency <= 0) {
     throw new Error(
@@ -1693,6 +1736,17 @@ export async function reconcileIssueCommentSnapshots(args: {
         } catch (error) {
           const abortError = cooperativeClassifierAbort(error);
           if (abortError) throw abortError;
+          if (
+            args.accumulateGroundingFailures &&
+            accumulableClassifierGroundingFailure(error)
+          ) {
+            classificationFailures.set(issueNumber, {
+              issueNumber,
+              issue: item.issue,
+              error,
+            });
+            return;
+          }
           throw new Error(
             `Failed to classify reconciled issue #${issueNumber}: ` +
             `${error instanceof Error ? error.message : String(error)}`,
@@ -1744,6 +1798,7 @@ export async function reconcileIssueCommentSnapshots(args: {
   }
   if (classificationFailure) throw classificationFailure;
 
+  const persistableIssueNumberSet = new Set(persistableIssueNumbers);
   return {
     snapshotsByIssue: snapshots,
     issuesByNumber: new Map([...evidence].map(([issueNumber, item]) => [issueNumber, item.issue])),
@@ -1759,8 +1814,12 @@ export async function reconcileIssueCommentSnapshots(args: {
     reconciledIssueNumbers: [...new Set([
       ...persistedMismatches,
       ...stateSnapshotMismatches,
-    ])].sort((a, b) => a - b),
-    classifiedIssueNumbers: classificationNumbers,
+    ])]
+      .filter((issueNumber) => persistableIssueNumberSet.has(issueNumber))
+      .sort((a, b) => a - b),
+    classifiedIssueNumbers: [...classifications.keys()].sort((a, b) => a - b),
+    classificationFailures: [...classificationFailures.values()]
+      .sort((left, right) => left.issueNumber - right.issueNumber),
   };
 }
 
@@ -1791,6 +1850,7 @@ async function reconcileIssueCommentSnapshotChunks(
     stateEvidenceByIssue: new Map(),
     reconciledIssueNumbers: [],
     classifiedIssueNumbers: [],
+    classificationFailures: [],
   };
   const reconciled = new Set<number>();
   const classified = new Set<number>();
@@ -1830,6 +1890,7 @@ async function reconcileIssueCommentSnapshotChunks(
     for (const [key, value] of result.stateEvidenceByIssue) aggregate.stateEvidenceByIssue.set(key, value);
     for (const issueNumber of result.reconciledIssueNumbers) reconciled.add(issueNumber);
     for (const issueNumber of result.classifiedIssueNumbers) classified.add(issueNumber);
+    aggregate.classificationFailures.push(...result.classificationFailures);
     args.onChunk?.({
       completed: Math.min(offset + chunk.length, issueNumbers.length),
       total: issueNumbers.length,
@@ -4956,6 +5017,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
           const reconciliation = await reconcileIssueCommentSnapshots({
             issueNumbers: metadataMismatchNumbers,
             classifyIssueNumbers: metadataMismatchNumbers,
+            accumulateGroundingFailures: true,
             releaseTags: tags,
             snapshotsByIssue,
             classificationConcurrency: CLASSIFY_CONCURRENCY,
@@ -4968,26 +5030,52 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
               return revision ? [[issueNumber, revision] as const] : [];
             })),
           });
+          const failedReconciliationIssueNumbers = new Set(
+            reconciliation.classificationFailures.map(
+              (failure) => failure.issueNumber,
+            ),
+          );
+          for (const failure of reconciliation.classificationFailures) {
+            const message = recordIssueClassificationFailure({
+              issue: failure.issue,
+              error: failure.error,
+              pageContext: pageEvidenceContext,
+              recordFailure: recordEvidenceRefreshFailure,
+            });
+            classificationFailures.push(message);
+            console.error(message);
+          }
           for (const [issueNumber, snapshot] of reconciliation.snapshotsByIssue) {
+            if (failedReconciliationIssueNumbers.has(issueNumber)) continue;
             snapshotsByIssue.set(issueNumber, snapshot);
           }
           for (const [issueNumber, events] of reconciliation.labelEventsByIssue) {
+            if (failedReconciliationIssueNumbers.has(issueNumber)) continue;
             labelEventsByIssue.set(issueNumber, events);
           }
           for (
             const [issueNumber, labelEvidence]
             of reconciliation.labelEvidenceSnapshotsByIssue
           ) {
+            if (failedReconciliationIssueNumbers.has(issueNumber)) continue;
             labelEvidenceSnapshotsByIssue.set(issueNumber, labelEvidence);
           }
           for (const [issueNumber, evidence] of reconciliation.stateEvidenceByIssue) {
+            if (failedReconciliationIssueNumbers.has(issueNumber)) continue;
             stateEvidenceByIssue.set(issueNumber, evidence);
           }
-          effectivePage = effectivePage.map((issue) =>
-            reconciliation.issuesByNumber.get(issue.number) ?? issue
-          );
+          effectivePage = effectivePage
+            .filter((issue) =>
+              !failedReconciliationIssueNumbers.has(issue.number)
+            )
+            .map((issue) =>
+              reconciliation.issuesByNumber.get(issue.number) ?? issue
+            );
           classifiedCount += reconciliation.classifiedIssueNumbers.length;
-          for (const [issueNumber, revision] of issueEvidenceRevisions(metadataMismatchNumbers)) {
+          for (
+            const [issueNumber, revision]
+            of issueEvidenceRevisions(reconciliation.reconciledIssueNumbers)
+          ) {
             pageExpectedRevisions.set(issueNumber, revision);
           }
           allUnchanged = false;
@@ -5173,6 +5261,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
               const abortError = cooperativeClassifierAbort(error);
               if (abortError) throw abortError;
               classificationWorkerFailures.push({ issue, error });
+              if (accumulableClassifierGroundingFailure(error)) return;
               throw new Error(
                 `Issue #${issue.number} classification failed: ` +
                 `${error instanceof Error ? error.message : String(error)}`,
@@ -5188,6 +5277,9 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         finishClassificationTiming();
       }
       throwIfAborted(signal);
+      classificationWorkerFailures.sort(
+        (left, right) => left.issue.number - right.issue.number,
+      );
       for (const failure of classificationWorkerFailures) {
         const message = recordIssueClassificationFailure({
           issue: failure.issue,
@@ -6654,6 +6746,7 @@ export const __refreshTest = {
   ISSUE_CRAWL_SCHEMA_VERSION,
   ISSUE_PAGINATION_SCHEMA_VERSION,
   mapWithConcurrency,
+  accumulableClassifierGroundingFailure,
   recordIssueClassificationFailure,
   REFRESH_LEASE_NAME,
   REFRESH_LEASE_HEARTBEAT_MS,
