@@ -4010,6 +4010,33 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'integration');
   });
 
+  it('accepts issue #37584 explicit heavyweight workaround evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?heavyweight-workaround=${Date.now()}`
+    );
+    const workaroundEvidence =
+      'Two gateway instances with separate configs \u2014 works but heavyweight for just an API key difference';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${workaroundEvidence}.`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.workaroundStatus = 'partial';
+    raw.evidence.workaroundStatus = [{
+      source_id: 'issue:body',
+      excerpt: workaroundEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.workaroundStatus, 'partial');
+    assert.equal(accepted.hasWorkaround, true);
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
