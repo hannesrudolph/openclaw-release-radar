@@ -3934,6 +3934,31 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'core');
   });
 
+  it('accepts issue #21207 explicit broader product scope evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?broader-product-scope=${Date.now()}`
+    );
+    const scopeEvidence = 'broader product/API request';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${scopeEvidence}.`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.scope = 'broad';
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.scope, 'broad');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
