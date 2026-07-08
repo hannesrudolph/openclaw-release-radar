@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 19;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 20;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2607,6 +2607,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         negative: [
           '\\b(?:bugs?|problems?|broken|breaks?|broke|fail(?:s|ed|ing|ures?)?|errors?|crash(?:es|ed|ing)?|regression|outage|hang(?:s|ing)?|timeout|incorrect|wrong|missing|unusable|blocked|loss|lost|unable|cannot|exit(?:s|ed|ing)?|stops?|reject(?:s|ed|ing)?|denied|leak(?:s|ed|ing|ages?)?|frustrat(?:e|es|ed|ing|ion|ions))\\b',
           '\\b(?:does not|doesn.t|did not|will not|won.t|not)\\s+(?:work|start|open|load|send|receive|connect)\\b',
+          '(?:\\u65e0\\u6cd5|\\u4e0d\\u751f\\u6548|\\u53ea\\u8fd4\\u56de|\\u4e0d\\u5b8c\\u6574|\\u5931\\u8d25)',
         ],
         positive: [
           '\\b(?:positive|works?|working|fixed|resolved|successful|success|great|excellent|thanks?|appreciate|love|helpful|improved|ok|okay)\\b',
@@ -2630,6 +2631,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         medium: [
           '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
           '\\b(?:raw\\s+)?binary\\s+garbage\\b',
+          '(?:\\u65e0\\u6cd5\\u83b7\\u53d6\\u5b8c\\u6574|\\u53ea\\u8fd4\\u56de(?:\\u524d)?\\s*\\d+\\s*\\u6761\\u8bb0\\u5f55)',
         ],
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
@@ -2652,6 +2654,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix)\\b',
           '\\b(?:webui|control ui)\\b',
           '\\b(?:audio files?|read tool)\\b',
+          '(?:\\u98de\\u4e66\\u63d2\\u4ef6|feishu_wiki|@openclaw/feishu)',
           '\\b(?:tool calls?|sub-?agents?|exec)\\b',
           '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
           '\\b(?:additional|multiple)\\s+(?:configuration|config|state)\\s+layers\\b',
@@ -2676,6 +2679,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:(?:tray|menu bar|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\s+)?(?:integration|channel|plugin|extension|ui|tui|webchat|webhook)\\b',
           '\\b(?:webui|control ui)\\b',
           '\\b(?:discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\b',
+          '(?:\\u98de\\u4e66\\u63d2\\u4ef6|feishu_wiki|@openclaw/feishu)',
           '\\b(?:language|locale)\\s+(?:selector|picker|ids?|identifiers?)\\b',
         ],
         provider: [

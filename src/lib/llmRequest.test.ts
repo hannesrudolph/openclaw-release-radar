@@ -3959,6 +3959,57 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'broad');
   });
 
+  it('accepts issue #37626 Chinese Feishu pagination evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?feishu-pagination=${Date.now()}`
+    );
+    const sentimentEvidence =
+      '\u5206\u9875\u4e0d\u751f\u6548\uff0c\u53ea\u8fd4\u56de\u524d20\u6761\u8bb0\u5f55';
+    const severityEvidence =
+      '\u98de\u4e66 API \u9ed8\u8ba4\u53ea\u8fd4\u56de\u524d 20 \u6761\u8bb0\u5f55';
+    const scopeEvidence = '\u98de\u4e66\u63d2\u4ef6';
+    const functionalityEvidence = '`feishu_wiki` \u5de5\u5177';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${sentimentEvidence}. ${severityEvidence}. ` +
+          `${scopeEvidence}. ${functionalityEvidence}.`,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'negative';
+    raw.severity = 'medium';
+    raw.scope = 'moderate';
+    raw.functionality = 'integration';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: sentimentEvidence,
+    }];
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: severityEvidence,
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: functionalityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'negative');
+    assert.equal(accepted.severity, 'medium');
+    assert.equal(accepted.scope, 'moderate');
+    assert.equal(accepted.functionality, 'integration');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
