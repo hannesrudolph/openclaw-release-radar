@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 11;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 12;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2628,7 +2628,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:broken|fail(?:s|ed|ing|ure)?|crash(?:es|ed|ing)?|exit(?:s|ed|ing)?|stops?)\\b.{0,60}\\b(?:install(?:er|ation)?|update|gateway|startup|boot|cli|chat|session|auth(?:entication)?|login|exec|doctor)\\b',
         ],
         medium: [
-          '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|regressions?|cosmetic)\\b',
+          '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
         ],
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
@@ -2655,6 +2655,8 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:specific|single|custom)\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface|flag|combination)\\b',
           '\\bone\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface)\\b',
           '\\b(?:proxy|hardware)\\s+(?:setup|configuration|environment|deployment|combination|issue|failure)\\b',
+          '\\b(?:multiple|several)\\s+(?:openclaw\\s+)?instances\\b',
+          '\\b(?:high-load|high load|high-concurrency|high concurrency)\\s+(?:scenario|scenarios|system|systems|deployment|deployments|environment|environments)\\b',
           '\\bscope\\s*:\\s*[^\\r\\n]{0,96}\\b(?:i18n|l10n|internationali[sz]ation|locali[sz]ation|locale|language)\\b[^\\r\\n]{0,64}\\b(?:system|subsystem|layer|module|component|path|flow|mode|locale|language)?\\s*only\\b(?=\\s*(?:[,.;:!?)]|$))',
         ],
       },
