@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 23;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 24;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2637,6 +2637,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
           '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
           '\\bwould be (?:great|useful|helpful) to (?:add|expose|support|provide)\\b',
+          '\\b(?:package|packaging|archives?|bundles?|artifacts?).{0,80}\\b(?:deterministic|non-?deterministic|reproducible|reproducibility)\\b',
           '\\b(?:flaky|tests?|test suite|test harness|fixture|ci|lint|formatter|formatting|typecheck|build-only|developer tooling)\\b',
         ],
       },
@@ -2664,6 +2665,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:specific|single|custom)\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface|flag|combination)\\b',
           '\\bone\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface)\\b',
           '\\b(?:proxy|hardware)\\s+(?:setup|configuration|environment|deployment|combination|issue|failure)\\b',
+          '\\b(?:skill-creator|package_skill\\.py)\\b',
           '\\b(?:multiple|several)\\s+(?:openclaw\\s+)?instances\\b',
           '\\b(?:high-load|high load|high-concurrency|high concurrency)\\s+(?:scenario|scenarios|system|systems|deployment|deployments|environment|environments)\\b',
           '\\bscope\\s*:\\s*[^\\r\\n]{0,96}\\b(?:i18n|l10n|internationali[sz]ation|locali[sz]ation|locale|language)\\b[^\\r\\n]{0,64}\\b(?:system|subsystem|layer|module|component|path|flow|mode|locale|language)?\\s*only\\b(?=\\s*(?:[,.;:!?)]|$))',
@@ -2689,7 +2691,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:test|testing)\\s+(?:infrastructure|suite|runner|harness|fixtures?|coverage)\\b',
           '\\bfixture\\s+harness\\b',
           '\\b(?:unit|integration|end[- ]to[- ]end|e2e|smoke|snapshot|flaky)\\s+tests?\\b',
-          '\\b(?:ci|continuous integration|github actions?)\\s+(?:workflow|job|pipeline|runner)\\b',
+          '\\b(?:ci|continuous integration|github actions?)(?:\\s+and\\s+release)?\\s+(?:workflows?|job|pipeline|runner)\\b',
           '\\bbuild[- ]only\\b',
           '\\bbuild\\s+(?:pipeline|system|scripts?|tooling)\\b',
           '\\b(?:lint(?:er|ing)?|eslint|prettier|type[- ]?check(?:er|ing)?|type checking|developer tooling|dev tooling)\\b',

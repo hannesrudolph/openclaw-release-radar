@@ -3839,6 +3839,56 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'integration');
   });
 
+  it('accepts issue #37748 deterministic skill packaging evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?deterministic-skill-packaging=${Date.now()}`
+    );
+    const issueTitle =
+      'skill-creator: make .skill package file order deterministic';
+    const sentimentEvidence = '## Proposed improvement';
+    const functionalityEvidence =
+      'More predictable packaging behavior for CI and release workflows';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${sentimentEvidence} ${functionalityEvidence}.`,
+        issueTitle,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'neutral';
+    raw.severity = 'low';
+    raw.scope = 'niche';
+    raw.functionality = 'tooling';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: sentimentEvidence,
+    }];
+    raw.evidence.severity = [{
+      source_id: 'issue:title',
+      excerpt: 'make .skill package file order deterministic',
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:title',
+      excerpt: 'skill-creator',
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: 'CI and release workflows',
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'neutral');
+    assert.equal(accepted.severity, 'low');
+    assert.equal(accepted.scope, 'niche');
+    assert.equal(accepted.functionality, 'tooling');
+  });
+
   it('accepts issue #35835 read-tool audio failure evidence', async () => {
     const { __llmTest } = await import(
       `./llm.ts?read-tool-audio=${Date.now()}`
