@@ -1,13 +1,16 @@
+import { createRequire } from 'node:module';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   parseQualityRefreshArgs,
   validateQualityRefreshDatabase,
 } from './lib/quality-refresh-cli.mjs';
-import {
+
+const require = createRequire(import.meta.url);
+const {
   acquireRepositoryDatabaseWriterLock,
   pathsReferToSameFile,
-} from '../src/lib/exclusiveProcessLock.ts';
+} = require('../src/lib/exclusiveProcessLock.ts');
 
 const repositoryRoot = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const { databasePath, resumeExisting } = parseQualityRefreshArgs(

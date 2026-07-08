@@ -9,8 +9,10 @@ import {
   symlinkSync,
   writeFileSync,
 } from 'node:fs';
+import { createRequire } from 'node:module';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   canonicalManualScope,
   exactIngestionFailureMatches,
@@ -443,6 +445,60 @@ describe('manual command failure scopes', () => {
       source,
       /dotenvConfigPath: configuredApplicationEnvironment\.dotenvConfigPath/,
     );
+  });
+
+  it('shares quality-refresh writer-lock ownership with the database module graph', () => {
+    const repositoryRoot =
+      mkdtempSync(join(tmpdir(), 'radar-quality-refresh-lock-module-'));
+    const databasePath = join(repositoryRoot, 'quality.db');
+    const launcherPath = resolve(
+      process.cwd(),
+      'scripts/refresh-quality-db.mjs',
+    );
+    const databaseModulePath = resolve(process.cwd(), 'src/lib/db.ts');
+    const source = readFileSync(launcherPath, 'utf8');
+    const launcherRequire = createRequire(pathToFileURL(launcherPath));
+    const databaseRequire = createRequire(pathToFileURL(databaseModulePath));
+    const launcherLocks = launcherRequire(
+      '../src/lib/exclusiveProcessLock.ts',
+    );
+    const databaseLocks = databaseRequire('./exclusiveProcessLock');
+    let lock;
+    try {
+      assert.match(source, /import \{ createRequire \} from 'node:module'/);
+      assert.match(
+        source,
+        /const require = createRequire\(import\.meta\.url\)/,
+      );
+      assert.match(
+        source,
+        /\} = require\('\.\.\/src\/lib\/exclusiveProcessLock\.ts'\)/,
+      );
+      assert.equal(
+        launcherLocks.acquireRepositoryDatabaseWriterLock,
+        databaseLocks.acquireRepositoryDatabaseWriterLock,
+      );
+      assert.equal(
+        launcherLocks.locallyHeldRepositoryDatabaseWriterLockOwner,
+        databaseLocks.locallyHeldRepositoryDatabaseWriterLockOwner,
+      );
+
+      lock = launcherLocks.acquireRepositoryDatabaseWriterLock({
+        repositoryRoot,
+        label: 'quality refresh module identity test',
+        databasePath,
+        registerExitHandler: false,
+      });
+      assert.deepEqual(
+        databaseLocks.locallyHeldRepositoryDatabaseWriterLockOwner({
+          repositoryRoot,
+        }),
+        lock.owner,
+      );
+    } finally {
+      lock?.release();
+      rmSync(repositoryRoot, { recursive: true, force: true });
+    }
   });
 
   it('canonicalizes release and issue sets independently of input order', () => {
