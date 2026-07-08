@@ -5022,7 +5022,7 @@ function seedDoctorFixture(db: DatabaseSync) {
       release_tag, schema_version, analyzer_version, issue_numbers_json,
       dependency_digest, dependency_row_count, captured_at
     )
-    VALUES ('v2', 2, ${CLOSURE_PROOF_ANALYZER_VERSION}, '[]', ?, 0, '2026-06-02T00:50:00Z')
+    VALUES ('v2', 3, ${CLOSURE_PROOF_ANALYZER_VERSION}, '[]', ?, 0, '2026-06-02T00:50:00Z')
   `).run('0'.repeat(64));
   db.prepare(`
     INSERT INTO advisory_snapshot_history(id, captured_at, row_count, content_hash)

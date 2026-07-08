@@ -5453,7 +5453,7 @@ function seedProductionDoctorDb(db: DatabaseSync, dbPath: string) {
       release_tag, schema_version, analyzer_version, issue_numbers_json,
       dependency_digest, dependency_row_count, captured_at
     )
-    VALUES (?, 2, ?, '[]', ?, 0, ?)
+    VALUES (?, 3, ?, '[]', ?, 0, ?)
   `);
   for (const tag of ['v1', 'v2']) {
     insertDependencySnapshot.run(
@@ -7240,7 +7240,7 @@ function seedScoreEvidenceSnapshots(
       release_tag, schema_version, analyzer_version, issue_numbers_json,
       dependency_digest, dependency_row_count, captured_at
     )
-    VALUES (?, 2, ?, ?, ?, 1, '2026-07-03T01:02:00Z')
+    VALUES (?, 3, ?, ?, ?, 1, '2026-07-03T01:02:00Z')
   `).run(
     releaseTag,
     CLOSURE_PROOF_ANALYZER_VERSION,

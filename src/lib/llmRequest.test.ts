@@ -2202,33 +2202,43 @@ describe('OpenAI classification request', () => {
         assert.ok(feedbackJson);
         return JSON.parse(feedbackJson);
       });
-      assert.equal(feedbackPayloads[0].schema_version, 3);
+      assert.equal(feedbackPayloads[0].schema_version, 4);
       assert.equal(feedbackPayloads[0].repeated_output_count, 0);
       assert.equal(feedbackPayloads[1].repeated_output_count, 1);
       assert.equal(feedbackPayloads[2].repeated_output_count, 0);
       assert.deepEqual(
         feedbackPayloads.map((payload) => ({
           field: payload.correction_requirements[0].field,
-          diagnosticCode: payload.correction_requirements[0].diagnostic_code,
+          status: payload.correction_requirements[0].status,
+          lastUpdatedRetryOrdinal:
+            payload.correction_requirements[0].last_updated_retry_ordinal,
+          diagnosticCodes:
+            payload.correction_requirements[0].diagnostic_codes,
           rejectedValue: payload.correction_requirements[0].rejected_value,
           repeated: payload.correction_requirements[0].repeated_unchanged_output,
         })),
         [
           {
             field: 'scope',
-            diagnosticCode: 'excerpt_not_field_relevant',
+            status: 'current',
+            lastUpdatedRetryOrdinal: 1,
+            diagnosticCodes: ['excerpt_not_field_relevant'],
             rejectedValue: 'broad',
             repeated: false,
           },
           {
             field: 'scope',
-            diagnosticCode: 'excerpt_not_field_relevant',
+            status: 'current',
+            lastUpdatedRetryOrdinal: 2,
+            diagnosticCodes: ['excerpt_not_field_relevant'],
             rejectedValue: 'broad',
             repeated: true,
           },
           {
             field: 'scope',
-            diagnosticCode: 'excerpt_not_field_relevant',
+            status: 'current',
+            lastUpdatedRetryOrdinal: 3,
+            diagnosticCodes: ['excerpt_not_field_relevant'],
             rejectedValue: 'niche',
             repeated: false,
           },
@@ -2268,6 +2278,268 @@ describe('OpenAI classification request', () => {
       assert.equal(
         result.ledger.attempts[2].rawModelOutput?.text,
         JSON.stringify(unsupportedNiche),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('retains active semantic corrections across fields and replaces same-field requirements', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 4;
+    const irrelevantScopeEvidence = 'Reference ticket metadata';
+    const unsupportedBroad = groundedOutput({ scope: 'broad' });
+    const unsupportedCritical = groundedOutput({ severity: 'critical' });
+    const regressedScope = groundedOutput({
+      evidence: {
+        ...(groundedOutput().evidence as Record<string, unknown>),
+        scope: [{
+          source_id: 'issue:body',
+          excerpt: irrelevantScopeEvidence,
+        }],
+      },
+    });
+    const corrected = groundedOutput();
+    const outputs = [
+      unsupportedBroad,
+      unsupportedCritical,
+      regressedScope,
+      corrected,
+    ];
+    const requestBodies: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
+      return new Response(JSON.stringify({
+        id: `chatcmpl-active-corrections-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(output) },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?active-semantic-corrections=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        groundingIssue(
+          `${DEFAULT_GROUNDING_BODY} ${irrelevantScopeEvidence}.`,
+        ) as any,
+        [],
+        [],
+      );
+      assert.equal(attempts, 4);
+      assert.equal(result.classification.severity, 'high');
+      assert.equal(result.classification.scope, 'moderate');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        [
+          'semantic_rejection',
+          'semantic_rejection',
+          'semantic_rejection',
+          'accepted_success',
+        ],
+      );
+      assert.deepEqual(
+        result.ledger.attempts.slice(0, 3).map((attempt) =>
+          attempt.semanticDiagnostics.map((diagnostic) => [
+            diagnostic.field,
+            diagnostic.code,
+          ])),
+        [
+          [['scope', 'excerpt_not_field_relevant']],
+          [['severity', 'excerpt_not_field_relevant']],
+          [['scope', 'excerpt_not_field_relevant']],
+        ],
+      );
+
+      const parsedBodies = requestBodies.map((body) => JSON.parse(body));
+      assert.deepEqual(
+        parsedBodies.map((body) => ({
+          severity:
+            body.response_format.json_schema.schema.properties.severity.enum,
+          scope: body.response_format.json_schema.schema.properties.scope.enum,
+        })),
+        [
+          {
+            severity: ['critical', 'high', 'medium', 'low'],
+            scope: ['broad', 'moderate', 'niche'],
+          },
+          {
+            severity: ['critical', 'high', 'medium', 'low'],
+            scope: ['moderate'],
+          },
+          { severity: ['high', 'medium'], scope: ['moderate'] },
+          { severity: ['high', 'medium'], scope: ['moderate'] },
+        ],
+      );
+      const feedbackPayloads = parsedBodies.slice(1).map((body) => {
+        const feedbackText = body.messages[2].content as string;
+        const feedbackJson = feedbackText
+          .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+          ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+        assert.ok(feedbackJson);
+        return JSON.parse(feedbackJson);
+      });
+      assert.deepEqual(
+        feedbackPayloads.map((payload) =>
+          payload.correction_requirements.map((requirement: any) => ({
+            field: requirement.field,
+            status: requirement.status,
+            lastUpdatedRetryOrdinal: requirement.last_updated_retry_ordinal,
+            diagnosticCodes: requirement.diagnostic_codes,
+            rejectedValue: requirement.rejected_value,
+          }))),
+        [
+          [{
+            field: 'scope',
+            status: 'current',
+            lastUpdatedRetryOrdinal: 1,
+            diagnosticCodes: ['excerpt_not_field_relevant'],
+            rejectedValue: 'broad',
+          }],
+          [
+            {
+              field: 'severity',
+              status: 'current',
+              lastUpdatedRetryOrdinal: 2,
+              diagnosticCodes: ['excerpt_not_field_relevant'],
+              rejectedValue: 'critical',
+            },
+            {
+              field: 'scope',
+              status: 'carried',
+              lastUpdatedRetryOrdinal: 1,
+              diagnosticCodes: ['excerpt_not_field_relevant'],
+              rejectedValue: 'broad',
+            },
+          ],
+          [
+            {
+              field: 'severity',
+              status: 'carried',
+              lastUpdatedRetryOrdinal: 2,
+              diagnosticCodes: ['excerpt_not_field_relevant'],
+              rejectedValue: 'critical',
+            },
+            {
+              field: 'scope',
+              status: 'current',
+              lastUpdatedRetryOrdinal: 3,
+              diagnosticCodes: ['excerpt_not_field_relevant'],
+              rejectedValue: 'moderate',
+            },
+          ],
+        ],
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('tracks repeated optional-field failures independently of unrelated output changes', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 4;
+    const unsupportedWorkaround = 'Perfect discipline is required.';
+    const partialWithUnsupportedEvidence = groundedOutput({
+      workaroundStatus: 'partial',
+      evidence: {
+        ...(groundedOutput().evidence as Record<string, unknown>),
+        workaroundStatus: [{
+          source_id: 'issue:body',
+          excerpt: unsupportedWorkaround,
+        }],
+      },
+    });
+    const unrelatedSeverityFailure = groundedOutput({ severity: 'critical' });
+    const outputs = [
+      partialWithUnsupportedEvidence,
+      unrelatedSeverityFailure,
+      partialWithUnsupportedEvidence,
+      groundedOutput(),
+    ];
+    const requestBodies: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
+      return new Response(JSON.stringify({
+        id: `chatcmpl-field-repetition-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(output) },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?field-specific-repetition=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        groundingIssue(
+          `${DEFAULT_GROUNDING_BODY} ${unsupportedWorkaround}`,
+        ) as any,
+        [],
+        [],
+      );
+      assert.equal(result.classification.workaroundStatus, 'unknown');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        [
+          'semantic_rejection',
+          'semantic_rejection',
+          'semantic_rejection',
+          'accepted_success',
+        ],
+      );
+      const feedbackPayloads = requestBodies.slice(1).map((requestBody) => {
+        const feedbackText = JSON.parse(requestBody).messages[2].content as string;
+        const feedbackJson = feedbackText
+          .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+          ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+        assert.ok(feedbackJson);
+        return JSON.parse(feedbackJson);
+      });
+      const finalRequirements = new Map(
+        feedbackPayloads[2].correction_requirements.map(
+          (requirement: any) => [requirement.field, requirement],
+        ),
+      );
+      assert.deepEqual(
+        feedbackPayloads[1].correction_requirements.map(
+          (requirement: any) => [requirement.field, requirement.status],
+        ),
+        [
+          ['severity', 'current'],
+          ['workaroundStatus', 'carried'],
+        ],
+      );
+      assert.equal(
+        (finalRequirements.get('severity') as any).status,
+        'carried',
+      );
+      assert.equal(
+        (finalRequirements.get('workaroundStatus') as any)
+          .repeated_unchanged_output,
+        true,
+      );
+      assert.match(
+        (finalRequirements.get('workaroundStatus') as any).required_action,
+        /must now use different supporting evidence or a different supported value/,
       );
     } finally {
       globalThis.fetch = previousFetch;
@@ -3699,6 +3971,42 @@ describe('LLM source grounding', () => {
           return true;
         },
       );
+    }
+  });
+
+  it('accepts issue #25592 integration evidence for singular and plural messaging channels', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?issue-25592-messaging-channels=${Date.now()}`
+    );
+    for (const excerpt of [
+      'Text between tool calls leaks to a messaging channel.',
+      'Text between tool calls leaks to messaging channels.',
+    ]) {
+      const prompt = __llmTest.buildClassifierPromptInput(
+        {
+          ...groundingIssue(`${body} ${excerpt}`),
+          number: 25592,
+        } as any,
+        [],
+        ['v2026.7.4'],
+      );
+      const raw = structuredClone(fullyGroundedOutput()) as any;
+      raw.functionality = 'integration';
+      raw.evidence.functionality = [{
+        source_id: 'issue:body',
+        excerpt,
+      }];
+      const accepted = __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      );
+      assert.equal(accepted.functionality, 'integration', excerpt);
+      assert.deepEqual(accepted.evidence?.functionality, [{
+        sourceId: 'issue:body',
+        excerpt,
+      }]);
     }
   });
 
