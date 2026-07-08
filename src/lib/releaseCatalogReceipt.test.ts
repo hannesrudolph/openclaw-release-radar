@@ -439,6 +439,57 @@ describe('release catalog capture receipt ledger', () => {
     }
   });
 
+  it('accepts canonical boolean or SQLite prerelease states only', () => {
+    for (const [prerelease, expected] of [
+      [false, 0],
+      [true, 1],
+      [0, 0],
+      [1, 1],
+    ] as const) {
+      const projection = projectReleaseCatalogActiveRows([{
+        ...RELEASE_V2_BETA,
+        catalog_rank: 0,
+        prerelease,
+      }]);
+      assert.equal(projection.prereleaseCount, expected);
+      assert.equal(projection.stableCount, expected === 0 ? 1 : 0);
+    }
+
+    for (const prerelease of ['false', '', null, {}, -1, 2]) {
+      assert.throws(
+        () => projectReleaseCatalogActiveRows([{
+          ...RELEASE_V2_BETA,
+          catalog_rank: 0,
+          prerelease,
+        }]),
+        /invalid prerelease state/,
+        String(prerelease),
+      );
+    }
+  });
+
+  it('does not derive a base stable tag from a prerelease name', () => {
+    const projection = projectReleaseCatalogActiveRows([
+      {
+        ...RELEASE_V2_BETA,
+        catalog_rank: 0,
+        name: 'OpenClaw v2.0.0',
+      },
+      {
+        ...RELEASE_V1,
+        catalog_rank: 1,
+      },
+    ]);
+
+    assert.deepEqual(projection.tags, [
+      'v2.0.0-beta.1',
+      'v1.0.0',
+    ]);
+    assert.equal(projection.prereleaseCount, 1);
+    assert.equal(projection.stableCount, 1);
+    assert.equal(projection.latestStable?.tag, 'v1.0.0');
+  });
+
   it('rejects beta tag and name normalization as a stable active projection', () => {
     const fixture = githubFixture({
       activeCatalog: BETA_CATALOG,

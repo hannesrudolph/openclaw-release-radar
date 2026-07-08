@@ -96,7 +96,7 @@ export OC_OPENAI_API_KEY=sk-your_openai_key
 
 The app also accepts the conventional names `GITHUB_TOKEN` and `OPENAI_API_KEY` if you prefer those.
 
-Classification requests use `gpt-5.5` and explicitly send `reasoning_effort: "medium"` and `service_tier: "priority"` by default. OpenAI calls the fast API processing tier `priority`; override these settings only if you intentionally want a different model, latency, or reasoning tradeoff. Transient retries use bounded jitter and honor longer `Retry-After` deadlines. The response model must match exactly, except that an unversioned request may resolve to the same model plus a `-YYYY-MM-DD` suffix. Any other returned model or any returned service-tier mismatch is a hard classification failure; the response is not accepted as evidence, and incomplete classification coverage blocks score persistence.
+Classification requests use `gpt-5.5` and explicitly send `reasoning_effort: "medium"` and `service_tier: "priority"` by default. OpenAI calls the fast API processing tier `priority`; override these settings only if you intentionally want a different model, latency, or reasoning tradeoff. Transport retries use bounded jitter and honor longer `Retry-After` deadlines. Model-correctable citation-grounding failures retry within the same `OPENAI_MAX_ATTEMPTS` budget with bounded deterministic validator feedback; schema, identity, usage, configuration, and duplicate-source failures remain terminal. Every attempt records the hash of its exact serialized request, while the run retains the initial request hash. The response model must match exactly, except that an unversioned request may resolve to the same model plus a `-YYYY-MM-DD` suffix. Any other returned model or any returned service-tier mismatch is a hard classification failure; the response is not accepted as evidence, and incomplete classification coverage blocks score persistence.
 
 Choose an explicit quality database and the exact raw commit SHA that will be deployed. The checkout must represent that SHA; do not use the auto-derived `git:<sha>` or dirty-worktree revision for deployable quality data.
 
@@ -106,13 +106,32 @@ export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
 ```
 
-Build or refresh that quality database. This command writes only the explicit quality DB:
+Build a fresh quality database. The main file and its `-wal`, `-shm`, and
+`-journal` sidecars must all be absent. This command writes only the explicit
+quality DB:
 
 ```bash
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
   npm run refresh:quality -- --db-path "$QUALITY_DB"
 ```
+
+If the process is interrupted after creating the database, preserve the whole
+SQLite family and resume the same quality DB explicitly:
+
+```bash
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
+  npm run refresh:quality -- --db-path "$QUALITY_DB" --resume-existing
+```
+
+The resume flag is never inferred from existing files or inherited
+environment. Admission runs under the repository writer lock, rejects
+`data/radar.db` and every path/inode alias of its SQLite family, and requires
+the main DB plus any present sidecars to be regular non-symlink files. Use the
+same explicit form for a later intentional refresh of an existing quality DB.
+Do not prefix this command with `DB_PATH`; any inherited `DB_PATH` is treated as
+a configured application database and is protected from quality refresh.
 
 Validate the same DB read-only:
 
@@ -159,15 +178,23 @@ Build a fresh quality database separately from the serving database:
 export QUALITY_DB="$PWD/data/radar-quality.db"
 export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
-rm -f "$QUALITY_DB" "$QUALITY_DB-wal" "$QUALITY_DB-shm"
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+rm -f "$QUALITY_DB" "$QUALITY_DB-wal" "$QUALITY_DB-shm" "$QUALITY_DB-journal"
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
   npm run refresh:quality -- --db-path "$QUALITY_DB"
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
   npm run verify:local
 ```
 
-Every later score-producing refresh of that DB uses the same exhaustive path and must use the same raw deployment SHA for the deployment candidate being evaluated.
+Every later score-producing refresh of that DB uses the same exhaustive path,
+must use the raw deployment SHA for the candidate being evaluated, and must opt
+into the existing database explicitly:
+
+```bash
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
+  npm run refresh:quality -- --db-path "$QUALITY_DB" --resume-existing
+```
 
 Reachability checks maintain a bare Git cache at `.cache/openclaw.git`. `OPENCLAW_REPO_URL` must identify the same repository as `GITHUB_OWNER` / `GITHUB_REPO`. For a private target, configure Git credentials that allow the bare clone and fetches to read that URL. Probe commands keep Git auto-GC and automatic maintenance disabled. Before probing, the app runs bounded explicit `repack` and `prune` maintenance only when `git count-objects` reaches `GIT_CACHE_MAX_PACKS` or `GIT_CACHE_MAX_SIZE_MIB`; `GIT_CACHE_MAINTENANCE_TIMEOUT_MS` bounds each inspection and maintenance command.
 
@@ -481,7 +508,7 @@ DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" npm run analyze:closure-
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" npm run backfill:issue-comment-snapshots -- --all-scored
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" npm run backfill:issue-state-events -- --limit 10
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" npm run backfill:closed-windows -- --all
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" npm run refresh:quality -- --db-path "$QUALITY_DB"
+RADAR_CODE_REVISION="$DEPLOY_SHA" npm run refresh:quality -- --db-path "$QUALITY_DB" --resume-existing
 
 # Read-only validation snapshot; --output writes only the requested JSON file.
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 npm run validation:snapshot
@@ -547,8 +574,11 @@ production release. Any eval, print, stdin, or custom import script that loads
 repository modules must instead use an explicit fresh private `DB_PATH` and an
 empty `DOTENV_CONFIG_PATH`; it must not open the configured live database. Do
 not invoke the refresh pipeline through eval. Use `npm run refresh:quality --
---db-path <path>`; it refuses `data/radar.db`, disables automatic refresh, and
-holds the writer lock for the complete operation. Every
+--db-path <path>` for a fresh SQLite family, or add `--resume-existing` after
+the path to resume an interrupted or intentionally retained quality DB. The
+guard refuses `data/radar.db` and aliases of its complete SQLite family,
+validates fresh/resume admission while holding the writer lock, preserves
+existing sidecars, and disables automatic refresh. Every
 writable database import also holds a per-database initialization lock until
 bootstrap and migration finish, so separate processes cannot interleave schema
 work before the SQLite lease is available.
@@ -598,7 +628,7 @@ export QUALITY_DB="$QUALITY_ROOT/radar.db"
 export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
 
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
   npm run refresh:quality -- --db-path "$QUALITY_DB"
 
@@ -622,8 +652,10 @@ release clusters, and 20 cases in each required outcome class; a freshly
 created database will normally report `insufficient` until those observations
 have accumulated over real future releases.
 
-Build or refresh a separate candidate DB, verify it, and serve it read-only on
-port `8788`:
+Complete every DB-writing candidate step and DB-only evaluation against the
+existing separate candidate DB before starting or restarting its immutable
+read-only reader on port `8788`. Stop any existing candidate reader before the
+first command:
 
 ```bash
 export QUALITY_DB="$PWD/data/radar-quality.db"
@@ -633,15 +665,28 @@ export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
 
 # DB-writing exhaustive refresh of the explicit quality DB.
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
-  npm run refresh:quality -- --db-path "$QUALITY_DB"
+  npm run refresh:quality -- --db-path "$QUALITY_DB" --resume-existing
 
 # Read-only DB validation.
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
   npm run verify:local
 
-# Candidate server. Keep this terminal running for the live checks below.
+# Read-only score verification before recording the evaluation.
+DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
+  npm run verify:score -- --all
+
+# Final candidate DB write: record the evaluation receipt.
+DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+  npm run validation:evaluate -- --record
+
+# Promotion dry-run writes only disposable staging.
+RADAR_CODE_REVISION="$DEPLOY_SHA" npm run --silent promote:quality-db -- \
+  --source "$QUALITY_DB" --destination "$PRIMARY_DB" --dry-run
+
+# Immutable candidate reader. Start or restart it only after every command above
+# completes, then keep this terminal running for the API/UI checks below.
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" PORT=8788 \
 RADAR_DB_READ_ONLY=1 REFRESH_ON_STARTUP=false REFRESH_MINUTES=0 \
   npm run dev
@@ -656,28 +701,29 @@ export CANDIDATE_URL=http://127.0.0.1:8788
 export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
 
-# Read-only DB/API validation.
+# Reader-backed DB/API validation.
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
   npm run doctor -- --fail-on-warnings --api-base "$CANDIDATE_URL"
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
-  npm run verify:score -- --all
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
   npm run verify:release-audit -- --all --api-base "$CANDIDATE_URL"
-
-# DB-writing evaluation receipt.
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
-  npm run validation:evaluate -- --record
 
 # API/browser-only validation; the script does not open SQLite.
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
 API_BASE="$CANDIDATE_URL" npm run ui:smoke
-
-# Promotion dry-run reads source/destination and writes only disposable staging.
-RADAR_CODE_REVISION="$DEPLOY_SHA" npm run --silent promote:quality-db -- \
-  --source "$QUALITY_DB" --destination "$PRIMARY_DB" --dry-run
 ```
 
-Dry-run is read-only and may inspect source and destination activity; a live destination requires explicit `--dry-run`. Its report marks activity observations as non-durable and never authorizes a later apply. After it passes, stop the production and candidate servers, verify both databases have no holders or active refresh leases, then apply. Apply always performs fresh source and destination activity checks regardless of any earlier report:
+If any later candidate DB write is required, stop the immutable reader first,
+complete the write and evaluation, restart the reader, and rerun every API/UI
+check against the newly opened database state.
+
+The dry-run above is read-only with respect to the source and destination and
+may inspect their activity; a live destination requires explicit `--dry-run`.
+Its report marks activity observations as non-durable and never authorizes a
+later apply. After the reader-backed API/UI checks pass, stop the production and
+candidate servers, verify both complete SQLite families (the main file plus
+`-wal`, `-shm`, and `-journal`) have no holders or active refresh leases, then
+apply. Apply always performs fresh source and destination activity checks
+regardless of any earlier report:
 
 ```bash
 export RADAR_DEPLOY_LOCK_PATH=/opt/openclaw-release-radar/shared/deploy-promotion.lock
@@ -688,7 +734,7 @@ export BACKUP_PATH="$(jq -r '.backupPath' ./promotion-report.json)"
 test -f "$BACKUP_PATH"
 ```
 
-Promotion snapshots the source with `VACUUM INTO`, records source and destination holders plus active and stale lease rows in the report, strips every `refresh_leases` row from the staged database, and reports the captured/stripped/remaining counts. Apply refuses an active or malformed source lease, any live source holder, or corresponding destination activity before staging can hide it. After staging and again at the final swap boundary, it takes a fresh source snapshot and requires the original source inode and logical database identity to remain unchanged; replacement or content drift aborts. Expired source lease rows are reported as stale and removed only from the staged install; the source database is not modified.
+Promotion snapshots the source with `VACUUM INTO`, records holders across the complete source and destination SQLite families (main, `-wal`, `-shm`, and `-journal`) plus active and stale lease rows in the report, strips every `refresh_leases` row from the staged database, and reports the captured/stripped/remaining counts. Apply refuses an active or malformed source lease, any live holder on either SQLite family, or corresponding destination activity before staging can hide it. After staging it revalidates the source before the awaited independent GitHub catalog check, then repeats the full source family, holder, lease, and logical-identity revalidation after that check; only synchronous boundary checks remain before the atomic swap. Replacement or content drift aborts. Expired source lease rows are reported as stale and removed only from the staged install; the source database is not modified.
 
 Before any swap, the source and final staged DB must pass doctor with `--fail-on-warnings`, full score recomputation with `verify-new-scoring --all`, full release-audit invariants with `--all`, and an exact replay of the latest immutable prospective-validation evaluation receipt. Only status `validated` is promotable. `Insufficient`, `measurable_but_failed`, malformed or semantically invalid ledgers, hidden failed models, a missing or stale evaluation receipt, or any ID/hash mismatch are rejected. Calibration promotion receipts never authorize production. The staged database receives a production promotion receipt bound to the exact evaluation ID/content hash plus the source and destination logical database digests. Dry-run reports this receipt only from its disposable stage and explicitly cannot authorize a later apply; apply records it in the installed database.
 
@@ -698,17 +744,19 @@ Exhaustive issue-catalog snapshots are resumable operational data owned by the p
 
 Immutable advisory, forecast, validation-opportunity enrollment, outcome, validation-observation batch, issue-catalog consumption, and history ledgers remain fail-closed. Promotion requires every destination row in those ledgers to exist exactly in the verified source snapshot; destination-only evidence aborts promotion instead of being dropped. Their update/delete triggers are checked as unconditional append-only guards, and their complete row identities are included in source, destination, staged, and promotion-doctor digests. Promotion requires both revision-aware partial forecast-series unique indexes and rejects identities that omit `code_revision`. Existing forecast rows, hashes, and outcome links are preserved during migration. Refresh operation attempts and stage events are merged only when duplicate identities are exact. The destination capture-receipt chain remains the exact prefix of the promoted ledger; source-only receipts are appended in source order with new chain links, then the complete attempt/stage/receipt ledger is rechecked for hashes and foreign keys. `operationReceiptMerge.receipts.identityMappings` records each source receipt's run/receipt IDs, original and merged chain hashes, and matching semantic-identity digests so rehashing is explicitly auditable. Any destination operation-receipt change during staging aborts. When the destination has a valid sealed score-history extension, promotion preserves it and updates only `score_persistence_last_run.historyRunId` and `historyRunContentHash` to the merged history tip.
 
-Before swapping, apply checkpoints the destination, clears only empty WAL sidecars recreated by read-only doctor/identity inspection, fails if those inspections expose a nonempty WAL, verifies the logical contents and inode again, and preserves owner, group, mode, ACLs, and extended attributes on both the installed database and rollback backup. It checks both holders and active refresh leases before final success and around rollback, including after the backup has been restored. The backup path is `PRIMARY_DB.pre-promotion-<UTC>.bak` and is returned as `backupPath`. A post-swap failure attempts rollback automatically and retains that independent backup. Apply holds `RADAR_DEPLOY_LOCK_PATH` for the complete operation; its default is `/opt/openclaw-release-radar/shared/deploy-promotion.lock`, exactly the same `flock` lock used by release activation, commit, rollback, and watchdog recovery.
+Before swapping, apply checkpoints the destination, requires any `-wal` or `-journal` contents recreated by read-only doctor/identity inspection to be empty, clears the resulting `-wal`, `-shm`, and `-journal` sidecars, verifies the logical contents and inode again, and preserves owner, group, mode, ACLs, and extended attributes on both the installed database and rollback backup. It checks holders across both complete SQLite families and active refresh leases before final success and around rollback, including after the backup has been restored. The backup path is `PRIMARY_DB.pre-promotion-<UTC>.bak` and is returned as `backupPath`. A post-swap failure attempts rollback automatically and retains that independent backup. Apply holds `RADAR_DEPLOY_LOCK_PATH` for the complete operation; its default is `/opt/openclaw-release-radar/shared/deploy-promotion.lock`, exactly the same `flock` lock used by release activation, commit, rollback, and watchdog recovery.
 
-For an operator-requested rollback after a successful promotion, stop the service first and restore atomically from the reported backup:
+For an operator-requested rollback after a successful promotion, stop the
+service, verify the main DB and its `-wal`, `-shm`, and `-journal` sidecars have
+no holders, and restore atomically from the reported backup:
 
 ```bash
 export ROLLBACK_SHA="<exact-raw-SHA-of-restored-release>"
 node -e "const { DatabaseSync } = require('node:sqlite'); const db = new DatabaseSync(process.argv[1]); db.exec('PRAGMA wal_checkpoint(TRUNCATE)'); db.close()" "$PRIMARY_DB"
-rm -f "$PRIMARY_DB-wal" "$PRIMARY_DB-shm"
+rm -f "$PRIMARY_DB-wal" "$PRIMARY_DB-shm" "$PRIMARY_DB-journal"
 FAILED_DB="${PRIMARY_DB}.failed-$(date -u +%Y%m%dT%H%M%SZ)"
 RESTORE_DB="${PRIMARY_DB}.restore"
-rm -f "$RESTORE_DB"
+rm -f "$RESTORE_DB" "$RESTORE_DB-wal" "$RESTORE_DB-shm" "$RESTORE_DB-journal"
 mv "$PRIMARY_DB" "$FAILED_DB"
 cp -a "$BACKUP_PATH" "$RESTORE_DB"
 mv "$RESTORE_DB" "$PRIMARY_DB"
@@ -718,7 +766,9 @@ sudo systemctl restart openclaw-release-radar.service
 curl --fail http://127.0.0.1:8787/api/health
 ```
 
-Do not copy or replace a live WAL database or its sidecars. Restore the database while the service is stopped, then restart the old code and require semantic readiness before declaring rollback complete.
+Do not copy or replace a live SQLite family (the main file plus `-wal`, `-shm`,
+and `-journal`). Restore the database while the service is stopped, then restart
+the old code and require semantic readiness before declaring rollback complete.
 
 `npm run backfill:issue-comment-snapshots -- --all-scored` fetches comments for the current audited release issue universe, including audited null-score `wait` releases, and writes `issue_comment_snapshots` rows with total/fetched comment counts, latest comment update time, a digest, matching issue `updated_at`, and the validated comment cache used by closure analysis. The command holds the shared renewable write lease, detects staged revision races, and supersedes only a prior failure with the exact same release/issue scope after the snapshot transaction succeeds. Run the explicit read-only `DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 npm run verify:local` form afterward; if snapshots are newer than the current score, run the full monitored closed-window backfill.
 
@@ -753,7 +803,7 @@ Operator workflows in this README do not rely on that fallback; they name a sepa
 To reset local data:
 
 ```bash
-rm -f ./data/*.db ./data/*.db-* ./data/*.db-shm ./data/*.db-wal
+rm -f ./data/*.db ./data/*.db-* ./data/*.db-wal ./data/*.db-shm ./data/*.db-journal
 ```
 
 This also deletes durable refresh attempts/stage events/capture receipts, append-only score history, prospective forecasts, outcomes, and advisory snapshots. Export any validation ledger you need before wiping:
@@ -768,13 +818,14 @@ DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
 
 This reads the explicit DB and writes only the requested JSON export.
 
-Then rebuild a separate quality DB. Do not start a server against it while the full refresh is writing:
+Then rebuild that separate quality DB. Do not start a server against it while
+the full refresh is writing:
 
 ```bash
 export QUALITY_DB="$PWD/data/radar-quality.db"
 export DEPLOY_SHA="$(git rev-parse --verify HEAD)"
 test -z "$(git status --porcelain)"
-DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" \
+RADAR_CODE_REVISION="$DEPLOY_SHA" \
 RELEASES_LIMIT=10 CLASSIFY_CONCURRENCY=5 \
   npm run refresh:quality -- --db-path "$QUALITY_DB"
 DB_PATH="$QUALITY_DB" RADAR_CODE_REVISION="$DEPLOY_SHA" RADAR_DB_READ_ONLY=1 \
@@ -883,7 +934,7 @@ The installer extracts into a fresh staging directory, rejects unsafe archive pa
 
 Immediately before promotion, activation stops the old service and creates a consistent SQLite `backup()` snapshot at `shared/deploy-backups/<release>-<transaction-id>/pre-migration.sqlite`. It publishes one hash-bound pending transaction containing the transaction ID, release/SHA/artifact identity, exact production and quality database paths, rollback snapshot path and physical digest, required score receipt, previous `current` target, and installer-created artifact ownership. The bundled promotion runtime then inherits the already-held deployment lock. The installer accepts the promotion report only when it exact-binds that pending transaction, source receipt and code revision, quality/production/rollback database identities, production promotion receipt, and the unchanged rollback-backup digest.
 
-Activation atomically replaces the `current` symlink only after promotion succeeds, then requires exact local health, served manifest, API code provenance, status receipt, and receipt verification before handing control back to the workflow. On failed activation or explicit pending rollback, the installer stops the candidate, atomically restores the pre-promotion snapshot while clearing WAL/SHM sidecars, switches `current` back, restores and restarts the prior release when one exists, and waits for semantic readiness. Old code is never restarted against the promoted candidate database.
+Activation atomically replaces the `current` symlink only after promotion succeeds, then requires exact local health, served manifest, API code provenance, status receipt, and receipt verification before handing control back to the workflow. On failed activation or explicit pending rollback, the installer stops the candidate, atomically restores the pre-promotion snapshot while clearing `-wal`, `-shm`, and `-journal` sidecars, switches `current` back, restores and restarts the prior release when one exists, and waits for semantic readiness. Old code is never restarted against the promoted candidate database.
 
 External verification uses protocol-4 HMAC authorization. The attestation binds the workflow run/attempt, transaction ID, pending-state hash, release identity, deadline, and the immutable `activated` phase-transition hash. The installer first fsyncs `verification-authorization.json`, then appends and fsyncs the `verified` phase transition. A lost response is idempotently recoverable: when the current phase is already `verified`, authorization is revalidated against that transition's `previousHash`, which must be the original `activated` hash. Conflicting verification identities and any authorization or phase-chain tampering fail closed.
 

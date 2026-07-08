@@ -4,7 +4,11 @@ import { describe, it } from 'node:test';
 import {
   CLASSIFIER_ERROR_MESSAGE_MAX_BYTES,
   CLASSIFIER_RAW_RESPONSE_MAX_BYTES,
+  CLASSIFIER_SEMANTIC_DIAGNOSTIC_MESSAGE_MAX_BYTES,
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT,
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES,
   appendClassifierAttempt,
+  CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES,
   canonicalClassifierAttemptLedgerJson,
   captureClassifierError,
   captureClassifierRawModelOutput,
@@ -17,6 +21,7 @@ import {
   createClassifierAttemptLedger,
   createClassifierAttemptRun,
   createClassifierAttemptTerminalReceipt,
+  isEligibleClassifierGroundingSemanticRetry,
   normalizeOpenAIClassifierUsage,
   validateClassifierAttempt,
   validateClassifierAttemptRun,
@@ -28,6 +33,9 @@ import {
 } from './classifierAttemptLedger';
 
 const REQUEST_HASH = hash('classifier-request');
+const SEMANTIC_RETRY_REQUEST_HASH = hash(
+  'classifier-request-with-semantic-feedback',
+);
 const CLASSIFIER_IDENTITY_HASH = hash('classifier-identity');
 
 describe('classifier attempt ledger', () => {
@@ -83,7 +91,20 @@ describe('classifier attempt ledger', () => {
     assert.equal(ledger.attempts[0].retry.delayMs, 250);
     assert.equal(
       ledger.attempts[1].semanticDiagnostics[0]?.code,
-      'invalid_enum',
+      'missing_support',
+    );
+    assert.equal(
+      isEligibleClassifierGroundingSemanticRetry(ledger.attempts[1]),
+      true,
+    );
+    assert.equal(ledger.run.requestHash, REQUEST_HASH);
+    assert.deepEqual(
+      ledger.attempts.map((attempt) => attempt.provenance.requestHash),
+      [REQUEST_HASH, REQUEST_HASH, SEMANTIC_RETRY_REQUEST_HASH],
+    );
+    assert.equal(
+      ledger.receipt.selectedAttempt?.provenance.requestHash,
+      SEMANTIC_RETRY_REQUEST_HASH,
     );
     assert.equal(Object.isFrozen(ledger), true);
     assert.equal(Object.isFrozen(ledger.attempts), true);
@@ -251,10 +272,10 @@ describe('classifier attempt ledger', () => {
         '{"severity":"impossible"}',
       ),
       error: captureClassifierError(new Error('semantic validation failed')),
-      retry: stopMetadata(true, 'attempt_budget_exhausted'),
+      retry: stopMetadata(false, 'deterministic_semantic_rejection'),
       semanticDiagnostics: semanticDiagnostics(
         'severity',
-        'invalid_enum',
+        'schema_value_rejection',
         'severity is not recognized',
       ),
       provenance: responseProvenance('response-failure-2'),
@@ -365,11 +386,174 @@ describe('classifier attempt ledger', () => {
     foreignReceipt.receipt.runId = 'foreign-run';
     rehashReceipt(foreignReceipt);
     assertInvalid(foreignReceipt, /receipt\.runId does not match/);
+  });
 
-    const foreignRequest = clone(successfulLedger());
-    foreignRequest.attempts[1].provenance.requestHash = hash('foreign-request');
-    resealLedger(foreignRequest);
-    assertInvalid(foreignRequest, /requestHash does not match/);
+  it('rejects request-hash changes after transport or arbitrary retries', () => {
+    const transportTransition = clone(successfulLedger());
+    transportTransition.attempts[1].provenance.requestHash =
+      hash('transport-transition');
+    resealLedger(transportTransition);
+    assertInvalid(
+      transportTransition,
+      /requestHash changed without an immediately preceding eligible grounding semantic retry/,
+    );
+
+    const arbitraryTransition = clone(successfulLedger());
+    arbitraryTransition.attempts[1].retry = {
+      decision: 'stop',
+      retryable: true,
+      delayMs: null,
+      reason: 'attempt_budget_exhausted',
+    };
+    resealLedger(arbitraryTransition);
+    assertInvalid(
+      arbitraryTransition,
+      /requestHash changed without an immediately preceding eligible grounding semantic retry/,
+    );
+
+    const unchangedSemanticTransition = clone(successfulLedger());
+    unchangedSemanticTransition.attempts[2].provenance.requestHash =
+      unchangedSemanticTransition.attempts[1].provenance.requestHash;
+    resealLedger(unchangedSemanticTransition);
+    assertInvalid(
+      unchangedSemanticTransition,
+      /requestHash must change after an immediately preceding eligible grounding semantic retry/,
+    );
+
+    const initialMismatch = clone(successfulLedger());
+    initialMismatch.attempts[0].provenance.requestHash =
+      hash('not-the-initial-request');
+    resealLedger(initialMismatch);
+    assertInvalid(initialMismatch, /does not match the initial run\.requestHash/);
+  });
+
+  it('rejects duplicate, schema, generic-error, and exhausted retry claims', () => {
+    assert.deepEqual(
+      CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES,
+      [
+        'abstention_has_citations',
+        'cross_field_citation_reuse',
+        'duplicate_citation',
+        'excerpt_not_exact',
+        'excerpt_not_field_relevant',
+        'missing_support',
+        'source_id_not_included',
+        'unsupported_affects_version',
+        'unsupported_duplicate_cluster',
+        'unsupported_workaround_status',
+      ],
+    );
+
+    const duplicateSource = clone(successfulLedger());
+    duplicateSource.attempts[1].semanticDiagnostics[0].code =
+      'duplicate_source_id';
+    resealLedger(duplicateSource);
+    assertInvalid(
+      duplicateSource,
+      /duplicate_source_id cannot authorize a semantic retry/,
+    );
+
+    const schemaFailure = clone(successfulLedger());
+    schemaFailure.attempts[1].semanticDiagnostics[0].code =
+      'schema_shape_rejection';
+    resealLedger(schemaFailure);
+    assertInvalid(schemaFailure, /is not a model-correctable grounding failure/);
+
+    const relabeledSchemaFailure = clone(successfulLedger());
+    replaceAttemptRawModelOutput(
+      relabeledSchemaFailure.attempts[1],
+      '{"severity":"extreme"}',
+    );
+    resealLedger(relabeledSchemaFailure);
+    assertInvalid(
+      relabeledSchemaFailure,
+      /rawModelOutput\.text.*classifier JSON|missing fields/,
+    );
+
+    const invalidUsage = clone(successfulLedger());
+    const invalidUsageResponse = JSON.parse(
+      invalidUsage.attempts[1].rawResponse.text,
+    );
+    invalidUsageResponse.usage = { prompt_tokens: -1 };
+    invalidUsage.attempts[1].rawResponse =
+      captureClassifierRawResponse(JSON.stringify(invalidUsageResponse));
+    resealLedger(invalidUsage);
+    assertInvalid(
+      invalidUsage,
+      /semantic retry requires verifiable provider usage/,
+    );
+
+    const delayedRetry = clone(successfulLedger());
+    delayedRetry.attempts[1].retry.delayMs = 1;
+    resealLedger(delayedRetry);
+    assertInvalid(delayedRetry, /semantic retry requires delayMs=0/);
+
+    const oversizedDiagnostic = clone(successfulLedger());
+    oversizedDiagnostic.attempts[1].semanticDiagnostics =
+      captureClassifierSemanticDiagnostics([{
+        field: 'severity',
+        code: 'missing_support',
+        message: 'x'.repeat(
+          CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES + 1,
+        ),
+      }]);
+    resealLedger(oversizedDiagnostic);
+    assertInvalid(
+      oversizedDiagnostic,
+      /message exceeds the semantic retry feedback limit/,
+    );
+
+    const excessiveDiagnostics = clone(successfulLedger());
+    excessiveDiagnostics.attempts[1].semanticDiagnostics =
+      captureClassifierSemanticDiagnostics(Array.from(
+        { length: CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT + 1 },
+        (_, index) => ({
+          field: 'severity',
+          code: 'missing_support',
+          message: `missing support ${index}`,
+        }),
+      ));
+    resealLedger(excessiveDiagnostics);
+    assertInvalid(
+      excessiveDiagnostics,
+      /semantic retry diagnostics exceed the feedback limit/,
+    );
+
+    const genericError = clone(successfulLedger());
+    genericError.attempts[1].error.name = 'Error';
+    resealLedger(genericError);
+    assertInvalid(
+      genericError,
+      /semantic retry requires an uncoded ClassificationGroundingError/,
+    );
+
+    const exhausted = clone(successfulLedger());
+    exhausted.run.maxAttempts = 2;
+    exhausted.attempts.splice(2, 1);
+    exhausted.receipt.status = 'terminal_failure';
+    exhausted.receipt.reason = 'attempt_budget_exhausted';
+    exhausted.receipt.selectedAttempt = null;
+    exhausted.receipt.error = captureClassifierError(
+      new Error('attempt budget exhausted'),
+    );
+    resealLedger(exhausted);
+    assertInvalid(exhausted, /retry cannot exceed the run attempt budget/);
+
+    const prematureExhaustion = clone(successfulLedger());
+    prematureExhaustion.attempts.splice(2, 1);
+    prematureExhaustion.attempts[1].retry =
+      stopMetadata(true, 'attempt_budget_exhausted');
+    prematureExhaustion.receipt.status = 'terminal_failure';
+    prematureExhaustion.receipt.reason = 'attempt_budget_exhausted';
+    prematureExhaustion.receipt.selectedAttempt = null;
+    prematureExhaustion.receipt.error = captureClassifierError(
+      new Error('attempt budget exhausted'),
+    );
+    resealLedger(prematureExhaustion);
+    assertInvalid(
+      prematureExhaustion,
+      /attempt_budget_exhausted is only valid at run\.maxAttempts/,
+    );
   });
 
   it('rejects independently resealed selected attempt, raw, and provenance bindings', () => {
@@ -672,20 +856,22 @@ function successfulLedger(): ClassifierAttemptLedger {
     finishedAt: time(4),
     rawResponse: acceptedRawResponse(
       'response-success-2',
-      '{"severity":"extreme"}',
+      classifierRawOutput(),
     ),
-    rawModelOutput: captureClassifierRawModelOutput('{"severity":"extreme"}'),
-    error: captureClassifierError(new Error('unsupported severity')),
+    rawModelOutput: captureClassifierRawModelOutput(classifierRawOutput()),
+    error: captureClassifierError({
+      name: 'ClassificationGroundingError',
+      message: 'severity requires a supporting citation',
+    }),
     retry: retryMetadata(0, 'retryable_semantic_rejection'),
     semanticDiagnostics: semanticDiagnostics(
       'severity',
-      'invalid_enum',
-      'unsupported severity',
+      'missing_support',
+      'severity requires a supporting citation',
     ),
     provenance: responseProvenance('response-success-2'),
   });
-  const rawModelOutput =
-    '{"severity":"medium","sentiment":"negative"}';
+  const rawModelOutput = classifierRawOutput({ severity: 'medium' });
   const third = appendClassifierAttempt(run, [first, second], {
     attemptId: 'success-attempt-3',
     status: 'accepted_success',
@@ -696,7 +882,10 @@ function successfulLedger(): ClassifierAttemptLedger {
     error: null,
     retry: stopMetadata(false, 'accepted_success'),
     semanticDiagnostics: [],
-    provenance: responseProvenance('response-success-3'),
+    provenance: responseProvenance(
+      'response-success-3',
+      SEMANTIC_RETRY_REQUEST_HASH,
+    ),
   });
   const receipt = createClassifierAttemptTerminalReceipt(
     run,
@@ -731,9 +920,12 @@ function transportProvenance(): ClassifierAttemptProvenance {
   };
 }
 
-function responseProvenance(responseId: string): ClassifierAttemptProvenance {
+function responseProvenance(
+  responseId: string,
+  requestHash = REQUEST_HASH,
+): ClassifierAttemptProvenance {
   return {
-    requestHash: REQUEST_HASH,
+    requestHash,
     responseId,
     responseModel: 'classifier-model-1',
     responseServiceTier: 'standard',
@@ -847,4 +1039,38 @@ function acceptedRawResponse(
     service_tier: 'standard',
     choices: [{ message: { content: rawModelOutput } }],
   }));
+}
+
+function classifierRawOutput(
+  overrides: Record<string, unknown> = {},
+): string {
+  return JSON.stringify({
+    sentiment: 'negative',
+    severity: 'high',
+    scope: 'moderate',
+    functionality: 'core',
+    affected_users: 'unknown',
+    workaroundStatus: 'unknown',
+    duplicateCluster: null,
+    affectsVersion: null,
+    evidence: {
+      sentiment: [],
+      severity: [],
+      scope: [],
+      functionality: [],
+      affected_users: [],
+      workaroundStatus: [],
+      duplicateCluster: [],
+      affectsVersion: [],
+    },
+    rationale: 'Grounding fixture requires corrected citations.',
+    ...overrides,
+  });
+}
+
+function replaceAttemptRawModelOutput(attempt: any, rawModelOutput: string): void {
+  const rawResponse = JSON.parse(attempt.rawResponse.text);
+  rawResponse.choices[0].message.content = rawModelOutput;
+  attempt.rawResponse = captureClassifierRawResponse(JSON.stringify(rawResponse));
+  attempt.rawModelOutput = captureClassifierRawModelOutput(rawModelOutput);
 }

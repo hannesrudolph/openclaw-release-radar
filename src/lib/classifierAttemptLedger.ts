@@ -6,6 +6,21 @@ export const CLASSIFIER_RAW_MODEL_OUTPUT_MAX_BYTES = 1_048_576;
 export const CLASSIFIER_ERROR_MESSAGE_MAX_BYTES = 65_536;
 export const CLASSIFIER_SEMANTIC_DIAGNOSTIC_MAX_COUNT = 128;
 export const CLASSIFIER_SEMANTIC_DIAGNOSTIC_MESSAGE_MAX_BYTES = 4_096;
+export const CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT = 32;
+export const CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES = 1_024;
+export const CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES =
+  Object.freeze([
+    'abstention_has_citations',
+    'cross_field_citation_reuse',
+    'duplicate_citation',
+    'excerpt_not_exact',
+    'excerpt_not_field_relevant',
+    'missing_support',
+    'source_id_not_included',
+    'unsupported_affects_version',
+    'unsupported_duplicate_cluster',
+    'unsupported_workaround_status',
+  ] as const);
 
 const IDENTIFIER_MAX_BYTES = 256;
 const ERROR_NAME_MAX_BYTES = 256;
@@ -225,6 +240,61 @@ export class ClassifierAttemptLedgerValidationError extends Error {
     this.name = 'ClassifierAttemptLedgerValidationError';
     this.problems = [...problems];
   }
+}
+
+const classifierModelCorrectableGroundingDiagnosticCodeSet =
+  new Set<string>(CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES);
+const classifierRetryRawClassificationKeys = [
+  'sentiment',
+  'severity',
+  'scope',
+  'functionality',
+  'affected_users',
+  'workaroundStatus',
+  'duplicateCluster',
+  'affectsVersion',
+  'evidence',
+  'rationale',
+] as const;
+const classifierRetryEvidenceKeys = [
+  'sentiment',
+  'severity',
+  'scope',
+  'functionality',
+  'affected_users',
+  'workaroundStatus',
+  'duplicateCluster',
+  'affectsVersion',
+] as const;
+const classifierRetrySentiments = new Set(['negative', 'positive', 'neutral']);
+const classifierRetrySeverities = new Set(['critical', 'high', 'medium', 'low']);
+const classifierRetryScopes = new Set(['broad', 'moderate', 'niche']);
+const classifierRetryFunctionalities =
+  new Set(['core', 'integration', 'provider', 'docs']);
+const classifierRetryAffectedUsers = new Set(['many', 'some', 'few', 'unknown']);
+const classifierRetryWorkaroundStatuses =
+  new Set(['none', 'partial', 'confirmed', 'unknown']);
+const classifierRetryDuplicateClusterRe =
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
+export function isClassifierModelCorrectableGroundingDiagnosticCode(
+  code: unknown,
+): code is (
+  typeof CLASSIFIER_MODEL_CORRECTABLE_GROUNDING_DIAGNOSTIC_CODES
+)[number] {
+  return typeof code === 'string' &&
+    classifierModelCorrectableGroundingDiagnosticCodeSet.has(code);
+}
+
+export function isEligibleClassifierGroundingSemanticRetry(
+  attempt: ClassifierAttempt,
+): boolean {
+  return attempt.status === 'semantic_rejection' &&
+    attempt.retry.decision === 'retry' &&
+    attempt.retry.retryable === true &&
+    attempt.retry.reason === 'retryable_semantic_rejection' &&
+    classifierGroundingSemanticRetryEvidenceProblems(attempt, 'attempt')
+      .length === 0;
 }
 
 export function canonicalClassifierAttemptLedgerJson(value: unknown): string {
@@ -897,6 +967,55 @@ function classifierAttemptProblems(value: unknown, path: string): string[] {
     problems.push(...acceptedResponseEvidenceProblems(value, path));
   }
 
+  const retry = isRecord(value.retry) ? value.retry : null;
+  const claimsSemanticRetryReason =
+    retry?.reason === 'retryable_semantic_rejection';
+  const claimsSemanticRetryDecision =
+    value.status === 'semantic_rejection' && retry?.decision === 'retry';
+  const claimsRetryableSemanticFailure =
+    value.status === 'semantic_rejection' && retry?.retryable === true;
+  if (
+    claimsSemanticRetryReason &&
+    (
+      value.status !== 'semantic_rejection' ||
+      retry?.decision !== 'retry'
+    )
+  ) {
+    problems.push(
+      `${path} retryable_semantic_rejection requires semantic_rejection ` +
+      'status and a retry decision',
+    );
+  }
+  if (
+    claimsSemanticRetryDecision &&
+    retry?.reason !== 'retryable_semantic_rejection'
+  ) {
+    problems.push(
+      `${path} semantic retry decision requires reason ` +
+      'retryable_semantic_rejection',
+    );
+  }
+  if (
+    claimsRetryableSemanticFailure &&
+    retry?.decision === 'stop' &&
+    retry.reason !== 'attempt_budget_exhausted'
+  ) {
+    problems.push(
+      `${path} retryable semantic stop requires reason ` +
+      'attempt_budget_exhausted',
+    );
+  }
+  if (
+    claimsSemanticRetryReason ||
+    claimsSemanticRetryDecision ||
+    claimsRetryableSemanticFailure
+  ) {
+    problems.push(...classifierGroundingSemanticRetryEvidenceProblems(
+      value,
+      path,
+    ));
+  }
+
   const structuralProblems = problems.length;
   if (structuralProblems === 0) {
     const attempt = value as unknown as ClassifierAttempt;
@@ -1013,6 +1132,7 @@ function classifierAttemptChainProblems(
   }
   const attemptIds = new Set<string>();
   let previousContentHash = run.contentHash;
+  let previousRequestHash = run.requestHash;
   let previousFinishedAtMs = Date.parse(run.startedAt);
   let acceptedOrdinal: number | null = null;
 
@@ -1033,8 +1153,31 @@ function classifierAttemptChainProblems(
     if (attempt.issueNumber !== run.issueNumber) {
       problems.push(`${path}.issueNumber does not match run.issueNumber`);
     }
-    if (attempt.provenance.requestHash !== run.requestHash) {
-      problems.push(`${path}.provenance.requestHash does not match run.requestHash`);
+    if (index === 0 && attempt.provenance.requestHash !== run.requestHash) {
+      problems.push(
+        `${path}.provenance.requestHash does not match the initial run.requestHash`,
+      );
+    } else if (index > 0) {
+      const previousAttempt = attempts[index - 1];
+      const requestHashChanged =
+        attempt.provenance.requestHash !== previousRequestHash;
+      if (
+        isEligibleClassifierGroundingSemanticRetry(previousAttempt) &&
+        !requestHashChanged
+      ) {
+        problems.push(
+          `${path}.provenance.requestHash must change after an immediately ` +
+          'preceding eligible grounding semantic retry',
+        );
+      } else if (
+        !isEligibleClassifierGroundingSemanticRetry(previousAttempt) &&
+        requestHashChanged
+      ) {
+        problems.push(
+          `${path}.provenance.requestHash changed without an immediately ` +
+          'preceding eligible grounding semantic retry',
+        );
+      }
     }
     if (attempt.previousContentHash !== previousContentHash) {
       problems.push(`${path}.previousContentHash does not match the append chain`);
@@ -1058,7 +1201,25 @@ function classifierAttemptChainProblems(
     if (index < attempts.length - 1 && attempt.retry.decision !== 'retry') {
       problems.push(`${path}.retry.decision must be retry before a later attempt`);
     }
+    if (
+      attempt.retry.decision === 'retry' &&
+      attempt.ordinal >= run.maxAttempts
+    ) {
+      problems.push(`${path}.retry cannot exceed the run attempt budget`);
+    }
+    if (
+      attempt.retry.decision === 'stop' &&
+      attempt.retry.retryable === true &&
+      attempt.retry.reason === 'attempt_budget_exhausted' &&
+      attempt.ordinal !== run.maxAttempts
+    ) {
+      problems.push(
+        `${path}.retry reason attempt_budget_exhausted is only valid at ` +
+        'run.maxAttempts',
+      );
+    }
     previousContentHash = attempt.contentHash;
+    previousRequestHash = attempt.provenance.requestHash;
   }
   return unique(problems);
 }
@@ -1158,6 +1319,420 @@ function classifierTerminalSemanticProblems(
     problems.push('abandoned receipt reason must be caller_aborted');
   }
   return unique(problems);
+}
+
+function classifierGroundingSemanticRetryEvidenceProblems(
+  value: unknown,
+  path: string,
+): string[] {
+  const problems: string[] = [];
+  if (!isRecord(value)) {
+    return [`${path} semantic retry evidence must be a plain object`];
+  }
+  if (value.status !== 'semantic_rejection') {
+    problems.push(`${path} semantic retry requires semantic_rejection status`);
+  }
+  if (
+    !isRecord(value.error) ||
+    value.error.name !== 'ClassificationGroundingError' ||
+    value.error.code !== null
+  ) {
+    problems.push(
+      `${path} semantic retry requires an uncoded ` +
+      'ClassificationGroundingError',
+    );
+  }
+  if (
+    isRecord(value.retry) &&
+    value.retry.decision === 'retry' &&
+    value.retry.delayMs !== 0
+  ) {
+    problems.push(`${path} semantic retry requires delayMs=0`);
+  }
+  if (
+    !isRecord(value.rawResponse) ||
+    value.rawResponse.truncated !== false
+  ) {
+    problems.push(
+      `${path} semantic retry requires a complete provider response`,
+    );
+  }
+  if (
+    !isRecord(value.rawModelOutput) ||
+    value.rawModelOutput.truncated !== false
+  ) {
+    problems.push(
+      `${path} semantic retry requires complete rejected model output`,
+    );
+  } else if (typeof value.rawModelOutput.text === 'string') {
+    problems.push(...classifierSemanticRetryRawModelOutputProblems(
+      value.rawModelOutput.text,
+      `${path}.rawModelOutput`,
+    ));
+  }
+  if (
+    !isRecord(value.provenance) ||
+    typeof value.provenance.responseId !== 'string' ||
+    typeof value.provenance.responseModel !== 'string' ||
+    typeof value.provenance.responseServiceTier !== 'string'
+  ) {
+    problems.push(
+      `${path} semantic retry requires complete provider response identity`,
+    );
+  }
+  if (
+    !Array.isArray(value.semanticDiagnostics) ||
+    value.semanticDiagnostics.length === 0
+  ) {
+    problems.push(
+      `${path} semantic retry requires model-correctable grounding diagnostics`,
+    );
+    return unique(problems);
+  }
+  if (
+    value.semanticDiagnostics.length >
+      CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT
+  ) {
+    problems.push(
+      `${path} semantic retry diagnostics exceed the feedback limit of ` +
+      `${CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT}`,
+    );
+  }
+  for (const [index, diagnostic] of value.semanticDiagnostics.entries()) {
+    const diagnosticPath = `${path}.semanticDiagnostics[${index}]`;
+    if (!isRecord(diagnostic)) {
+      problems.push(`${diagnosticPath} cannot authorize a semantic retry`);
+      continue;
+    }
+    if (diagnostic.code === 'duplicate_source_id') {
+      problems.push(
+        `${diagnosticPath}.code duplicate_source_id cannot authorize a ` +
+        'semantic retry',
+      );
+    } else if (
+      !isClassifierModelCorrectableGroundingDiagnosticCode(diagnostic.code)
+    ) {
+      problems.push(
+        `${diagnosticPath}.code ${JSON.stringify(diagnostic.code)} is not a ` +
+        'model-correctable grounding failure',
+      );
+    }
+    if (
+      !isRecord(diagnostic.message) ||
+      diagnostic.message.truncated !== false
+    ) {
+      problems.push(
+        `${diagnosticPath}.message must be complete to authorize a semantic retry`,
+      );
+    } else if (
+      typeof diagnostic.message.text === 'string' &&
+      Buffer.byteLength(diagnostic.message.text, 'utf8') >
+        CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES
+    ) {
+      problems.push(
+        `${diagnosticPath}.message exceeds the semantic retry feedback limit of ` +
+        `${CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES} bytes`,
+      );
+    }
+  }
+  problems.push(...classifierSemanticRetryUsageProblems(value, path));
+  return unique(problems);
+}
+
+function classifierSemanticRetryRawModelOutputProblems(
+  rawModelOutput: string,
+  path: string,
+): string[] {
+  const problems: string[] = [];
+  let parsed: unknown;
+  try {
+    assertClassifierRetryJsonHasUniqueKeys(rawModelOutput);
+    parsed = JSON.parse(rawModelOutput) as unknown;
+  } catch (error) {
+    return [
+      `${path}.text must contain structurally valid classifier JSON: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
+  }
+  if (!isRecord(parsed)) {
+    return [`${path}.text must contain a classifier JSON object`];
+  }
+
+  exactKeys(
+    parsed,
+    [...classifierRetryRawClassificationKeys],
+    `${path}.text`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.sentiment,
+    classifierRetrySentiments,
+    `${path}.text.sentiment`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.severity,
+    classifierRetrySeverities,
+    `${path}.text.severity`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.scope,
+    classifierRetryScopes,
+    `${path}.text.scope`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.functionality,
+    classifierRetryFunctionalities,
+    `${path}.text.functionality`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.affected_users,
+    classifierRetryAffectedUsers,
+    `${path}.text.affected_users`,
+    problems,
+  );
+  validateClassifierRetryEnum(
+    parsed.workaroundStatus,
+    classifierRetryWorkaroundStatuses,
+    `${path}.text.workaroundStatus`,
+    problems,
+  );
+  if (
+    parsed.duplicateCluster !== null &&
+    (
+      typeof parsed.duplicateCluster !== 'string' ||
+      !classifierRetryDuplicateClusterRe.test(parsed.duplicateCluster)
+    )
+  ) {
+    problems.push(
+      `${path}.text.duplicateCluster must be null or a lowercase kebab-case slug`,
+    );
+  }
+  if (
+    parsed.affectsVersion !== null &&
+    (
+      typeof parsed.affectsVersion !== 'string' ||
+      parsed.affectsVersion.length === 0 ||
+      parsed.affectsVersion.trim() !== parsed.affectsVersion
+    )
+  ) {
+    problems.push(
+      `${path}.text.affectsVersion must be null or a non-empty trimmed string`,
+    );
+  }
+  if (
+    typeof parsed.rationale !== 'string' ||
+    parsed.rationale.length < 1 ||
+    parsed.rationale.length > 400 ||
+    parsed.rationale.trim() !== parsed.rationale
+  ) {
+    problems.push(
+      `${path}.text.rationale must be a trimmed string with 1-400 characters`,
+    );
+  }
+
+  if (!isRecord(parsed.evidence)) {
+    problems.push(`${path}.text.evidence must be a plain object`);
+    return unique(problems);
+  }
+  exactKeys(
+    parsed.evidence,
+    [...classifierRetryEvidenceKeys],
+    `${path}.text.evidence`,
+    problems,
+  );
+  for (const field of classifierRetryEvidenceKeys) {
+    const citations = parsed.evidence[field];
+    const fieldPath = `${path}.text.evidence.${field}`;
+    if (!Array.isArray(citations)) {
+      problems.push(`${fieldPath} must be an array`);
+      continue;
+    }
+    if (citations.length > 3) {
+      problems.push(`${fieldPath} must contain at most 3 citations`);
+    }
+    for (const [index, citation] of citations.entries()) {
+      const citationPath = `${fieldPath}[${index}]`;
+      if (!isRecord(citation)) {
+        problems.push(`${citationPath} must be a plain object`);
+        continue;
+      }
+      exactKeys(
+        citation,
+        ['source_id', 'excerpt'],
+        citationPath,
+        problems,
+      );
+      if (
+        typeof citation.source_id !== 'string' ||
+        citation.source_id.length === 0 ||
+        citation.source_id.trim() !== citation.source_id
+      ) {
+        problems.push(`${citationPath}.source_id must be a non-empty trimmed string`);
+      }
+      if (
+        typeof citation.excerpt !== 'string' ||
+        citation.excerpt.length < 2 ||
+        citation.excerpt.length > 400 ||
+        citation.excerpt.trim() !== citation.excerpt
+      ) {
+        problems.push(
+          `${citationPath}.excerpt must be a trimmed string with 2-400 characters`,
+        );
+      }
+    }
+  }
+  return unique(problems);
+}
+
+function classifierSemanticRetryUsageProblems(
+  value: Record<string, unknown>,
+  path: string,
+): string[] {
+  if (
+    !isRecord(value.rawResponse) ||
+    value.rawResponse.truncated !== false ||
+    typeof value.rawResponse.text !== 'string'
+  ) {
+    return [];
+  }
+  let response: unknown;
+  try {
+    response = JSON.parse(value.rawResponse.text) as unknown;
+  } catch {
+    return [];
+  }
+  if (!isRecord(response)) return [];
+  try {
+    const normalizedUsage = normalizeOpenAIClassifierUsage(response.usage);
+    if (
+      canonicalClassifierAttemptLedgerJson(normalizedUsage) !==
+      canonicalClassifierAttemptLedgerJson(value.usage)
+    ) {
+      return [
+        `${path} semantic retry usage does not match normalized rawResponse usage`,
+      ];
+    }
+  } catch (error) {
+    return [
+      `${path} semantic retry requires verifiable provider usage: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    ];
+  }
+  return [];
+}
+
+function validateClassifierRetryEnum(
+  value: unknown,
+  allowed: ReadonlySet<string>,
+  path: string,
+  problems: string[],
+): void {
+  if (typeof value !== 'string' || !allowed.has(value)) {
+    problems.push(
+      `${path} must be one of ${[...allowed].map((entry) =>
+        JSON.stringify(entry)).join(', ')}`,
+    );
+  }
+}
+
+function assertClassifierRetryJsonHasUniqueKeys(json: string): void {
+  let index = 0;
+
+  const skipWhitespace = () => {
+    while (index < json.length && /\s/.test(json[index])) index++;
+  };
+  const parseString = (): string => {
+    if (json[index] !== '"') throw new SyntaxError('expected JSON string');
+    const start = index++;
+    while (index < json.length) {
+      const character = json[index++];
+      if (character === '\\') {
+        if (index >= json.length) throw new SyntaxError('unterminated JSON escape');
+        index++;
+        continue;
+      }
+      if (character === '"') {
+        return JSON.parse(json.slice(start, index)) as string;
+      }
+    }
+    throw new SyntaxError('unterminated JSON string');
+  };
+  const parsePrimitive = () => {
+    const start = index;
+    while (index < json.length && !/[\s,\]}]/.test(json[index])) index++;
+    if (index === start) throw new SyntaxError('expected JSON value');
+  };
+  const parseValue = (): void => {
+    skipWhitespace();
+    if (json[index] === '{') {
+      parseObject();
+    } else if (json[index] === '[') {
+      parseArray();
+    } else if (json[index] === '"') {
+      parseString();
+    } else {
+      parsePrimitive();
+    }
+  };
+  const parseObject = (): void => {
+    index++;
+    skipWhitespace();
+    if (json[index] === '}') {
+      index++;
+      return;
+    }
+    const keys = new Set<string>();
+    while (index < json.length) {
+      skipWhitespace();
+      const key = parseString();
+      if (keys.has(key)) {
+        throw new SyntaxError(`duplicate JSON key ${JSON.stringify(key)}`);
+      }
+      keys.add(key);
+      skipWhitespace();
+      if (json[index++] !== ':') {
+        throw new SyntaxError('expected JSON object colon');
+      }
+      parseValue();
+      skipWhitespace();
+      const delimiter = json[index++];
+      if (delimiter === '}') return;
+      if (delimiter !== ',') {
+        throw new SyntaxError('expected JSON object delimiter');
+      }
+    }
+    throw new SyntaxError('unterminated JSON object');
+  };
+  const parseArray = (): void => {
+    index++;
+    skipWhitespace();
+    if (json[index] === ']') {
+      index++;
+      return;
+    }
+    while (index < json.length) {
+      parseValue();
+      skipWhitespace();
+      const delimiter = json[index++];
+      if (delimiter === ']') return;
+      if (delimiter !== ',') {
+        throw new SyntaxError('expected JSON array delimiter');
+      }
+    }
+    throw new SyntaxError('unterminated JSON array');
+  };
+
+  parseValue();
+  skipWhitespace();
+  if (index !== json.length) {
+    throw new SyntaxError('unexpected trailing JSON content');
+  }
 }
 
 function acceptedResponseEvidenceProblems(

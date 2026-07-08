@@ -1719,7 +1719,7 @@ for (const path of ['/live', '/health', '/validation/opportunities']) {
   if (!paths.has(path)) throw new Error(`production API is missing ${path}`);
 }
 NODE
-  rm -f "$smoke_db" "$smoke_db-wal" "$smoke_db-shm" || return 1
+  rm -f "$smoke_db" "$smoke_db-wal" "$smoke_db-shm" "$smoke_db-journal" || return 1
   [ "$smoke_status" -eq 0 ] || return "$smoke_status"
 }
 
@@ -3001,6 +3001,7 @@ try {
   }
   fs.rmSync(`${destinationPath}-wal`, { force: true });
   fs.rmSync(`${destinationPath}-shm`, { force: true });
+  fs.rmSync(`${destinationPath}-journal`, { force: true });
   fs.renameSync(temporaryPath, destinationPath);
   renamed = true;
   if (JSON.stringify(readMetadata(destinationPath)) !== JSON.stringify(expectedMetadata)) {

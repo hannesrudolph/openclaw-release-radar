@@ -15,7 +15,6 @@ it('records one CLI evaluation receipt and reuses its exact retry', () => {
   delete environment.NODE_TEST_CONTEXT;
   const cliEnvironment = {
     ...environment,
-    npm_lifecycle_event: 'validation:evaluate',
     RADAR_DB_BOOTSTRAP_MODE: 'existing',
   };
   const evaluatedAt = '2026-02-15T00:00:00.000Z';
@@ -116,7 +115,7 @@ it('records one CLI evaluation receipt and reuses its exact retry', () => {
     ],
     {
       cwd: root,
-      env: promotionChildEnvironment(cliEnvironment),
+      env: cliEnvironment,
       encoding: 'utf8',
     },
   );
@@ -182,13 +181,3 @@ it('records one CLI evaluation receipt and reuses its exact retry', () => {
     database.close();
   }
 });
-
-function promotionChildEnvironment(
-  base: NodeJS.ProcessEnv,
-): NodeJS.ProcessEnv {
-  const environment = {
-    ...base,
-    npm_lifecycle_event: 'promote:quality-db',
-  };
-  return environment;
-}

@@ -26,6 +26,17 @@ const INCIDENT_PHANTOM_TAGS = [
 let fixtureResponses = null;
 let fixtureIndexHtmlPromise = null;
 
+function cssAttributeEquals(name, value) {
+  if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) {
+    throw new Error(`Invalid CSS attribute name ${name}`);
+  }
+  return `[${name}=${JSON.stringify(String(value))}]`;
+}
+
+function releaseSelector(tag) {
+  return `.release${cssAttributeEquals('data-tag', tag)}`;
+}
+
 if (fixtureOnly) {
   await runFixtureOnlySmoke();
   process.exit(0);
@@ -269,7 +280,7 @@ try {
     throw new Error(`Rendered release row count ${renderedCount} did not match /api/releases ${releases.length}`);
   }
   for (const release of releases) {
-    const row = page.locator(`.release[data-tag="${release.tag}"]`);
+    const row = page.locator(releaseSelector(release.tag));
     if (await row.count() !== 1) throw new Error(`Expected one DOM row for ${release.tag}`);
   }
   const recommendedRows = page.locator('#releases .release--recommended');
@@ -281,7 +292,7 @@ try {
   }
   const recommendedTag = recommendedReleases[0]?.tag ?? null;
   const expectedRecommendedCmd = recommendedTag
-    ? `openclaw update --tag ${recommendedTag.replace(/^v/i, '')}`
+    ? installCommand(recommendedTag)
     : null;
   const recommendedDecisionCopy = recommendedReleases[0]
     ? expectedRecommendationDecisionCopy(recommendedReleases[0])
@@ -307,7 +318,9 @@ try {
   const recommendationPanelText = await recommendationPanel.innerText();
   if (recommendedTag && expectedRecommendedCmd && recommendedDecisionCopy) {
     await recommendationPanel.locator('.update-cmd__code').filter({ hasText: expectedRecommendedCmd }).waitFor();
-    await recommendationPanel.locator(`.update-cmd__copy[data-cmd="${expectedRecommendedCmd}"]`).waitFor();
+    await recommendationPanel
+      .locator(`.update-cmd__copy${cssAttributeEquals('data-cmd', expectedRecommendedCmd)}`)
+      .waitFor();
     if (!recommendationPanelText.includes(recommendedDecisionCopy)) {
       throw new Error(`Recommended panel missing human decision copy: ${recommendedDecisionCopy}`);
     }
@@ -444,7 +457,7 @@ try {
   }
 
   if (eligibleNonRecommended) {
-  const normalRow = page.locator(`.release[data-tag="${eligibleNonRecommended.tag}"]`);
+  const normalRow = page.locator(releaseSelector(eligibleNonRecommended.tag));
   await normalRow.evaluate((el) => {
     if (!el.classList.contains('release--normal')) throw new Error('eligible non-recommended row is not normal category');
     if (el.querySelector('.rec-pill')) throw new Error('eligible non-recommended row shows Recommended pill');
@@ -462,7 +475,7 @@ try {
   if (await normalPanel.locator('.update-cmd__code').count()) {
     throw new Error('eligible non-recommended panel showed command code');
   }
-  if (normalText.includes(`openclaw update --tag ${eligibleNonRecommended.tag.replace(/^v/i, '')}`)) {
+  if (normalText.includes(installCommand(eligibleNonRecommended.tag))) {
     throw new Error('eligible non-recommended panel showed install command text');
   }
   if (normalText.includes('The release is eligible and recommended.')) {
@@ -483,7 +496,7 @@ try {
   }
 
   if (securityGatedRelease) {
-  const securityRow = page.locator(`.release[data-tag="${securityGatedRelease.tag}"]`);
+  const securityRow = page.locator(releaseSelector(securityGatedRelease.tag));
   const securityRowText = await securityRow.innerText();
   if (!/medium-or-higher security advisor(y|ies)/i.test(securityRowText)) {
     throw new Error(`security-gated row did not use advisory wording: ${securityRowText}`);
@@ -549,13 +562,13 @@ try {
     await profilePage.waitForSelector('#releases .release');
     for (const release of releases) {
       const scoreText = await profilePage
-        .locator(`.release[data-tag="${release.tag}"] .score-num`)
+        .locator(`${releaseSelector(release.tag)} .score-num`)
         .innerText();
       const expectedScore = release.finalScore == null ? '—' : Number(release.finalScore).toFixed(1);
       if (scoreText !== expectedScore) {
         throw new Error(`Profile changed ${release.tag} score from audited ${expectedScore} to ${scoreText}`);
       }
-      if (await profilePage.locator(`.release[data-tag="${release.tag}"] .score-sub`).count()) {
+      if (await profilePage.locator(`${releaseSelector(release.tag)} .score-sub`).count()) {
         throw new Error(`Profile rendered a secondary mutated score for ${release.tag}`);
       }
     }
@@ -612,7 +625,9 @@ try {
       await mobileRecommendationPanel.locator('.update-cmd__code')
         .filter({ hasText: expectedRecommendedCmd })
         .waitFor();
-      await mobileRecommendationPanel.locator(`.update-cmd__copy[data-cmd="${expectedRecommendedCmd}"]`).waitFor();
+      await mobileRecommendationPanel
+        .locator(`.update-cmd__copy${cssAttributeEquals('data-cmd', expectedRecommendedCmd)}`)
+        .waitFor();
       await assertElementInViewport(mobilePage, mobileRecommendationPanel.locator('.update-cmd__code').first(), 'mobile update command');
       await assertElementInViewport(mobilePage, mobileRecommendationPanel.locator('.update-cmd__copy').first(), 'mobile copy button');
     } else if (await mobileRecommendationPanel.locator('.update-cmd__code, .update-cmd__copy').count()) {
@@ -623,7 +638,7 @@ try {
       : mobileRecommendationPanel;
     await mobileReviewPanel.locator('.score-review').waitFor();
     if (recommendedTag) {
-      await mobilePage.locator(`.release[data-tag="${recommendedTag}"] .release__drivers`).first().waitFor();
+      await mobilePage.locator(`${releaseSelector(recommendedTag)} .release__drivers`).first().waitFor();
     }
 
     await assertVisualSmoke(mobilePage, 'mobile');
@@ -631,7 +646,7 @@ try {
     await assertElementInViewport(mobilePage, mobilePage.locator('.topbar__nav').first(), 'mobile topbar nav');
     await assertElementInViewport(mobilePage, mobileReviewPanel.locator('.score-review').first(), 'mobile score review');
     if (recommendedTag) {
-      await assertElementInViewport(mobilePage, mobilePage.locator(`.release[data-tag="${recommendedTag}"] .release__drivers`).first(), 'mobile score drivers');
+      await assertElementInViewport(mobilePage, mobilePage.locator(`${releaseSelector(recommendedTag)} .release__drivers`).first(), 'mobile score drivers');
     }
     passCoverage(coverage.core, 'mobile');
   } finally {
@@ -1236,7 +1251,7 @@ async function assertStaleCauseMappings(browser, {
   try {
     await page.goto(`${base}/#/openclaw`, { waitUntil: 'networkidle' });
     await releaseToggle(page, target.tag).click();
-    const diagnostic = page.locator(`#review-${cssId(target.tag)} [data-review-state="stale"]`);
+    const diagnostic = page.locator(`#review-${domIdForTag(target.tag)} [data-review-state="stale"]`);
     await diagnostic.waitFor();
     const text = await diagnostic.innerText();
     for (const expected of [
@@ -1428,10 +1443,10 @@ async function assertStaleAuditHardRefreshIsolation(browser, {
       .locator('#recTarget')
       .getByText(/stored analysis was produced by older scoring code or evidence/i)
       .waitFor();
-    const row = page.locator(`.release[data-tag="${staleRelease.tag}"]`);
+    const row = page.locator(releaseSelector(staleRelease.tag));
     await row.waitFor();
     await row.locator('[data-release-toggle]').click();
-    const panel = page.locator(`#det-${cssId(staleRelease.tag)}`);
+    const panel = page.locator(`#det-${domIdForTag(staleRelease.tag)}`);
     const diagnostic = panel.locator('[data-review-state="stale"]');
     await diagnostic.getByText('Assessment details unavailable.', { exact: false }).waitFor();
     await diagnostic.getByText(/evidence source changed after scoring/i).waitFor();
@@ -1447,7 +1462,7 @@ async function assertStaleAuditHardRefreshIsolation(browser, {
     if (/OBSOLETE SCORE COMPONENT MARKER|obsoletePenalty|-9\.9/.test(panelText)) {
       throw new Error(`Stale hard reload mixed obsolete score details with current evidence: ${panelText}`);
     }
-    if (await page.locator(`.score-history__dot[data-tag="${staleRelease.tag}"]`).count()) {
+    if (await page.locator(`.score-history__dot${cssAttributeEquals('data-tag', staleRelease.tag)}`).count()) {
       throw new Error('Obsolete history score reappeared for an authoritative stale release');
     }
     if (historyCalls < 2) {
@@ -1537,9 +1552,9 @@ async function assertDelayedReleaseAndPublicStates(browser, {
     pendingPublicRoute = null;
     await page.waitForSelector('#releases .release');
     await assertReleaseRowInteractionSemantics(page, release.tag);
-    const row = page.locator(`.release[data-tag="${release.tag}"]`);
+    const row = page.locator(releaseSelector(release.tag));
     await row.locator('[data-release-toggle]').click();
-    const issueSlot = page.locator(`#issues-${cssId(release.tag)}`);
+    const issueSlot = page.locator(`#issues-${domIdForTag(release.tag)}`);
     await issueSlot.locator('[data-public-state="empty"]').waitFor({ state: 'visible' });
     await page.locator('.release--recommended').waitFor();
 
@@ -1714,7 +1729,7 @@ async function assertHistoryReleaseSetAuthorization(browser, {
         `history ${phantomTag} automatic snapshot rebase`,
       );
       await page.locator('.release--recommended').waitFor();
-      if (await page.locator(`.score-history__dot[data-tag="${phantomTag}"]`).count()) {
+      if (await page.locator(`.score-history__dot${cssAttributeEquals('data-tag', phantomTag)}`).count()) {
         throw new Error(`History rendered phantom rating ${phantomTag}`);
       }
       if ((await page.locator('body').innerText()).includes(phantomTag)) {
@@ -1796,7 +1811,7 @@ async function assertRetainedPublicSnapshotIsDiagnostic(browser, {
     await assertAuthorizedRatingsRemainVisible(page, releases, 'Retained public snapshot');
     await exposeReleaseDetailsWithoutReview(page, releases[0].tag);
     await page
-      .locator(`#issues-${cssId(releases[0].tag)} [data-public-retry]`)
+      .locator(`#issues-${domIdForTag(releases[0].tag)} [data-public-retry]`)
       .waitFor({ state: 'visible' });
     await assertRetryTargetSizes(page, 'Retained public snapshot');
   } finally {
@@ -2041,7 +2056,7 @@ async function assertProfileSummaryOmission(browser, {
     await page.goto(`${base}/#/openclaw`, { waitUntil: 'networkidle' });
     await page.waitForSelector('#releases .release');
     await releaseToggle(page, target.tag).click();
-    const panel = page.locator(`#det-${cssId(target.tag)}`);
+    const panel = page.locator(`#det-${domIdForTag(target.tag)}`);
     await panel.locator('summary.evidence-toggle__summary', { hasText: 'Show related issues' }).click();
     await panel
       .getByText(
@@ -2144,7 +2159,7 @@ async function assertAllStaleResponsiveState(browser, {
       }
       await assertNoActionableRetainedUi(page, scenario.label);
       await releaseToggle(page, target.tag).click();
-      await page.locator(`#det-${cssId(target.tag)}`).waitFor({ state: 'visible' });
+      await page.locator(`#det-${domIdForTag(target.tag)}`).waitFor({ state: 'visible' });
       await assertNoActionableRetainedUi(page, `${scenario.label} expanded`);
       await assertVisualSmoke(page, scenario.label);
       await assertHelpAndDisclosureTargetSizes(page, scenario.label);
@@ -2362,7 +2377,7 @@ async function assertReviewFailureInvalidatesSnapshot(browser, {
     await assertNoRecommendationOrInstallUi(page, 'Review 503');
     await assertAuthorizedRatingsRemainVisible(page, scenario.releases, 'Review 503');
     const retry = page.locator(
-      `#review-${cssId(release.tag)} [data-review-state="error"] [data-release-retry]`,
+      `#review-${domIdForTag(release.tag)} [data-review-state="error"] [data-release-retry]`,
     );
     await retry.waitFor();
     await assertRetryTargetSizes(page, 'Review failure');
@@ -2638,7 +2653,7 @@ async function assertSnapshotRebaseBudget(browser, {
 
     await exposeReleaseDetailsWithoutReview(page, second.targetTag);
     const publicRetry = page.locator(
-      `#issues-${cssId(second.targetTag)} [data-public-retry]`,
+      `#issues-${domIdForTag(second.targetTag)} [data-public-retry]`,
     );
     await publicRetry.waitFor({ state: 'visible' });
     await publicRetry.click();
@@ -2646,7 +2661,7 @@ async function assertSnapshotRebaseBudget(browser, {
     const targetTag = third.targetTag;
     await page.waitForSelector('#releases .release');
     await page
-      .locator(`#issues-${cssId(targetTag)} [data-public-state="ready"], #issues-${cssId(targetTag)} [data-public-state="empty"]`)
+      .locator(`#issues-${domIdForTag(targetTag)} [data-public-state="ready"], #issues-${domIdForTag(targetTag)} [data-public-state="empty"]`)
       .waitFor({ state: 'attached' });
     await page.waitForTimeout(150);
     if (releaseCalls !== 3) {
@@ -2716,10 +2731,10 @@ async function assertFailedSnapshotRebaseDropsRows(browser, {
     await page.goto(`${base}/#/openclaw`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#releases .release');
     await waitForCondition(() => pendingFirstHistoryRoute, 'first failed-rebase history request');
-    const row = page.locator(`.release[data-tag="${first.targetTag}"]`);
+    const row = page.locator(releaseSelector(first.targetTag));
     await row.locator('[data-release-toggle]').click();
     await page
-      .locator(`#review-${cssId(first.targetTag)} [data-review-state="loading"]`)
+      .locator(`#review-${domIdForTag(first.targetTag)} [data-review-state="loading"]`)
       .waitFor({ state: 'visible' });
     await waitForCondition(() => pendingReviewRoute, 'first failed-rebase review request');
 
@@ -2759,7 +2774,7 @@ async function assertFailedSnapshotRebaseDropsRows(browser, {
     await waitForCondition(() => releaseCalls === 3, 'failed-rebase manual retry');
     await page.locator('#packageLoadState[data-release-state="ready"]').waitFor({ state: 'attached' });
     await page
-      .locator(`#issues-${cssId(second.targetTag)} [data-public-state="ready"], #issues-${cssId(second.targetTag)} [data-public-state="empty"]`)
+      .locator(`#issues-${domIdForTag(second.targetTag)} [data-public-state="ready"], #issues-${domIdForTag(second.targetTag)} [data-public-state="empty"]`)
       .waitFor({ state: 'attached' });
     if (publicCalls !== 2) {
       throw new Error(`Failed-rebase retry issued ${publicCalls} public requests instead of 2`);
@@ -3085,15 +3100,15 @@ async function assertProgressiveFirstRender(browser, {
     await page.evaluate(() => {
       window.__progressiveFirstRow = document.querySelector('#releases .release');
     });
-    const row = page.locator(`.release[data-tag="${rowRelease.tag}"]`);
+    const row = page.locator(releaseSelector(rowRelease.tag));
     const toggle = row.locator('[data-release-toggle]');
-    const panel = page.locator(`#det-${cssId(rowRelease.tag)}`);
+    const panel = page.locator(`#det-${domIdForTag(rowRelease.tag)}`);
     const firstScoreBeforeAsyncCompletion = await row.locator('.score-num').innerText();
 
     await fulfillJson(pendingPublicRoute, publicPayload);
     pendingPublicRoute = null;
     await page
-      .locator(`#issues-${cssId(rowRelease.tag)} [data-public-state="ready"], #issues-${cssId(rowRelease.tag)} [data-public-state="empty"]`)
+      .locator(`#issues-${domIdForTag(rowRelease.tag)} [data-public-state="ready"], #issues-${domIdForTag(rowRelease.tag)} [data-public-state="empty"]`)
       .waitFor({ state: 'attached' });
     await toggle.click();
     await panel.locator('[data-review-state="loading"]').waitFor();
@@ -3115,8 +3130,8 @@ async function assertProgressiveFirstRender(browser, {
     await fulfillJson(pendingHistoryRoute, historyPayload);
     pendingHistoryRoute = null;
     await page.locator('#scoreHistory').waitFor({ state: 'visible' });
-    await page.locator(`.score-history__dot[data-tag="${chartRelease.tag}"]`).click();
-    const chartPanel = page.locator(`#det-${cssId(chartRelease.tag)}`);
+    await page.locator(`.score-history__dot${cssAttributeEquals('data-tag', chartRelease.tag)}`).click();
+    const chartPanel = page.locator(`#det-${domIdForTag(chartRelease.tag)}`);
     await waitForCondition(
       () => reviewCounts.get(chartRelease.tag) === 1,
       `${chartRelease.tag} chart review request`,
@@ -3129,7 +3144,7 @@ async function assertProgressiveFirstRender(browser, {
     }
 
     const firstScoreAfterAsyncCompletion = await page
-      .locator(`.release[data-tag="${rowRelease.tag}"] .score-num`)
+      .locator(`${releaseSelector(rowRelease.tag)} .score-num`)
       .innerText();
     if (firstScoreAfterAsyncCompletion !== firstScoreBeforeAsyncCompletion) {
       throw new Error(`Async enrichment replaced /api/releases score for ${rowRelease.tag}`);
@@ -3224,9 +3239,9 @@ async function assertStaleResponseIsolation(browser, {
   try {
     await page.goto(`${base}/#/openclaw`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('#releases .release');
-    const row = page.locator(`.release[data-tag="${release.tag}"]`);
+    const row = page.locator(releaseSelector(release.tag));
     await row.locator('[data-release-toggle]').click();
-    await page.locator(`#review-${cssId(release.tag)} [data-review-state="loading"]`).waitFor();
+    await page.locator(`#review-${domIdForTag(release.tag)} [data-review-state="loading"]`).waitFor();
     await waitForCondition(() => pendingOldReviewRoute, 'first snapshot review request');
     await page.evaluate(() => {
       loadHistoryForSnapshot(releaseLoadEpoch, releaseSnapshot);
@@ -3240,12 +3255,12 @@ async function assertStaleResponseIsolation(browser, {
     await page.evaluate(() => loadReleases());
     const expectedScore = Number(changedScore).toFixed(1);
     await page
-      .locator(`.release[data-tag="${release.tag}"] .score-num`)
+      .locator(`${releaseSelector(release.tag)} .score-num`)
       .filter({ hasText: expectedScore })
       .waitFor();
     await page.waitForFunction(
       ({ id }) => document.getElementById(id)?.textContent?.includes('FRESH PUBLIC MARKER'),
-      { id: `issues-${cssId(release.tag)}` },
+      { id: `issues-${domIdForTag(release.tag)}` },
     );
     await page.evaluate((tag) => {
       window.__freshSnapshotRow = document.querySelector(`.release[data-tag="${CSS.escape(tag)}"]`);
@@ -3259,16 +3274,16 @@ async function assertStaleResponseIsolation(browser, {
     pendingOldPublicRoute = null;
     await page.waitForTimeout(50);
 
-    const reviewSlot = page.locator(`#review-${cssId(release.tag)}`);
+    const reviewSlot = page.locator(`#review-${domIdForTag(release.tag)}`);
     if (await reviewSlot.locator('.score-review').count()) {
       throw new Error('Stale review response populated the current release snapshot');
     }
     await reviewSlot.locator('[data-review-state="idle"]').waitFor({ state: 'attached' });
-    const issueText = await page.locator(`#issues-${cssId(release.tag)}`).textContent();
+    const issueText = await page.locator(`#issues-${domIdForTag(release.tag)}`).textContent();
     if (!issueText.includes('FRESH PUBLIC MARKER') || issueText.includes('STALE PUBLIC MARKER')) {
       throw new Error('Stale /api/public response replaced current enrichment');
     }
-    const currentScore = await page.locator(`.release[data-tag="${release.tag}"] .score-num`).innerText();
+    const currentScore = await page.locator(`${releaseSelector(release.tag)} .score-num`).innerText();
     if (currentScore !== expectedScore) {
       throw new Error(`Stale response changed current /api/releases score ${expectedScore} to ${currentScore}`);
     }
@@ -4221,7 +4236,7 @@ async function assertFixtureStaticUx(browser, {
     await page.getByText('Global assessment history', { exact: true }).waitFor();
     await assertReleaseRowInteractionSemantics(page, releases[0].tag);
     await releaseToggle(page, releases[0].tag).click();
-    const panel = page.locator(`#det-${cssId(releases[0].tag)}`);
+    const panel = page.locator(`#det-${domIdForTag(releases[0].tag)}`);
     const loading = panel.locator('[data-review-state="loading"]');
     await loading.waitFor();
     if (await loading.getAttribute('aria-busy') !== 'true') {
@@ -4274,7 +4289,7 @@ async function assertFixtureStaticUx(browser, {
     }
 
     const advisoryRowText = await page
-      .locator(`.release[data-tag="${advisoryGated.tag}"]`)
+      .locator(releaseSelector(advisoryGated.tag))
       .innerText();
     if (!/medium-or-higher security advisor(y|ies)/i.test(advisoryRowText)) {
       throw new Error(`Fixture advisory-gated row did not use advisory wording: ${advisoryRowText}`);
@@ -4296,7 +4311,7 @@ async function assertFixtureStaticUx(browser, {
 }
 
 async function assertUnchangedStatusPollPreservesInteractiveDom(page, tag) {
-  const id = cssId(tag);
+  const id = domIdForTag(tag);
   const actionSelector = `#install-action-${id}`;
   const reviewSelector = `#review-${id}`;
   const panelSelector = `#det-${id}`;
@@ -4527,7 +4542,7 @@ async function assertAuditLinkJson(locator, expectedIssueNumber, label) {
 }
 
 async function assertReleaseRowInteractionSemantics(page, tag) {
-  const row = page.locator(`.release[data-tag="${tag}"]`);
+  const row = page.locator(releaseSelector(tag));
   const toggle = row.locator('[data-release-toggle]');
   const semantics = await row.evaluate((element) => ({
     role: element.getAttribute('role'),
@@ -4546,7 +4561,7 @@ async function assertReleaseRowInteractionSemantics(page, tag) {
     throw new Error(`Release toggle contains ${nestedInteractive} nested interactive element(s)`);
   }
 
-  const panel = page.locator(`#det-${cssId(tag)}`);
+  const panel = page.locator(`#det-${domIdForTag(tag)}`);
   await toggle.press('Enter');
   await panel.waitFor({ state: 'visible' });
   if (await toggle.getAttribute('aria-expanded') !== 'true') {
@@ -4717,8 +4732,8 @@ async function assertElementInViewport(page, locator, label) {
 }
 
 async function openScoreBreakdown(page, tag) {
-  const row = page.locator(`.release[data-tag="${tag}"]`);
-  const panel = page.locator(`#det-${cssId(tag)}`);
+  const row = page.locator(releaseSelector(tag));
+  const panel = page.locator(`#det-${domIdForTag(tag)}`);
   if (!(await panel.isVisible())) {
     await row.locator('[data-release-toggle]').click();
     await panel.waitFor({ state: 'visible' });
@@ -4731,7 +4746,7 @@ async function openScoreBreakdown(page, tag) {
 }
 
 function releaseToggle(page, tag) {
-  return page.locator(`.release[data-tag="${tag}"] [data-release-toggle]`);
+  return page.locator(`${releaseSelector(tag)} [data-release-toggle]`);
 }
 
 async function exposeReleaseDetailsWithoutReview(page, tag) {
@@ -4749,8 +4764,21 @@ async function exposeReleaseDetailsWithoutReview(page, tag) {
   }, tag);
 }
 
-function cssId(value) {
-  return String(value).replace(/[^a-zA-Z0-9_-]/g, '_');
+function domIdForTag(tag) {
+  const value = String(tag);
+  let encoded = 'tag-';
+  for (let index = 0; index < value.length; index += 1) {
+    encoded += value.charCodeAt(index).toString(16).padStart(4, '0');
+  }
+  return encoded;
+}
+
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+}
+
+function installCommand(tag) {
+  return `openclaw update --tag ${shellQuote(String(tag ?? '').replace(/^v/i, ''))}`;
 }
 
 function createCoverageReport() {

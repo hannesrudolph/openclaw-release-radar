@@ -981,7 +981,15 @@ function scoreInfo(r) {
   return { color: m.color, label: m.label, num: (s == null ? '—' : s.toFixed(1)) };
 }
 
-function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
+function domIdForTag(tag) {
+  const value = String(tag);
+  let encoded = 'tag-';
+  // Fixed-width UTF-16 code units preserve exact string identity using safe ID characters.
+  for (let i = 0; i < value.length; i += 1) {
+    encoded += value.charCodeAt(i).toString(16).padStart(4, '0');
+  }
+  return encoded;
+}
 
 function formatScore10(s) {
   const score = finiteScore(s);
@@ -1594,8 +1602,12 @@ function npmVersionFromTag(tag) {
   return String(tag ?? '').replace(/^v/i, '');
 }
 
+function shellQuote(value) {
+  return "'" + String(value).replace(/'/g, "'\"'\"'") + "'";
+}
+
 function installCommand(tag) {
-  return `openclaw update --tag ${npmVersionFromTag(tag)}`;
+  return `openclaw update --tag ${shellQuote(npmVersionFromTag(tag))}`;
 }
 
 const STALE_ANALYSIS_PREFIX = 'Analysis is stale.';
@@ -3422,10 +3434,10 @@ function collapsibleEvidence(summary, contentHtml) {
 function installPanelHtml(r) {
   const advCount = (r.advisories?.affected?.items ?? []).length;
   return `<div class="details__inner">`
-    + `<div id="install-action-${cssId(r.tag)}">${installActionHtml(r)}</div>`
-    + `<div id="review-${cssId(r.tag)}" aria-live="polite">${reviewSlotHtml(r)}</div>`
+    + `<div id="install-action-${domIdForTag(r.tag)}">${installActionHtml(r)}</div>`
+    + `<div id="review-${domIdForTag(r.tag)}" aria-live="polite">${reviewSlotHtml(r)}</div>`
     + collapsibleEvidence(advCount === 1 ? 'Show known advisory' : 'Show known advisories', advisoryEvidenceHtml(r))
-    + `<div id="issues-${cssId(r.tag)}">${relatedIssuesSlotHtml(r)}</div>`
+    + `<div id="issues-${domIdForTag(r.tag)}">${relatedIssuesSlotHtml(r)}</div>`
     + `</div>`;
 }
 
@@ -3487,21 +3499,21 @@ function relatedIssuesSlotHtml(r) {
 
 function patchReleaseReviewSlot(tag) {
   const release = allReleases.find((row) => row.tag === tag);
-  const slot = document.getElementById(`review-${cssId(tag)}`);
+  const slot = document.getElementById(`review-${domIdForTag(tag)}`);
   if (!release || !slot) return;
   slot.innerHTML = reviewSlotHtml(release);
 }
 
 function patchReleaseActionSlot(tag) {
   const release = allReleases.find((row) => row.tag === tag);
-  const slot = document.getElementById(`install-action-${cssId(tag)}`);
+  const slot = document.getElementById(`install-action-${domIdForTag(tag)}`);
   if (!release || !slot) return;
   slot.innerHTML = installActionHtml(release);
 }
 
 function patchReleaseIssueSlot(tag) {
   const release = allReleases.find((row) => row.tag === tag);
-  const slot = document.getElementById(`issues-${cssId(tag)}`);
+  const slot = document.getElementById(`issues-${domIdForTag(tag)}`);
   if (!release || !slot) return;
   const wasOpen = slot.querySelector('details.evidence-toggle')?.open === true;
   slot.innerHTML = relatedIssuesSlotHtml(release);
@@ -3511,13 +3523,13 @@ function patchReleaseIssueSlot(tag) {
 function patchReleasePublicSlots(tag) {
   const release = allReleases.find((row) => row.tag === tag);
   if (!release) return;
-  const surfaceSlot = document.getElementById(`surfaces-${cssId(tag)}`);
+  const surfaceSlot = document.getElementById(`surfaces-${domIdForTag(tag)}`);
   if (surfaceSlot) surfaceSlot.innerHTML = affectedAreasHtml(issueBackedSurfaces(release));
   patchReleaseIssueSlot(tag);
 }
 
 function patchReleaseRecommendationPresentation(release, category) {
-  const id = cssId(release.tag);
+  const id = domIdForTag(release.tag);
   const row = document.querySelector(`.release[data-tag="${CSS.escape(release.tag)}"]`);
   if (!row) return;
   ['normal', 'skip', 'too-new', 'recommended', 'stale']
@@ -4488,7 +4500,7 @@ function renderReleases() {
 
   rows.forEach(r => {
     const si  = displayScoreInfo(r);
-    const id  = cssId(r.tag);
+    const id  = domIdForTag(r.tag);
     const cat = byTag.get(r.tag) ?? { category: 'normal', reason: '' };
 
     const row = document.createElement('div');

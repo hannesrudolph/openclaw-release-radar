@@ -473,6 +473,7 @@ function releaseNode(input: {
   id: string;
   tagName: string;
   tagOid?: string;
+  name?: string | null;
   publishedAt?: string | null;
   createdAt?: string;
   updatedAt?: string;
@@ -483,7 +484,7 @@ function releaseNode(input: {
     id: input.id,
     tagName: input.tagName,
     tagCommit: { oid: input.tagOid ?? 'a'.repeat(40) },
-    name: input.tagName,
+    name: input.name === undefined ? input.tagName : input.name,
     publishedAt: input.publishedAt ?? '2026-07-01T00:00:00Z',
     createdAt: input.createdAt ?? '2026-07-01T00:00:00Z',
     updatedAt: input.updatedAt ?? '2026-07-01T00:00:00Z',
@@ -933,6 +934,23 @@ describe('GitHub GraphQL mapping', () => {
     assert.equal(release.prerelease, true);
   });
 
+  it('preserves an exact beta tag when its GitHub release name looks stable', async () => {
+    const catalog = await fetchBoundReleaseCatalog([
+      releaseNode({
+        id: 'R_beta-with-stable-name',
+        tagName: 'v2.0.0-beta.1',
+        tagOid: '2'.repeat(40),
+        name: 'OpenClaw v2.0.0',
+        isPrerelease: true,
+      }),
+    ]);
+
+    assert.equal(catalog.releases[0].tag_name, 'v2.0.0-beta.1');
+    assert.equal(catalog.releases[0].name, 'OpenClaw v2.0.0');
+    assert.equal(catalog.releases[0].prerelease, true);
+    assert.equal(activeReleaseRows(catalog)[0].tag, 'v2.0.0-beta.1');
+  });
+
   it('exhausts and stabilizes the full release connection with explicit metadata', async () => {
     const newestCreated = releaseNode({
       id: 'R_newest-created',
@@ -1070,6 +1088,48 @@ describe('GitHub GraphQL mapping', () => {
     );
   });
 
+  it('rejects non-boolean GraphQL isPrerelease metadata', async () => {
+    for (const isPrerelease of [0, 1, 'false', null]) {
+      const node = {
+        ...releaseNode({
+          id: `R_invalid-prerelease-${String(isPrerelease)}`,
+          tagName: `v-invalid-prerelease-${String(isPrerelease)}`,
+        }),
+        isPrerelease,
+      } as unknown as ReturnType<typeof releaseNode>;
+
+      await assert.rejects(
+        __githubTest.fetchReleaseCatalog({
+          request: async <T>(): Promise<T> =>
+            releasePage(1, [node]) as T,
+        }),
+        /returned release .* with non-boolean isPrerelease/,
+        String(isPrerelease),
+      );
+    }
+  });
+
+  it('rejects non-boolean GraphQL isDraft metadata', async () => {
+    for (const isDraft of [0, 1, 'false', null]) {
+      const node = {
+        ...releaseNode({
+          id: `R_invalid-draft-${String(isDraft)}`,
+          tagName: `v-invalid-draft-${String(isDraft)}`,
+        }),
+        isDraft,
+      } as unknown as ReturnType<typeof releaseNode>;
+
+      await assert.rejects(
+        __githubTest.fetchReleaseCatalog({
+          request: async <T>(): Promise<T> =>
+            releasePage(1, [node]) as T,
+        }),
+        /returned release .* with non-boolean isDraft/,
+        String(isDraft),
+      );
+    }
+  });
+
   it('rejects release count mismatches, repeated cursors, and page-cap truncation', async () => {
     await assert.rejects(
       __githubTest.fetchReleaseCatalog({
@@ -1181,6 +1241,33 @@ describe('GitHub GraphQL mapping', () => {
         activeReleaseRows(forgedCatalog),
       ),
       /requires the exact object returned by fetchReleaseCatalog/,
+    );
+  });
+
+  it('rejects in-place mutation of the exact fetched catalog object', async () => {
+    const catalog = await fetchBoundReleaseCatalog([
+      releaseNode({
+        id: 'R_fetched_v1',
+        tagName: 'v1.0.0',
+        tagOid: '1'.repeat(40),
+      }),
+    ]);
+    catalog.releases[0] = {
+      ...catalog.releases[0],
+      node_id: 'R_phantom_v9',
+      tag_name: 'v9.9.9',
+      tag_commit_oid: '9'.repeat(40),
+      name: 'OpenClaw v9.9.9',
+      html_url:
+        'https://github.com/openclaw/openclaw/releases/tag/v9.9.9',
+    };
+
+    assert.throws(
+      () => __githubTest.authorizeGithubReleaseCatalogPublication(
+        catalog,
+        activeReleaseRows(catalog),
+      ),
+      /changed after GraphQL provenance was captured/,
     );
   });
 

@@ -2718,6 +2718,18 @@ function requireReleaseNode(node: ReleaseNode, context: string): ReleaseNode {
     node.tagCommit.oid,
     `${context} release ${node.tagName} tag commit OID`,
   );
+  if (typeof node.isPrerelease !== 'boolean') {
+    throw new Error(
+      `GitHub GraphQL ${context} returned release ${node.tagName} ` +
+      'with non-boolean isPrerelease',
+    );
+  }
+  if (typeof node.isDraft !== 'boolean') {
+    throw new Error(
+      `GitHub GraphQL ${context} returned release ${node.tagName} ` +
+      'with non-boolean isDraft',
+    );
+  }
   if (typeof node.createdAt !== 'string' || node.createdAt.length === 0) {
     throw new Error(`GitHub GraphQL ${context} returned release ${node.tagName} with missing createdAt`);
   }
@@ -3031,14 +3043,14 @@ export function authorizeGithubReleaseCatalogPublication(
       'Release catalog publication authorization requires the exact object returned by fetchReleaseCatalog',
     );
   }
-  if (fetched.requestAuthority !== 'production') {
-    throw new Error(
-      'Release catalog publication authorization requires the built-in production GitHub GraphQL requester; injected requesters are untrusted',
-    );
-  }
   if (fetched.fingerprint !== fetchedReleaseCatalogFingerprint(catalog)) {
     throw new Error(
       'Fetched release catalog changed after GraphQL provenance was captured',
+    );
+  }
+  if (fetched.requestAuthority !== 'production') {
+    throw new Error(
+      'Release catalog publication authorization requires the built-in production GitHub GraphQL requester; injected requesters are untrusted',
     );
   }
   if (!fetched.operationBinding) {

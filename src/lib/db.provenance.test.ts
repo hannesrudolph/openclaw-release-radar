@@ -23,10 +23,16 @@ import {
   type IssueClassification,
 } from './llm.ts';
 import {
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT,
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES,
   appendClassifierAttempt,
   captureClassifierError,
   captureClassifierRawModelOutput,
   captureClassifierRawResponse,
+  captureClassifierSemanticDiagnostics,
+  classifierAttemptContentHash,
+  classifierAttemptProvenanceHash,
+  classifierAttemptRunContentHash,
   createClassifierAttemptLedger,
   createClassifierAttemptRun,
   createClassifierAttemptTerminalReceipt,
@@ -303,6 +309,176 @@ function recordAcceptedClassifierLedger(
       stateSnapshotRevision: revisions.stateSnapshotRevision,
     },
   };
+}
+
+function groundingRetryRawModelOutput(): string {
+  return JSON.stringify({
+    sentiment: 'negative',
+    severity: 'high',
+    scope: 'moderate',
+    functionality: 'core',
+    affected_users: 'unknown',
+    workaroundStatus: 'unknown',
+    duplicateCluster: null,
+    affectsVersion: null,
+    evidence: {
+      sentiment: [],
+      severity: [],
+      scope: [],
+      functionality: [],
+      affected_users: [],
+      workaroundStatus: [],
+      duplicateCluster: [],
+      affectsVersion: [],
+    },
+    rationale: 'Grounding fixture requires corrected citations.',
+  });
+}
+
+function acceptedClassifierSemanticRetryLedger(
+  input: Parameters<typeof acceptedClassifierLedger>[0],
+) {
+  const initialRequestHash = createHash('sha256')
+    .update(`initial-request:${input.issueNumber}:${input.responseId}`)
+    .digest('hex');
+  const finalRequestHash = createHash('sha256')
+    .update(`feedback-request:${input.issueNumber}:${input.responseId}`)
+    .digest('hex');
+  const run = createClassifierAttemptRun({
+    runId: `classifier-run-${input.issueNumber}-${input.responseId}`,
+    issueNumber: input.issueNumber,
+    startedAt: '2040-01-01T00:00:00.000Z',
+    maxAttempts: 2,
+    classifierIdentityHash: input.sourceIdentity.promptTemplateHash,
+    requestHash: initialRequestHash,
+  });
+  const rejectedRawModelOutput = groundingRetryRawModelOutput();
+  const rejectedResponseId = `${input.responseId}-rejected`;
+  const rejectedAttempt = appendClassifierAttempt(run, [], {
+    attemptId: `classifier-attempt-${input.issueNumber}-${rejectedResponseId}`,
+    status: 'semantic_rejection',
+    startedAt: '2040-01-01T00:00:00.000Z',
+    finishedAt: '2040-01-01T00:00:01.000Z',
+    rawResponse: captureClassifierRawResponse(JSON.stringify({
+      id: rejectedResponseId,
+      model: input.sourceIdentity.model,
+      service_tier: input.sourceIdentity.serviceTier,
+      choices: [{
+        message: {
+          content: rejectedRawModelOutput,
+        },
+      }],
+    })),
+    rawModelOutput: captureClassifierRawModelOutput(rejectedRawModelOutput),
+    error: captureClassifierError({
+      name: 'ClassificationGroundingError',
+      message: 'severity requires a supporting citation',
+    }),
+    retry: {
+      decision: 'retry',
+      retryable: true,
+      delayMs: 0,
+      reason: 'retryable_semantic_rejection',
+    },
+    semanticDiagnostics: captureClassifierSemanticDiagnostics([{
+      field: 'severity',
+      code: 'missing_support',
+      message: 'severity requires a supporting citation',
+    }]),
+    provenance: {
+      requestHash: initialRequestHash,
+      responseId: rejectedResponseId,
+      responseModel: input.sourceIdentity.model,
+      responseServiceTier: input.sourceIdentity.serviceTier,
+    },
+  });
+  const acceptedAttempt = appendClassifierAttempt(run, [rejectedAttempt], {
+    attemptId: `classifier-attempt-${input.issueNumber}-${input.responseId}`,
+    status: 'accepted_success',
+    startedAt: '2040-01-01T00:00:01.000Z',
+    finishedAt: '2040-01-01T00:00:02.000Z',
+    rawResponse: captureClassifierRawResponse(JSON.stringify({
+      id: input.responseId,
+      model: input.sourceIdentity.model,
+      service_tier: input.sourceIdentity.serviceTier,
+      choices: [{
+        message: {
+          content: input.rawModelOutput,
+        },
+      }],
+    })),
+    rawModelOutput: captureClassifierRawModelOutput(input.rawModelOutput),
+    error: null,
+    retry: {
+      decision: 'stop',
+      retryable: false,
+      delayMs: null,
+      reason: 'accepted_success',
+    },
+    semanticDiagnostics: [],
+    provenance: {
+      requestHash: finalRequestHash,
+      responseId: input.responseId,
+      responseModel: input.sourceIdentity.model,
+      responseServiceTier: input.sourceIdentity.serviceTier,
+    },
+  });
+  const receipt = createClassifierAttemptTerminalReceipt(
+    run,
+    [rejectedAttempt, acceptedAttempt],
+    {
+      receiptId: `classifier-receipt-${input.issueNumber}-${input.responseId}`,
+      status: 'accepted_success',
+      finishedAt: '2040-01-01T00:00:03.000Z',
+      error: null,
+    },
+  );
+  const ledger = createClassifierAttemptLedger(
+    run,
+    [rejectedAttempt, acceptedAttempt],
+    receipt,
+  );
+  return {
+    initialRequestHash,
+    finalRequestHash,
+    run,
+    rejectedAttempt,
+    acceptedAttempt,
+    receipt,
+    ledger,
+  };
+}
+
+function recordAcceptedClassifierSemanticRetryLedger(
+  db: any,
+  input: Parameters<typeof acceptedClassifierLedger>[0],
+) {
+  const fixture = acceptedClassifierSemanticRetryLedger(input);
+  db.recordClassifierAttemptRun(fixture.run);
+  db.recordClassifierAttempt(fixture.rejectedAttempt);
+  db.recordClassifierAttempt(fixture.acceptedAttempt);
+  db.recordClassifierAttemptTerminalReceipt(fixture.receipt);
+  const revisions = db.issueEvidenceRevisions([input.issueNumber]).get(input.issueNumber);
+  assert.ok(revisions);
+  assert.ok(fixture.receipt.selectedAttempt);
+  return {
+    ...fixture,
+    selectedAttemptBinding: fixture.receipt.selectedAttempt,
+    evidenceRevisions: {
+      issueRevision: revisions.issueRevision,
+      snapshotRevision: revisions.snapshotRevision,
+      stateSnapshotRevision: revisions.stateSnapshotRevision,
+    },
+  };
+}
+
+function resealClassifierAttempt(attempt: any): any {
+  attempt.provenanceHash = classifierAttemptProvenanceHash(
+    attempt.provenance,
+  );
+  const { contentHash: _contentHash, ...withoutContentHash } = attempt;
+  attempt.contentHash = classifierAttemptContentHash(withoutContentHash);
+  return attempt;
 }
 
 function testReleaseCommitOid(tag: string): string {
@@ -4602,6 +4778,308 @@ describe('release fix provenance', () => {
     }
   });
 
+  it('mirrors semantic-retry request-hash transitions in durable attempt prefixes', async () => {
+    const db = await freshDb('classifier-attempt-request-hash-transition');
+    const sourceIdentity = db.classifierSourceIdentity(['v-ledger'], 8);
+    const initialRequestHash = createHash('sha256')
+      .update('transport-initial-request')
+      .digest('hex');
+    const changedRequestHash = createHash('sha256')
+      .update('transport-changed-request')
+      .digest('hex');
+    const transportRun = createClassifierAttemptRun({
+      runId: 'classifier-run-transport-transition',
+      issueNumber: 7202,
+      startedAt: '2040-02-02T00:00:00.000Z',
+      maxAttempts: 2,
+      classifierIdentityHash: sourceIdentity.promptTemplateHash,
+      requestHash: initialRequestHash,
+    });
+    const transportFailure = appendClassifierAttempt(transportRun, [], {
+      attemptId: 'classifier-attempt-transport-transition-1',
+      status: 'transport_failure',
+      startedAt: '2040-02-02T00:00:00.000Z',
+      finishedAt: '2040-02-02T00:00:01.000Z',
+      rawResponse: captureClassifierRawResponse('temporary failure'),
+      rawModelOutput: null,
+      error: captureClassifierError(new Error('temporary failure')),
+      retry: {
+        decision: 'retry',
+        retryable: true,
+        delayMs: 0,
+        reason: 'retryable_transport_failure',
+      },
+      semanticDiagnostics: [],
+      provenance: {
+        requestHash: initialRequestHash,
+        responseId: null,
+        responseModel: null,
+        responseServiceTier: null,
+      },
+    });
+    const transportRawOutput = JSON.stringify({
+      sentiment: 'negative',
+      severity: 'high',
+      scope: 'moderate',
+      functionality: 'core',
+      affected_users: 'some',
+      affected_users_evidence: 'Affects startup.',
+      hasWorkaround: false,
+      workaroundStatus: 'unknown',
+      duplicateCluster: null,
+      affectsVersion: null,
+      confidence: 0.9,
+      rationale: 'Startup fails.',
+    });
+    const validTransportRetry = appendClassifierAttempt(
+      transportRun,
+      [transportFailure],
+      {
+        attemptId: 'classifier-attempt-transport-transition-2',
+        status: 'accepted_success',
+        startedAt: '2040-02-02T00:00:01.000Z',
+        finishedAt: '2040-02-02T00:00:02.000Z',
+        rawResponse: captureClassifierRawResponse(JSON.stringify({
+          id: 'chatcmpl-transport-transition',
+          model: sourceIdentity.model,
+          service_tier: sourceIdentity.serviceTier,
+          choices: [{
+            message: {
+              content: transportRawOutput,
+            },
+          }],
+        })),
+        rawModelOutput: captureClassifierRawModelOutput(transportRawOutput),
+        error: null,
+        retry: {
+          decision: 'stop',
+          retryable: false,
+          delayMs: null,
+          reason: 'accepted_success',
+        },
+        semanticDiagnostics: [],
+        provenance: {
+          requestHash: initialRequestHash,
+          responseId: 'chatcmpl-transport-transition',
+          responseModel: sourceIdentity.model,
+          responseServiceTier: sourceIdentity.serviceTier,
+        },
+      },
+    );
+    const invalidTransportTransition = structuredClone(validTransportRetry) as any;
+    invalidTransportTransition.provenance.requestHash = changedRequestHash;
+    resealClassifierAttempt(invalidTransportTransition);
+
+    db.recordClassifierAttemptRun(transportRun);
+    db.recordClassifierAttempt(transportFailure);
+    assert.throws(
+      () => db.recordClassifierAttempt(invalidTransportTransition),
+      /requestHash changed without an immediately preceding eligible grounding semantic retry/,
+    );
+    assert.equal(db.listClassifierAttempts(transportRun.runId).length, 1);
+
+    const semanticRetry = acceptedClassifierSemanticRetryLedger({
+      issueNumber: 7203,
+      rawModelOutput: transportRawOutput,
+      sourceIdentity,
+      responseId: 'chatcmpl-semantic-transition',
+    });
+    db.recordClassifierAttemptRun(semanticRetry.run);
+    db.recordClassifierAttempt(semanticRetry.rejectedAttempt);
+    const unchangedSemanticTransition = resealClassifierAttempt(
+      structuredClone(semanticRetry.acceptedAttempt),
+    );
+    unchangedSemanticTransition.provenance.requestHash =
+      semanticRetry.initialRequestHash;
+    resealClassifierAttempt(unchangedSemanticTransition);
+    assert.throws(
+      () => db.recordClassifierAttempt(unchangedSemanticTransition),
+      /requestHash must change after an immediately preceding eligible grounding semantic retry/,
+    );
+    assert.equal(db.listClassifierAttempts(semanticRetry.run.runId).length, 1);
+    db.recordClassifierAttempt(semanticRetry.acceptedAttempt);
+    db.recordClassifierAttemptTerminalReceipt(semanticRetry.receipt);
+
+    const stored = db.getClassifierAttemptLedger(semanticRetry.run.runId);
+    assert.ok(stored);
+    assert.equal(stored.run.requestHash, semanticRetry.initialRequestHash);
+    assert.deepEqual(
+      stored.attempts.map((attempt: any) => attempt.provenance.requestHash),
+      [semanticRetry.initialRequestHash, semanticRetry.finalRequestHash],
+    );
+    assert.equal(
+      stored.receipt.selectedAttempt?.provenance.requestHash,
+      semanticRetry.finalRequestHash,
+    );
+
+    for (const testCase of [
+      {
+        issueNumber: 7204,
+        responseId: 'chatcmpl-duplicate-source-retry',
+        mutate(attempt: any) {
+          attempt.semanticDiagnostics[0].code = 'duplicate_source_id';
+        },
+        expected: /duplicate_source_id cannot authorize a semantic retry/,
+      },
+      {
+        issueNumber: 7205,
+        responseId: 'chatcmpl-schema-retry',
+        mutate(attempt: any) {
+          attempt.semanticDiagnostics[0].code = 'schema_shape_rejection';
+        },
+        expected: /is not a model-correctable grounding failure/,
+      },
+      {
+        issueNumber: 7206,
+        responseId: 'chatcmpl-generic-error-retry',
+        mutate(attempt: any) {
+          attempt.error.name = 'Error';
+        },
+        expected:
+          /semantic retry requires an uncoded ClassificationGroundingError/,
+      },
+      {
+        issueNumber: 7207,
+        responseId: 'chatcmpl-oversized-diagnostic-retry',
+        mutate(attempt: any) {
+          attempt.semanticDiagnostics =
+            captureClassifierSemanticDiagnostics([{
+              field: 'severity',
+              code: 'missing_support',
+              message: 'x'.repeat(
+                CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES + 1,
+              ),
+            }]);
+        },
+        expected:
+          /message exceeds the semantic retry feedback limit/,
+      },
+      {
+        issueNumber: 7208,
+        responseId: 'chatcmpl-delayed-semantic-retry',
+        mutate(attempt: any) {
+          attempt.retry.delayMs = 1;
+        },
+        expected: /semantic retry requires delayMs=0/,
+      },
+      {
+        issueNumber: 7210,
+        responseId: 'chatcmpl-relabeled-schema-retry',
+        mutate(attempt: any) {
+          const invalidOutput = '{"severity":"extreme"}';
+          const rawResponse = JSON.parse(attempt.rawResponse.text);
+          rawResponse.choices[0].message.content = invalidOutput;
+          attempt.rawResponse =
+            captureClassifierRawResponse(JSON.stringify(rawResponse));
+          attempt.rawModelOutput =
+            captureClassifierRawModelOutput(invalidOutput);
+        },
+        expected: /rawModelOutput\.text.*classifier JSON|missing fields/,
+      },
+      {
+        issueNumber: 7211,
+        responseId: 'chatcmpl-invalid-usage-retry',
+        mutate(attempt: any) {
+          const rawResponse = JSON.parse(attempt.rawResponse.text);
+          rawResponse.usage = { prompt_tokens: -1 };
+          attempt.rawResponse =
+            captureClassifierRawResponse(JSON.stringify(rawResponse));
+        },
+        expected: /semantic retry requires verifiable provider usage/,
+      },
+      {
+        issueNumber: 7212,
+        responseId: 'chatcmpl-excessive-diagnostics-retry',
+        mutate(attempt: any) {
+          attempt.semanticDiagnostics =
+            captureClassifierSemanticDiagnostics(Array.from(
+              {
+                length:
+                  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT + 1,
+              },
+              (_, index) => ({
+                field: 'severity',
+                code: 'missing_support',
+                message: `missing support ${index}`,
+              }),
+            ));
+        },
+        expected: /semantic retry diagnostics exceed the feedback limit/,
+      },
+    ]) {
+      const fixture = acceptedClassifierSemanticRetryLedger({
+        issueNumber: testCase.issueNumber,
+        rawModelOutput: transportRawOutput,
+        sourceIdentity,
+        responseId: testCase.responseId,
+      });
+      const invalidRejectedAttempt = structuredClone(
+        fixture.rejectedAttempt,
+      ) as any;
+      testCase.mutate(invalidRejectedAttempt);
+      resealClassifierAttempt(invalidRejectedAttempt);
+      db.recordClassifierAttemptRun(fixture.run);
+      assert.throws(
+        () => db.recordClassifierAttempt(invalidRejectedAttempt),
+        testCase.expected,
+      );
+      assert.equal(db.listClassifierAttempts(fixture.run.runId).length, 0);
+    }
+
+    const exhaustedFixture = acceptedClassifierSemanticRetryLedger({
+      issueNumber: 7209,
+      rawModelOutput: transportRawOutput,
+      sourceIdentity,
+      responseId: 'chatcmpl-exhausted-retry-claim',
+    });
+    const exhaustedRun = structuredClone(exhaustedFixture.run) as any;
+    exhaustedRun.maxAttempts = 1;
+    const {
+      contentHash: _exhaustedRunContentHash,
+      ...exhaustedRunWithoutContentHash
+    } = exhaustedRun;
+    exhaustedRun.contentHash = classifierAttemptRunContentHash(
+      exhaustedRunWithoutContentHash,
+    );
+    const exhaustedAttempt = structuredClone(
+      exhaustedFixture.rejectedAttempt,
+    ) as any;
+    exhaustedAttempt.previousContentHash = exhaustedRun.contentHash;
+    resealClassifierAttempt(exhaustedAttempt);
+    db.recordClassifierAttemptRun(exhaustedRun);
+    assert.throws(
+      () => db.recordClassifierAttempt(exhaustedAttempt),
+      /retry cannot exceed the run attempt budget/,
+    );
+    assert.equal(db.listClassifierAttempts(exhaustedRun.runId).length, 0);
+
+    const prematureFixture = acceptedClassifierSemanticRetryLedger({
+      issueNumber: 7213,
+      rawModelOutput: transportRawOutput,
+      sourceIdentity,
+      responseId: 'chatcmpl-premature-exhaustion-claim',
+    });
+    const prematureAttempt = structuredClone(
+      prematureFixture.rejectedAttempt,
+    ) as any;
+    prematureAttempt.retry = {
+      decision: 'stop',
+      retryable: true,
+      delayMs: null,
+      reason: 'attempt_budget_exhausted',
+    };
+    resealClassifierAttempt(prematureAttempt);
+    db.recordClassifierAttemptRun(prematureFixture.run);
+    assert.throws(
+      () => db.recordClassifierAttempt(prematureAttempt),
+      /attempt_budget_exhausted is only valid at run\.maxAttempts/,
+    );
+    assert.equal(
+      db.listClassifierAttempts(prematureFixture.run.runId).length,
+      0,
+    );
+  });
+
   it('keeps receiptless, failed, and abandoned classifier runs durable without publishing classifications', async () => {
     const db = await freshDb('classifier-terminal-nonpublication');
     const requestHash = createHash('sha256').update('terminal-request').digest('hex');
@@ -4702,7 +5180,7 @@ describe('release fix provenance', () => {
       rawModelOutputHash: createHash('sha256').update(rawOutput).digest('hex'),
       rawModelOutput: rawOutput,
     };
-    const accepted = recordAcceptedClassifierLedger(db, {
+    const accepted = recordAcceptedClassifierSemanticRetryLedger(db, {
       issueNumber: 7401,
       rawModelOutput: rawOutput,
       sourceIdentity,
@@ -4741,6 +5219,20 @@ describe('release fix provenance', () => {
     assert.equal(
       integrity.publication?.selected_attempt_content_hash,
       accepted.selectedAttemptBinding.attemptContentHash,
+    );
+    assert.notEqual(accepted.initialRequestHash, accepted.finalRequestHash);
+    assert.equal(accepted.ledger.run.requestHash, accepted.initialRequestHash);
+    assert.equal(
+      accepted.selectedAttemptBinding.provenance.requestHash,
+      accepted.finalRequestHash,
+    );
+    assert.equal(
+      integrity.publication?.request_hash,
+      accepted.finalRequestHash,
+    );
+    assert.equal(
+      JSON.parse(integrity.publication?.binding_json ?? '{}').requestHash,
+      accepted.finalRequestHash,
     );
     const publishedRevision = db.getClassification(7401)?.revision;
     assert.throws(
@@ -10672,6 +11164,14 @@ describe('release fix provenance', () => {
           gate_evidence_json: '{}',
           source_identity_json: '{"schemaVersion":1,"digest":"baseline-source"}',
         });
+        database.upsertRelease({
+          tag: 'v-later',
+          name: 'v-later',
+          published_at: '2026-06-03T00:00:00Z',
+          html_url: 'https://example.test/v-later',
+          prerelease: false,
+          body: '',
+        });
         database.db.exec('DROP TABLE release_score_audit_history');
         database.db.close();
       })().catch((error) => {
@@ -10731,14 +11231,18 @@ describe('release fix provenance', () => {
         assert.equal(database.db.prepare(
           "SELECT COUNT(*) AS count FROM release_score_audit_history WHERE release_tag='v-baseline'"
         ).get().count, 1);
-        database.upsertRelease({
-          tag: 'v-later',
-          name: 'v-later',
-          published_at: '2026-06-03T00:00:00Z',
-          html_url: 'https://example.test/v-later',
-          prerelease: false,
-          body: '',
-        });
+        assert.throws(
+          () => database.upsertRelease({
+            tag: 'v-phantom',
+            name: 'v-phantom',
+            published_at: '2026-06-03T00:00:00Z',
+            html_url: 'https://example.test/v-phantom',
+            prerelease: false,
+            body: '',
+          }),
+          /upsertRelease is allowed only for test fixtures in fresh private test databases/,
+        );
+        assert.equal(database.getRelease('v-phantom'), undefined);
         database.upsertReleaseScoreAudit({
           release_tag: 'v-later',
           scored_at: '2026-06-04T00:00:00Z',

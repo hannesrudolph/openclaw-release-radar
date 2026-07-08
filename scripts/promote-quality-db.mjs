@@ -53,6 +53,13 @@ const DEFAULT_INSTALL_BASE = '/opt/openclaw-release-radar';
 const DEFAULT_DEPLOYMENT_LOCK_PATH =
   '/opt/openclaw-release-radar/shared/deploy-promotion.lock';
 const PENDING_DEPLOY_DIRECTORY = '.pending-deploy';
+const SQLITE_FAMILY_SUFFIXES = Object.freeze([
+  '',
+  '-wal',
+  '-shm',
+  '-journal',
+]);
+const SQLITE_SIDECAR_SUFFIXES = SQLITE_FAMILY_SUFFIXES.slice(1);
 export const INSTALLER_PENDING_STATE_SCHEMA_VERSION = 4;
 export const INSTALLER_PENDING_STATE_HASH_DOMAIN =
   'installer-pending-promotion-v2';
@@ -562,9 +569,14 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
     destinationPath,
     deploymentTransaction,
   );
-  const sourceFileIdentity = fileIdentity(sourcePath);
+  let sourceFileIdentity = fileIdentity(sourcePath);
   const destinationFileIdentity = fileIdentity(destinationPath);
-  assertDistinctDatabases(sourceFileIdentity, destinationFileIdentity);
+  assertDistinctDatabases(
+    sourceFileIdentity,
+    destinationFileIdentity,
+    'Source',
+    'destination',
+  );
   const rollbackBackupPath = options.rollbackBackupPath == null
     ? null
     : resolveRequiredDatabase(options.rollbackBackupPath, 'rollback backup');
@@ -572,8 +584,18 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
     ? null
     : fileIdentity(rollbackBackupPath);
   if (rollbackBackupFileIdentity) {
-    assertDistinctDatabases(sourceFileIdentity, rollbackBackupFileIdentity);
-    assertDistinctDatabases(destinationFileIdentity, rollbackBackupFileIdentity);
+    assertDistinctDatabases(
+      sourceFileIdentity,
+      rollbackBackupFileIdentity,
+      'Source',
+      'rollback backup',
+    );
+    assertDistinctDatabases(
+      destinationFileIdentity,
+      rollbackBackupFileIdentity,
+      'Destination',
+      'rollback backup',
+    );
   }
   if (pendingDeploymentAuthorization) {
     if (pendingDeploymentAuthorization.qualityDatabasePath !== sourceFileIdentity.realPath) {
@@ -633,6 +655,7 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
   );
   const sourceSnapshotPath = `${stem}.source.sqlite`;
   const sourceAfterStagingSnapshotPath = `${stem}.source-after-staging.sqlite`;
+  const sourceBeforeGithubSnapshotPath = `${stem}.source-before-github.sqlite`;
   const sourceFinalBoundarySnapshotPath = `${stem}.source-final-boundary.sqlite`;
   const destinationSnapshotPath = `${stem}.destination.sqlite`;
   const finalDestinationSnapshotPath = `${stem}.destination-final.sqlite`;
@@ -640,6 +663,7 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
   const temporaryPaths = [
     sourceSnapshotPath,
     sourceAfterStagingSnapshotPath,
+    sourceBeforeGithubSnapshotPath,
     sourceFinalBoundarySnapshotPath,
     destinationSnapshotPath,
     finalDestinationSnapshotPath,
@@ -665,12 +689,16 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
       },
     );
     assertSourceActivityAllowsApply(sourcePath, sourceActivityBeforeSnapshot, apply);
-    deps.snapshotDatabase(sourcePath, sourceSnapshotPath);
-    const sourceFileIdentityAfterSnapshot = fileIdentity(sourcePath);
-    assertFileIdentityEqual(
+    sourceFileIdentity = normalizeReadInspectionSqliteFamily(
       sourceFileIdentity,
-      sourceFileIdentityAfterSnapshot,
-      'Source database path changed identity while its promotion snapshot was created',
+      sourcePath,
+      'Source database family changed during initial activity inspection',
+    );
+    deps.snapshotDatabase(sourcePath, sourceSnapshotPath);
+    normalizeReadInspectionSqliteFamily(
+      sourceFileIdentity,
+      sourcePath,
+      'Source database family changed identity while its promotion snapshot was created',
     );
     const sourceActivityAfterSnapshot = inspectDatabaseActivity(
       deps,
@@ -681,6 +709,11 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
       },
     );
     assertSourceActivityAllowsApply(sourcePath, sourceActivityAfterSnapshot, apply);
+    normalizeReadInspectionSqliteFamily(
+      sourceFileIdentity,
+      sourcePath,
+      'Source database family changed during post-snapshot activity inspection',
+    );
     deps.snapshotDatabase(destinationPath, destinationSnapshotPath);
 
     const sourceVerification = verifyDatabase(sourceSnapshotPath, 'source snapshot', {
@@ -1139,6 +1172,10 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
       deps.readMetadata(nextBackupPath),
       'Promotion backup did not preserve destination owner, group, mode, ACLs, and xattrs',
     );
+    clearReadInspectionSidecars(
+      nextBackupPath,
+      'after promotion backup verification',
+    );
     backupPath = nextBackupPath;
     unverifiedBackupPath = null;
     backupVerification = preparedBackupVerification;
@@ -1191,8 +1228,47 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
     );
     result.advisoryPublicAuditProjection.install =
       advisoryAuditProjectionEvidence(installAdvisoryAuditProjection);
+    clearReadInspectionSidecars(
+      installPath,
+      'after metadata-preserving staged promotion verification',
+    );
     stagedFileIdentity = fileIdentity(installPath);
 
+    const sourceActivityBeforeGithubVerification = revalidateSourceDatabase({
+      dependencies: deps,
+      sourcePath,
+      expectedFileIdentity: sourceFileIdentity,
+      expectedDatabaseIdentity: sourceVerification,
+      snapshotPath: sourceBeforeGithubSnapshotPath,
+      phase: 'source-before-final-github-verification',
+      label: 'source database before final GitHub verification',
+      apply: true,
+    });
+    const beforeSwapGithubReleaseCatalog =
+      await deps.verifyGithubReleaseCatalog({
+        dbPath: sourceSnapshotPath,
+        label: 'source database immediately before swap',
+        runtimeEnvPath:
+          pendingDeploymentAuthorization?.runtimeEnvPath ?? null,
+        observedAt: deps.now().toISOString(),
+      });
+    assertReleaseCatalogReceiptRepositoryMatchesGithub(
+      stagedVerification.releaseCatalogReceipt,
+      beforeSwapGithubReleaseCatalog,
+      'Source database immediately before swap',
+    );
+    result.githubReleaseCatalog.beforeSwap =
+      beforeSwapGithubReleaseCatalog;
+    const sourceActivityImmediatelyBeforeSwap = revalidateSourceDatabase({
+      dependencies: deps,
+      sourcePath,
+      expectedFileIdentity: sourceFileIdentity,
+      expectedDatabaseIdentity: sourceVerification,
+      snapshotPath: sourceFinalBoundarySnapshotPath,
+      phase: 'source-immediately-before-swap',
+      label: 'source database immediately before swap',
+      apply: true,
+    });
     const immediateDestinationVerification = verifyDatabase(
       destinationPath,
       'destination immediately before promotion swap',
@@ -1211,37 +1287,20 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
       deps.readMetadata(destinationPath),
       'Destination metadata changed immediately before promotion swap',
     );
-    oldDestinationIdentity = fileIdentity(destinationPath);
+    const destinationIdentityImmediatelyBeforeSwap =
+      fileIdentity(destinationPath);
     assertFileIdentityEqual(
       destinationFileIdentity,
-      oldDestinationIdentity,
+      destinationIdentityImmediatelyBeforeSwap,
       'Destination database path changed inode before promotion swap',
     );
-    const sourceActivityImmediatelyBeforeSwap = revalidateSourceDatabase({
-      dependencies: deps,
-      sourcePath,
-      expectedFileIdentity: sourceFileIdentity,
-      expectedDatabaseIdentity: sourceVerification,
-      snapshotPath: sourceFinalBoundarySnapshotPath,
-      phase: 'source-immediately-before-swap',
-      label: 'source database immediately before swap',
-      apply: true,
-    });
-    const beforeSwapGithubReleaseCatalog =
-      await deps.verifyGithubReleaseCatalog({
-        dbPath: sourceSnapshotPath,
-        label: 'source database immediately before swap',
-        runtimeEnvPath:
-          pendingDeploymentAuthorization?.runtimeEnvPath ?? null,
-        observedAt: deps.now().toISOString(),
-      });
-    assertReleaseCatalogReceiptRepositoryMatchesGithub(
-      stagedVerification.releaseCatalogReceipt,
-      beforeSwapGithubReleaseCatalog,
-      'Source database immediately before swap',
-    );
-    result.githubReleaseCatalog.beforeSwap =
-      beforeSwapGithubReleaseCatalog;
+    oldDestinationIdentity = {
+      ...destinationIdentityImmediatelyBeforeSwap,
+      family: [
+        ...destinationFileIdentity.family,
+        ...destinationIdentityImmediatelyBeforeSwap.family,
+      ],
+    };
     const holdersImmediatelyBeforeSwap = inspectHolders(
       deps,
       destinationPath,
@@ -1266,8 +1325,25 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
         'destination database immediately before swap',
       );
     }
+    clearReadInspectionSidecars(
+      destinationPath,
+      'after immediate pre-swap activity revalidation',
+    );
+    assertNoSidecars(destinationPath, 'at the promotion swap boundary');
+    deps.assertDeploymentLockHeld('immediately before promotion swap');
+    const sourceBoundaryHold = recheckSourceBoundary({
+      dependencies: deps,
+      sourcePath,
+      expectedFileIdentity: sourceFileIdentity,
+      phase: 'source-at-swap-boundary',
+      label: 'source database at the promotion swap boundary',
+      apply: true,
+    });
     result.activity.applyRevalidation.immediatelyBeforeSwap = {
+      sourceBeforeGithubVerification:
+        sourceActivityBeforeGithubVerification,
       source: sourceActivityImmediatelyBeforeSwap,
+      sourceBoundaryHold,
       destination: {
         observedAt: destinationLeaseImmediatelyBeforeSwap.observedAt,
         active:
@@ -1278,12 +1354,6 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
         refreshLeases: destinationLeaseImmediatelyBeforeSwap,
       },
     };
-    clearReadInspectionSidecars(
-      destinationPath,
-      'after immediate pre-swap activity revalidation',
-    );
-    assertNoSidecars(destinationPath, 'at the promotion swap boundary');
-    deps.assertDeploymentLockHeld('immediately before promotion swap');
 
     swapAttempted = true;
     try {
@@ -1488,14 +1558,10 @@ async function promoteQualityDbUnlocked(options, dependencies = {}) {
     throw error;
   } finally {
     if (unverifiedBackupPath) {
-      rmSync(unverifiedBackupPath, { force: true });
-      rmSync(`${unverifiedBackupPath}-wal`, { force: true });
-      rmSync(`${unverifiedBackupPath}-shm`, { force: true });
+      removeSqliteFamily(unverifiedBackupPath);
     }
     for (const path of temporaryPaths) {
-      rmSync(path, { force: true });
-      rmSync(`${path}-wal`, { force: true });
-      rmSync(`${path}-shm`, { force: true });
+      removeSqliteFamily(path);
     }
   }
 }
@@ -1579,25 +1645,140 @@ function resolveRequiredDatabase(inputPath, label) {
 }
 
 function fileIdentity(path) {
-  const realPath = realpathSync(path);
-  const info = statSync(realPath, { bigint: true });
+  const family = sqliteFamilyIdentity(path);
+  const main = family[0];
+  if (!main.exists) {
+    throw new Error(`Database does not exist while reading identity: ${path}`);
+  }
   return {
     path,
-    realPath,
+    realPath: main.resolvedPath,
+    device: main.device,
+    inode: main.inode,
+    sizeBytes: main.sizeBytes,
+    linkCount: main.linkCount,
+    family,
+  };
+}
+
+function sqliteFamilyIdentity(databasePath) {
+  const family = SQLITE_FAMILY_SUFFIXES.map((suffix) =>
+    sqliteFamilyMemberIdentity(`${databasePath}${suffix}`, suffix));
+  assertNoInternalSqliteFamilyAliases(family, databasePath);
+  return family;
+}
+
+function sqliteFamilyMemberIdentity(memberPath, suffix) {
+  const path = resolve(memberPath);
+  let pathInfo;
+  try {
+    pathInfo = lstatSync(path, { bigint: true });
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw new Error(
+        `Could not inspect SQLite family member: ${path}`,
+        { cause: error },
+      );
+    }
+    return {
+      suffix,
+      path,
+      resolvedPath: resolveThroughExistingAncestor(path),
+      exists: false,
+      device: null,
+      inode: null,
+      sizeBytes: null,
+      linkCount: null,
+      modifiedAtNs: null,
+      changedAtNs: null,
+    };
+  }
+  if (pathInfo.isSymbolicLink() || !pathInfo.isFile()) {
+    throw new Error(
+      `SQLite family member must be a regular non-symlink file: ${path}`,
+    );
+  }
+  const realPath = realpathSync(path);
+  const info = statSync(realPath, { bigint: true });
+  if (pathInfo.dev !== info.dev || pathInfo.ino !== info.ino) {
+    throw new Error(`SQLite family member changed while inspected: ${path}`);
+  }
+  return {
+    suffix,
+    path,
+    resolvedPath: realPath,
+    exists: true,
     device: String(info.dev),
     inode: String(info.ino),
     sizeBytes: Number(info.size),
     linkCount: Number(info.nlink),
+    modifiedAtNs: String(info.mtimeNs),
+    changedAtNs: String(info.ctimeNs),
   };
 }
 
-function assertDistinctDatabases(source, destination) {
-  if (
-    source.realPath === destination.realPath ||
-    (source.device === destination.device && source.inode === destination.inode)
-  ) {
-    throw new Error('Source and destination must identify distinct database files');
+function resolveThroughExistingAncestor(path) {
+  let current = resolve(path);
+  const missingSegments = [];
+  for (;;) {
+    try {
+      return resolve(realpathSync(current), ...missingSegments);
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw new Error(
+          `Could not resolve SQLite family member: ${path}`,
+          { cause: error },
+        );
+      }
+      const parent = dirname(current);
+      if (parent === current) return resolve(path);
+      missingSegments.unshift(basename(current));
+      current = parent;
+    }
   }
+}
+
+function assertNoInternalSqliteFamilyAliases(family, databasePath) {
+  for (let leftIndex = 0; leftIndex < family.length; leftIndex++) {
+    for (let rightIndex = leftIndex + 1; rightIndex < family.length; rightIndex++) {
+      const left = family[leftIndex];
+      const right = family[rightIndex];
+      if (sqliteFamilyMembersAlias(left, right)) {
+        throw new Error(
+          `SQLite database family contains path or inode aliases: ` +
+          `${left.path} aliases ${right.path} for ${databasePath}`,
+        );
+      }
+    }
+  }
+}
+
+function assertDistinctDatabases(
+  source,
+  destination,
+  sourceLabel = 'Source',
+  destinationLabel = 'destination',
+) {
+  for (const sourceMember of source.family) {
+    for (const destinationMember of destination.family) {
+      if (!sqliteFamilyMembersAlias(sourceMember, destinationMember)) continue;
+      throw new Error(
+        `${sourceLabel} and ${destinationLabel} must identify distinct database files ` +
+        `across their SQLite families: ${sourceMember.path} aliases ` +
+        `${destinationMember.path}`,
+      );
+    }
+  }
+}
+
+function sqliteFamilyMembersAlias(left, right) {
+  if (left.resolvedPath === right.resolvedPath) return true;
+  return (
+    left.exists &&
+    right.exists &&
+    left.device === right.device &&
+    left.inode === right.inode
+  );
 }
 
 function assertFileIdentityEqual(expected, actual, message) {
@@ -1611,8 +1792,86 @@ function assertFileIdentityEqual(expected, actual, message) {
   }
 }
 
+function normalizeReadInspectionSqliteFamily(
+  expectedIdentity,
+  databasePath,
+  message,
+) {
+  const observedIdentity = fileIdentity(databasePath);
+  assertFileIdentityEqual(expectedIdentity, observedIdentity, message);
+  assertSqliteMainStorageIdentityEqual(
+    expectedIdentity.family[0],
+    observedIdentity.family[0],
+    message,
+  );
+  for (const suffix of ['-wal', '-journal']) {
+    const expectedMember = expectedIdentity.family.find(
+      (member) => member.suffix === suffix,
+    );
+    const observedMember = observedIdentity.family.find(
+      (member) => member.suffix === suffix,
+    );
+    for (const member of [expectedMember, observedMember]) {
+      if (member?.exists && member.sizeBytes > 0) {
+        throw new Error(
+          `${message}: non-empty SQLite ${suffix.slice(1)} sidecar ` +
+          `${member.path}`,
+        );
+      }
+    }
+  }
+  removeSqliteSidecars(databasePath);
+  assertNoSidecars(databasePath, message);
+  const normalizedIdentity = fileIdentity(databasePath);
+  assertFileIdentityEqual(expectedIdentity, normalizedIdentity, message);
+  assertSqliteMainStorageIdentityEqual(
+    expectedIdentity.family[0],
+    normalizedIdentity.family[0],
+    message,
+  );
+  return normalizedIdentity;
+}
+
+function assertSqliteMainStorageIdentityEqual(expected, actual, message) {
+  if (
+    expected.path !== actual.path ||
+    expected.suffix !== '' ||
+    actual.suffix !== '' ||
+    expected.resolvedPath !== actual.resolvedPath ||
+    expected.exists !== actual.exists ||
+    expected.device !== actual.device ||
+    expected.inode !== actual.inode ||
+    expected.sizeBytes !== actual.sizeBytes ||
+    expected.linkCount !== actual.linkCount ||
+    expected.modifiedAtNs !== actual.modifiedAtNs ||
+    expected.changedAtNs !== actual.changedAtNs
+  ) {
+    throw new Error(message);
+  }
+}
+
+function sqliteFamilyPaths(databasePath) {
+  return SQLITE_FAMILY_SUFFIXES.map((suffix) => `${databasePath}${suffix}`);
+}
+
+function sqliteSidecarPaths(databasePath) {
+  return SQLITE_SIDECAR_SUFFIXES.map((suffix) => `${databasePath}${suffix}`);
+}
+
+function removeSqliteFamily(databasePath) {
+  for (const path of sqliteFamilyPaths(databasePath)) {
+    rmSync(path, { force: true });
+  }
+}
+
+function removeSqliteSidecars(databasePath) {
+  for (const path of sqliteSidecarPaths(databasePath)) {
+    rmSync(path, { force: true });
+  }
+}
+
 function vacuumInto(sourcePath, snapshotPath) {
-  rmSync(snapshotPath, { force: true });
+  removeSqliteFamily(snapshotPath);
   const db = new DatabaseSync(sourcePath, { readOnly: true, timeout: 10_000 });
   try {
     db.prepare('VACUUM INTO ?').run(snapshotPath);
@@ -4924,11 +5183,10 @@ function revalidateSourceDatabase({
   label,
   apply,
 }) {
-  const fileBefore = fileIdentity(sourcePath);
-  assertFileIdentityEqual(
+  normalizeReadInspectionSqliteFamily(
     expectedFileIdentity,
-    fileBefore,
-    `${label} changed inode or path identity before revalidation`,
+    sourcePath,
+    `${label} changed inode or path identity in its SQLite family before revalidation`,
   );
   const beforeSnapshot = inspectDatabaseActivity(
     dependencies,
@@ -4937,12 +5195,6 @@ function revalidateSourceDatabase({
   );
   assertSourceActivityAllowsApply(sourcePath, beforeSnapshot, apply);
   dependencies.snapshotDatabase(sourcePath, snapshotPath);
-  const fileAfter = fileIdentity(sourcePath);
-  assertFileIdentityEqual(
-    expectedFileIdentity,
-    fileAfter,
-    `${label} changed inode or path identity during revalidation`,
-  );
   const database = verifyDatabase(snapshotPath, `${label} snapshot`, {
     requireScoreEvidenceSnapshots: true,
   });
@@ -4950,6 +5202,11 @@ function revalidateSourceDatabase({
     expectedDatabaseIdentity,
     database,
     `${label} logical contents or database identity drifted`,
+  );
+  normalizeReadInspectionSqliteFamily(
+    expectedFileIdentity,
+    sourcePath,
+    `${label} changed inode or path identity in its SQLite family during revalidation`,
   );
   const afterSnapshot = inspectDatabaseActivity(
     dependencies,
@@ -4960,6 +5217,11 @@ function revalidateSourceDatabase({
     },
   );
   assertSourceActivityAllowsApply(sourcePath, afterSnapshot, apply);
+  normalizeReadInspectionSqliteFamily(
+    expectedFileIdentity,
+    sourcePath,
+    `${label} changed its SQLite family during post-snapshot activity inspection`,
+  );
   return {
     observedAt: afterSnapshot.observedAt,
     active: beforeSnapshot.active || afterSnapshot.active,
@@ -4971,6 +5233,36 @@ function revalidateSourceDatabase({
     fileIdentityStable: true,
     databaseIdentityStable: true,
     database,
+  };
+}
+
+function recheckSourceBoundary({
+  dependencies,
+  sourcePath,
+  expectedFileIdentity,
+  phase,
+  label,
+  apply,
+}) {
+  normalizeReadInspectionSqliteFamily(
+    expectedFileIdentity,
+    sourcePath,
+    `${label} changed its SQLite family before the final activity check`,
+  );
+  const activity = inspectDatabaseActivity(
+    dependencies,
+    sourcePath,
+    { phase, label },
+  );
+  assertSourceActivityAllowsApply(sourcePath, activity, apply);
+  normalizeReadInspectionSqliteFamily(
+    expectedFileIdentity,
+    sourcePath,
+    `${label} changed its SQLite family during the final activity check`,
+  );
+  return {
+    ...activity,
+    fileIdentityStable: true,
   };
 }
 
@@ -5017,11 +5309,16 @@ export function listDestinationHolders(destinationPath, {
   identity = null,
   writersOnly = false,
 } = {}) {
+  const identityMembers = identity == null
+    ? []
+    : sqliteHolderIdentityMembers(identity);
   const paths = identity
     ? []
-    : [destinationPath, `${destinationPath}-wal`, `${destinationPath}-shm`]
+    : sqliteFamilyPaths(destinationPath)
       .filter((path) => existsSync(path));
-  if (!identity && paths.length === 0) return [];
+  if ((!identity && paths.length === 0) || (identity && identityMembers.length === 0)) {
+    return [];
+  }
   const args = identity
     ? ['-a', '+L1', '-FpcfaDin']
     : ['-FpcfaDin'];
@@ -5042,10 +5339,10 @@ export function listDestinationHolders(destinationPath, {
     if (!currentProcess || !currentFile || currentProcess.pid === process.pid) return;
     if (!Number.isSafeInteger(currentProcess.pid) || currentProcess.pid <= 0) return;
     if (identity) {
-      if (
-        normalizeLsofDevice(currentFile.device) !== identity.device ||
-        String(currentFile.inode ?? '') !== identity.inode
-      ) {
+      const device = normalizeLsofDevice(currentFile.device);
+      const inode = String(currentFile.inode ?? '');
+      if (!identityMembers.some((member) =>
+        device === member.device && inode === member.inode)) {
         return;
       }
     }
@@ -5103,6 +5400,28 @@ export function listDestinationHolders(destinationPath, {
   }
   flushFile();
   return [...holdersByPid.values()].sort((left, right) => left.pid - right.pid);
+}
+
+function sqliteHolderIdentityMembers(identity) {
+  const members = Array.isArray(identity.family)
+    ? identity.family
+    : [identity];
+  const seen = new Set();
+  return members
+    .filter((member) =>
+      member &&
+      typeof member.device === 'string' &&
+      typeof member.inode === 'string')
+    .filter((member) => {
+      const key = `${member.device}:${member.inode}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .map((member) => ({
+      device: member.device,
+      inode: member.inode,
+    }));
 }
 
 function normalizeLsofDevice(value) {
@@ -5198,7 +5517,7 @@ function runMetadataCommand(command, args, action) {
 }
 
 function cloneFileWithMetadata(sourcePath, destinationPath) {
-  rmSync(destinationPath, { force: true });
+  removeSqliteFamily(destinationPath);
   if (process.platform === 'darwin') {
     runMetadataCommand('/bin/cp', ['-p', sourcePath, destinationPath], 'clone file metadata');
     return;
@@ -5314,24 +5633,25 @@ function checkpointAndClearSidecars(destinationPath) {
   } finally {
     db.close();
   }
-  rmSync(`${destinationPath}-wal`, { force: true });
-  rmSync(`${destinationPath}-shm`, { force: true });
+  removeSqliteSidecars(destinationPath);
 }
 
 function clearReadInspectionSidecars(destinationPath, label) {
-  const walPath = `${destinationPath}-wal`;
-  if (existsSync(walPath) && statSync(walPath).size > 0) {
-    throw new Error(
-      `${label} found a non-empty WAL; destination contents may have changed after verification`,
-    );
+  for (const suffix of ['-wal', '-journal']) {
+    const sidecarPath = `${destinationPath}${suffix}`;
+    if (existsSync(sidecarPath) && statSync(sidecarPath).size > 0) {
+      throw new Error(
+        `${label} found a non-empty SQLite ${suffix.slice(1)} sidecar; ` +
+        `database contents may have changed after verification`,
+      );
+    }
   }
-  rmSync(walPath, { force: true });
-  rmSync(`${destinationPath}-shm`, { force: true });
+  removeSqliteSidecars(destinationPath);
   assertNoSidecars(destinationPath, label);
 }
 
 function assertNoSidecars(destinationPath, label) {
-  const sidecars = [`${destinationPath}-wal`, `${destinationPath}-shm`]
+  const sidecars = sqliteSidecarPaths(destinationPath)
     .filter((path) => existsSync(path));
   if (sidecars.length > 0) {
     throw new Error(
@@ -5351,6 +5671,36 @@ function attemptAutomaticRollback({
   dependencies,
   temporaryPaths,
 }) {
+  let holders;
+  try {
+    holders = inspectHolders(
+      dependencies,
+      destinationPath,
+      'before-rollback-sidecar-clear',
+    );
+  } catch (error) {
+    return {
+      restored: false,
+      reason: `Could not inspect destination holders before rollback: ${errorMessage(error)}.`,
+    };
+  }
+  if (holders.length > 0) {
+    return {
+      restored: false,
+      reason: `Automatic rollback was blocked by active holders ` +
+        `(${holderSummary(holders)}).`,
+    };
+  }
+  try {
+    removeSqliteSidecars(destinationPath);
+    assertNoSidecars(destinationPath, 'before automatic rollback activity inspection');
+  } catch (error) {
+    return {
+      restored: false,
+      reason: `Could not clear failed destination sidecars before rollback: ${errorMessage(error)}.`,
+    };
+  }
+
   let activity;
   try {
     activity = inspectDatabaseActivity(
@@ -5390,8 +5740,7 @@ function attemptAutomaticRollback({
   );
   temporaryPaths.push(rollbackPath);
   try {
-    rmSync(`${destinationPath}-wal`, { force: true });
-    rmSync(`${destinationPath}-shm`, { force: true });
+    removeSqliteSidecars(destinationPath);
     assertNoSidecars(destinationPath, 'before automatic rollback');
     assertFileIdentityEqual(
       backupFileIdentity,
@@ -5592,10 +5941,12 @@ function holderSummary(holders) {
 function uniqueBackupPath(destinationPath, now) {
   const stamp = now.toISOString().replace(/[-:.]/g, '');
   const base = `${destinationPath}.pre-promotion-${stamp}.bak`;
-  if (!existsSync(base)) return base;
+  if (sqliteFamilyPaths(base).every((path) => !existsSync(path))) return base;
   for (let suffix = 1; ; suffix++) {
     const candidate = `${base}.${suffix}`;
-    if (!existsSync(candidate)) return candidate;
+    if (sqliteFamilyPaths(candidate).every((path) => !existsSync(path))) {
+      return candidate;
+    }
   }
 }
 

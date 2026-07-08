@@ -27,6 +27,7 @@ import {
   assertRepositoryDatabaseWriterLockOwnedBy,
   databaseFileInitializationLockPath,
   databaseInitializationLockPath,
+  locallyHeldRepositoryDatabaseWriterLockOwner,
   pathsReferToSameFile,
   type ExclusiveProcessLock,
 } from './exclusiveProcessLock';
@@ -42,6 +43,7 @@ import {
 import {
   CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION,
   canonicalClassifierAttemptLedgerJson,
+  isEligibleClassifierGroundingSemanticRetry,
   validateClassifierAttempt,
   validateClassifierAttemptRun,
   validateClassifierAttemptTerminalReceipt,
@@ -834,6 +836,18 @@ function immutableReadOnlyDatabaseLocation(
   return url.toString();
 }
 
+function nonCreatingWritableDatabaseLocation(
+  location: string,
+  filesystemPath: string | null,
+): string {
+  if (!filesystemPath) return location;
+  const url = location.startsWith('file:')
+    ? new URL(location)
+    : pathToFileURL(filesystemPath);
+  url.searchParams.set('mode', 'rw');
+  return url.toString();
+}
+
 function configuredApplicationDatabasePaths(): string[] {
   const protectedPaths = new Set<string>([repositoryLiveDatabasePath]);
   const repositoryEnvPath = resolve(repositoryRoot, '.env');
@@ -884,13 +898,61 @@ type DatabaseBootstrapPolicy = {
     | 'test'
     | 'evaluation'
     | 'installer-smoke'
+    | 'quality-refresh'
     | 'api-read-worker';
   mode: 'normal' | 'fresh' | 'existing';
 };
 
+function assertQualityRefreshWriterLockHeld(): void {
+  const owner = locallyHeldRepositoryDatabaseWriterLockOwner({
+    repositoryRoot,
+  });
+  if (!owner || owner.pid !== process.pid) {
+    throw new Error(
+      'refresh:quality requires a same-process repository database writer ' +
+      'lock before database open',
+    );
+  }
+  if (
+    owner.databasePath == null ||
+    !pathsReferToSameFile(owner.databasePath, databasePath)
+  ) {
+    throw new Error(
+      'refresh:quality repository database writer lock does not match DB_PATH',
+    );
+  }
+}
+
 function databaseBootstrapPolicy(): DatabaseBootstrapPolicy {
   if (trustedApiReadWorker) {
     return { context: 'api-read-worker', mode: 'existing' };
+  }
+  const lifecycleAuthorization = inspectPackageLifecycleAuthorization();
+  if (lifecycleAuthorization.claimed && !lifecycleAuthorization.authorized) {
+    throw new Error(
+      `Refusing unverified npm lifecycle authorization for ` +
+      `${lifecycleAuthorization.event}: ${lifecycleAuthorization.problem}`,
+    );
+  }
+  if (
+    lifecycleAuthorization.authorized &&
+    lifecycleAuthorization.event === 'refresh:quality'
+  ) {
+    assertQualityRefreshWriterLockHeld();
+    const mode = process.env.RADAR_DB_BOOTSTRAP_MODE;
+    if (mode !== 'fresh' && mode !== 'existing') {
+      throw new Error(
+        'refresh:quality requires explicit ' +
+        'RADAR_DB_BOOTSTRAP_MODE=fresh or existing before database open',
+      );
+    }
+    if (dbReadOnly && mode === 'fresh') {
+      throw new Error(
+        'Read-only refresh:quality database access requires ' +
+        'RADAR_DB_BOOTSTRAP_MODE=existing',
+      );
+    }
+    return { context: 'quality-refresh', mode };
   }
   const databasePolicyProbeContext =
     process.env.RADAR_TEST_DATABASE_POLICY_PROBE === '1'
@@ -1024,6 +1086,22 @@ function databaseBootstrapPolicy(): DatabaseBootstrapPolicy {
 
 const bootstrapPolicy = databaseBootstrapPolicy();
 
+function assertBootstrapPolicyAtDatabaseOpen(
+  policy: DatabaseBootstrapPolicy,
+): void {
+  if (
+    policy.context === 'quality-refresh' &&
+    process.env.RADAR_DB_BOOTSTRAP_MODE !== policy.mode
+  ) {
+    throw new Error(
+      'refresh:quality RADAR_DB_BOOTSTRAP_MODE changed before database open',
+    );
+  }
+  if (policy.context === 'quality-refresh') {
+    assertQualityRefreshWriterLockHeld();
+  }
+}
+
 interface DatabaseFileIdentity {
   dev: number;
   ino: number;
@@ -1155,6 +1233,7 @@ if (!dbReadOnly && inheritedTestWriterToken) {
 const localWriterLock =
   !dbReadOnly &&
   !inheritedTestWriterToken &&
+  bootstrapPolicy.context !== 'quality-refresh' &&
   (
     runningInAdHocEvaluationContext() ||
     runningInTestContext()
@@ -1653,13 +1732,15 @@ try {
     }
   }
 
-  const databaseOpenLocation =
-    explicitDatabaseReadOnly && !trustedApiReadWorker
+  const databaseOpenLocation = dbReadOnly
+    ? explicitDatabaseReadOnly && !trustedApiReadWorker
       ? immutableReadOnlyDatabaseLocation(databasePath, databaseFilePath)
-      : databasePath;
+      : databasePath
+    : nonCreatingWritableDatabaseLocation(databasePath, databaseFilePath);
+  assertBootstrapPolicyAtDatabaseOpen(bootstrapPolicy);
   openedDatabase = dbReadOnly
     ? new DatabaseSync(databaseOpenLocation, { readOnly: true })
-    : new DatabaseSync(databasePath);
+    : new DatabaseSync(databaseOpenLocation);
 
   if (databaseFilePath && expectedDatabaseIdentity) {
     assertFileIdentity(
@@ -5982,6 +6063,11 @@ export function upsertRelease(r: {
   prerelease: boolean;
   body: string | null;
 }): void {
+  if (!testFixtureCatalogWriteAuthorityAllowed()) {
+    throw new Error(
+      'upsertRelease is allowed only for test fixtures in fresh private test databases',
+    );
+  }
   upsertReleaseStmt.run({
     ...r,
     node_id: r.node_id ?? `legacy:${r.tag}`,
@@ -6259,7 +6345,7 @@ function currentActiveReleaseCatalogRaw(): ActiveReleaseCatalogSnapshot {
     created_at: release.created_at ?? '',
     updated_at: release.updated_at ?? '',
     html_url: release.html_url,
-    prerelease: release.prerelease === 1,
+    prerelease: release.prerelease,
     body: release.body,
   })));
   const storedDigests = new Set(rows.map((release) => release.catalog_digest));
@@ -20221,6 +20307,7 @@ function classifierAttemptPrefixProblems(
   }
   const attemptIds = new Set<string>();
   let previousHash = run.contentHash;
+  let previousRequestHash = run.requestHash;
   let previousFinishedAt = Date.parse(run.startedAt);
   let acceptedOrdinal: number | null = null;
   for (const [index, attempt] of attempts.entries()) {
@@ -20238,8 +20325,31 @@ function classifierAttemptPrefixProblems(
     if (attempt.issueNumber !== run.issueNumber) {
       problems.push(`${path}.issueNumber does not match run.issueNumber`);
     }
-    if (attempt.provenance.requestHash !== run.requestHash) {
-      problems.push(`${path}.provenance.requestHash does not match run.requestHash`);
+    if (index === 0 && attempt.provenance.requestHash !== run.requestHash) {
+      problems.push(
+        `${path}.provenance.requestHash does not match the initial run.requestHash`,
+      );
+    } else if (index > 0) {
+      const previousAttempt = attempts[index - 1];
+      const requestHashChanged =
+        attempt.provenance.requestHash !== previousRequestHash;
+      if (
+        isEligibleClassifierGroundingSemanticRetry(previousAttempt) &&
+        !requestHashChanged
+      ) {
+        problems.push(
+          `${path}.provenance.requestHash must change after an immediately ` +
+          'preceding eligible grounding semantic retry',
+        );
+      } else if (
+        !isEligibleClassifierGroundingSemanticRetry(previousAttempt) &&
+        requestHashChanged
+      ) {
+        problems.push(
+          `${path}.provenance.requestHash changed without an immediately ` +
+          'preceding eligible grounding semantic retry',
+        );
+      }
     }
     if (attempt.previousContentHash !== previousHash) {
       problems.push(`${path}.previousContentHash does not match the append chain`);
@@ -20259,7 +20369,25 @@ function classifierAttemptPrefixProblems(
     if (index < attempts.length - 1 && attempt.retry.decision !== 'retry') {
       problems.push(`${path}.retry.decision must be retry before a later attempt`);
     }
+    if (
+      attempt.retry.decision === 'retry' &&
+      attempt.ordinal >= run.maxAttempts
+    ) {
+      problems.push(`${path}.retry cannot exceed the run attempt budget`);
+    }
+    if (
+      attempt.retry.decision === 'stop' &&
+      attempt.retry.retryable === true &&
+      attempt.retry.reason === 'attempt_budget_exhausted' &&
+      attempt.ordinal !== run.maxAttempts
+    ) {
+      problems.push(
+        `${path}.retry reason attempt_budget_exhausted is only valid at ` +
+        'run.maxAttempts',
+      );
+    }
     previousHash = attempt.contentHash;
+    previousRequestHash = attempt.provenance.requestHash;
   }
   return [...new Set(problems)];
 }
@@ -20797,11 +20925,6 @@ function acceptedClassifierInputProblems(
       problems.push('classification response service tier does not match selected attempt');
     }
   }
-  if (
-    selectedAttemptBinding.provenance.requestHash !== ledger.run.requestHash
-  ) {
-    problems.push('selected attempt request hash does not match classifier run');
-  }
   const current = issueEvidenceRevisions([issueNumber]).get(issueNumber);
   if (!current) {
     problems.push('classification source evidence revisions are unavailable');
@@ -20955,7 +21078,7 @@ export function upsertClassification(
       runContentHash: ledger.run.contentHash,
       receiptId: ledger.receipt.receiptId,
       receiptContentHash: ledger.receipt.contentHash,
-      requestHash: ledger.run.requestHash,
+      requestHash: selected.provenance.requestHash,
       selectedAttempt: selected,
       evidenceRevisions: {
         issueRevision: acceptedClassifier.evidenceRevisions.issueRevision,
@@ -20993,7 +21116,7 @@ export function upsertClassification(
       run_content_hash: ledger.run.contentHash,
       receipt_id: ledger.receipt.receiptId,
       receipt_content_hash: ledger.receipt.contentHash,
-      request_hash: ledger.run.requestHash,
+      request_hash: selected.provenance.requestHash,
       selected_attempt_id: selected.attemptId,
       selected_attempt_ordinal: selected.ordinal,
       selected_attempt_content_hash: selected.attemptContentHash,
@@ -21222,7 +21345,7 @@ function classifierClassificationPublicationProblems(
       ) {
         problems.push('classifier publication receipt binding is invalid');
       }
-      if (publication.request_hash !== ledger.run.requestHash) {
+      if (publication.request_hash !== selected.provenance.requestHash) {
         problems.push('classifier publication request hash is invalid');
       }
       if (
@@ -21264,7 +21387,7 @@ function classifierClassificationPublicationProblems(
         runContentHash: ledger.run.contentHash,
         receiptId: ledger.receipt.receiptId,
         receiptContentHash: ledger.receipt.contentHash,
-        requestHash: ledger.run.requestHash,
+        requestHash: selected.provenance.requestHash,
         selectedAttempt: selected,
         evidenceRevisions: {
           issueRevision: publication.issue_revision,

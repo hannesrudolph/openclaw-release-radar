@@ -12,9 +12,11 @@ import {
   mkdtempSync,
   readFileSync,
   readdirSync,
+  realpathSync,
   renameSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -2752,6 +2754,56 @@ describe('quality database promotion', () => {
     }
   });
 
+  it('clears empty source read sidecars but rejects a data-bearing source WAL', async () => {
+    const emptySidecars = createFixture('empty-source-read-sidecars');
+    try {
+      closeFixtureDatabases(emptySidecars);
+      let injected = false;
+      const result = await promoteQualityDb({
+        sourcePath: emptySidecars.sourcePath,
+        destinationPath: emptySidecars.destinationPath,
+      }, testDependencies({
+        snapshotDatabase(sourcePath: string, snapshotPath: string) {
+          copyDatabaseSnapshotForTest(sourcePath, snapshotPath);
+          if (sourcePath !== emptySidecars.sourcePath || injected) return;
+          injected = true;
+          writeFileSync(`${sourcePath}-wal`, '');
+          writeFileSync(`${sourcePath}-shm`, Buffer.alloc(32 * 1024));
+        },
+      }));
+      assert.equal(result.applied, false);
+      assert.equal(injected, true);
+      assert.equal(existsSync(`${emptySidecars.sourcePath}-wal`), false);
+      assert.equal(existsSync(`${emptySidecars.sourcePath}-shm`), false);
+    } finally {
+      emptySidecars.cleanup();
+    }
+
+    const dataBearingWal = createFixture('data-bearing-source-wal');
+    try {
+      closeFixtureDatabases(dataBearingWal);
+      let injected = false;
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: dataBearingWal.sourcePath,
+          destinationPath: dataBearingWal.destinationPath,
+        }, testDependencies({
+          snapshotDatabase(sourcePath: string, snapshotPath: string) {
+            copyDatabaseSnapshotForTest(sourcePath, snapshotPath);
+            if (sourcePath !== dataBearingWal.sourcePath || injected) return;
+            injected = true;
+            writeFileSync(`${sourcePath}-wal`, 'unverified-write');
+          },
+        })),
+        /non-empty SQLite wal sidecar/,
+      );
+      assert.equal(injected, true);
+      assert.equal(backupFiles(dataBearingWal).length, 0);
+    } finally {
+      dataBearingWal.cleanup();
+    }
+  });
+
   it('aborts when the source inode is replaced at the final swap boundary', async () => {
     const fixture = createFixture('source-inode-drift-final-boundary');
     try {
@@ -2784,6 +2836,164 @@ describe('quality database promotion', () => {
       );
       assert.equal(readPromotionState(fixture.destinationPath), 'initial');
       assert.equal(backupFiles(fixture).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rechecks source quiescence after awaited GitHub verification before the final swap', async () => {
+    const fixture = createFixture('source-holder-after-github-verification');
+    try {
+      closeFixtureDatabases(fixture);
+      let finalGithubVerificationCompleted = false;
+      let renameCalls = 0;
+      const postGithubSourcePhases: string[] = [];
+      const holder = {
+        pid: 447,
+        command: 'late-candidate-writer',
+        paths: [`${fixture.sourcePath}-journal`],
+        accesses: ['u'],
+      };
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: fixture.sourcePath,
+          destinationPath: fixture.destinationPath,
+          apply: true,
+        }, testDependencies({
+          verifyGithubReleaseCatalog: async ({
+            dbPath,
+            label,
+            observedAt,
+          }: {
+            dbPath: string;
+            label: string;
+            observedAt: string;
+          }) => {
+            const proof = testGithubReleaseCatalogProof(dbPath, observedAt);
+            if (label === 'source database immediately before swap') {
+              await Promise.resolve();
+              finalGithubVerificationCompleted = true;
+            }
+            return proof;
+          },
+          listHolders: (
+            path: string,
+            options: { phase?: string },
+          ) => {
+            if (path !== fixture.sourcePath || !finalGithubVerificationCompleted) {
+              return [];
+            }
+            postGithubSourcePhases.push(options.phase ?? '');
+            return [holder];
+          },
+          rename(from: string, to: string) {
+            renameCalls += 1;
+            renameSync(from, to);
+          },
+        })),
+        /Source database has active holders/,
+      );
+      assert.equal(finalGithubVerificationCompleted, true);
+      assert.ok(postGithubSourcePhases.length > 0);
+      assert.equal(renameCalls, 0);
+      assert.equal(readPromotionState(fixture.destinationPath), 'initial');
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rechecks destination contents after the final source snapshot before swap', async () => {
+    const fixture = createFixture('destination-drift-during-final-source-snapshot');
+    try {
+      closeFixtureDatabases(fixture);
+      let destinationMutated = false;
+      let renameCalls = 0;
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: fixture.sourcePath,
+          destinationPath: fixture.destinationPath,
+          apply: true,
+        }, testDependencies({
+          snapshotDatabase(sourcePath: string, snapshotPath: string) {
+            copyDatabaseSnapshotForTest(sourcePath, snapshotPath);
+            if (
+              sourcePath !== fixture.sourcePath ||
+              !snapshotPath.includes('.source-final-boundary.sqlite') ||
+              destinationMutated
+            ) {
+              return;
+            }
+            destinationMutated = true;
+            const destination = new DatabaseSync(fixture.destinationPath);
+            try {
+              setPromotionState(
+                destination,
+                'destination-mutated-during-final-source-snapshot',
+              );
+            } finally {
+              destination.close();
+            }
+          },
+          rename(from: string, to: string) {
+            renameCalls += 1;
+            renameSync(from, to);
+          },
+        })),
+        /Destination logical contents changed immediately before promotion swap/,
+      );
+      assert.equal(destinationMutated, true);
+      assert.equal(renameCalls, 0);
+      assert.equal(
+        readPromotionState(fixture.destinationPath),
+        'destination-mutated-during-final-source-snapshot',
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('does not yield after the final source boundary hold before swap', async () => {
+    const fixture = createFixture('no-yield-after-source-boundary');
+    try {
+      closeFixtureDatabases(fixture);
+      let sourceBoundaryObserved = false;
+      let boundaryMicrotaskRan = false;
+      let renameCalls = 0;
+
+      const result = await promoteQualityDb({
+        sourcePath: fixture.sourcePath,
+        destinationPath: fixture.destinationPath,
+        apply: true,
+      }, testDependencies({
+        listHolders: (
+          path: string,
+          options: { phase?: string },
+        ) => {
+          if (
+            path === fixture.sourcePath &&
+            options.phase === 'source-at-swap-boundary'
+          ) {
+            assert.equal(sourceBoundaryObserved, false);
+            sourceBoundaryObserved = true;
+            queueMicrotask(() => {
+              boundaryMicrotaskRan = true;
+            });
+          }
+          return [];
+        },
+        rename(from: string, to: string) {
+          renameCalls += 1;
+          assert.equal(sourceBoundaryObserved, true);
+          assert.equal(boundaryMicrotaskRan, false);
+          renameSync(from, to);
+        },
+      }));
+
+      assert.equal(result.applied, true);
+      assert.equal(renameCalls, 1);
+      assert.equal(boundaryMicrotaskRan, true);
     } finally {
       fixture.cleanup();
     }
@@ -3383,36 +3593,63 @@ describe('quality database promotion', () => {
     let child: ReturnType<typeof spawn> | null = null;
     try {
       closeFixtureDatabases(fixture);
-      const oldInfo = statSync(fixture.destinationPath, { bigint: true });
+      const familyPaths = [
+        fixture.destinationPath,
+        `${fixture.destinationPath}-wal`,
+        `${fixture.destinationPath}-shm`,
+        `${fixture.destinationPath}-journal`,
+      ];
+      for (const sidecarPath of familyPaths.slice(1)) {
+        writeFileSync(sidecarPath, 'holder-sidecar');
+      }
+      const oldFamilyIdentity = familyPaths.map((path) => {
+        const info = statSync(path, { bigint: true });
+        return {
+          path,
+          device: String(info.dev),
+          inode: String(info.ino),
+        };
+      });
       child = spawn(process.execPath, [
         '-e',
         `
           const fs = require('node:fs');
-          fs.openSync(process.argv[1], 'r+');
+          for (const path of process.argv.slice(1)) fs.openSync(path, 'r+');
           process.stdout.write('ready\\n');
           setInterval(() => {}, 1000);
         `,
-        fixture.destinationPath,
+        ...familyPaths,
       ], { stdio: ['ignore', 'pipe', 'pipe'] });
       await waitForChildReady(child);
 
-      assert.ok(
-        listDestinationHolders(fixture.destinationPath)
-          .some((holder) => holder.pid === child?.pid),
-      );
+      const currentHolder = listDestinationHolders(fixture.destinationPath)
+        .find((holder) => holder.pid === child?.pid);
+      assert.ok(currentHolder);
+      const heldRealPaths = currentHolder.paths.map((path) => realpathSync(path));
+      for (const familyPath of familyPaths) {
+        assert.ok(heldRealPaths.includes(realpathSync(familyPath)));
+      }
 
       const oldPath = join(fixture.dir, 'old-primary.db');
       renameSync(fixture.destinationPath, oldPath);
+      for (const sidecarPath of familyPaths.slice(1)) {
+        rmSync(sidecarPath, { force: true });
+      }
       copyFileSync(fixture.sourcePath, fixture.destinationPath);
       rmSync(oldPath, { force: true });
-      const oldInodeWriters = listDestinationHolders(fixture.destinationPath, {
-        identity: {
-          device: String(oldInfo.dev),
-          inode: String(oldInfo.ino),
-        },
-        writersOnly: true,
-      });
-      assert.ok(oldInodeWriters.some((holder) => holder.pid === child?.pid));
+      for (const member of oldFamilyIdentity) {
+        const oldInodeWriters = listDestinationHolders(
+          fixture.destinationPath,
+          {
+            identity: { family: [member] },
+            writersOnly: true,
+          },
+        );
+        assert.ok(
+          oldInodeWriters.some((holder) => holder.pid === child?.pid),
+          `expected deleted-inode holder for ${member.path}`,
+        );
+      }
     } finally {
       if (child && child.exitCode == null) {
         child.kill('SIGTERM');
@@ -3445,6 +3682,70 @@ describe('quality database promotion', () => {
       assert.equal(readPromotionState(fixture.destinationPath), 'destination');
       assert.equal(existsSync(`${fixture.destinationPath}-wal`), false);
       assert.equal(backupFiles(fixture).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('detects a recreated rollback journal and restores from the retained backup', async () => {
+    const fixture = createFixture('stale-rollback-journal');
+    try {
+      setPromotionState(fixture.source, 'source');
+      setPromotionState(fixture.destination, 'destination');
+      closeFixtureDatabases(fixture);
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: fixture.sourcePath,
+          destinationPath: fixture.destinationPath,
+          apply: true,
+        }, testDependencies({
+          rename(from: string, to: string) {
+            renameSync(from, to);
+            writeFileSync(`${to}-journal`, 'stale-rollback-journal');
+          },
+        })),
+        /original destination was restored automatically.*(?:sidecar|journal)/s,
+      );
+      assert.equal(readPromotionState(fixture.destinationPath), 'destination');
+      assert.equal(existsSync(`${fixture.destinationPath}-journal`), false);
+      assert.equal(backupFiles(fixture).length, 1);
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('cleans the complete SQLite family for failed temporary promotion artifacts', async () => {
+    const fixture = createFixture('temporary-family-cleanup');
+    const temporaryFamily: string[] = [];
+    try {
+      closeFixtureDatabases(fixture);
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: fixture.sourcePath,
+          destinationPath: fixture.destinationPath,
+        }, testDependencies({
+          snapshotDatabase(sourcePath: string, snapshotPath: string) {
+            copyFileSync(sourcePath, snapshotPath);
+            temporaryFamily.push(
+              snapshotPath,
+              `${snapshotPath}-wal`,
+              `${snapshotPath}-shm`,
+              `${snapshotPath}-journal`,
+            );
+            for (const sidecarPath of temporaryFamily.slice(1)) {
+              writeFileSync(sidecarPath, 'temporary-sidecar');
+            }
+            throw new Error('injected temporary snapshot failure');
+          },
+        })),
+        /injected temporary snapshot failure/,
+      );
+      assert.ok(temporaryFamily.length > 0);
+      for (const familyPath of temporaryFamily) {
+        assert.equal(existsSync(familyPath), false);
+      }
     } finally {
       fixture.cleanup();
     }
@@ -3890,6 +4191,145 @@ describe('quality database promotion', () => {
       assert.equal(backupFiles(hardlinkedDestination).length, 0);
     } finally {
       hardlinkedDestination.cleanup();
+    }
+  });
+
+  it('rejects resolved-path and inode aliases across complete source, destination, and rollback SQLite families', async () => {
+    const familyAliasError =
+      /(?:SQLite database family contains path or inode aliases|distinct database files across their SQLite families: .* aliases)/i;
+    const internalFamilyAlias = createFixture('internal-family-inode-alias');
+    try {
+      closeFixtureDatabases(internalFamilyAlias);
+      rmSync(`${internalFamilyAlias.sourcePath}-wal`, { force: true });
+      linkSync(
+        internalFamilyAlias.sourcePath,
+        `${internalFamilyAlias.sourcePath}-wal`,
+      );
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: internalFamilyAlias.sourcePath,
+          destinationPath: internalFamilyAlias.destinationPath,
+        }, testDependencies()),
+        familyAliasError,
+      );
+    } finally {
+      internalFamilyAlias.cleanup();
+    }
+
+    const resolvedAlias = createFixture('resolved-family-alias');
+    try {
+      closeFixtureDatabases(resolvedAlias);
+      const realDirectory = join(resolvedAlias.dir, 'real');
+      const aliasDirectory = join(resolvedAlias.dir, 'alias');
+      mkdirSync(realDirectory);
+      symlinkSync(realDirectory, aliasDirectory);
+      const sourcePath = join(realDirectory, 'quality.db');
+      const destinationTargetPath = `${sourcePath}-wal`;
+      const destinationPath = join(aliasDirectory, 'quality.db-wal');
+      renameSync(resolvedAlias.sourcePath, sourcePath);
+      rmSync(destinationTargetPath, { force: true });
+      renameSync(resolvedAlias.destinationPath, destinationTargetPath);
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath,
+          destinationPath,
+        }, testDependencies()),
+        familyAliasError,
+      );
+    } finally {
+      resolvedAlias.cleanup();
+    }
+
+    const inodeAliasPairs = [
+      { sourceSuffix: '', destinationSuffix: '-wal' },
+      { sourceSuffix: '-wal', destinationSuffix: '-shm' },
+      { sourceSuffix: '-shm', destinationSuffix: '-journal' },
+      { sourceSuffix: '-journal', destinationSuffix: '' },
+    ] as const;
+    for (const { sourceSuffix, destinationSuffix } of inodeAliasPairs) {
+      const fixture = createFixture(
+        `inode-family-alias-${sourceSuffix || 'main'}-${destinationSuffix || 'main'}`,
+      );
+      try {
+        closeFixtureDatabases(fixture);
+        const sourceMember = `${fixture.sourcePath}${sourceSuffix}`;
+        const destinationMember =
+          `${fixture.destinationPath}${destinationSuffix}`;
+        if (sourceSuffix && destinationSuffix) {
+          rmSync(sourceMember, { force: true });
+          rmSync(destinationMember, { force: true });
+          writeFileSync(sourceMember, '');
+          linkSync(sourceMember, destinationMember);
+        } else if (sourceSuffix) {
+          rmSync(sourceMember, { force: true });
+          linkSync(destinationMember, sourceMember);
+        } else {
+          rmSync(destinationMember, { force: true });
+          linkSync(sourceMember, destinationMember);
+        }
+
+        await assert.rejects(
+          promoteQualityDb({
+            sourcePath: fixture.sourcePath,
+            destinationPath: fixture.destinationPath,
+          }, testDependencies()),
+          familyAliasError,
+        );
+      } finally {
+        fixture.cleanup();
+      }
+    }
+
+    const rollbackAlias = createFixture('rollback-family-inode-alias');
+    try {
+      closeFixtureDatabases(rollbackAlias);
+      const rollbackPath = join(rollbackAlias.dir, 'rollback.db');
+      copyFileSync(rollbackAlias.destinationPath, rollbackPath);
+      rmSync(`${rollbackAlias.destinationPath}-journal`, { force: true });
+      rmSync(`${rollbackPath}-shm`, { force: true });
+      writeFileSync(`${rollbackAlias.destinationPath}-journal`, '');
+      linkSync(
+        `${rollbackAlias.destinationPath}-journal`,
+        `${rollbackPath}-shm`,
+      );
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: rollbackAlias.sourcePath,
+          destinationPath: rollbackAlias.destinationPath,
+          rollbackBackupPath: rollbackPath,
+        }, testDependencies()),
+        familyAliasError,
+      );
+    } finally {
+      rollbackAlias.cleanup();
+    }
+
+    const sourceRollbackAlias = createFixture('source-rollback-family-inode-alias');
+    try {
+      closeFixtureDatabases(sourceRollbackAlias);
+      const rollbackPath = join(sourceRollbackAlias.dir, 'rollback.db');
+      copyFileSync(sourceRollbackAlias.destinationPath, rollbackPath);
+      rmSync(`${sourceRollbackAlias.sourcePath}-journal`, { force: true });
+      rmSync(`${rollbackPath}-shm`, { force: true });
+      writeFileSync(`${sourceRollbackAlias.sourcePath}-journal`, '');
+      linkSync(
+        `${sourceRollbackAlias.sourcePath}-journal`,
+        `${rollbackPath}-shm`,
+      );
+
+      await assert.rejects(
+        promoteQualityDb({
+          sourcePath: sourceRollbackAlias.sourcePath,
+          destinationPath: sourceRollbackAlias.destinationPath,
+          rollbackBackupPath: rollbackPath,
+        }, testDependencies()),
+        familyAliasError,
+      );
+    } finally {
+      sourceRollbackAlias.cleanup();
     }
   });
 
@@ -4432,6 +4872,7 @@ function createProductionDoctorFixture(name: string) {
     }
     rmSync(`${sourcePath}-wal`, { force: true });
     rmSync(`${sourcePath}-shm`, { force: true });
+    rmSync(`${sourcePath}-journal`, { force: true });
     copyFileSync(sourcePath, destinationPath);
   } catch (error) {
     rmSync(dir, { recursive: true, force: true });
@@ -4461,6 +4902,7 @@ function createRealVerifierPromotionFixture(name: string) {
     }
     rmSync(`${sourcePath}-wal`, { force: true });
     rmSync(`${sourcePath}-shm`, { force: true });
+    rmSync(`${sourcePath}-journal`, { force: true });
     rescoreProductionCandidate(sourcePath);
     copyFileSync(sourcePath, destinationPath);
   } catch (error) {
@@ -4525,6 +4967,7 @@ function rescoreProductionCandidate(path: string) {
   }
   rmSync(`${path}-wal`, { force: true });
   rmSync(`${path}-shm`, { force: true });
+  rmSync(`${path}-journal`, { force: true });
 }
 
 function initializeProductionSchema(path: string) {
@@ -5497,6 +5940,7 @@ function rewriteProductionCandidate(path: string, { score }: { score: number }) 
   }
   rmSync(`${path}-wal`, { force: true });
   rmSync(`${path}-shm`, { force: true });
+  rmSync(`${path}-journal`, { force: true });
 }
 
 function readScorePersistenceMetaFromDb(db: DatabaseSync) {

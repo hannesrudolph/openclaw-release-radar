@@ -54,7 +54,7 @@ export interface ReleaseCatalogActiveProjectionRow {
   created_at: string | null;
   updated_at: string | null;
   html_url: string;
-  prerelease: boolean | number;
+  prerelease: unknown;
   body: string | null;
 }
 

@@ -126,6 +126,89 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /rows\.find\(\(r\) => r\.status === 'eligible' && r\.finalScore != null\)/);
   });
 
+  it('keeps exact release tags collision-free in DOM ids and shell-safe in commands', () => {
+    const html = readFileSync(join(root, 'public/index.html'), 'utf8');
+    const smoke = readFileSync(join(root, 'scripts/ui-smoke.mjs'), 'utf8');
+    const domIdSource = html.match(
+      /function domIdForTag\(tag\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? '';
+    const shellQuoteSource = html.match(
+      /function shellQuote\(value\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? '';
+    const npmVersionSource = html.match(
+      /function npmVersionFromTag\(tag\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? '';
+    const installCommandSource = html.match(
+      /function installCommand\(tag\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? '';
+    const updateCommandBlockSource = html.match(
+      /function updateCommandBlockHtml\(tag, opts = \{\}\) \{[\s\S]*?\n\}/,
+    )?.[0] ?? '';
+
+    assert.notEqual(domIdSource, '');
+    assert.notEqual(shellQuoteSource, '');
+    assert.notEqual(npmVersionSource, '');
+    assert.notEqual(installCommandSource, '');
+    assert.notEqual(updateCommandBlockSource, '');
+    assert.doesNotMatch(html, /\bcssId\(/);
+    assert.match(
+      domIdSource,
+      /charCodeAt\(i\)\.toString\(16\)\.padStart\(4, '0'\)/,
+    );
+    assert.match(
+      installCommandSource,
+      /openclaw update --tag \$\{shellQuote\(npmVersionFromTag\(tag\)\)\}/,
+    );
+    assert.equal((html.match(/openclaw update --tag/g) ?? []).length, 1);
+    assert.match(updateCommandBlockSource, /const cmd = installCommand\(tag\)/);
+    assert.match(updateCommandBlockSource, /\$\{esc\(cmd\)\}<\/code>/);
+    assert.match(updateCommandBlockSource, /data-cmd="\$\{esc\(cmd\)\}"/);
+    assert.match(smoke, /function cssAttributeEquals\(name, value\)/);
+    assert.doesNotMatch(smoke, /locator\([^)]*data-tag="\$\{/s);
+    assert.doesNotMatch(smoke, /locator\([^)]*data-cmd="\$\{/s);
+
+    const runtime = Function(
+      `${domIdSource}\n${npmVersionSource}\n${shellQuoteSource}\n`
+        + `${installCommandSource}\n`
+        + 'return { domIdForTag, shellQuote, installCommand };',
+    )() as {
+      domIdForTag(tag: string): string;
+      shellQuote(value: string): string;
+      installCommand(tag: string): string;
+    };
+    const tags = [
+      '',
+      'v2026.7.8',
+      'release/a',
+      'release+a',
+      "v1'$(id);$HOME&`id`",
+      '\u03b2/\ud83d\ude80',
+      '\ud800',
+      '\ufffd',
+    ];
+    const ids = tags.map(runtime.domIdForTag);
+    assert.equal(new Set(ids).size, tags.length);
+    assert.ok(ids.every((id) => /^tag-[0-9a-f]*$/.test(id)));
+    assert.equal(runtime.domIdForTag('a'), 'tag-0061');
+    assert.equal(runtime.domIdForTag('\ud83d\ude80'), 'tag-d83dde80');
+    assert.notEqual(
+      runtime.domIdForTag('release/a'),
+      runtime.domIdForTag('release+a'),
+    );
+
+    const hostileTag = "v1'$(id);$HOME&`id`";
+    const quotedTag = "'1'\"'\"'$(id);$HOME&`id`'";
+    assert.equal(runtime.shellQuote(hostileTag.slice(1)), quotedTag);
+    assert.equal(
+      runtime.installCommand(hostileTag),
+      `openclaw update --tag ${quotedTag}`,
+    );
+    assert.equal(
+      runtime.installCommand('v2026.7.8'),
+      "openclaw update --tag '2026.7.8'",
+    );
+  });
+
   it('public payload cache and last-known-good data stay epoch-compatible', () => {
     const api = readFileSync(join(root, 'src/routes/api.ts'), 'utf8');
     const loader = api.slice(
@@ -354,8 +437,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /data-release-retry/);
 
     assert.match(html, /id="surfaces-\$\{id\}"/);
-    assert.match(html, /id="review-\$\{cssId\(r\.tag\)\}"/);
-    assert.match(html, /id="issues-\$\{cssId\(r\.tag\)\}"/);
+    assert.match(html, /id="review-\$\{domIdForTag\(r\.tag\)\}"/);
+    assert.match(html, /id="issues-\$\{domIdForTag\(r\.tag\)\}"/);
     assert.match(publicLoader, /patchAllPublicSlots/);
     assert.doesNotMatch(publicLoader, /renderReleases/);
     assert.doesNotMatch(historyLoader, /renderReleases/);
@@ -1245,14 +1328,18 @@ describe('static scoring/UI contracts', () => {
     assert.match(promotionTests, /rejects an internally consistent obsolete model with the real score verifier/);
     assert.match(promotionTests, /rejects internally consistent but mathematically wrong scores with the real score verifier/);
     assert.match(readme, /destination capture-receipt chain remains the exact prefix/);
-    assert.match(readme, /source inode and logical database identity/);
-    assert.match(readme, /holders and active refresh leases before final success and around rollback/);
+    assert.match(readme, /full source family, holder, lease, and logical-identity revalidation/);
+    assert.match(readme, /holders across both complete SQLite families and active refresh leases before final success and around rollback/);
   });
 
   it('refresh orchestration is executable through durable success and failure receipts', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     const qualityRefresh = readFileSync(
       join(root, 'scripts/refresh-quality-db.mjs'),
+      'utf8',
+    );
+    const qualityRefreshCli = readFileSync(
+      join(root, 'scripts/lib/quality-refresh-cli.mjs'),
       'utf8',
     );
     const dbModule = readFileSync(join(root, 'src/lib/db.ts'), 'utf8');
@@ -1264,11 +1351,48 @@ describe('static scoring/UI contracts', () => {
     assert.match(refresh, /orchestration\.publishScore\(\{/);
     assert.match(refresh, /terminalReceiptId = orchestration\?\.fail\(e\)/);
     assert.match(qualityRefresh, /process\.env\.RADAR_DB_READ_ONLY = '0'/);
-    assert.ok(
-      qualityRefresh.indexOf("process.env.RADAR_DB_READ_ONLY = '0'") <
-        qualityRefresh.indexOf("await import('../src/lib/db.ts')"),
-      'quality refresh must select writable mode before importing the database',
+    assert.match(
+      qualityRefreshCli,
+      /argv\.length === 3[\s\S]*?argv\[2\] === '--resume-existing'/,
     );
+    assert.doesNotMatch(qualityRefreshCli, /process\.env/);
+    assert.match(
+      qualityRefreshCli,
+      /const SQLITE_FAMILY_SUFFIXES = \['', '-wal', '-shm', '-journal'\]/,
+    );
+    assert.match(
+      qualityRefreshCli,
+      /member\.lstat\.isSymbolicLink\(\) \|\| !member\.lstat\.isFile\(\)/,
+    );
+    assert.match(
+      qualityRefreshCli,
+      /left\.stat\.dev === right\.stat\.dev[\s\S]*?left\.stat\.ino === right\.stat\.ino/,
+    );
+    const forceFreshIndex = qualityRefresh.indexOf(
+      "process.env.RADAR_DB_BOOTSTRAP_MODE = 'fresh'",
+    );
+    const writerLockIndex = qualityRefresh.indexOf(
+      'const writerLock = acquireRepositoryDatabaseWriterLock',
+    );
+    const familyValidationIndex = qualityRefresh.indexOf(
+      'validateQualityRefreshDatabase({',
+    );
+    const resumeBootstrapIndex = qualityRefresh.indexOf(
+      "process.env.RADAR_DB_BOOTSTRAP_MODE = 'existing'",
+    );
+    const databaseImportIndex = qualityRefresh.indexOf(
+      "await import('../src/lib/db.ts')",
+    );
+    assert.ok(
+      forceFreshIndex >= 0 &&
+        forceFreshIndex < writerLockIndex &&
+        writerLockIndex < familyValidationIndex &&
+        familyValidationIndex < resumeBootstrapIndex &&
+        resumeBootstrapIndex < databaseImportIndex,
+      'quality refresh must force fresh mode, lock, validate, select resume mode, then import',
+    );
+    assert.match(qualityRefresh, /databaseModule\?\.db\.close\(\)/);
+    assert.match(qualityRefresh, /writerLock\.release\(\)/);
     assert.match(dbModule, /assertActiveRefreshLeaseFence\(\{/);
     assert.match(dbModule, /without an active started stage/);
     assert.match(dbModule, /function recoverUnsuccessfulRefreshScoreTip/);

@@ -4,12 +4,33 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { describe, it } from 'node:test';
 import {
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT,
+  CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES,
   verifyClassifierAttemptLedger,
   type ClassifierAttemptRecorder,
 } from './classifierAttemptLedger';
 
 const DEFAULT_GROUNDING_BODY =
   'gateway startup fails for the default Windows configuration.';
+const ISSUE_75_GROUNDING_BODY =
+  'Feature request for macOS tray behavior. This is a minor request for one custom setup.';
+const ISSUE_75_COMMENTS = [
+  {
+    id: 4_345_729_906,
+    body: 'The menu bar entry should remain compact.',
+  },
+  {
+    id: 4_351_288_700,
+    body: 'Please add tray integration for the compact status view.',
+  },
+].map((comment) => ({
+  ...comment,
+  node_id: `IC_${comment.id}`,
+  node_type: 'IssueComment',
+  user: { id: 'U_test', type: 'User', login: 'reporter' },
+  created_at: '2026-07-07T00:00:00Z',
+  updated_at: '2026-07-07T00:00:00Z',
+}));
 
 function groundedOutput(
   overrides: Record<string, unknown> = {},
@@ -35,6 +56,33 @@ function groundedOutput(
     },
     rationale: 'The cited issue body supports the classification.',
     ...overrides,
+  };
+}
+
+function issue75GroundedOutput(
+  sentimentCitation: { source_id: string; excerpt: string },
+  functionalityCitation: { source_id: string; excerpt: string },
+): Record<string, unknown> {
+  return {
+    sentiment: 'neutral',
+    severity: 'low',
+    scope: 'niche',
+    functionality: 'integration',
+    affected_users: 'unknown',
+    workaroundStatus: 'unknown',
+    duplicateCluster: null,
+    affectsVersion: null,
+    evidence: {
+      sentiment: [sentimentCitation],
+      severity: [{ source_id: 'issue:body', excerpt: 'minor' }],
+      scope: [{ source_id: 'issue:body', excerpt: 'one custom setup' }],
+      functionality: [functionalityCitation],
+      affected_users: [],
+      workaroundStatus: [],
+      duplicateCluster: [],
+      affectsVersion: [],
+    },
+    rationale: 'The cited request and tray integration evidence support the classification.',
   };
 }
 
@@ -495,6 +543,9 @@ describe('OpenAI classification request', () => {
       ['response format', (value) => { value.request.responseFormat.type = 'json_schema'; }],
       ['request shape', (value) => { value.request.bodyFieldOrder.reverse(); }],
       ['retry budget', (value) => { value.retry.maxHttpAttempts++; }],
+      ['semantic retry feedback', (value) => {
+        value.semanticRetryFeedback.rejectedAssistantOutputMaxBytes++;
+      }],
       ['attempt ledger contract', (value) => {
         value.attemptLedger.retryDecision += ' changed';
       }],
@@ -542,6 +593,90 @@ describe('OpenAI classification request', () => {
       __llmTest.classifierAlgorithmFingerprint(revisionDrift),
       baseline,
       'implementation revision drift must invalidate classifier reuse',
+    );
+  });
+
+  it('retries only model-correctable grounding errors and excludes duplicate source IDs', async () => {
+    const {
+      ClassificationGroundingError,
+      __llmTest,
+    } = await import(`./llm.ts?semantic-retry-policy=${Date.now()}`);
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError([{
+          field: 'sentiment',
+          code: 'excerpt_not_field_relevant',
+          message: 'choose another exact citation',
+        }]),
+      ),
+      true,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError([
+          {
+            field: 'sentiment',
+            code: 'excerpt_not_field_relevant',
+            message: 'choose another exact citation',
+          },
+          {
+            field: 'evidence',
+            code: 'duplicate_source_id',
+            message: 'caller supplied duplicate source IDs',
+          },
+        ]),
+      ),
+      false,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError([{
+          field: 'evidence',
+          code: 'wrong_keys',
+          message: 'evidence schema is incomplete',
+        }]),
+      ),
+      false,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError([]),
+      ),
+      false,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError([{
+            field: 'sentiment',
+            code: 'excerpt_not_field_relevant',
+            message: 'x'.repeat(
+              CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MESSAGE_MAX_BYTES + 1,
+            ),
+          }]),
+      ),
+      false,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new ClassificationGroundingError(Array.from(
+          {
+            length:
+              CLASSIFIER_SEMANTIC_RETRY_DIAGNOSTIC_MAX_COUNT + 1,
+          },
+          (_, index) => ({
+            field: 'sentiment',
+            code: 'excerpt_not_field_relevant',
+            message: `choose another exact citation ${index}`,
+          })),
+        ),
+      ),
+      false,
+    );
+    assert.equal(
+      __llmTest.isRetryableClassificationGroundingError(
+        new Error('schema failure'),
+      ),
+      false,
     );
   });
 
@@ -965,6 +1100,11 @@ describe('OpenAI classification request', () => {
     (config.openai as any).retryMaxMs = 0;
     let attempts = 0;
     const requestBodies: string[] = [];
+    const invalidGrounding = structuredClone(groundedOutput()) as any;
+    invalidGrounding.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: 'not present in the issue',
+    }];
     globalThis.fetch = (async (_input, init) => {
       attempts++;
       requestBodies.push(String(init?.body ?? ''));
@@ -972,7 +1112,7 @@ describe('OpenAI classification request', () => {
         return new Response('temporary upstream failure', { status: 503 });
       }
       const content = attempts === 2
-        ? '{}'
+        ? JSON.stringify(invalidGrounding)
         : JSON.stringify(groundedOutput());
       return new Response(JSON.stringify({
         id: `chatcmpl-attempt-${attempts}`,
@@ -985,55 +1125,56 @@ describe('OpenAI classification request', () => {
       });
     }) as typeof fetch;
     try {
-      const {
-        ClassifierAttemptLedgerTerminalError,
-        classifyIssueWithAttemptLedger,
-      } = await import(`./llm.ts?transport-only-retry=${Date.now()}`);
-      await assert.rejects(
-        classifyIssueWithAttemptLedger({
-          number: 89,
-          state: 'open',
-          title: 'Retry budget fixture',
-          body: DEFAULT_GROUNDING_BODY,
-          user: { login: 'reporter' },
-          created_at: '2026-07-04T00:00:00Z',
-          updated_at: '2026-07-04T00:00:00Z',
-          closed_at: null,
-          html_url: 'https://github.com/openclaw/openclaw/issues/89',
-          comments: 0,
-          labels: [],
-        }, [], []),
-        (error: unknown) => {
-          assert.ok(error instanceof ClassifierAttemptLedgerTerminalError);
-          assert.match(error.message, /classification keys must equal/);
-          assert.equal(error.terminalStatus, 'terminal_failure');
-          assert.equal(verifyClassifierAttemptLedger(error.ledger).valid, true);
-          assert.deepEqual(
-            error.ledger.attempts.map((attempt) => attempt.status),
-            ['transport_failure', 'semantic_rejection'],
-          );
-          assert.deepEqual(
-            error.ledger.attempts.map((attempt) => attempt.retry.decision),
-            ['retry', 'stop'],
-          );
-          assert.deepEqual(
-            error.ledger.attempts.map((attempt) => attempt.retry.retryable),
-            [true, false],
-          );
-          assert.equal(
-            error.ledger.attempts[1].semanticDiagnostics[0]?.code,
-            'schema_shape_rejection',
-          );
-          assert.equal(
-            error.ledger.attempts[1].retry.reason,
-            'deterministic_semantic_rejection',
-          );
-          assert.equal(error.ledger.receipt.attemptCount, 2);
-          return true;
-        },
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?shared-semantic-retry=${Date.now()}`
       );
-      assert.equal(attempts, 2);
-      assert.equal(new Set(requestBodies).size, 1);
+      const result = await classifyIssueWithAttemptLedger({
+        number: 89,
+        state: 'open',
+        title: 'Retry budget fixture',
+        body: DEFAULT_GROUNDING_BODY,
+        user: { login: 'reporter' },
+        created_at: '2026-07-04T00:00:00Z',
+        updated_at: '2026-07-04T00:00:00Z',
+        closed_at: null,
+        html_url: 'https://github.com/openclaw/openclaw/issues/89',
+        comments: 0,
+        labels: [],
+      }, [], []);
+      assert.equal(attempts, 3);
+      assert.equal(verifyClassifierAttemptLedger(result.ledger).valid, true);
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['transport_failure', 'semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.retry.reason),
+        [
+          'retryable_transport_failure',
+          'retryable_semantic_rejection',
+          'accepted_success',
+        ],
+      );
+      assert.equal(
+        result.ledger.attempts[1].semanticDiagnostics[0]?.code,
+        'excerpt_not_exact',
+      );
+      assert.equal(requestBodies[0], requestBodies[1]);
+      assert.notEqual(requestBodies[1], requestBodies[2]);
+      assert.equal(new Set(requestBodies).size, 2);
+      const requestHashes = requestBodies.map((requestBody) =>
+        createHash('sha256').update(requestBody).digest('hex'));
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.provenance.requestHash),
+        [requestHashes[0], requestHashes[0], requestHashes[2]],
+      );
+      const finalMessages = JSON.parse(requestBodies[2]).messages;
+      assert.equal(
+        result.classification.provenance?.promptHash,
+        createHash('sha256')
+          .update(JSON.stringify(finalMessages))
+          .digest('hex'),
+      );
     } finally {
       globalThis.fetch = previousFetch;
       (config.openai as any).maxAttempts = original.maxAttempts;
@@ -1280,6 +1421,66 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('records invalid response usage as a terminal semantic rejection', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 3;
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-invalid-usage',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          message: {
+            content: JSON.stringify(groundedOutput()),
+          },
+        }],
+        usage: {
+          prompt_tokens: -1,
+        },
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const {
+        ClassifierAttemptLedgerTerminalError,
+        classifyIssueWithAttemptLedger,
+      } = await import(`./llm.ts?usage-ledger=${Date.now()}`);
+      await assert.rejects(
+        classifyIssueWithAttemptLedger(
+          groundingIssue(DEFAULT_GROUNDING_BODY) as any,
+          [],
+          [],
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassifierAttemptLedgerTerminalError);
+          assert.equal(error.terminalStatus, 'terminal_failure');
+          assert.equal(error.ledger.attempts.length, 1);
+          const attempt = error.ledger.attempts[0];
+          assert.equal(attempt.status, 'semantic_rejection');
+          assert.deepEqual(attempt.retry, {
+            decision: 'stop',
+            retryable: false,
+            delayMs: null,
+            reason: 'deterministic_semantic_rejection',
+          });
+          assert.equal(
+            attempt.semanticDiagnostics[0]?.code,
+            'response_usage_invalid',
+          );
+          return true;
+        },
+      );
+      assert.equal(attempts, 1);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('records non-retryable HTTP failures without spending the remaining budget', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');
@@ -1515,11 +1716,8 @@ describe('OpenAI classification request', () => {
     const originalMaxAttempts = config.openai.maxAttempts;
     (config.openai as any).maxAttempts = 4;
     const valid = groundedOutput();
-    const invalidCitation = structuredClone(valid) as any;
-    invalidCitation.evidence.sentiment = [{
-      source_id: 'issue:body',
-      excerpt: 'not present in the issue',
-    }];
+    const invalidEvidenceSchema = structuredClone(valid) as any;
+    delete invalidEvidenceSchema.evidence.affectsVersion;
     const cases: Array<{
       name: string;
       content: string | undefined;
@@ -1536,9 +1734,9 @@ describe('OpenAI classification request', () => {
         diagnosticCode: 'schema_shape_rejection',
       },
       {
-        name: 'unsupported citation',
-        content: JSON.stringify(invalidCitation),
-        diagnosticCode: 'excerpt_not_exact',
+        name: 'invalid evidence schema',
+        content: JSON.stringify(invalidEvidenceSchema),
+        diagnosticCode: 'wrong_keys',
       },
       {
         name: 'missing assistant content',
@@ -1606,52 +1804,127 @@ describe('OpenAI classification request', () => {
     }
   });
 
-  it('retries semantically malformed model JSON and persists exact raw provenance', async () => {
+  it('stops eligible grounding retries when the shared attempt budget is exhausted', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
-    process.env.OPENAI_MODEL = 'gpt-5.5';
-    process.env.OPENAI_SERVICE_TIER = 'priority';
+    const { config } = await import('../config.ts');
     const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const rejectedRaw = JSON.stringify(issue75GroundedOutput(
+      { source_id: 'issue:body', excerpt: 'macOS tray behavior' },
+      {
+        source_id: 'comment:4345729906',
+        excerpt: 'menu bar entry',
+      },
+    ));
     let attempts = 0;
     const requestBodies: string[] = [];
-    const valid = {
-      sentiment: 'negative',
-      severity: 'medium',
-      scope: 'moderate',
-      functionality: 'core',
-      affected_users: 'some',
-      workaroundStatus: 'unknown',
-      duplicateCluster: null,
-      affectsVersion: 'v2026.7.4',
-      evidence: {
-        sentiment: [{
-          source_id: 'issue:body',
-          excerpt: 'exits',
-        }],
-        severity: [{
-          source_id: 'issue:body',
-          excerpt: 'exits during startup',
-        }],
-        scope: [{
-          source_id: 'issue:body',
-          excerpt: 'Windows configuration',
-        }],
-        functionality: [{
-          source_id: 'issue:body',
-          excerpt: 'startup',
-        }],
-        affected_users: [{
-          source_id: 'issue:body',
-          excerpt: 'the default Windows configuration',
-        }],
-        workaroundStatus: [],
-        duplicateCluster: [],
-        affectsVersion: [{
-          source_id: 'issue:title',
-          excerpt: 'v2026.7.4',
-        }],
-      },
-      rationale: 'A second human reproduced the startup failure on the named release.',
+    globalThis.fetch = (async (_input, init) => {
+      attempts++;
+      requestBodies.push(String(init?.body ?? ''));
+      return new Response(JSON.stringify({
+        id: `chatcmpl-exhausted-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{ message: { content: rejectedRaw } }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const {
+        ClassifierAttemptLedgerTerminalError,
+        classifyIssueWithAttemptLedger,
+      } = await import(`./llm.ts?semantic-budget-exhaustion=${Date.now()}`);
+      await assert.rejects(
+        classifyIssueWithAttemptLedger({
+          number: 75,
+          state: 'open',
+          title: 'macOS tray request',
+          body: ISSUE_75_GROUNDING_BODY,
+          user: { login: 'reporter' },
+          created_at: '2026-07-07T00:00:00Z',
+          updated_at: '2026-07-07T00:00:00Z',
+          closed_at: null,
+          html_url: 'https://github.com/openclaw/openclaw/issues/75',
+          comments: ISSUE_75_COMMENTS.length,
+          labels: [],
+        }, ISSUE_75_COMMENTS as any, []),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassifierAttemptLedgerTerminalError);
+          assert.equal(error.terminalStatus, 'terminal_failure');
+          assert.equal(verifyClassifierAttemptLedger(error.ledger).valid, true);
+          assert.deepEqual(
+            error.ledger.attempts.map((attempt) => attempt.status),
+            ['semantic_rejection', 'semantic_rejection'],
+          );
+          assert.deepEqual(
+            error.ledger.attempts.map((attempt) => attempt.retry),
+            [
+              {
+                decision: 'retry',
+                retryable: true,
+                delayMs: 0,
+                reason: 'retryable_semantic_rejection',
+              },
+              {
+                decision: 'stop',
+                retryable: true,
+                delayMs: null,
+                reason: 'attempt_budget_exhausted',
+              },
+            ],
+          );
+          assert.equal(error.ledger.receipt.reason, 'attempt_budget_exhausted');
+          assert.deepEqual(
+            error.ledger.attempts.map((attempt) =>
+              attempt.semanticDiagnostics.map((diagnostic) => diagnostic.code)),
+            [
+              ['excerpt_not_field_relevant', 'excerpt_not_field_relevant'],
+              ['excerpt_not_field_relevant', 'excerpt_not_field_relevant'],
+            ],
+          );
+          return true;
+        },
+      );
+      assert.equal(attempts, 2);
+      assert.equal(requestBodies.length, 2);
+      assert.notEqual(requestBodies[0], requestBodies[1]);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('retries semantically malformed model JSON and persists exact raw provenance', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const original = {
+      model: config.openai.model,
+      serviceTier: config.openai.serviceTier,
+      maxAttempts: config.openai.maxAttempts,
     };
+    (config.openai as any).model = 'gpt-5.5';
+    (config.openai as any).serviceTier = 'priority';
+    (config.openai as any).maxAttempts = 3;
+    let attempts = 0;
+    const requestBodies: string[] = [];
+    const rejected = issue75GroundedOutput(
+      { source_id: 'issue:body', excerpt: 'macOS tray behavior' },
+      {
+        source_id: 'comment:4345729906',
+        excerpt: 'menu bar entry',
+      },
+    );
+    const corrected = issue75GroundedOutput(
+      { source_id: 'issue:body', excerpt: 'Feature request' },
+      {
+        source_id: 'comment:4351288700',
+        excerpt: 'tray integration',
+      },
+    );
+    const rejectedJson = JSON.stringify(rejected);
+    const rejectedRaw = `${rejectedJson}${' '.repeat(17_000)}`;
+    const correctedRaw = JSON.stringify(corrected);
     globalThis.fetch = (async (_input, init) => {
       attempts++;
       requestBodies.push(String(init?.body ?? ''));
@@ -1659,7 +1932,11 @@ describe('OpenAI classification request', () => {
         id: `chatcmpl-${attempts}`,
         model: 'gpt-5.5',
         service_tier: 'priority',
-        choices: [{ message: { content: JSON.stringify(valid) } }],
+        choices: [{
+          message: {
+            content: attempts === 1 ? rejectedRaw : correctedRaw,
+          },
+        }],
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1669,56 +1946,143 @@ describe('OpenAI classification request', () => {
       const {
         CLASSIFICATION_PROMPT_TEMPLATE_HASH,
         classifyIssueWithAttemptLedger,
-      } = await import(`./llm.ts?accepted-provenance=${Date.now()}`);
+      } = await import(`./llm.ts?issue-75-semantic-retry=${Date.now()}`);
       const result = await classifyIssueWithAttemptLedger({
-        number: 98416,
+        number: 75,
         state: 'open',
-        title: 'Startup fails in v2026.7.4',
-        body: 'The release exits during startup for the default Windows configuration.',
+        title: 'macOS tray request',
+        body: ISSUE_75_GROUNDING_BODY,
         user: { login: 'reporter' },
-        created_at: '2026-07-04T00:00:00Z',
-        updated_at: '2026-07-04T00:00:00Z',
+        created_at: '2026-07-07T00:00:00Z',
+        updated_at: '2026-07-07T00:00:00Z',
         closed_at: null,
-        html_url: 'https://github.com/openclaw/openclaw/issues/98416',
-        comments: 0,
-        labels: [{ name: 'P0' }],
-      }, [], ['v2026.7.4']);
+        html_url: 'https://github.com/openclaw/openclaw/issues/75',
+        comments: ISSUE_75_COMMENTS.length,
+        labels: [],
+      }, ISSUE_75_COMMENTS as any, []);
       const { classification, ledger, selectedAttemptBinding } = result;
-      assert.equal(attempts, 1);
-      assert.equal(classification.severity, 'medium');
-      assert.equal(classification.rationale, valid.rationale);
+      assert.equal(attempts, 2);
+      assert.equal(classification.sentiment, 'neutral');
+      assert.equal(classification.functionality, 'integration');
+      assert.deepEqual(classification.evidence?.sentiment, [{
+        sourceId: 'issue:body',
+        excerpt: 'Feature request',
+      }]);
+      assert.deepEqual(classification.evidence?.functionality, [{
+        sourceId: 'comment:4351288700',
+        excerpt: 'tray integration',
+      }]);
       assert.equal(classification.confidenceAuthority, 'deterministic_verified_citations');
       assert.equal(classification.confidence, classification.evidenceQuality?.value);
-      assert.equal(classification.provenance?.rawModelOutput, JSON.stringify(valid));
+      assert.equal(classification.provenance?.rawModelOutput, correctedRaw);
       assert.match(classification.provenance?.promptHash ?? '', /^[0-9a-f]{64}$/);
       assert.match(classification.provenance?.promptTemplateHash ?? '', /^[0-9a-f]{64}$/);
       assert.equal(classification.provenance?.schemaVersion, 2);
       if (classification.provenance?.schemaVersion === 2) {
-        assert.equal(classification.provenance.inputTruncation.body.originalLength, 71);
-        assert.deepEqual(classification.provenance.inputTruncation.comments.includedIds, []);
+        assert.equal(
+          classification.provenance.inputTruncation.body.originalLength,
+          ISSUE_75_GROUNDING_BODY.length,
+        );
+        assert.deepEqual(
+          classification.provenance.inputTruncation.comments.includedIds,
+          [4_345_729_906, 4_351_288_700],
+        );
       }
       assert.equal(verifyClassifierAttemptLedger(ledger).valid, true);
-      assert.equal(ledger.run.issueNumber, 98416);
+      assert.equal(ledger.run.issueNumber, 75);
       assert.equal(
         ledger.run.requestHash,
         createHash('sha256').update(requestBodies[0]).digest('hex'),
       );
-      assert.equal(new Set(requestBodies).size, 1);
+      assert.equal(new Set(requestBodies).size, 2);
       assert.equal(
         ledger.run.classifierIdentityHash,
         CLASSIFICATION_PROMPT_TEMPLATE_HASH,
       );
       assert.deepEqual(
         ledger.attempts.map((attempt) => attempt.status),
-        ['accepted_success'],
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+          diagnostic.sourceId,
+        ]),
+        [
+          ['sentiment', 'excerpt_not_field_relevant', 'issue:body'],
+          [
+            'functionality',
+            'excerpt_not_field_relevant',
+            'comment:4345729906',
+          ],
+        ],
+      );
+      assert.deepEqual(ledger.attempts[0].retry, {
+        decision: 'retry',
+        retryable: true,
+        delayMs: 0,
+        reason: 'retryable_semantic_rejection',
+      });
+      const firstBody = JSON.parse(requestBodies[0]);
+      const secondBody = JSON.parse(requestBodies[1]);
+      assert.equal(firstBody.messages.length, 2);
+      assert.equal(secondBody.messages.length, 3);
+      assert.notEqual(
+        createHash('sha256').update(JSON.stringify(firstBody.messages)).digest('hex'),
+        createHash('sha256').update(JSON.stringify(secondBody.messages)).digest('hex'),
+      );
+      const feedbackText = secondBody.messages[2].content as string;
+      const feedbackJson = feedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(feedbackJson);
+      const feedback = JSON.parse(feedbackJson);
+      assert.equal(
+        feedback.rejected_assistant_output.text.startsWith(rejectedJson),
+        true,
+      );
+      assert.equal(feedback.rejected_assistant_output.truncated, true);
+      assert.ok(
+        Buffer.byteLength(feedback.rejected_assistant_output.text, 'utf8') <=
+          16_384,
+      );
+      assert.equal(
+        feedback.rejected_assistant_output.original_byte_length,
+        Buffer.byteLength(rejectedRaw, 'utf8'),
+      );
+      assert.equal(
+        feedback.rejected_assistant_output.full_sha256,
+        createHash('sha256').update(rejectedRaw).digest('hex'),
+      );
+      assert.deepEqual(
+        feedback.semantic_diagnostics.entries.map((diagnostic: any) => [
+          diagnostic.field,
+          diagnostic.code,
+          diagnostic.source_id,
+        ]),
+        [
+          ['sentiment', 'excerpt_not_field_relevant', 'issue:body'],
+          [
+            'functionality',
+            'excerpt_not_field_relevant',
+            'comment:4345729906',
+          ],
+        ],
+      );
+      const requestHashes = requestBodies.map((requestBody) =>
+        createHash('sha256').update(requestBody).digest('hex'));
+      assert.deepEqual(
+        ledger.attempts.map((attempt) => attempt.provenance.requestHash),
+        requestHashes,
       );
       assert.equal(
         selectedAttemptBinding.attemptId,
-        ledger.attempts[0].attemptId,
+        ledger.attempts[1].attemptId,
       );
       assert.equal(
         selectedAttemptBinding.rawResponseHash,
-        ledger.attempts[0].rawResponse?.fullContentHash,
+        ledger.attempts[1].rawResponse?.fullContentHash,
       );
       assert.equal(ledger.attempts[0].rawResponse?.truncated, false);
       assert.equal(ledger.attempts[0].rawModelOutput?.truncated, false);
@@ -1731,10 +2095,22 @@ describe('OpenAI classification request', () => {
           attempt.durationMs,
           Date.parse(attempt.finishedAt) - Date.parse(attempt.startedAt),
         );
-        assert.equal(attempt.provenance.requestHash, ledger.run.requestHash);
       }
+      assert.equal(
+        selectedAttemptBinding.provenance.requestHash,
+        requestHashes[1],
+      );
+      assert.equal(
+        classification.provenance?.promptHash,
+        createHash('sha256')
+          .update(JSON.stringify(secondBody.messages))
+          .digest('hex'),
+      );
     } finally {
       globalThis.fetch = previousFetch;
+      (config.openai as any).model = original.model;
+      (config.openai as any).serviceTier = original.serviceTier;
+      (config.openai as any).maxAttempts = original.maxAttempts;
     }
   });
 });

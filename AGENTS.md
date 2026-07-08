@@ -27,7 +27,10 @@ For this repository, aggressively use parallel subagents for substantial work.
 - Access to a configured live database is supported only through named npm lifecycle commands or the exact app runtimes declared in `package.json`: `tsx watch src/index.ts` for development and `NODE_ENV=production node dist/index.js` for production.
 - Writable ad hoc repository imports are globally serialized by a process lock. Do not bypass or remove that lock to gain parallelism.
 - Every writable SQLite import also holds a per-database initialization lock through bootstrap and schema migration.
-- Use `npm run refresh:quality -- --db-path <path>` instead of invoking `refresh()` through `tsx -e`.
+- Use `npm run refresh:quality -- --db-path <path>` for a fresh isolated database instead of invoking `refresh()` through `tsx -e`.
+- Resume an interrupted quality build only with the explicit `npm run refresh:quality -- --db-path <path> --resume-existing` form. Never infer resume from existing files or inherited environment.
+- Do not prefix `refresh:quality` with `DB_PATH`; the target comes only from `--db-path`, and inherited/configured application database paths are protected.
+- Fresh and resume admission must run under the repository database-writer lock. Resume preserves the complete SQLite family and accepts only a regular non-symlink main DB plus regular non-symlink WAL, SHM, or journal sidecars when present.
 - Prefer the guarded focused runner during implementation for code paths that open SQLite; reserve the full runners for the single full gate described below.
 - Do not open or migrate `data/radar.db` during implementation or test work. Promote a separately verified quality database only through the guarded installer.
 

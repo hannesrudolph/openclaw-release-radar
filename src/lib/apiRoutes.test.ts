@@ -596,6 +596,34 @@ describe('audit API routes', () => {
     }
   });
 
+  it('fails closed for a malformed persisted prerelease state', async () => {
+    restorePrimaryTestCatalog();
+    dbModule.db.prepare(`
+      UPDATE releases
+      SET prerelease=2
+      WHERE tag=? AND catalog_active=1
+    `).run(PRIMARY_RELEASE_TAG);
+
+    try {
+      assert.throws(
+        () => dbModule.currentAuthorizedReleaseCatalog(),
+        /invalid prerelease state/,
+      );
+      for (const [path, error] of [
+        ['/api/releases', 'release payload unavailable'],
+        ['/api/releases/history', 'release history unavailable'],
+        ['/api/public', 'public payload unavailable'],
+        ['/api/status', 'status unavailable'],
+      ]) {
+        const response = await getJsonExact(path);
+        assert.equal(response.status, 503, path);
+        assert.equal(response.body.error, error, path);
+      }
+    } finally {
+      restorePrimaryTestCatalog();
+    }
+  });
+
   it('withholds actionability when the latest authorized stable has no sealed score', async () => {
     const latestStableTag = 'v2026.6.2';
     replaceTestActiveCatalog([
