@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 25;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 26;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -3765,6 +3765,7 @@ function workaroundCitationPatterns(status: WorkaroundStatus): readonly string[]
       '\\bworkaround\\b',
       '\\bworks?\\s+(?:sometimes|partially|only)\\b',
       '\\bworks?\\s+but\\s+(?:heavyweight|cumbersome|impractical|fragile)\\b',
+      '\\bworks?\\s+(?:technically|in principle)\\s*,?\\s*but\\b',
       '\\bmanual(?:ly)?\\b',
       '\\bfragile\\b',
       '\\bmonkey[- ]?patch(?:es|ed|ing)?\\b',

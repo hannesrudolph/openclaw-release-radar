@@ -4207,6 +4207,33 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'broad');
   });
 
+  it('accepts issue #21207 technically working but unreliable workaround evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?technical-workaround=${Date.now()}`
+    );
+    const workaroundEvidence =
+      'Works technically, but AI frequently ignores prompt rules and falls back to sequential single-file reads.';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${workaroundEvidence}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.workaroundStatus = 'partial';
+    raw.evidence.workaroundStatus = [{
+      source_id: 'issue:body',
+      excerpt: workaroundEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.workaroundStatus, 'partial');
+    assert.equal(accepted.hasWorkaround, true);
+  });
+
   it('accepts issue #37626 Chinese Feishu pagination evidence', async () => {
     const { __llmTest } = await import(
       `./llm.ts?feishu-pagination=${Date.now()}`
