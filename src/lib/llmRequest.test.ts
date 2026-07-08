@@ -1899,9 +1899,16 @@ describe('OpenAI classification request', () => {
     const { config } = await import('../config.ts');
     const previousFetch = globalThis.fetch;
     const originalMaxAttempts = config.openai.maxAttempts;
-    (config.openai as any).maxAttempts = 3;
-    const unsupported = groundedOutput({ scope: 'broad' });
+    (config.openai as any).maxAttempts = 4;
+    const unsupportedBroad = groundedOutput({ scope: 'broad' });
+    const unsupportedNiche = groundedOutput({ scope: 'niche' });
     const corrected = groundedOutput();
+    const outputs = [
+      unsupportedBroad,
+      unsupportedBroad,
+      unsupportedNiche,
+      corrected,
+    ];
     let attempts = 0;
     const requestBodies: string[] = [];
     globalThis.fetch = (async (_input, init) => {
@@ -1913,7 +1920,7 @@ describe('OpenAI classification request', () => {
         service_tier: config.openai.serviceTier,
         choices: [{
           message: {
-            content: JSON.stringify(attempts < 3 ? unsupported : corrected),
+            content: JSON.stringify(outputs[attempts - 1]),
           },
         }],
       }), { status: 200 });
@@ -1923,17 +1930,25 @@ describe('OpenAI classification request', () => {
         `./llm.ts?repeated-scope-repair=${Date.now()}`
       );
       const result = await classifyIssueWithAttemptLedger(
-        groundingIssue(DEFAULT_GROUNDING_BODY) as any,
+        groundingIssue(
+          DEFAULT_GROUNDING_BODY,
+          'Feature Request: Agent-triggered context compaction (self-compact tool)',
+        ) as any,
         [],
         [],
       );
       assert.equal(result.classification.scope, 'moderate');
       assert.deepEqual(
         result.ledger.attempts.map((attempt) => attempt.status),
-        ['semantic_rejection', 'semantic_rejection', 'accepted_success'],
+        [
+          'semantic_rejection',
+          'semantic_rejection',
+          'semantic_rejection',
+          'accepted_success',
+        ],
       );
       assert.deepEqual(
-        result.ledger.attempts.slice(0, 2).map((attempt) =>
+        result.ledger.attempts.slice(0, 3).map((attempt) =>
           attempt.semanticDiagnostics.map((diagnostic) => [
             diagnostic.field,
             diagnostic.code,
@@ -1941,12 +1956,13 @@ describe('OpenAI classification request', () => {
         [
           [['scope', 'excerpt_not_field_relevant']],
           [['scope', 'excerpt_not_field_relevant']],
+          [['scope', 'excerpt_not_field_relevant']],
         ],
       );
       const parsedBodies = requestBodies.map((body) => JSON.parse(body));
       assert.deepEqual(
         parsedBodies.map((body) => body.messages.length),
-        [2, 3, 3],
+        [2, 3, 3, 3],
       );
       const feedbackPayloads = parsedBodies.slice(1).map((body) => {
         const feedbackText = body.messages[2].content as string;
@@ -1956,25 +1972,35 @@ describe('OpenAI classification request', () => {
         assert.ok(feedbackJson);
         return JSON.parse(feedbackJson);
       });
-      assert.equal(feedbackPayloads[0].schema_version, 2);
+      assert.equal(feedbackPayloads[0].schema_version, 3);
       assert.equal(feedbackPayloads[0].repeated_output_count, 0);
       assert.equal(feedbackPayloads[1].repeated_output_count, 1);
+      assert.equal(feedbackPayloads[2].repeated_output_count, 0);
       assert.deepEqual(
-        feedbackPayloads.map((payload) => payload.correction_requirements[0]),
+        feedbackPayloads.map((payload) => ({
+          field: payload.correction_requirements[0].field,
+          diagnosticCode: payload.correction_requirements[0].diagnostic_code,
+          rejectedValue: payload.correction_requirements[0].rejected_value,
+          repeated: payload.correction_requirements[0].repeated_unchanged_output,
+        })),
         [
           {
             field: 'scope',
-            diagnostic_code: 'excerpt_not_field_relevant',
-            rejected_value: 'broad',
-            repeated_unchanged_output: false,
-            required_action: feedbackPayloads[0].correction_requirements[0].required_action,
+            diagnosticCode: 'excerpt_not_field_relevant',
+            rejectedValue: 'broad',
+            repeated: false,
           },
           {
             field: 'scope',
-            diagnostic_code: 'excerpt_not_field_relevant',
-            rejected_value: 'broad',
-            repeated_unchanged_output: true,
-            required_action: feedbackPayloads[1].correction_requirements[0].required_action,
+            diagnosticCode: 'excerpt_not_field_relevant',
+            rejectedValue: 'broad',
+            repeated: true,
+          },
+          {
+            field: 'scope',
+            diagnosticCode: 'excerpt_not_field_relevant',
+            rejectedValue: 'niche',
+            repeated: false,
           },
         ],
       );
@@ -1986,13 +2012,30 @@ describe('OpenAI classification request', () => {
         feedbackPayloads[1].correction_requirements[0].required_action,
         /must now use different supporting evidence or a different supported value/,
       );
+      assert.match(
+        feedbackPayloads[2].correction_requirements[0].required_action,
+        /A narrowly worded feature or one product capability is not itself niche/,
+      );
+      assert.ok(
+        feedbackPayloads[2].correction_requirements[0].supported_values.some(
+          (supported: any) =>
+            supported.value === 'moderate' &&
+            supported.candidate_citations.some(
+              (citation: any) => citation.source_id === 'issue:title',
+            ),
+        ),
+      );
       assert.equal(
         result.ledger.attempts[0].rawModelOutput?.text,
-        JSON.stringify(unsupported),
+        JSON.stringify(unsupportedBroad),
       );
       assert.equal(
         result.ledger.attempts[1].rawModelOutput?.text,
-        JSON.stringify(unsupported),
+        JSON.stringify(unsupportedBroad),
+      );
+      assert.equal(
+        result.ledger.attempts[2].rawModelOutput?.text,
+        JSON.stringify(unsupportedNiche),
       );
     } finally {
       globalThis.fetch = previousFetch;
@@ -2429,6 +2472,33 @@ describe('LLM source grounding', () => {
       explicitPrompt.inputTruncation,
     );
     assert.equal(explicit.scope, 'broad');
+
+    const genericNicheText = 'The only option is to ask the user.';
+    const genericNichePrompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${genericNicheText}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    raw.scope = 'niche';
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: genericNicheText,
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        genericNichePrompt.groundingSources,
+        genericNichePrompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'scope' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
   });
 
   it('requires independent support when one rich citation is reused across fields', async () => {

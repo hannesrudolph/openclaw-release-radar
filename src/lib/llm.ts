@@ -245,7 +245,7 @@ export const PROMPT_VERSION = 9;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 2;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 3;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -389,7 +389,7 @@ const OPENAI_RESPONSE_BODY_MAX_BYTES = 1_048_576;
 const OPENAI_ERROR_BODY_MAX_BYTES = 65_536;
 
 const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   eligibility:
     'ClassificationGroundingError containing only model-correctable grounding diagnostics within the feedback envelope from a complete schema-valid response with verifiable identity and usage',
   eligibleDiagnosticCodes:
@@ -431,6 +431,7 @@ const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
     'rejected_value',
     'repeated_unchanged_output',
     'required_action',
+    'supported_values',
   ],
   rejectedAssistantOutputFieldOrder: [
     'text',
@@ -1017,6 +1018,7 @@ export async function classifyIssueTerminalResult(
                 semanticDiagnostics,
                 nextOrdinal,
                 repeatedOutputCount,
+                promptInput.groundingSources,
               ),
             },
           ];
@@ -1601,6 +1603,7 @@ function buildSemanticRetryFeedback(
   diagnostics: readonly ClassifierAttemptSemanticDiagnostic[],
   retryOrdinal: number,
   repeatedOutputCount: number,
+  groundingSources: readonly ClassifierSource[],
 ): string {
   const boundedOutput = boundedSemanticRetryText(
     rejectedAssistantOutput,
@@ -1629,6 +1632,10 @@ function buildSemanticRetryFeedback(
           diagnostic.field,
           rejectedValue,
           repeatedOutputCount > 0,
+        ),
+        supported_values: semanticRetrySupportedValues(
+          diagnostic.field,
+          groundingSources,
         ),
       };
     }),
@@ -1701,11 +1708,79 @@ function semanticRetryRequiredAction(
       `non-default case.${progressRequirement}`
     );
   }
+  if (field === 'scope' && rejectedValue === 'niche') {
+    return (
+      'Keep scope=niche only with exact text that limits impact to a specialized, rare, ' +
+      'custom, experimental, or non-default user population, setup, configuration, or ' +
+      'environment. A narrowly worded feature or one product capability is not itself niche. ' +
+      'If the evidence names one common agent, session, gateway, CLI, UI, provider, platform, ' +
+      `or configuration surface, choose scope=moderate and cite that exact text.${progressRequirement}`
+    );
+  }
+  if (field === 'scope' && rejectedValue === 'moderate') {
+    return (
+      'Keep scope=moderate only with exact text naming one common operating system, agent, ' +
+      'session, gateway, CLI, UI, provider, platform, channel, or configuration surface. ' +
+      'Otherwise choose another scope value only when exact evidence satisfies that value.' +
+      progressRequirement
+    );
+  }
   return (
     'Either replace the citation with exact included-source evidence that supports the selected ' +
     'value, or change the value and citations to an alternative that the exact source text supports.' +
     progressRequirement
   );
+}
+
+function semanticRetrySupportedValues(
+  field: string | null,
+  groundingSources: readonly ClassifierSource[],
+): Array<{
+  value: Scope;
+  candidate_citations: Array<{ source_id: string; excerpt: string }>;
+}> {
+  if (field !== 'scope') return [];
+  const values: readonly Scope[] = ['broad', 'moderate', 'niche'];
+  return values.flatMap((value) => {
+    const candidateCitations: Array<{ source_id: string; excerpt: string }> = [];
+    const identities = new Set<string>();
+    for (const source of groundingSources) {
+      if (candidateCitations.length >= 3) break;
+      const excerpt = firstScopeEvidenceCandidate(value, source.text);
+      if (excerpt === null) continue;
+      const identity = `${source.sourceId}\u0000${excerpt}`;
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      candidateCitations.push({
+        source_id: source.sourceId,
+        excerpt,
+      });
+    }
+    return candidateCitations.length === 0
+      ? []
+      : [{ value, candidate_citations: candidateCitations }];
+  });
+}
+
+function firstScopeEvidenceCandidate(
+  value: Scope,
+  sourceText: string,
+): string | null {
+  const patterns =
+    CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.scope[value];
+  for (const pattern of patterns) {
+    const match = new RegExp(pattern, 'iu').exec(sourceText)?.[0]?.trim();
+    if (
+      match &&
+      match.length >= CLASSIFICATION_SCHEMA_RULES.citations.minLength &&
+      match.length <= CLASSIFICATION_SCHEMA_RULES.citations.maxLength &&
+      sourceText.includes(match) &&
+      mandatoryCitationSupports('scope', value, match)
+    ) {
+      return match;
+    }
+  }
+  return null;
 }
 
 function boundedSemanticRetryText(
@@ -2119,10 +2194,13 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
         ],
         moderate: [
-          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
+          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
         ],
         niche: [
-          '\\b(?:niche|only|specific|single|custom|non-default|experimental|alpha|rare|edge case|proxy|hardware|flag|combination|one (?:user|setup|configuration))\\b',
+          '\\b(?:niche|non-default|experimental|alpha|rare|edge case)\\b',
+          '\\b(?:specific|single|custom)\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface|flag|combination)\\b',
+          '\\bone\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface)\\b',
+          '\\b(?:proxy|hardware)\\s+(?:setup|configuration|environment|deployment|combination|issue|failure)\\b',
         ],
       },
       functionality: {
