@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 10;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 11;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2613,6 +2613,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         ],
         neutral: [
           '\\b(?:feature request|feature|enhancement|proposal|propose|proposed|suggestion|suggest|question|request|would like|could we|should we|how|support for|add(?:ing)?|provide|rename|documentation)\\b',
+          "\\b(?:i|we)[\\u0027\\u2019]d\\s+like\\s+to\\s+(?:discuss|propose|suggest|request)\\b",
         ],
       },
       severity: {

@@ -3702,6 +3702,32 @@ describe('LLM source grounding', () => {
     }
   });
 
+  it('accepts issue #28965 contracted proposal language as neutral evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?proposal-contraction=${Date.now()}`
+    );
+    const proposal =
+      'I\u2019d like to discuss a maintainable single-source reconcile approach with maintainers.';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${proposal}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'neutral';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: proposal,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'neutral');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
