@@ -2150,6 +2150,16 @@ describe('OpenAI classification request', () => {
         parsedBodies.map((body) => body.messages.length),
         [2, 3, 3, 3],
       );
+      assert.deepEqual(
+        parsedBodies.map((body) =>
+          body.response_format.json_schema.schema.properties.scope.enum),
+        [
+          ['broad', 'moderate', 'niche'],
+          ['moderate'],
+          ['moderate'],
+          ['moderate'],
+        ],
+      );
       const feedbackPayloads = parsedBodies.slice(1).map((body) => {
         const feedbackText = body.messages[2].content as string;
         const feedbackJson = feedbackText
@@ -2222,6 +2232,126 @@ describe('OpenAI classification request', () => {
       assert.equal(
         result.ledger.attempts[2].rawModelOutput?.text,
         JSON.stringify(unsupportedNiche),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('narrows issue #9658 retries away from unsupported broad scope', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const body = [
+      'Tool calls with large arguments (>10KB) fail with "Bad escaped character in JSON" errors.',
+      'This affects `exec`, `write`, and other tools when working with large files or complex code.',
+      'Large strings or strings with special characters cause serialization failures.',
+      'Many subagent tasks fail when creating large files.',
+      'Multiple users report subagent tasks failing with this error.',
+      'Users must manually split large files into chunks.',
+    ].join(' ');
+    const evidence = {
+      sentiment: [{
+        source_id: 'issue:body',
+        excerpt: 'fail with "Bad escaped character in JSON" errors',
+      }],
+      severity: [{
+        source_id: 'issue:body',
+        excerpt: 'Many subagent tasks fail when creating large files',
+      }],
+      scope: [{
+        source_id: 'issue:body',
+        excerpt: 'This affects `exec`, `write`, and other tools',
+      }],
+      functionality: [{ source_id: 'issue:body', excerpt: '`exec`' }],
+      affected_users: [{
+        source_id: 'issue:body',
+        excerpt: 'Multiple users report subagent tasks failing with this error',
+      }],
+      workaroundStatus: [{
+        source_id: 'issue:body',
+        excerpt: 'Users must manually split large files into chunks',
+      }],
+      duplicateCluster: [],
+      affectsVersion: [],
+    };
+    const rejected = groundedOutput({
+      severity: 'medium',
+      scope: 'broad',
+      affected_users: 'some',
+      workaroundStatus: 'partial',
+      evidence,
+    });
+    const corrected = groundedOutput({
+      severity: 'medium',
+      scope: 'moderate',
+      affected_users: 'some',
+      workaroundStatus: 'partial',
+      evidence: {
+        ...evidence,
+        scope: [{ source_id: 'issue:body', excerpt: 'Tool calls' }],
+      },
+    });
+    const outputs = [rejected, corrected];
+    const requestBodies: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
+      return new Response(JSON.stringify({
+        id: `chatcmpl-9658-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(output) },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-9658-scope-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(
+            body,
+            'Feature Request: Support streaming or file-based tool arguments to bypass JSON serialization limits',
+          ),
+          number: 9658,
+        } as any,
+        [],
+        [],
+      );
+      assert.equal(result.classification.scope, 'moderate');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+        ]),
+        [['scope', 'excerpt_not_field_relevant']],
+      );
+      const initialBody = JSON.parse(requestBodies[0]);
+      const retryBody = JSON.parse(requestBodies[1]);
+      assert.deepEqual(
+        initialBody.response_format.json_schema.schema.properties.scope.enum,
+        ['broad', 'moderate', 'niche'],
+      );
+      assert.deepEqual(
+        retryBody.response_format.json_schema.schema.properties.scope.enum,
+        ['moderate'],
+      );
+      assert.equal(
+        retryBody.response_format.json_schema.schema.properties.scope.enum
+          .includes('broad'),
+        false,
       );
     } finally {
       globalThis.fetch = previousFetch;
