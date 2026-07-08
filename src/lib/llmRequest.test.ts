@@ -3770,6 +3770,39 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'niche');
   });
 
+  it('accepts issue #30518 one-channel feature-request evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?telegram-feature-request=${Date.now()}`
+    );
+    const severityEvidence =
+      'Telegram Bot API supports pinChatMessage and unpinChatMessage - would be great to expose as pin/unpin actions.';
+    const scopeEvidence = 'Telegram Bot API supports pinChatMessage and unpinChatMessage';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${severityEvidence}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.severity = 'low';
+    raw.scope = 'moderate';
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: severityEvidence,
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.severity, 'low');
+    assert.equal(accepted.scope, 'moderate');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,

@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 13;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 14;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2633,6 +2633,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
           '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
+          '\\bwould be (?:great|useful|helpful) to (?:add|expose|support|provide)\\b',
           '\\b(?:flaky|tests?|test suite|test harness|fixture|ci|lint|formatter|formatting|typecheck|build-only|developer tooling)\\b',
         ],
       },
@@ -2646,7 +2647,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
         ],
         moderate: [
-          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
+          '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix)\\b',
           '\\b(?:tool calls?|sub-?agents?|exec)\\b',
           '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
           '\\b(?:additional|multiple)\\s+(?:configuration|config|state)\\s+layers\\b',
