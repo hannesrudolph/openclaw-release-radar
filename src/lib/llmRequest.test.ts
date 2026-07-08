@@ -639,6 +639,40 @@ describe('OpenAI classification request', () => {
     );
   });
 
+  it('accumulates semantic retry enum constraints monotonically', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?semantic-retry-constraint-merge=${Date.now()}`
+    );
+    assert.deepEqual(
+      __llmTest.mergeClassificationResponseEnumConstraints(
+        { scope: ['moderate'] },
+        { severity: ['high', 'medium'] },
+      ),
+      { scope: ['moderate'], severity: ['high', 'medium'] },
+    );
+    assert.deepEqual(
+      __llmTest.mergeClassificationResponseEnumConstraints(
+        { severity: ['high', 'medium'] },
+        { severity: ['medium', 'low'] },
+      ),
+      { severity: ['medium'] },
+    );
+    assert.deepEqual(
+      __llmTest.mergeClassificationResponseEnumConstraints(
+        { scope: ['moderate'] },
+        { severity: [] },
+      ),
+      { scope: ['moderate'] },
+    );
+    assert.throws(
+      () => __llmTest.mergeClassificationResponseEnumConstraints(
+        { scope: ['moderate'] },
+        { scope: ['broad', 'niche'] },
+      ),
+      /constraints became unsatisfiable for scope/,
+    );
+  });
+
   it('retries only model-correctable grounding errors and excludes duplicate source IDs', async () => {
     const {
       ClassificationGroundingError,
@@ -2217,7 +2251,9 @@ describe('OpenAI classification request', () => {
           (supported: any) =>
             supported.value === 'moderate' &&
             supported.candidate_citations.some(
-              (citation: any) => citation.source_id === 'issue:title',
+              (citation: any) =>
+                citation.source_id === 'issue:body' &&
+                citation.excerpt === DEFAULT_GROUNDING_BODY,
             ),
         ),
       );
@@ -2244,7 +2280,7 @@ describe('OpenAI classification request', () => {
     const { config } = await import('../config.ts');
     const previousFetch = globalThis.fetch;
     const originalMaxAttempts = config.openai.maxAttempts;
-    (config.openai as any).maxAttempts = 2;
+    (config.openai as any).maxAttempts = 3;
     const body = [
       'Tool calls with large arguments (>10KB) fail with "Bad escaped character in JSON" errors.',
       'This affects `exec`, `write`, and other tools when working with large files or complex code.',
@@ -2292,10 +2328,37 @@ describe('OpenAI classification request', () => {
       workaroundStatus: 'partial',
       evidence: {
         ...evidence,
-        scope: [{ source_id: 'issue:body', excerpt: 'Tool calls' }],
+        sentiment: [{
+          source_id: 'issue:body',
+          excerpt:
+            'Large strings or strings with special characters cause serialization failures.',
+        }],
+        scope: [{
+          source_id: 'issue:body',
+          excerpt:
+            'Tool calls with large arguments (>10KB) fail with "Bad escaped character in JSON" errors.',
+        }],
       },
     });
-    const outputs = [rejected, corrected];
+    const secondRejected = groundedOutput({
+      severity: 'critical',
+      scope: 'moderate',
+      affected_users: 'some',
+      workaroundStatus: 'partial',
+      evidence: {
+        ...evidence,
+        severity: [{
+          source_id: 'issue:body',
+          excerpt: 'Many subagent tasks fail when creating large files',
+        }],
+        scope: [{
+          source_id: 'issue:body',
+          excerpt:
+            'Tool calls with large arguments (>10KB) fail with "Bad escaped character in JSON" errors.',
+        }],
+      },
+    });
+    const outputs = [rejected, secondRejected, corrected];
     const requestBodies: string[] = [];
     let attempts = 0;
     globalThis.fetch = (async (_input, init) => {
@@ -2329,7 +2392,7 @@ describe('OpenAI classification request', () => {
       assert.equal(result.classification.scope, 'moderate');
       assert.deepEqual(
         result.ledger.attempts.map((attempt) => attempt.status),
-        ['semantic_rejection', 'accepted_success'],
+        ['semantic_rejection', 'semantic_rejection', 'accepted_success'],
       );
       assert.deepEqual(
         result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
@@ -2338,8 +2401,16 @@ describe('OpenAI classification request', () => {
         ]),
         [['scope', 'excerpt_not_field_relevant']],
       );
+      assert.deepEqual(
+        result.ledger.attempts[1].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+        ]),
+        [['severity', 'excerpt_not_field_relevant']],
+      );
       const initialBody = JSON.parse(requestBodies[0]);
       const retryBody = JSON.parse(requestBodies[1]);
+      const secondRetryBody = JSON.parse(requestBodies[2]);
       assert.deepEqual(
         initialBody.response_format.json_schema.schema.properties.scope.enum,
         ['broad', 'moderate', 'niche'],
@@ -2353,6 +2424,62 @@ describe('OpenAI classification request', () => {
           .includes('broad'),
         false,
       );
+      const retryFeedbackText = retryBody.messages[2].content as string;
+      const retryFeedbackJson = retryFeedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(retryFeedbackJson);
+      const retryFeedback = JSON.parse(retryFeedbackJson);
+      const scopeRequirement = retryFeedback.correction_requirements[0];
+      assert.equal(scopeRequirement.field, 'scope');
+      assert.equal(
+        scopeRequirement.supported_values.every((supported: any) =>
+          supported.candidate_citations.every((citation: any) =>
+            citation.source_id === 'issue:body')),
+        true,
+      );
+      assert.ok(scopeRequirement.supported_values.some((supported: any) =>
+        supported.value === 'moderate' &&
+        supported.candidate_citations.some((citation: any) =>
+          citation.excerpt ===
+            'Tool calls with large arguments (>10KB) fail with "Bad escaped character in JSON" errors.')));
+      assert.deepEqual(
+        secondRetryBody.response_format.json_schema.schema.properties.scope.enum,
+        ['moderate'],
+      );
+      assert.equal(
+        secondRetryBody.response_format.json_schema.schema.properties.severity.enum
+          .includes('critical'),
+        false,
+      );
+      assert.equal(
+        secondRetryBody.response_format.json_schema.schema.properties.severity.enum
+          .includes('medium'),
+        true,
+      );
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.provenance.requestHash),
+        requestBodies.map((requestBody) =>
+          createHash('sha256').update(requestBody).digest('hex')),
+      );
+      assert.equal(
+        new Set(
+          result.ledger.attempts.map((attempt) =>
+            attempt.provenance.requestHash),
+        ).size,
+        3,
+      );
+      assert.deepEqual(result.classification.evidence?.sentiment, [{
+        sourceId: 'issue:body',
+        excerpt:
+          'Large strings or strings with special characters cause serialization failures.',
+      }]);
+      assert.equal(
+        result.classification.provenance?.schemaVersion === 2
+          ? result.classification.provenance.evidenceNormalization
+          : null,
+        null,
+      );
     } finally {
       globalThis.fetch = previousFetch;
       (config.openai as any).maxAttempts = originalMaxAttempts;
@@ -2364,22 +2491,57 @@ describe('OpenAI classification request', () => {
     const { config } = await import('../config.ts');
     const previousFetch = globalThis.fetch;
     const originalMaxAttempts = config.openai.maxAttempts;
-    (config.openai as any).maxAttempts = 1;
+    (config.openai as any).maxAttempts = 2;
     const body = [
-      '### Summary',
       'Provide a native upgrade scanner to detect schema/behavior drift before and after updates.',
-      '### Problem to solve',
       'Updates can silently break configs or runtime behavior.',
-      '### Proposed solution',
       'Add built-in `doctor --upgrade-scan`.',
-      '### Alternatives considered',
       'Manual checklists only: easy to skip, inconsistent quality.',
-      '### Impact',
       'Affected: anyone updating OpenClaw in active environments.',
       'Severity: high (update regressions can block workflows).',
       'Frequency: every update cycle.',
     ].join('\n\n');
-    const rawOutput = JSON.stringify(groundedOutput({
+    const title =
+      '[Tooling]: Add pre/post-update compatibility scanner with risk report and smoke recommendations';
+    const sharedEvidence = {
+      sentiment: [{
+        source_id: 'issue:body',
+        excerpt: 'Provide a native upgrade scanner',
+      }],
+      scope: [{
+        source_id: 'issue:title',
+        excerpt: title,
+      }],
+      affected_users: [{
+        source_id: 'issue:body',
+        excerpt: 'Affected: anyone updating OpenClaw in active environments.',
+      }],
+      workaroundStatus: [{
+        source_id: 'issue:body',
+        excerpt: 'Manual checklists only: easy to skip, inconsistent quality.',
+      }],
+      duplicateCluster: [],
+      affectsVersion: [],
+    };
+    const rejected = groundedOutput({
+      sentiment: 'neutral',
+      severity: 'medium',
+      scope: 'moderate',
+      functionality: 'tooling',
+      affected_users: 'some',
+      workaroundStatus: 'partial',
+      evidence: {
+        ...sharedEvidence,
+        severity: [{
+          source_id: 'issue:body',
+          excerpt: 'Severity: high (update regressions can block workflows).',
+        }],
+        functionality: [{ source_id: 'issue:title', excerpt: '[Tooling]' }],
+      },
+      rationale:
+        'The request targets one doctor/update surface and a defined updater population.',
+    });
+    const corrected = groundedOutput({
       sentiment: 'neutral',
       severity: 'high',
       scope: 'moderate',
@@ -2387,46 +2549,32 @@ describe('OpenAI classification request', () => {
       affected_users: 'some',
       workaroundStatus: 'partial',
       evidence: {
-        sentiment: [{
-          source_id: 'issue:title',
-          excerpt: 'Add pre/post-update compatibility scanner',
-        }],
+        ...sharedEvidence,
         severity: [{
           source_id: 'issue:body',
           excerpt: 'Severity: high (update regressions can block workflows).',
         }],
-        scope: [{
-          source_id: 'issue:body',
-          excerpt: 'Frequency: every update cycle.',
-        }],
         functionality: [{
           source_id: 'issue:body',
-          excerpt: 'doctor --upgrade-scan',
+          excerpt: 'Add built-in `doctor --upgrade-scan`.',
         }],
-        affected_users: [{
-          source_id: 'issue:body',
-          excerpt: 'Affected: anyone updating OpenClaw in active environments.',
-        }],
-        workaroundStatus: [{
-          source_id: 'issue:body',
-          excerpt: 'Manual checklists only: easy to skip, inconsistent quality.',
-        }],
-        duplicateCluster: [],
-        affectsVersion: [],
       },
       rationale:
-        'The request targets one doctor/update surface and a defined updater population.',
-    }));
+        'The cited severity line and runtime doctor command support a core update classification.',
+    });
+    const outputs = [rejected, corrected];
+    const requestBodies: string[] = [];
     let attempts = 0;
-    globalThis.fetch = (async () => {
-      attempts++;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
       return new Response(JSON.stringify({
-        id: 'chatcmpl-17215',
+        id: `chatcmpl-17215-${attempts}`,
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
         choices: [{
           finish_reason: 'stop',
-          message: { content: rawOutput },
+          message: { content: JSON.stringify(output) },
         }],
       }), { status: 200 });
     }) as typeof fetch;
@@ -2438,50 +2586,179 @@ describe('OpenAI classification request', () => {
         {
           ...groundingIssue(
             body,
-            '[Tooling]: Add pre/post-update compatibility scanner with risk report and smoke recommendations',
+            title,
           ),
           number: 17215,
         } as any,
         [],
         [],
       );
-      assert.equal(attempts, 1);
+      assert.equal(attempts, 2);
+      assert.equal(result.classification.severity, 'high');
       assert.equal(result.classification.scope, 'moderate');
+      assert.equal(result.classification.functionality, 'core');
       assert.equal(result.classification.affectedUsers, 'some');
       assert.deepEqual(
         result.ledger.attempts.map((attempt) => attempt.status),
-        ['accepted_success'],
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+        ]),
+        [
+          ['severity', 'excerpt_not_field_relevant'],
+          ['functionality', 'excerpt_not_field_relevant'],
+        ],
       );
       assert.deepEqual(result.classification.evidence?.affected_users, [{
         sourceId: 'issue:body',
         excerpt: 'Affected: anyone updating OpenClaw in active environments.',
       }]);
-      const normalization = result.classification.provenance?.schemaVersion === 2
-        ? result.classification.provenance.evidenceNormalization
-        : null;
+      const retryBody = JSON.parse(requestBodies[1]);
       assert.deepEqual(
-        normalization?.fields.map((field) => [
-          field.field,
-          field.value,
-          field.diagnosticCodes,
-          field.originalCitations,
-          field.effectiveCitations,
-        ]),
-        [[
-          'scope',
-          'moderate',
-          ['excerpt_not_field_relevant'],
-          [{
-            sourceId: 'issue:body',
-            excerpt: 'Frequency: every update cycle.',
-          }],
-          [{
-            sourceId: 'issue:title',
-            excerpt: 'post-update',
-          }],
-        ]],
+        retryBody.response_format.json_schema.schema.properties.severity.enum,
+        ['high'],
       );
-      assert.equal(result.classification.provenance?.rawModelOutput, rawOutput);
+      assert.deepEqual(
+        retryBody.response_format.json_schema.schema.properties.functionality.enum,
+        ['core'],
+      );
+      const feedbackText = retryBody.messages[2].content as string;
+      const feedbackJson = feedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(feedbackJson);
+      const requirements = new Map(
+        JSON.parse(feedbackJson).correction_requirements.map(
+          (requirement: any) => [requirement.field, requirement],
+        ),
+      );
+      assert.deepEqual(
+        (requirements.get('severity') as any).supported_values,
+        [{
+          value: 'high',
+          candidate_citations: [{
+            source_id: 'issue:body',
+            excerpt: 'Severity: high (update regressions can block workflows).',
+          }],
+        }],
+      );
+      assert.deepEqual(
+        (requirements.get('functionality') as any).supported_values,
+        [{
+          value: 'core',
+          candidate_citations: [{ source_id: 'issue:title', excerpt: title }],
+        }],
+      );
+      assert.equal(
+        result.classification.provenance?.schemaVersion === 2
+          ? result.classification.provenance.evidenceNormalization
+          : null,
+        null,
+      );
+      assert.equal(
+        result.classification.provenance?.rawModelOutput,
+        JSON.stringify(corrected),
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('accepts issue #28303 explicit subsystem-only scope in one attempt', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 1;
+    const body = [
+      '### Proposed solution',
+      'Proposed locale identifier migration.',
+      '### Impact',
+      'Affected: Users with saved locale preferences (localStorage migration)',
+      'Severity: Low',
+      'Scope: i18n system only, no functional changes',
+    ].join('\n\n');
+    const comments = [{
+      id: 4_320_980_456,
+      node_id: 'IC_kwDOQb6kR88AAAABAYzt6A',
+      node_type: 'IssueComment',
+      user: { id: 'BOT_kgDOEFkMNA', type: 'Bot', login: 'clawsweeper' },
+      body: 'The public Control UI locale IDs require a coordinated migration.',
+      created_at: '2026-04-26T01:19:41Z',
+      updated_at: '2026-07-07T15:14:22Z',
+    }];
+    const rawOutput = JSON.stringify(groundedOutput({
+      sentiment: 'neutral',
+      severity: 'low',
+      scope: 'niche',
+      functionality: 'integration',
+      affected_users: 'some',
+      evidence: {
+        sentiment: [{ source_id: 'issue:body', excerpt: 'Proposed' }],
+        severity: [{ source_id: 'issue:body', excerpt: 'Severity: Low' }],
+        scope: [{
+          source_id: 'issue:body',
+          excerpt: 'Scope: i18n system only, no functional changes',
+        }],
+        functionality: [{
+          source_id: 'comment:4320980456',
+          excerpt: 'UI',
+        }],
+        affected_users: [{
+          source_id: 'issue:body',
+          excerpt: 'Affected: Users with saved locale preferences',
+        }],
+        workaroundStatus: [],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+      rationale:
+        'The proposal is low severity and limited to the i18n subsystem and saved-locale users.',
+    }));
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-28303',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: rawOutput },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-28303-explicit-scope=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(
+            body,
+            'Rename i18n locale codes from region-based to script-based',
+          ),
+          number: 28303,
+          comments: 1,
+        } as any,
+        comments as any,
+        [],
+      );
+      assert.equal(attempts, 1);
+      assert.equal(result.classification.scope, 'niche');
+      assert.equal(result.classification.affectedUsers, 'some');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['accepted_success'],
+      );
+      assert.deepEqual(result.classification.evidence?.scope, [{
+        sourceId: 'issue:body',
+        excerpt: 'Scope: i18n system only, no functional changes',
+      }]);
     } finally {
       globalThis.fetch = previousFetch;
       (config.openai as any).maxAttempts = originalMaxAttempts;
@@ -2495,15 +2772,19 @@ describe('OpenAI classification request', () => {
     const originalMaxAttempts = config.openai.maxAttempts;
     (config.openai as any).maxAttempts = 2;
     const title = 'Feature: Graceful sub-agent timeout (pre-timeout warning)';
-    const body =
-      'All unsaved work is lost when a sub-agent session reaches its hard timeout.';
+    const body = [
+      'The failure is destructive.',
+      'All unsaved work is lost.',
+      'A sub-agent reaches its hard timeout.',
+      'The session cannot continue.',
+    ].join(' ');
     const invalid = groundedOutput({
       sentiment: 'negative',
       severity: 'critical',
       scope: 'niche',
       functionality: 'core',
       evidence: {
-        sentiment: [{ source_id: 'issue:body', excerpt: 'work' }],
+        sentiment: [{ source_id: 'issue:body', excerpt: 'destructive' }],
         severity: [{ source_id: 'issue:body', excerpt: 'timeout' }],
         scope: [{ source_id: 'issue:title', excerpt: 'Feature' }],
         functionality: [{ source_id: 'issue:body', excerpt: 'session' }],
@@ -2519,13 +2800,19 @@ describe('OpenAI classification request', () => {
       scope: 'moderate',
       functionality: 'core',
       evidence: {
-        sentiment: [{ source_id: 'issue:body', excerpt: 'lost' }],
+        sentiment: [{
+          source_id: 'issue:body',
+          excerpt: 'The failure is destructive.',
+        }],
         severity: [{
           source_id: 'issue:body',
-          excerpt: 'All unsaved work is lost',
+          excerpt: 'All unsaved work is lost.',
         }],
-        scope: [{ source_id: 'issue:body', excerpt: 'sub-agent' }],
-        functionality: [{ source_id: 'issue:body', excerpt: 'session' }],
+        scope: [{ source_id: 'issue:title', excerpt: title }],
+        functionality: [{
+          source_id: 'issue:body',
+          excerpt: 'The session cannot continue.',
+        }],
         affected_users: [],
         workaroundStatus: [],
         duplicateCluster: [],
@@ -2596,21 +2883,25 @@ describe('OpenAI classification request', () => {
         (supported: any) =>
           supported.value === 'negative' &&
           supported.candidate_citations.some(
-            (citation: any) => citation.excerpt === 'lost',
+            (citation: any) =>
+              citation.excerpt === 'The failure is destructive.',
           ),
       ));
       assert.ok(severity.supported_values.some(
         (supported: any) =>
           supported.value === 'critical' &&
           supported.candidate_citations.some(
-            (citation: any) => citation.excerpt === 'All unsaved work is lost',
+            (citation: any) =>
+              citation.excerpt === 'All unsaved work is lost.',
           ),
       ));
       assert.ok(scope.supported_values.some(
         (supported: any) =>
           supported.value === 'moderate' &&
           supported.candidate_citations.some(
-            (citation: any) => /agent|session/i.test(citation.excerpt),
+            (citation: any) =>
+              citation.source_id === 'issue:title' &&
+              citation.excerpt === title,
           ),
       ));
       assert.equal(
@@ -2843,6 +3134,7 @@ describe('OpenAI classification request', () => {
       'When the OAuth token refresh API call fails transiently, the gateway immediately ' +
       'throws an error. This can cause agents to fail even when the underlying issue is ' +
       'temporary. A gateway restart fixed it immediately.';
+    const title = 'Add retry logic to OAuth token refresh';
     const comment = {
       id: 4_320_890_028,
       node_id: 'IC_4320890028',
@@ -2864,7 +3156,7 @@ describe('OpenAI classification request', () => {
         scope: [{ source_id: 'issue:body', excerpt: 'gateway' }],
         functionality: [{
           source_id: 'issue:title',
-          excerpt: 'OAuth token refresh',
+          excerpt: title,
         }],
         affected_users: [],
         workaroundStatus: [{
@@ -2896,7 +3188,7 @@ describe('OpenAI classification request', () => {
       );
       const result = await classifyIssueWithAttemptLedger(
         {
-          ...groundingIssue(body, 'Add retry logic to OAuth token refresh'),
+          ...groundingIssue(body, title),
           number: 8673,
           comments: 1,
         } as any,
@@ -2910,26 +3202,86 @@ describe('OpenAI classification request', () => {
         result.ledger.attempts.map((attempt) => attempt.status),
         ['accepted_success'],
       );
-      const normalization = result.classification.provenance?.schemaVersion === 2
-        ? result.classification.provenance.evidenceNormalization
-        : null;
       assert.deepEqual(
-        normalization?.fields.map((field) => [
-          field.field,
-          field.value,
-          field.diagnosticCodes,
-          field.originalCitations,
-          field.effectiveCitations,
-        ]),
-        [[
-          'functionality',
-          'core',
-          ['excerpt_not_field_relevant'],
-          [{ sourceId: 'issue:title', excerpt: 'OAuth token refresh' }],
-          [{ sourceId: 'comment:4320890028', excerpt: 'auth' }],
-        ]],
+        result.classification.evidence?.functionality,
+        [{ sourceId: 'issue:title', excerpt: title }],
+      );
+      assert.equal(
+        result.classification.provenance?.schemaVersion === 2
+          ? result.classification.provenance.evidenceNormalization
+          : null,
+        null,
       );
       assert.equal(result.classification.provenance?.rawModelOutput, rawOutput);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('rejects cross-field citation reuse instead of normalizing an available assignment', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 1;
+    const issueBody =
+      'OpenClaw v2026.7.4 gateway startup fails for all default Windows installs. ' +
+      'No workaround exists. This is a duplicate of #42.';
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    const shared = {
+      source_id: 'issue:body',
+      excerpt:
+        'OpenClaw v2026.7.4 gateway startup fails for all default Windows installs',
+    };
+    raw.evidence.sentiment = [shared];
+    for (const field of [
+      'severity',
+      'scope',
+      'functionality',
+      'affected_users',
+    ] as const) {
+      raw.evidence[field] = [shared, ...raw.evidence[field]];
+    }
+    globalThis.fetch = (async () =>
+      new Response(JSON.stringify({
+        id: 'chatcmpl-cross-field-reuse',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(raw) },
+        }],
+      }), { status: 200 })) as typeof fetch;
+    try {
+      const {
+        ClassifierAttemptLedgerTerminalError,
+        classifyIssueWithAttemptLedger,
+      } = await import(`./llm.ts?cross-field-no-normalization=${Date.now()}`);
+      await assert.rejects(
+        classifyIssueWithAttemptLedger(
+          groundingIssue(issueBody) as any,
+          [],
+          ['v2026.7.4'],
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassifierAttemptLedgerTerminalError);
+          assert.equal(error.terminalStatus, 'terminal_failure');
+          assert.equal(error.ledger.attempts[0].status, 'semantic_rejection');
+          assert.deepEqual(
+            error.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+              diagnostic.field,
+              diagnostic.code,
+            ]),
+            [['sentiment', 'cross_field_citation_reuse']],
+          );
+          assert.equal(
+            error.ledger.attempts[0].retry.reason,
+            'attempt_budget_exhausted',
+          );
+          return true;
+        },
+      );
     } finally {
       globalThis.fetch = previousFetch;
       (config.openai as any).maxAttempts = originalMaxAttempts;
@@ -3239,6 +3591,122 @@ describe('LLM source grounding', () => {
     }
   });
 
+  it('rejects negated negative cues while accepting complete failure phrases', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?negative-negation=${Date.now()}`);
+    const negationBody = [
+      body,
+      'No errors were observed.',
+      'The gateway did not fail.',
+      'The startup was not broken.',
+      'The gateway does not work.',
+    ].join(' ');
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(negationBody) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    for (const excerpt of [
+      'No errors were observed.',
+      'The gateway did not fail.',
+      'The startup was not broken.',
+    ]) {
+      const raw = structuredClone(fullyGroundedOutput()) as any;
+      raw.evidence.sentiment = [{ source_id: 'issue:body', excerpt }];
+      assert.throws(
+        () => __llmTest.parseRawClassification(
+          JSON.stringify(raw),
+          ['v2026.7.4'],
+          prompt.groundingSources,
+          prompt.inputTruncation,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassificationGroundingError);
+          assert.ok(error.diagnostics.some((diagnostic) =>
+            diagnostic.field === 'sentiment' &&
+            diagnostic.code === 'excerpt_not_field_relevant'));
+          return true;
+        },
+      );
+    }
+
+    const completeFailure = structuredClone(fullyGroundedOutput()) as any;
+    completeFailure.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: 'The gateway does not work.',
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(completeFailure),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'negative');
+  });
+
+  it('binds severity declarations only to the cited excerpt', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?severity-declaration-locality=${Date.now()}`);
+    const declaredHigh =
+      'Severity: high (a routine configuration bug has a workaround).';
+    const separateMedium = 'A routine configuration bug has a workaround.';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${declaredHigh} ${separateMedium}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const medium = structuredClone(fullyGroundedOutput()) as any;
+    medium.severity = 'medium';
+    medium.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: separateMedium,
+    }];
+    const acceptedMedium = __llmTest.parseRawClassification(
+      JSON.stringify(medium),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(acceptedMedium.severity, 'medium');
+
+    medium.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: declaredHigh,
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(medium),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'severity' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
+
+    const high = structuredClone(fullyGroundedOutput()) as any;
+    high.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: declaredHigh,
+    }];
+    const acceptedHigh = __llmTest.parseRawClassification(
+      JSON.stringify(high),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(acceptedHigh.severity, 'high');
+  });
+
   it('does not accept a prerelease citation as proof of a stable affectsVersion', async () => {
     const {
       __llmTest,
@@ -3345,6 +3813,82 @@ describe('LLM source grounding', () => {
         assert.ok(error instanceof ClassificationGroundingError);
         assert.ok(error.diagnostics.some((diagnostic) =>
           diagnostic.field === 'scope' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
+  });
+
+  it('separates explicit subsystem-only scope from affected-user reach', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?subsystem-only-scope=${Date.now()}`);
+    const subsystemScope = 'Scope: i18n system only, no functional changes';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${subsystemScope}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const niche = structuredClone(fullyGroundedOutput()) as any;
+    niche.scope = 'niche';
+    niche.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: subsystemScope,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(niche),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.scope, 'niche');
+
+    const genericScope = 'Scope: authentication system only, no functional changes';
+    const genericPrompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body} ${genericScope}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const genericNiche = structuredClone(fullyGroundedOutput()) as any;
+    genericNiche.scope = 'niche';
+    genericNiche.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: genericScope,
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(genericNiche),
+        ['v2026.7.4'],
+        genericPrompt.groundingSources,
+        genericPrompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'scope' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
+
+    const falseFew = structuredClone(fullyGroundedOutput()) as any;
+    falseFew.affected_users = 'few';
+    falseFew.evidence.affected_users = [{
+      source_id: 'issue:body',
+      excerpt: subsystemScope,
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(falseFew),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'affected_users' &&
           diagnostic.code === 'excerpt_not_field_relevant'));
         return true;
       },
