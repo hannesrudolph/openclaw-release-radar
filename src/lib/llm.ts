@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 5;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 6;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2812,6 +2812,7 @@ const CLASSIFICATION_EVIDENCE_NORMALIZATION_CODES = new Set([
   'abstention_has_citations',
   'cross_field_citation_reuse',
   'duplicate_citation',
+  'excerpt_not_field_relevant',
   'too_many_citations',
 ]);
 
@@ -2993,6 +2994,12 @@ function mandatoryEvidenceCandidates(
     candidates.push(citation);
   };
   original.forEach(add);
+  if (candidates.length === 0) {
+    for (const source of groundingSources) {
+      const excerpt = firstMandatoryEvidenceCandidate(field, value, source.text);
+      if (excerpt !== null) add({ sourceId: source.sourceId, excerpt });
+    }
+  }
   return candidates;
 }
 
@@ -4255,7 +4262,7 @@ const CLASSIFIER_ALGORITHM_MANIFEST = {
     policy: 'preserve_model_values_canonicalize_citations',
     eligibility: [...CLASSIFICATION_EVIDENCE_NORMALIZATION_CODES].sort(),
     assignment:
-      'use only exact supported model citations with distinct mandatory identities',
+      'prefer exact supported model citations, then bind unsupported mandatory citations to deterministic exact included-source candidates with distinct identities',
     provenance:
       'raw model bytes remain unchanged; before/after citation hashes and repairs are persisted',
   },

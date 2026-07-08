@@ -2574,6 +2574,109 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('repairs issue #8673 field-binding oscillation from exact included sources', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 1;
+    const body =
+      'When the OAuth token refresh API call fails transiently, the gateway immediately ' +
+      'throws an error. This can cause agents to fail even when the underlying issue is ' +
+      'temporary. A gateway restart fixed it immediately.';
+    const comment = {
+      id: 4_320_890_028,
+      node_id: 'IC_4320890028',
+      node_type: 'IssueComment',
+      body:
+        'Current main still lacks generic bounded retry for ordinary transient OAuth ' +
+        'refresh failures in the shared auth-profile path.',
+      user: { id: 'U_reviewer', type: 'User', login: 'reviewer' },
+      created_at: '2026-07-01T00:00:00Z',
+      updated_at: '2026-07-01T00:00:00Z',
+    };
+    const rawOutput = JSON.stringify(groundedOutput({
+      severity: 'medium',
+      scope: 'moderate',
+      workaroundStatus: 'confirmed',
+      evidence: {
+        sentiment: [{ source_id: 'issue:body', excerpt: 'agents to fail' }],
+        severity: [{ source_id: 'issue:body', excerpt: 'fails transiently' }],
+        scope: [{ source_id: 'issue:body', excerpt: 'gateway' }],
+        functionality: [{
+          source_id: 'issue:title',
+          excerpt: 'OAuth token refresh',
+        }],
+        affected_users: [],
+        workaroundStatus: [{
+          source_id: 'issue:body',
+          excerpt: 'gateway restart fixed it',
+        }],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+      rationale:
+        'Transient gateway OAuth refresh failures can fail agents; restart is a workaround.',
+    }));
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-8673',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: rawOutput },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-8673-binding-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(body, 'Add retry logic to OAuth token refresh'),
+          number: 8673,
+          comments: 1,
+        } as any,
+        [comment] as any,
+        [],
+      );
+      assert.equal(attempts, 1);
+      assert.equal(result.classification.scope, 'moderate');
+      assert.equal(result.classification.functionality, 'core');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['accepted_success'],
+      );
+      const normalization = result.classification.provenance?.schemaVersion === 2
+        ? result.classification.provenance.evidenceNormalization
+        : null;
+      assert.deepEqual(
+        normalization?.fields.map((field) => [
+          field.field,
+          field.value,
+          field.diagnosticCodes,
+          field.originalCitations,
+          field.effectiveCitations,
+        ]),
+        [[
+          'functionality',
+          'core',
+          ['excerpt_not_field_relevant'],
+          [{ sourceId: 'issue:title', excerpt: 'OAuth token refresh' }],
+          [{ sourceId: 'comment:4320890028', excerpt: 'auth' }],
+        ]],
+      );
+      assert.equal(result.classification.provenance?.rawModelOutput, rawOutput);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('classifies test-only issue #7057 as tooling and seals citation repair provenance', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');
