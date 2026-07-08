@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 24;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 25;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2605,8 +2605,9 @@ const CLASSIFICATION_SCHEMA_RULES = {
     fieldRelevance: {
       sentiment: {
         negative: [
-          '\\b(?:bugs?|problems?|broken|breaks?|broke|fail(?:s|ed|ing|ures?)?|errors?|crash(?:es|ed|ing)?|regression|outage|hang(?:s|ing)?|timeout|incorrect|wrong|missing|unusable|blocked|loss|lost|unable|cannot|exit(?:s|ed|ing)?|stops?|reject(?:s|ed|ing)?|denied|leak(?:s|ed|ing|ages?)?|frustrat(?:e|es|ed|ing|ion|ions))\\b',
+          '\\b(?:bugs?|problems?|broken|breaks?|broke|fail(?:s|ed|ing|ures?)?|errors?|crash(?:es|ed|ing)?|regression|outage|hang(?:s|ing)?|timeout|incorrect|wrong|missing|unusable|blocked|loss|lost|drop(?:s|ped|ping)?|ignor(?:e|es|ed|ing)|unable|cannot|exit(?:s|ed|ing)?|stops?|reject(?:s|ed|ing)?|denied|leak(?:s|ed|ing|ages?)?|frustrat(?:e|es|ed|ing|ion|ions))\\b',
           '\\b(?:does not|doesn.t|did not|will not|won.t|not)\\s+(?:work|start|open|load|send|receive|connect)\\b',
+          '\\btim(?:e|es|ed|ing)\\s+out\\b',
           '(?:\\u65e0\\u6cd5|\\u4e0d\\u751f\\u6548|\\u53ea\\u8fd4\\u56de|\\u4e0d\\u5b8c\\u6574|\\u5931\\u8d25)',
         ],
         positive: [
@@ -2629,12 +2630,13 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:broken|fail(?:s|ed|ing|ure)?|crash(?:es|ed|ing)?|exit(?:s|ed|ing)?|stops?)\\b.{0,60}\\b(?:install(?:er|ation)?|update|gateway|startup|boot|cli|chat|session|auth(?:entication)?|login|exec|doctor)\\b',
         ],
         medium: [
-          '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
+          '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|timeouts?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
+          '\\btim(?:e|es|ed|ing)\\s+out\\b',
           '\\b(?:raw\\s+)?binary\\s+garbage\\b',
           '(?:\\u65e0\\u6cd5\\u83b7\\u53d6\\u5b8c\\u6574|\\u53ea\\u8fd4\\u56de(?:\\u524d)?\\s*\\d+\\s*\\u6761\\u8bb0\\u5f55)',
         ],
         low: [
-          '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
+          '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge cases?|rare|niche)\\b',
           '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
           '\\bwould be (?:great|useful|helpful) to (?:add|expose|support|provide)\\b',
           '\\b(?:package|packaging|archives?|bundles?|artifacts?).{0,80}\\b(?:deterministic|non-?deterministic|reproducible|reproducibility)\\b',
@@ -2656,7 +2658,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:webui|control ui)\\b',
           '\\b(?:audio files?|read tool)\\b',
           '(?:\\u98de\\u4e66\\u63d2\\u4ef6|feishu_wiki|@openclaw/feishu)',
-          '\\b(?:tool calls?|sub-?agents?|exec)\\b',
+          '\\b(?:tool calls?|sub-?agents?|sessions?_spawn|exec)\\b',
           '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
           '\\b(?:additional|multiple)\\s+(?:configuration|config|state)\\s+layers\\b',
         ],
@@ -2666,6 +2668,8 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\bone\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface)\\b',
           '\\b(?:proxy|hardware)\\s+(?:setup|configuration|environment|deployment|combination|issue|failure)\\b',
           '\\b(?:skill-creator|package_skill\\.py)\\b',
+          '\\b(?:numeric[- ]string|non[- ]finite)\\b',
+          '\\blitellm\\b.{0,48}\\b(?:anthropic|models?)\\b',
           '\\b(?:multiple|several)\\s+(?:openclaw\\s+)?instances\\b',
           '\\b(?:high-load|high load|high-concurrency|high concurrency)\\s+(?:scenario|scenarios|system|systems|deployment|deployments|environment|environments)\\b',
           '\\bscope\\s*:\\s*[^\\r\\n]{0,96}\\b(?:i18n|l10n|internationali[sz]ation|locali[sz]ation|locale|language)\\b[^\\r\\n]{0,64}\\b(?:system|subsystem|layer|module|component|path|flow|mode|locale|language)?\\s*only\\b(?=\\s*(?:[,.;:!?)]|$))',
@@ -2673,7 +2677,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
       },
       functionality: {
         core: [
-          '\\b(?:core|install(?:er|ation)?|update|upgrade|gateway|startup|boot|cli|chat|session|auth(?:entication)?|oauth|token refresh|login|exec|approval|doctor|command|daemon|storage)\\b',
+          '\\b(?:core|install(?:er|ation)?|update|upgrade|gateway|startup|boot|cli|chat|session|sessions?_spawn|auth(?:entication)?|oauth|token refresh|login|exec|approval|doctor|command|daemon|storage)\\b',
           '\\bread tool\\b',
           '\\b(?:writeTrackedDoc|beginDocSession\\.commit)\\b',
         ],
@@ -3763,6 +3767,7 @@ function workaroundCitationPatterns(status: WorkaroundStatus): readonly string[]
       '\\bworks?\\s+but\\s+(?:heavyweight|cumbersome|impractical|fragile)\\b',
       '\\bmanual(?:ly)?\\b',
       '\\bfragile\\b',
+      '\\bmonkey[- ]?patch(?:es|ed|ing)?\\b',
     ];
   }
   if (status === 'confirmed') {

@@ -3889,6 +3889,168 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'tooling');
   });
 
+  it('accepts issue #37878 model-usage numeric edge-case evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?model-usage-numeric-edge=${Date.now()}`
+    );
+    const issueTitle =
+      'model-usage: handle numeric-string costs and ignore non-finite values';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ## Proposed improvement Add tests covering these edge cases. ` +
+        'Those valid values can be dropped during aggregation/model selection.',
+        issueTitle,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'negative';
+    raw.severity = 'low';
+    raw.scope = 'niche';
+    raw.functionality = 'provider';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: 'Those valid values can be dropped during aggregation/model selection.',
+    }];
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: 'edge cases',
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:title',
+      excerpt: 'numeric-string costs and ignore non-finite values',
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: 'model selection',
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'negative');
+    assert.equal(accepted.severity, 'low');
+    assert.equal(accepted.scope, 'niche');
+    assert.equal(accepted.functionality, 'provider');
+  });
+
+  it('accepts issue #37902 sessions_spawn timeout evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?sessions-spawn-timeout=${Date.now()}`
+    );
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} When an agent calls sessions_spawn to delegate to a subagent. ` +
+        'Subagents reliably timing out. Error: LLM request timed out. ' +
+        'The prompt workaround works but is fragile.',
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'negative';
+    raw.severity = 'medium';
+    raw.scope = 'moderate';
+    raw.functionality = 'core';
+    raw.workaroundStatus = 'partial';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: 'Subagents reliably timing out',
+    }];
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: 'LLM request timed out',
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: 'delegate to a subagent',
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: 'sessions_spawn',
+    }];
+    raw.evidence.workaroundStatus = [{
+      source_id: 'issue:body',
+      excerpt: 'works but is fragile',
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'negative');
+    assert.equal(accepted.severity, 'medium');
+    assert.equal(accepted.scope, 'moderate');
+    assert.equal(accepted.functionality, 'core');
+    assert.equal(accepted.workaroundStatus, 'partial');
+  });
+
+  it('accepts issue #37966 LiteLLM Anthropic cache evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?litellm-anthropic-cache=${Date.now()}`
+    );
+    const issueTitle =
+      '[Bug]: cacheRetention ignored for LiteLLM-proxied Anthropic models';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} Behavior bug (incorrect output/state without crash). ` +
+        'Affected users: LiteLLM users proxying Anthropic models. ' +
+        'cacheRetention is silently ignored. provider === "litellm". ' +
+        'I have to monkey patch my claw after every update.',
+        issueTitle,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.sentiment = 'negative';
+    raw.severity = 'medium';
+    raw.scope = 'niche';
+    raw.functionality = 'provider';
+    raw.affected_users = 'some';
+    raw.workaroundStatus = 'partial';
+    raw.evidence.sentiment = [{
+      source_id: 'issue:body',
+      excerpt: 'silently ignored',
+    }];
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: 'Behavior bug (incorrect output/state without crash)',
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:title',
+      excerpt: 'LiteLLM-proxied Anthropic models',
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:body',
+      excerpt: 'provider === "litellm"',
+    }];
+    raw.evidence.affected_users = [{
+      source_id: 'issue:body',
+      excerpt: 'Affected users: LiteLLM users proxying Anthropic models',
+    }];
+    raw.evidence.workaroundStatus = [{
+      source_id: 'issue:body',
+      excerpt: 'monkey patch my claw after every update',
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.sentiment, 'negative');
+    assert.equal(accepted.severity, 'medium');
+    assert.equal(accepted.scope, 'niche');
+    assert.equal(accepted.functionality, 'provider');
+    assert.equal(accepted.affectedUsers, 'some');
+    assert.equal(accepted.workaroundStatus, 'partial');
+  });
+
   it('accepts issue #35835 read-tool audio failure evidence', async () => {
     const { __llmTest } = await import(
       `./llm.ts?read-tool-audio=${Date.now()}`
