@@ -2359,6 +2359,135 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('repairs issue #17215 doctor/update scope from exact included sources', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 1;
+    const body = [
+      '### Summary',
+      'Provide a native upgrade scanner to detect schema/behavior drift before and after updates.',
+      '### Problem to solve',
+      'Updates can silently break configs or runtime behavior.',
+      '### Proposed solution',
+      'Add built-in `doctor --upgrade-scan`.',
+      '### Alternatives considered',
+      'Manual checklists only: easy to skip, inconsistent quality.',
+      '### Impact',
+      'Affected: anyone updating OpenClaw in active environments.',
+      'Severity: high (update regressions can block workflows).',
+      'Frequency: every update cycle.',
+    ].join('\n\n');
+    const rawOutput = JSON.stringify(groundedOutput({
+      sentiment: 'neutral',
+      severity: 'high',
+      scope: 'moderate',
+      functionality: 'core',
+      affected_users: 'some',
+      workaroundStatus: 'partial',
+      evidence: {
+        sentiment: [{
+          source_id: 'issue:title',
+          excerpt: 'Add pre/post-update compatibility scanner',
+        }],
+        severity: [{
+          source_id: 'issue:body',
+          excerpt: 'Severity: high (update regressions can block workflows).',
+        }],
+        scope: [{
+          source_id: 'issue:body',
+          excerpt: 'Frequency: every update cycle.',
+        }],
+        functionality: [{
+          source_id: 'issue:body',
+          excerpt: 'doctor --upgrade-scan',
+        }],
+        affected_users: [{
+          source_id: 'issue:body',
+          excerpt: 'Affected: anyone updating OpenClaw in active environments.',
+        }],
+        workaroundStatus: [{
+          source_id: 'issue:body',
+          excerpt: 'Manual checklists only: easy to skip, inconsistent quality.',
+        }],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+      rationale:
+        'The request targets one doctor/update surface and a defined updater population.',
+    }));
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-17215',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: rawOutput },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-17215-binding-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(
+            body,
+            '[Tooling]: Add pre/post-update compatibility scanner with risk report and smoke recommendations',
+          ),
+          number: 17215,
+        } as any,
+        [],
+        [],
+      );
+      assert.equal(attempts, 1);
+      assert.equal(result.classification.scope, 'moderate');
+      assert.equal(result.classification.affectedUsers, 'some');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['accepted_success'],
+      );
+      assert.deepEqual(result.classification.evidence?.affected_users, [{
+        sourceId: 'issue:body',
+        excerpt: 'Affected: anyone updating OpenClaw in active environments.',
+      }]);
+      const normalization = result.classification.provenance?.schemaVersion === 2
+        ? result.classification.provenance.evidenceNormalization
+        : null;
+      assert.deepEqual(
+        normalization?.fields.map((field) => [
+          field.field,
+          field.value,
+          field.diagnosticCodes,
+          field.originalCitations,
+          field.effectiveCitations,
+        ]),
+        [[
+          'scope',
+          'moderate',
+          ['excerpt_not_field_relevant'],
+          [{
+            sourceId: 'issue:body',
+            excerpt: 'Frequency: every update cycle.',
+          }],
+          [{
+            sourceId: 'issue:title',
+            excerpt: 'post-update',
+          }],
+        ]],
+      );
+      assert.equal(result.classification.provenance?.rawModelOutput, rawOutput);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('enumerates exact supported values for multi-field grounding repair', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');

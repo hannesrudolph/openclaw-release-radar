@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 7;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 8;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2527,6 +2527,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         moderate: [
           '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
           '\\b(?:tool calls?|sub-?agents?|exec)\\b',
+          '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
         ],
         niche: [
           '\\b(?:niche|non-default|experimental|alpha|rare|edge case|environment-sensitive|wsl2?|windows subsystem for linux)\\b',
@@ -2570,6 +2571,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         some: [
           '\\b(?:some|several)\\s+(?:users?|operators?|installs?|deployments?|teams?)\\b',
           '\\b(?:users?|windows|macos|linux|android|ios|operators?|install(?:s|ations)?|deployments?|teams?|provider|configuration|config|platform|environment)\\b',
+          '\\banyone\\s+(?:using|running|updating|operating|deploying|managing)\\b',
         ],
         few: [
           '\\b(?:few|single|one|only|rare|niche|specific|custom|non-default|experimental)\\b(?:.{0,30}\\b(?:users?|operator|setup|config|environment|machine|deployment))?',
