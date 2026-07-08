@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 14;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 15;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2629,6 +2629,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         ],
         medium: [
           '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
+          '\\b(?:raw\\s+)?binary\\s+garbage\\b',
         ],
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
@@ -2648,6 +2649,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         ],
         moderate: [
           '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix)\\b',
+          '\\b(?:audio files?|read tool)\\b',
           '\\b(?:tool calls?|sub-?agents?|exec)\\b',
           '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
           '\\b(?:additional|multiple)\\s+(?:configuration|config|state)\\s+layers\\b',
@@ -2665,6 +2667,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
       functionality: {
         core: [
           '\\b(?:core|install(?:er|ation)?|update|upgrade|gateway|startup|boot|cli|chat|session|auth(?:entication)?|oauth|token refresh|login|exec|approval|doctor|command|daemon|storage)\\b',
+          '\\bread tool\\b',
         ],
         integration: [
           '\\b(?:(?:tray|menu bar|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\s+)?(?:integration|channel|plugin|extension|ui|tui|webchat|webhook)\\b',

@@ -3803,6 +3803,51 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.scope, 'moderate');
   });
 
+  it('accepts issue #35835 read-tool audio failure evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?read-tool-audio=${Date.now()}`
+    );
+    const severityEvidence =
+      'read("audio-file.m4a") \u2192 raw binary garbage dumped as text';
+    const scopeEvidence =
+      'Audio files (m4a, mp3, wav, ogg, opus) are not supported';
+    const functionalityEvidence =
+      '[Feature]: Audio file support in read tool (multimodal parity with images)';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${severityEvidence}. ${scopeEvidence}.`,
+        functionalityEvidence,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.severity = 'medium';
+    raw.scope = 'moderate';
+    raw.functionality = 'core';
+    raw.evidence.severity = [{
+      source_id: 'issue:body',
+      excerpt: severityEvidence,
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
+    }];
+    raw.evidence.functionality = [{
+      source_id: 'issue:title',
+      excerpt: functionalityEvidence,
+    }];
+    const accepted = __llmTest.parseRawClassification(
+      JSON.stringify(raw),
+      ['v2026.7.4'],
+      prompt.groundingSources,
+      prompt.inputTruncation,
+    );
+    assert.equal(accepted.severity, 'medium');
+    assert.equal(accepted.scope, 'moderate');
+    assert.equal(accepted.functionality, 'core');
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
