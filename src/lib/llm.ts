@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 26;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 27;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -1292,6 +1292,7 @@ export async function classifyIssueTerminalResult(
             const nextEnumConstraints = mergeClassificationResponseEnumConstraints(
               semanticRetryEnumConstraints,
               semanticRetryResponseEnumConstraints(
+                rawModelOutput as string,
                 semanticDiagnostics,
                 promptInput.groundingSources,
               ),
@@ -1920,6 +1921,8 @@ function buildSemanticRetryFeedback(
         diagnostic.field,
         groundingSources,
         diagnostic.sourceId,
+        rejectedAssistantOutput,
+        diagnostic.citationIndex,
       );
       return {
         field: diagnostic.field,
@@ -2072,9 +2075,19 @@ function semanticRetrySupportedValues(
   field: string | null,
   groundingSources: readonly ClassifierSource[],
   sourceId: string | null = null,
+  rejectedAssistantOutput: string | null = null,
+  citationIndex: number | null = null,
 ): SemanticRetrySupportedValue[] {
   const binding = semanticRetryMandatoryBinding(field);
   if (binding === null) return [];
+  const reboundSeverity = semanticRetrySeverityRebinding(
+    binding.field,
+    rejectedAssistantOutput,
+    citationIndex,
+    sourceId,
+    groundingSources,
+  );
+  if (reboundSeverity !== null) return [reboundSeverity];
   const candidateSources = sourceId === null
     ? groundingSources
     : groundingSources.filter((source) => source.sourceId === sourceId);
@@ -2107,7 +2120,73 @@ function semanticRetrySupportedValues(
   return supported;
 }
 
+function semanticRetrySeverityRebinding(
+  field: MandatoryEvidenceField,
+  rejectedAssistantOutput: string | null,
+  citationIndex: number | null,
+  expectedSourceId: string | null,
+  groundingSources: readonly ClassifierSource[],
+): SemanticRetrySupportedValue | null {
+  if (
+    field !== 'severity' ||
+    rejectedAssistantOutput === null ||
+    citationIndex === null
+  ) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(rejectedAssistantOutput) as Record<string, unknown>;
+    if (typeof parsed.severity !== 'string') return null;
+    const evidence = parsed.evidence;
+    if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)) {
+      return null;
+    }
+    const severityEvidence = (evidence as Record<string, unknown>).severity;
+    if (!Array.isArray(severityEvidence)) return null;
+    const citation = severityEvidence[citationIndex];
+    if (citation === null || typeof citation !== 'object' || Array.isArray(citation)) {
+      return null;
+    }
+    const sourceId = (citation as Record<string, unknown>).source_id;
+    const excerpt = (citation as Record<string, unknown>).excerpt;
+    if (
+      typeof sourceId !== 'string' ||
+      typeof excerpt !== 'string' ||
+      (expectedSourceId !== null && sourceId !== expectedSourceId)
+    ) {
+      return null;
+    }
+    const source = groundingSources.find((candidate) => candidate.sourceId === sourceId);
+    if (!source?.text.includes(excerpt)) return null;
+    const supportedSeverities = CLASSIFICATION_SCHEMA_RULES.enums.severity.filter(
+      (severity) => mandatoryCitationSupports('severity', severity, excerpt),
+    );
+    const rejectedSeverityIndex = CLASSIFICATION_SCHEMA_RULES.enums.severity.indexOf(
+      parsed.severity as Severity,
+    );
+    const reboundSeverityIndex = supportedSeverities.length === 0
+      ? -1
+      : CLASSIFICATION_SCHEMA_RULES.enums.severity.indexOf(supportedSeverities[0]);
+    if (
+      supportedSeverities.length === 0 ||
+      supportedSeverities.includes(parsed.severity as Severity) ||
+      rejectedSeverityIndex < 0 ||
+      reboundSeverityIndex < 0 ||
+      reboundSeverityIndex >= rejectedSeverityIndex
+    ) {
+      return null;
+    }
+    return {
+      value: supportedSeverities[0],
+      candidate_citations: [{ source_id: sourceId, excerpt }],
+    };
+  } catch {
+    return null;
+  }
+}
+
 function semanticRetryResponseEnumConstraints(
+  rejectedAssistantOutput: string,
   diagnostics: readonly ClassifierAttemptSemanticDiagnostic[],
   groundingSources: readonly ClassifierSource[],
 ): ClassificationResponseEnumConstraints {
@@ -2124,6 +2203,8 @@ function semanticRetryResponseEnumConstraints(
         binding.field,
         groundingSources,
         diagnostic.sourceId,
+        rejectedAssistantOutput,
+        diagnostic.citationIndex,
       )
     ) {
       values.add(supported.value);
@@ -2650,7 +2731,9 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\bmultiple\\s+(?:operating systems?|oses|providers?|platforms?|surfaces?|channels?|integrations?|configurations?)\\b',
           '\\b(?:exec|filesystem|session|cli|slash|startup[- ]readiness|cron|gateway|node)\\b(?:.{0,80}\\b(?:exec|filesystem|session|cli|slash|startup[- ]readiness|cron|gateway|node)\\b){2}',
           '\\bboth\\s+(?:windows|macos|linux|android|ios)\\b.{0,60}\\b(?:and|,)\\s*(?:windows|macos|linux|android|ios)\\b',
-          '\\b(?:all|every|most)\\b.{0,60}\\b(?:users?|installs?|platforms?|systems?|providers?|operating systems?|deployments?|surfaces?|configurations?)\\b',
+          '\\b(?:all|every|most)\\b.{0,60}\\b(?:users?|installs?|instances?|devices?|platforms?|systems?|providers?|operating systems?|deployments?|surfaces?|configurations?)\\b',
+          '\\bany\\s+browser\\b.{0,48}\\bany\\s+device\\b',
+          '\\bany\\s+device\\b.{0,48}\\bbrowser\\b',
           '\\b(?:windows|macos|linux)\\b.{0,60}\\b(?:windows|macos|linux)\\b',
         ],
         moderate: [
@@ -3766,6 +3849,7 @@ function workaroundCitationPatterns(status: WorkaroundStatus): readonly string[]
       '\\bworks?\\s+(?:sometimes|partially|only)\\b',
       '\\bworks?\\s+but\\s+(?:heavyweight|cumbersome|impractical|fragile)\\b',
       '\\bworks?\\s+(?:technically|in principle)\\s*,?\\s*but\\b',
+      '\\bworks?\\s*,?\\s*but\\b.{0,48}\\b(?:two|three|four|five|six|seven|eight|nine|ten|\\d+)\\s+(?:installs?|apps?|steps?|setups?)\\b',
       '\\bmanual(?:ly)?\\b',
       '\\bfragile\\b',
       '\\bmonkey[- ]?patch(?:es|ed|ing)?\\b',

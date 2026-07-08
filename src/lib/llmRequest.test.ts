@@ -4337,6 +4337,131 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.severity, 'critical');
   });
 
+  it('repairs issue #24754 to critical security severity with broad reach and a partial workaround', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const title = '[Feature]: Native E2EE Browser Chat, No Third-Party Required';
+    const issueBody = [
+      'This is a proposal for a native E2EE browser-based chat layer built into every OpenClaw instance, no third party, no install, no sign up.',
+      'Every new user hits the same wall.',
+      "The best current workaround with no third-party chat app is Tailscale + WebChat. It works, but it's four installs before you can say hello.",
+      'one compromised skill or agent can read conversations meant for another',
+      'Reachable from any browser, on any device',
+      'Open Gateway URL',
+    ].join('\n\n');
+    const evidence = {
+      sentiment: [{ source_id: 'issue:title', excerpt: title }],
+      severity: [{
+        source_id: 'issue:body',
+        excerpt: 'one compromised skill or agent can read conversations meant for another',
+      }],
+      scope: [{
+        source_id: 'issue:body',
+        excerpt: 'Reachable from any browser, on any device',
+      }],
+      functionality: [{ source_id: 'issue:body', excerpt: 'Open Gateway URL' }],
+      affected_users: [{
+        source_id: 'issue:body',
+        excerpt: 'Every new user hits the same wall',
+      }],
+      workaroundStatus: [{
+        source_id: 'issue:body',
+        excerpt: "It works, but it's four installs before you can say hello.",
+      }],
+      duplicateCluster: [],
+      affectsVersion: [],
+    };
+    const rejected = groundedOutput({
+      sentiment: 'neutral',
+      severity: 'medium',
+      scope: 'broad',
+      functionality: 'core',
+      affected_users: 'many',
+      workaroundStatus: 'partial',
+      evidence,
+      rationale:
+        'The feature targets core browser chat across devices and addresses an agent-isolation security gap.',
+    });
+    const corrected = groundedOutput({
+      ...rejected,
+      severity: 'critical',
+    });
+    const outputs = [rejected, corrected];
+    const requestBodies: string[] = [];
+    let attempts = 0;
+    globalThis.fetch = (async (_input, init) => {
+      requestBodies.push(String(init?.body ?? ''));
+      const output = outputs[attempts++];
+      return new Response(JSON.stringify({
+        id: `chatcmpl-24754-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: JSON.stringify(output) },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?issue-24754-security-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(issueBody, title),
+          number: 24754,
+        } as any,
+        [],
+        [],
+      );
+      assert.equal(attempts, 2);
+      assert.equal(result.classification.sentiment, 'neutral');
+      assert.equal(result.classification.severity, 'critical');
+      assert.equal(result.classification.scope, 'broad');
+      assert.equal(result.classification.functionality, 'core');
+      assert.equal(result.classification.affectedUsers, 'many');
+      assert.equal(result.classification.workaroundStatus, 'partial');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+        ]),
+        [['severity', 'excerpt_not_field_relevant']],
+      );
+      const retryBody = JSON.parse(requestBodies[1]);
+      assert.deepEqual(
+        retryBody.response_format.json_schema.schema.properties.severity.enum,
+        ['critical'],
+      );
+      const feedbackText = retryBody.messages[2].content as string;
+      const feedbackJson = feedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(feedbackJson);
+      assert.deepEqual(
+        JSON.parse(feedbackJson).correction_requirements[0].supported_values,
+        [{
+          value: 'critical',
+          candidate_citations: [{
+            source_id: 'issue:body',
+            excerpt:
+              'one compromised skill or agent can read conversations meant for another',
+          }],
+        }],
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('binds severity declarations only to the cited excerpt', async () => {
     const {
       __llmTest,
