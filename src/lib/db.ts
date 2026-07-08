@@ -12887,8 +12887,8 @@ function validateClosureProofGateEvidence(tag: string, gateEvidenceJson: string)
   const fixProvenance = objectField(gateEvidence, 'fixProvenance');
   const closureProof = objectField(fixProvenance, 'closureProof');
   const releaseFixCredit = objectField(fixProvenance, 'releaseFixCredit');
-  if (closureProof.schemaVersion !== 1) {
-    throw new Error(`Release ${tag} closureProof payload must have schemaVersion 1`);
+  if (closureProof.schemaVersion !== 2) {
+    throw new Error(`Release ${tag} closureProof payload must have schemaVersion 2`);
   }
   if (!Number.isInteger(closureProof.creditedCount) ||
     !Number.isInteger(closureProof.notCreditedCount) ||

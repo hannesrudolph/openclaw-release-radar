@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { describe, it } from 'node:test';
 import {
+  CLASSIFIER_ATTEMPT_SCHEMA_VERSION,
   CLASSIFIER_ERROR_MESSAGE_MAX_BYTES,
   CLASSIFIER_RAW_RESPONSE_MAX_BYTES,
   CLASSIFIER_SEMANTIC_DIAGNOSTIC_MESSAGE_MAX_BYTES,
@@ -50,6 +51,14 @@ describe('classifier attempt ledger', () => {
     assert.deepEqual(
       ledger.attempts.map((attempt) => attempt.status),
       ['transport_failure', 'semantic_rejection', 'accepted_success'],
+    );
+    assert.deepEqual(
+      ledger.attempts.map((attempt) => attempt.schemaVersion),
+      [
+        CLASSIFIER_ATTEMPT_SCHEMA_VERSION,
+        CLASSIFIER_ATTEMPT_SCHEMA_VERSION,
+        CLASSIFIER_ATTEMPT_SCHEMA_VERSION,
+      ],
     );
     assert.equal(ledger.attempts[0].previousContentHash, ledger.run.contentHash);
     assert.equal(
@@ -181,16 +190,158 @@ describe('classifier attempt ledger', () => {
       forgedOutput,
       /accepted_success requires complete rawModelOutput/,
     );
+
+    for (const [name, mutateResponse, expected] of [
+      [
+        'missing finish reason',
+        (response: any) => { delete response.choices[0].finish_reason; },
+        /finish_reason must equal "stop"/,
+      ],
+      [
+        'length finish reason',
+        (response: any) => { response.choices[0].finish_reason = 'length'; },
+        /finish_reason must equal "stop"/,
+      ],
+      [
+        'refusal',
+        (response: any) => {
+          response.choices[0].message.refusal = 'cannot classify';
+        },
+        /must not contain a refusal/,
+      ],
+      [
+        'multiple choices',
+        (response: any) => { response.choices.push(response.choices[0]); },
+        /must contain exactly one choice/,
+      ],
+    ] as const) {
+      const tampered = clone(ledger);
+      const response = JSON.parse(tampered.attempts[2].rawResponse.text);
+      mutateResponse(response);
+      tampered.attempts[2].rawResponse =
+        captureClassifierRawResponse(JSON.stringify(response));
+      resealLedger(tampered);
+      assertInvalid(tampered, expected);
+      assert.ok(name);
+    }
+
+    const duplicateEnvelope = clone(ledger);
+    duplicateEnvelope.attempts[2].rawResponse =
+      captureClassifierRawResponse(
+        duplicateEnvelope.attempts[2].rawResponse.text.replace(
+          '"id":"response-success-3"',
+          '"id":"forged-response","id":"response-success-3"',
+        ),
+      );
+    resealLedger(duplicateEnvelope);
+    assertInvalid(duplicateEnvelope, /unique object keys/);
+  });
+
+  it('preserves persisted schema-v1 response evidence under the legacy contract', () => {
+    const acceptedLedger = clone(successfulLedger());
+    for (const attempt of acceptedLedger.attempts) {
+      attempt.schemaVersion = 1;
+    }
+    const accepted = acceptedLedger.attempts[2];
+    const acceptedResponse = JSON.parse(accepted.rawResponse.text);
+    acceptedResponse.choices[0].finish_reason = 'length';
+    acceptedResponse.choices[0].message.refusal = 'legacy refusal';
+    acceptedResponse.choices.push(structuredClone(acceptedResponse.choices[0]));
+    accepted.rawResponse = captureClassifierRawResponse(
+      JSON.stringify(acceptedResponse).replace(
+        '"id":"response-success-3"',
+        '"id":"response-success-3","id":"response-success-3"',
+      ),
+    );
+    resealLedger(acceptedLedger);
+    assert.equal(
+      verifyClassifierAttemptLedger(acceptedLedger).valid,
+      true,
+      problemText(verifyClassifierAttemptLedger(acceptedLedger).problems),
+    );
+
+    const semanticLedger = clone(semanticRejectionLedger());
+    const semantic = semanticLedger.attempts[0];
+    semantic.schemaVersion = 1;
+    const semanticResponse = JSON.parse(semantic.rawResponse.text);
+    semanticResponse.choices[0] = {
+      finish_reason: 'length',
+      message: { refusal: 'legacy refusal' },
+    };
+    semanticResponse.choices.push(structuredClone(semanticResponse.choices[0]));
+    semantic.rawResponse =
+      captureClassifierRawResponse(JSON.stringify(semanticResponse));
+    semantic.rawModelOutput = null;
+    resealLedger(semanticLedger);
+    assert.equal(
+      verifyClassifierAttemptLedger(semanticLedger).valid,
+      true,
+      problemText(verifyClassifierAttemptLedger(semanticLedger).problems),
+    );
+
+    const truncatedLedger = clone(semanticRejectionLedger());
+    const truncated = truncatedLedger.attempts[0];
+    truncated.schemaVersion = 1;
+    truncated.rawResponse.truncated = true;
+    truncated.rawResponse.originalByteLength += 1;
+    truncated.rawResponse.fullContentHash =
+      hash(`${truncated.rawResponse.text}x`);
+    resealLedger(truncatedLedger);
+    assert.equal(
+      verifyClassifierAttemptLedger(truncatedLedger).valid,
+      true,
+      problemText(verifyClassifierAttemptLedger(truncatedLedger).problems),
+    );
+
+    const unsupported = clone(successfulLedger());
+    unsupported.attempts[2].schemaVersion = 3;
+    resealLedger(unsupported);
+    assertInvalid(unsupported, /schemaVersion must equal 1 or 2/);
   });
 
   it('binds completed semantic rejections to provider response evidence', () => {
-    const ledger = successfulLedger();
-    const rejected = ledger.attempts[1];
+    const ledger = semanticRejectionLedger();
+    const rejected = ledger.attempts[0];
     assert.equal(rejected.rawResponse?.truncated, false);
     assert.equal(rejected.rawModelOutput?.truncated, false);
 
+    for (const [mutateResponse, expected] of [
+      [
+        (response: any) => {
+          response.choices.push(structuredClone(response.choices[0]));
+        },
+        /semantic_rejection rawResponse must contain exactly one choice/,
+      ],
+      [
+        (response: any) => {
+          response.choices[0].finish_reason = 'length';
+        },
+        /semantic_rejection rawResponse choice finish_reason must equal "stop"/,
+      ],
+      [
+        (response: any) => {
+          response.choices[0].message.refusal = 'cannot classify';
+        },
+        /semantic_rejection rawResponse must not contain a refusal/,
+      ],
+      [
+        (response: any) => {
+          response.choices[0].message.content = '{"severity":"forged"}';
+        },
+        /rawModelOutput does not match the retained assistant message/,
+      ],
+    ] as const) {
+      const tampered = clone(ledger);
+      const response = JSON.parse(tampered.attempts[0].rawResponse.text);
+      mutateResponse(response);
+      tampered.attempts[0].rawResponse =
+        captureClassifierRawResponse(JSON.stringify(response));
+      resealLedger(tampered);
+      assertInvalid(tampered, expected);
+    }
+
     const forgedOutput = clone(ledger);
-    const output = forgedOutput.attempts[1].rawModelOutput;
+    const output = forgedOutput.attempts[0].rawModelOutput;
     output.text = '{"severity":"forged"}';
     output.originalByteLength = Buffer.byteLength(output.text, 'utf8');
     output.retainedContentHash = hash(output.text);
@@ -202,7 +353,7 @@ describe('classifier attempt ledger', () => {
     );
 
     const forgedProvenance = clone(ledger);
-    forgedProvenance.attempts[1].provenance.responseId = 'forged-response';
+    forgedProvenance.attempts[0].provenance.responseId = 'forged-response';
     resealLedger(forgedProvenance);
     assertInvalid(
       forgedProvenance,
@@ -210,12 +361,119 @@ describe('classifier attempt ledger', () => {
     );
 
     const missingOutput = clone(ledger);
-    missingOutput.attempts[1].rawModelOutput = null;
+    missingOutput.attempts[0].rawModelOutput = null;
     resealLedger(missingOutput);
     assertInvalid(
       missingOutput,
       /requires rawModelOutput for assistant message content/,
     );
+
+    const truncatedOutput = clone(ledger);
+    truncatedOutput.attempts[0].rawModelOutput.truncated = true;
+    truncatedOutput.attempts[0].rawModelOutput.originalByteLength += 1;
+    resealLedger(truncatedOutput);
+    assertInvalid(
+      truncatedOutput,
+      /completed response requires complete rawModelOutput/,
+    );
+
+    const truncatedResponse = clone(ledger);
+    truncatedResponse.attempts[0].rawResponse.truncated = true;
+    truncatedResponse.attempts[0].rawResponse.originalByteLength += 1;
+    resealLedger(truncatedResponse);
+    assertInvalid(
+      truncatedResponse,
+      /semantic_rejection requires a complete rawResponse/,
+    );
+  });
+
+  it('preserves non-semantic raw envelopes as transport failure evidence', () => {
+    const run = runFixture('run-transport-envelope', 1);
+    const response = JSON.parse(
+      acceptedRawResponse(
+        'response-transport-envelope',
+        '{"severity":"unused"}',
+      ).text,
+    );
+    response.choices[0].finish_reason = 'length';
+    response.choices[0].message.refusal = 'cannot classify';
+    response.choices.push(structuredClone(response.choices[0]));
+    const attempt = appendClassifierAttempt(run, [], {
+      attemptId: 'transport-envelope-attempt-1',
+      status: 'transport_failure',
+      startedAt: time(1),
+      finishedAt: time(2),
+      rawResponse: captureClassifierRawResponse(JSON.stringify(response)),
+      error: captureClassifierError({
+        name: 'ClassifierResponseFinishReasonError',
+        code: 'CLASSIFIER_RESPONSE_FINISH_REASON',
+        message: 'completion was not a semantic response',
+      }),
+      retry: stopMetadata(false, 'non_retryable_transport_failure'),
+      semanticDiagnostics: [],
+      provenance: responseProvenance('response-transport-envelope'),
+    });
+    const receipt = createClassifierAttemptTerminalReceipt(run, [attempt], {
+      receiptId: 'receipt-transport-envelope',
+      status: 'terminal_failure',
+      finishedAt: time(3),
+      error: attempt.error,
+    });
+
+    assert.equal(
+      verifyClassifierAttemptLedger(
+        createClassifierAttemptLedger(run, [attempt], receipt),
+      ).valid,
+      true,
+    );
+  });
+
+  it('preserves provider usage that was explicitly rejected as invalid', () => {
+    const run = runFixture('run-invalid-provider-usage', 1);
+    const rawModelOutput = '{"severity":"low"}';
+    const response = JSON.parse(
+      acceptedRawResponse('response-invalid-provider-usage', rawModelOutput).text,
+    );
+    response.usage = { prompt_tokens: -1 };
+    const usageError = new Error(
+      'OpenAI response usage is invalid: prompt_tokens must be a non-negative integer',
+    ) as Error & { code: string };
+    usageError.name = 'ClassifierResponseUsageError';
+    usageError.code = 'CLASSIFIER_RESPONSE_USAGE';
+    const attempt = appendClassifierAttempt(run, [], {
+      attemptId: 'invalid-provider-usage-attempt-1',
+      status: 'semantic_rejection',
+      startedAt: time(1),
+      finishedAt: time(2),
+      rawResponse: captureClassifierRawResponse(JSON.stringify(response)),
+      rawModelOutput: captureClassifierRawModelOutput(rawModelOutput),
+      error: captureClassifierError(usageError),
+      retry: stopMetadata(false, 'deterministic_semantic_rejection'),
+      semanticDiagnostics: semanticDiagnostics(
+        null,
+        'response_usage_invalid',
+        usageError.message,
+      ),
+      provenance: responseProvenance('response-invalid-provider-usage'),
+    });
+    const receipt = createClassifierAttemptTerminalReceipt(run, [attempt], {
+      receiptId: 'receipt-invalid-provider-usage',
+      status: 'terminal_failure',
+      finishedAt: time(3),
+      error: attempt.error,
+    });
+    const ledger = createClassifierAttemptLedger(run, [attempt], receipt);
+    assert.equal(
+      verifyClassifierAttemptLedger(ledger).valid,
+      true,
+      problemText(verifyClassifierAttemptLedger(ledger).problems),
+    );
+
+    const missingDiagnostic = clone(ledger);
+    missingDiagnostic.attempts[0].semanticDiagnostics[0].code =
+      'semantic_validation_error';
+    resealLedger(missingDiagnostic);
+    assertInvalid(missingDiagnostic, /usage cannot be verified/);
   });
 
   it('normalizes provider usage and leaves unpriced cost indeterminate', () => {
@@ -900,6 +1158,37 @@ function successfulLedger(): ClassifierAttemptLedger {
   return createClassifierAttemptLedger(run, [first, second, third], receipt);
 }
 
+function semanticRejectionLedger(): ClassifierAttemptLedger {
+  const run = runFixture('run-semantic-rejection', 1);
+  const rawModelOutput = '{"severity":"impossible"}';
+  const attempt = appendClassifierAttempt(run, [], {
+    attemptId: 'semantic-rejection-attempt-1',
+    status: 'semantic_rejection',
+    startedAt: time(1),
+    finishedAt: time(2),
+    rawResponse: acceptedRawResponse(
+      'response-semantic-rejection',
+      rawModelOutput,
+    ),
+    rawModelOutput: captureClassifierRawModelOutput(rawModelOutput),
+    error: captureClassifierError(new Error('semantic validation failed')),
+    retry: stopMetadata(false, 'deterministic_semantic_rejection'),
+    semanticDiagnostics: semanticDiagnostics(
+      'severity',
+      'schema_value_rejection',
+      'severity is not recognized',
+    ),
+    provenance: responseProvenance('response-semantic-rejection'),
+  });
+  const receipt = createClassifierAttemptTerminalReceipt(run, [attempt], {
+    receiptId: 'receipt-semantic-rejection',
+    status: 'terminal_failure',
+    finishedAt: time(3),
+    error: captureClassifierError(new Error('semantic validation failed')),
+  });
+  return createClassifierAttemptLedger(run, [attempt], receipt);
+}
+
 function runFixture(runId: string, maxAttempts: number) {
   return createClassifierAttemptRun({
     runId,
@@ -1037,7 +1326,10 @@ function acceptedRawResponse(
     id: responseId,
     model: 'classifier-model-1',
     service_tier: 'standard',
-    choices: [{ message: { content: rawModelOutput } }],
+    choices: [{
+      finish_reason: 'stop',
+      message: { content: rawModelOutput, refusal: null },
+    }],
   }));
 }
 

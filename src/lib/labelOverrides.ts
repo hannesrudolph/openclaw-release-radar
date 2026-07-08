@@ -80,7 +80,13 @@ const FUNCTIONALITY_HINTS: Readonly<Record<string, Functionality>> = Object.free
   'impact:auth-provider': 'provider',
 });
 
-const FUNCTIONALITY_PRIORITY: Functionality[] = ['core', 'provider', 'integration', 'docs'];
+const FUNCTIONALITY_PRIORITY: Functionality[] = [
+  'core',
+  'provider',
+  'integration',
+  'tooling',
+  'docs',
+];
 
 function chooseFunctionality(
   current: Functionality,
@@ -105,17 +111,58 @@ function chooseFunctionality(
   return hinted[0];
 }
 
-// Title-based functionality inference. gpt-4o-mini systematically marks any bug
-// touching a third-party channel/provider name as `core`, even with explicit
-// anti-inflation examples in the prompt. Heuristic safety net: if the title
-// names a channel or provider, route the bug to integration/provider — channel
-// adapters and provider quirks do NOT break OpenClaw's core engine.
+// Title-based functionality inference. The model systematically marks some
+// non-runtime work as a runtime surface, even with explicit anti-inflation
+// examples in the prompt. Tooling must name developer infrastructure directly;
+// CI/test/build context alone is not enough to zero a runtime failure.
+const TOOLING_RE = new RegExp([
+  String.raw`\b(?:test|testing)\s+(?:infrastructure|suite|runner|harness|fixtures?|coverage)\b`,
+  String.raw`\bfixture\s+harness\b`,
+  String.raw`\b(?:unit|integration|end[- ]to[- ]end|e2e|smoke|snapshot|flaky)\s+tests?\b`,
+  String.raw`\b(?:ci|continuous integration|github actions?)\s+(?:workflow|jobs?|pipeline|runner)\b`,
+  String.raw`\bbuild[- ]only\b`,
+  String.raw`\bbuild\s+(?:pipeline|system|scripts?|tooling)\b`,
+  String.raw`\b(?:lint(?:er|ing)?|eslint|prettier|type[- ]?check(?:er|ing)?|type checking|developer tooling|dev tooling)\b`,
+  String.raw`\b(?:code|source)\s+(?:formatter|formatting)\b`,
+  String.raw`\bformatting\s+(?:checks?|tooling)\b`,
+  String.raw`\b(?:test harness|fixture)\s+(?:issue|failure|bug)\b`,
+].join('|'), 'i');
 const CHANNEL_RE = /\b(telegram|discord|slack|feishu|whatsapp|mattermost|imessage|tiktok|lark|wechat|weixin|kakao|kakaotalk|line bot|signal)\b/i;
 const PROVIDER_RE = /\b(ollama|openai|anthropic|claude|llama\.cpp|llama\b|codex|deepseek|xai|minimax|bedrock|gemini|mistral|qwen)\b/i;
 // Plugin / subagent / MCP + control-UI / dashboard / webchat — extension and UI
 // surfaces, not the core engine. A broken dashboard or WebChat channel adapter
 // doesn't break OpenClaw's gateway/CLI itself.
 const EXTENSION_RE = /\b(plugin|subagent|mcp|control[- ]ui|dashboard|webchat|skills?[- ]ui)\b/i;
+const RUNTIME_FAILURE_TARGET_SOURCE = [
+  String.raw`\b(?:install(?:er|ation)?|updates?|gateway|startup|boot|cli|chat|sessions?|auth(?:entication)?|login|exec(?:ution)?|approvals?|doctor|daemon|storage)\b`,
+  String.raw`\b(?:messages?|message delivery|webhooks?|channels?|adapters?|requests?|responses?|streams?|tool calls?|providers?|inference|embeddings?)\b`,
+  CHANNEL_RE.source,
+  PROVIDER_RE.source,
+  EXTENSION_RE.source,
+].join('|');
+const RUNTIME_FAILURE_SIGNAL_SOURCE = [
+  String.raw`fail(?:s|ed|ing|ure)?|error(?:s|ed|ing)?|break(?:s|ing)?|broke|broken|crash(?:es|ed|ing)?`,
+  String.raw`hang(?:s|ing)?|time(?:s|d)?\s*out|timeout(?:s|ed)?|drop(?:s|ped|ping)?|lost|leak(?:s|ed|ing)?`,
+  String.raw`corrupt(?:s|ed|ing)?|deadlock(?:s|ed|ing)?|stall(?:s|ed|ing)?|reject(?:s|ed|ing)?`,
+  String.raw`stuck|unavailable|unusable|wrong|cannot|can't|unable`,
+  String.raw`(?:does|did|will)\s+not\s+(?:work|start|open|load|send|receive|connect|run)`,
+].join('|');
+const TOOLING_SUBJECT_SOURCE = [
+  String.raw`tests?|testing|suite|runner|harness|fixtures?|coverage`,
+  String.raw`ci|workflow|jobs?|pipeline|build`,
+  String.raw`lint(?:er|ing)?|eslint|prettier|type[- ]?check(?:er|ing)?|format(?:ter|ting)?`,
+].join('|');
+const RUNTIME_FAILURE_TARGET_RE = new RegExp(
+  String.raw`(?:${RUNTIME_FAILURE_TARGET_SOURCE})` +
+    String.raw`(?:(?!\b(?:${TOOLING_SUBJECT_SOURCE})\b).){0,80}` +
+    String.raw`\b(?:${RUNTIME_FAILURE_SIGNAL_SOURCE})\b`,
+  'i',
+);
+const FAILED_RUNTIME_SURFACE_RE = new RegExp(
+  String.raw`\b(?:failed|failing|broken|dropped|lost|corrupted|stuck|unavailable|wrong|rejected)\s+` +
+    String.raw`(?:messages?|message delivery|requests?|responses?|webhooks?|sessions?|authentication|login|gateway|startup|cli|daemon|storage)\b`,
+  'i',
+);
 const NON_BUG_TITLE_RE = /\b(feature|feedback|roadmap|proposal|support|question|how do i|should support|preserve or explicitly support)\b|^\s*\[(feature|feedback|proposal|backup)\]/i;
 const STRONG_BUG_LABELS = new Set(['bug', 'regression', 'P0', 'beta-blocker']);
 const CLOSURE_RISK_IMPACT_LABELS = new Set([
@@ -178,23 +225,51 @@ function isHumanAppliedLabel(
   return labelAuthorizedForScoring(labelName, authority);
 }
 
+function inferRuntimeFailureFunctionalityFromTitle(
+  title: string,
+): Functionality | undefined {
+  if (
+    !RUNTIME_FAILURE_TARGET_RE.test(title) &&
+    !FAILED_RUNTIME_SURFACE_RE.test(title)
+  ) {
+    return undefined;
+  }
+  if (CHANNEL_RE.test(title))   return 'integration';
+  if (PROVIDER_RE.test(title))  return 'provider';
+  if (EXTENSION_RE.test(title)) return 'integration';
+  return 'core';
+}
+
 export function inferFunctionalityFromTitle(title: string): Functionality | undefined {
+  const runtimeFailure = inferRuntimeFailureFunctionalityFromTitle(title);
+  if (runtimeFailure) return runtimeFailure;
+  if (TOOLING_RE.test(title)) return 'tooling';
   if (CHANNEL_RE.test(title))   return 'integration';
   if (PROVIDER_RE.test(title))  return 'provider';
   if (EXTENSION_RE.test(title)) return 'integration';
   return undefined;
 }
 
-// Apply only when LLM picked `core` — otherwise trust the LLM (it might have
-// correctly identified that, e.g., "Telegram session-storage corruption" is
-// genuinely a core/session bug that mentions Telegram incidentally).
+// Title-only tooling hints cannot replace a body-grounded runtime classification
+// with zero-weight tooling. Conversely, an explicit runtime-failure title can
+// repair model-selected tooling. Existing channel/provider/extension routing
+// remains core-only because incidental names must not rewrite one non-core
+// runtime surface into another.
 export function applyTitleFunctionalityHint(
   c: IssueClassification,
   title: string,
 ): IssueClassification {
+  if (c.functionality === 'tooling') {
+    const runtimeFailure = inferRuntimeFailureFunctionalityFromTitle(title);
+    return runtimeFailure
+      ? { ...c, functionality: runtimeFailure }
+      : c;
+  }
   if (c.functionality !== 'core') return c;
   const hint = inferFunctionalityFromTitle(title);
-  return hint ? { ...c, functionality: hint } : c;
+  return hint && hint !== 'tooling'
+    ? { ...c, functionality: hint }
+    : c;
 }
 
 export function applyTitleIssueShapeHint(

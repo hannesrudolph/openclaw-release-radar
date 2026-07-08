@@ -1774,6 +1774,105 @@ describe('quality database promotion', () => {
     }
   });
 
+  it('allows promotion when the next authoritative capture omits a previously active phantom', async () => {
+    const fixture = createFixture('catalog-independent-omitted-phantom');
+    try {
+      const {
+        previousCatalog,
+        currentCatalog,
+        phantom,
+      } = omittedPhantomPromotionCatalogsForTest();
+      const previousProjection =
+        projectReleaseCatalogActiveRows(previousCatalog);
+      seedSharedPromotionCatalogForTest(fixture, previousCatalog);
+      replaceActiveReleaseCatalogForTest(
+        fixture.source,
+        currentCatalog,
+        { preserveInactive: true },
+      );
+      appendReleaseCatalogAuthority(fixture.source, {
+        runId: 'catalog-independent-omitted-phantom',
+        startedAt: '2026-07-05T01:00:00.000Z',
+      });
+      assert.deepEqual(
+        {
+          ...fixture.source.prepare(`
+          SELECT tag, catalog_active, catalog_rank, catalog_digest
+          FROM releases
+          WHERE tag=?
+          `).get(phantom.tag),
+        },
+        {
+          tag: phantom.tag,
+          catalog_active: 0,
+          catalog_rank: previousCatalog.length - 1,
+          catalog_digest: previousProjection.digest,
+        },
+      );
+      assertPromotionCatalogAuthoritiesAreSelfConsistent(
+        fixture,
+        'omitted phantom',
+      );
+      closeFixtureDatabases(fixture);
+
+      const result = await promoteQualityDb({
+        sourcePath: fixture.sourcePath,
+        destinationPath: fixture.destinationPath,
+      }, testDependencies({
+        verifyGithubReleaseCatalog:
+          independentGithubVerifierForTest(fixture, currentCatalog),
+      }));
+      assert.equal(result.applied, false);
+      assert.deepEqual(
+        result.githubReleaseCatalog.source.activeCatalog.tags,
+        currentCatalog.map((release) => release.tag),
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
+  it('rejects an inactive tombstone with forged historical coordinates', async () => {
+    const fixture = createFixture('catalog-independent-forged-tombstone');
+    try {
+      const {
+        previousCatalog,
+        currentCatalog,
+        phantom,
+      } = omittedPhantomPromotionCatalogsForTest();
+      seedSharedPromotionCatalogForTest(fixture, previousCatalog);
+      replaceActiveReleaseCatalogForTest(
+        fixture.source,
+        currentCatalog,
+        { preserveInactive: true },
+      );
+      appendReleaseCatalogAuthority(fixture.source, {
+        runId: 'catalog-independent-forged-tombstone',
+        startedAt: '2026-07-05T01:00:00.000Z',
+      });
+      fixture.source.prepare(`
+        UPDATE releases
+        SET catalog_rank=0
+        WHERE tag=?
+      `).run(phantom.tag);
+      closeFixtureDatabases(fixture);
+
+      await assert.rejects(
+        verifyPromotionGithubReleaseCatalog({
+          dbPath: fixture.sourcePath,
+          label: 'independent forged tombstone fixture',
+          runtimeEnvPath: githubRuntimeEnvForTest(fixture.dir),
+          observedAt: '2026-07-05T12:00:00.000Z',
+          fetchCatalog: async () =>
+            githubReleaseCatalogForTest(currentCatalog),
+        }),
+        /release catalog contains 1 row\(s\) outside the exact active GitHub catalog: "v-phantom-omitted" \(catalog_active=0\)/,
+      );
+    } finally {
+      fixture.cleanup();
+    }
+  });
+
   it('requires the source catalog receipt repository to exactly match independent GitHub', async () => {
     const fixture = createFixture('catalog-independent-repository-mismatch');
     try {
@@ -1800,6 +1899,7 @@ describe('quality database promotion', () => {
   const allowedCatalogEvolutionCases = [
     {
       name: 'new releases',
+      preserveInactive: false,
       mutate: (
         destinationCatalog: ReturnType<typeof destinationPromotionCatalogForTest>,
       ) => [
@@ -1815,6 +1915,7 @@ describe('quality database promotion', () => {
     },
     {
       name: 'deleted release',
+      preserveInactive: true,
       mutate: (
         destinationCatalog: ReturnType<typeof destinationPromotionCatalogForTest>,
       ) => destinationCatalog.filter(
@@ -1823,6 +1924,7 @@ describe('quality database promotion', () => {
     },
     {
       name: 'renamed release',
+      preserveInactive: true,
       mutate: (
         destinationCatalog: ReturnType<typeof destinationPromotionCatalogForTest>,
       ) => destinationCatalog.map((release) =>
@@ -1847,7 +1949,11 @@ describe('quality database promotion', () => {
         const destinationCatalog = destinationPromotionCatalogForTest();
         const sourceCatalog = testCase.mutate(destinationCatalog);
         seedSharedPromotionCatalogForTest(fixture, destinationCatalog);
-        replaceActiveReleaseCatalogForTest(fixture.source, sourceCatalog);
+        replaceActiveReleaseCatalogForTest(
+          fixture.source,
+          sourceCatalog,
+          { preserveInactive: testCase.preserveInactive },
+        );
         appendReleaseCatalogAuthority(fixture.source, {
           runId:
             `catalog-live-allowed-${testCase.name.replaceAll(' ', '-')}`,
@@ -7908,6 +8014,30 @@ function destinationPromotionCatalogForTest() {
   }));
 }
 
+function omittedPhantomPromotionCatalogsForTest() {
+  const phantom = promotionCatalogReleaseForTest({
+    tag: 'v-phantom-omitted',
+    nodeId: 'RE_phantom_omitted',
+    tagCommitOid: 'f'.repeat(40),
+    publishedAt: '2026-07-01T00:00:00.000Z',
+    prerelease: 0,
+  });
+  const previousCatalog = [
+    ...destinationPromotionCatalogForTest(),
+    phantom,
+  ].map((release, catalogRank) => ({
+    ...release,
+    catalog_rank: catalogRank,
+  }));
+  return {
+    phantom,
+    previousCatalog,
+    currentCatalog: previousCatalog.filter(
+      (release) => release.tag !== phantom.tag,
+    ),
+  };
+}
+
 function githubReleaseCatalogForTest(
   rows: ReturnType<typeof activeReleaseCatalogRowsForTest>,
   {
@@ -8050,6 +8180,11 @@ function assertPromotionCatalogAuthoritiesAreSelfConsistent(
 function replaceActiveReleaseCatalogForTest(
   db: DatabaseSync,
   rows: ReturnType<typeof activeReleaseCatalogRowsForTest>,
+  {
+    preserveInactive = false,
+  }: {
+    preserveInactive?: boolean;
+  } = {},
 ) {
   const normalizedRows = rows.map((row, catalogRank) => ({
     ...row,
@@ -8085,7 +8220,7 @@ function replaceActiveReleaseCatalogForTest(
   try {
     db.prepare(`
       UPDATE releases
-      SET catalog_rank=NULL, catalog_digest=NULL, catalog_active=0
+      SET catalog_active=0
       WHERE catalog_active=1
     `).run();
     for (const row of normalizedRows) {
@@ -8094,10 +8229,12 @@ function replaceActiveReleaseCatalogForTest(
         catalog_digest: projection.digest,
       });
     }
-    db.prepare(`
-      DELETE FROM releases
-      WHERE catalog_active IS NOT 1
-    `).run();
+    if (!preserveInactive) {
+      db.prepare(`
+        DELETE FROM releases
+        WHERE catalog_active IS NOT 1
+      `).run();
+    }
     db.exec('COMMIT');
   } catch (error) {
     db.exec('ROLLBACK');

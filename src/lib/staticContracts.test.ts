@@ -478,6 +478,10 @@ describe('static scoring/UI contracts', () => {
       html.indexOf('function scheduleAutomaticSnapshotRebase('),
       html.indexOf('async function loadReleases('),
     );
+    const loadReleases = html.slice(
+      html.indexOf('async function loadReleases('),
+      html.indexOf('function releaseSnapshotRow('),
+    );
     const statusLoader = html.slice(
       html.indexOf('async function loadStatus('),
       html.indexOf('/* ── init'),
@@ -517,9 +521,12 @@ describe('static scoring/UI contracts', () => {
       /function releaseSnapshotIdentityVerified\(\) \{\s*return releaseLoadState\.status === 'ready'\s*&& releaseSnapshotAuthorityVerified\(\)/,
     );
     assert.match(html, /setReleaseLoadState\(releases\.length \? 'ready' : 'empty'\)/);
-    assert.match(html, /setReleaseLoadState\('error', message\)/);
-    assert.match(html, /setReleaseLoadState\(\s*'stale'/);
-    assert.match(html, /Showing retained release data/);
+    assert.match(
+      html,
+      /function clearLoadedReleaseAuthority\(message\)[\s\S]*setReleaseLoadState\(\s*'error'/,
+    );
+    assert.match(loadReleases, /clearLoadedReleaseAuthority\(message\)/);
+    assert.doesNotMatch(loadReleases, /invalidateRetainedActionability/);
     assert.match(html, /data-release-retry/);
     assert.match(html, /data-public-state="pending"/);
     assert.match(html, /data-public-state="ready"/);
@@ -534,7 +541,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(apiHelper, /new UiRequestError\('http', response\.status\)/);
     assert.doesNotMatch(apiHelper, /response\.text\(|await r\.text\(/);
     assert.match(html, /function clearLoadedReleaseAuthority\(message\)/);
-    assert.match(html, /if \(isAuthorityUnavailableError\(error\)\) \{/);
+    assert.doesNotMatch(html, /function isAuthorityUnavailableError\(/);
+    assert.doesNotMatch(html, /function retainedDiagnosticRelease\(/);
     assert.match(statusLoader, /label\.textContent = 'Latest refresh failed'/);
     assert.doesNotMatch(statusLoader, /humanizeUiText\(s\.lastError\)|label\.textContent\s*=.*s\.lastError/);
 
@@ -551,8 +559,8 @@ describe('static scoring/UI contracts', () => {
     assert.match(uiSmoke, /Pending public verification hid authoritative release rows/);
     assert.match(uiSmoke, /Automatic snapshot rebase exceeded one request/);
     assert.match(uiSmoke, /Manual snapshot retry did not start exactly one new load cycle/);
-    assert.match(uiSmoke, /Release 503 retained untrusted release rows/);
-    assert.match(uiSmoke, /Release 503 retained untrusted client state/);
+    assert.match(uiSmoke, /Release load failure retained untrusted release rows/);
+    assert.match(uiSmoke, /Release load failure retained untrusted client state/);
     assert.match(uiSmoke, /Unsafe failed-rebase content reached the UI/);
     assert.match(uiSmoke, /timeout === 17_000 \? 100 : timeout/);
     assert.match(uiSmoke, /Public timeout state did not explain the timeout/);
@@ -2195,7 +2203,7 @@ describe('static scoring/UI contracts', () => {
     assert.match(scorer, /export const SCORE_COMPONENTS_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const SCORE_EXPLANATION_SCHEMA_VERSION = 5/);
     assert.match(scorer, /export const GATE_EVIDENCE_SCHEMA_VERSION = 1/);
-    assert.match(scorer, /export const ISSUE_EVIDENCE_SCHEMA_VERSION = 2/);
+    assert.match(scorer, /export const ISSUE_EVIDENCE_SCHEMA_VERSION = 3/);
     assert.match(scorer, /export const LABEL_TIMELINE_SCHEMA_VERSION = 1/);
     assert.match(scorer, /export const RELEASE_CHECKS_SCHEMA_VERSION = 2/);
     assert.match(

@@ -16,7 +16,7 @@ import { CLOSURE_PROOF_STATUSES } from './closureProofTaxonomy.ts';
 
 describe('closure proof risk weighting', () => {
   it('publishes a stable payload schema version', () => {
-    assert.equal(CLOSURE_PROOF_SCHEMA_VERSION, 1);
+    assert.equal(CLOSURE_PROOF_SCHEMA_VERSION, 2);
     assert.equal(RELEASE_FIX_CREDIT_SCHEMA_VERSION, 1);
   });
 
@@ -97,6 +97,19 @@ describe('closure proof risk weighting', () => {
     });
     assert.equal(closureRiskDisposition('repro_requested'), 'unsupported_closure_claim');
     assert.ok(weight > 0);
+  });
+
+  it('keeps tooling-only closures visible but at zero stability risk', () => {
+    const row = {
+      status: 'duplicate_to_open_canonical',
+      sentiment: 'negative',
+      severity: 'critical',
+      functionality: 'tooling',
+      scope: 'broad',
+      affected_users: 'many',
+    };
+    assert.equal(closureRiskClassificationWeightForRow(row), 0);
+    assert.equal(closureRiskWeightForRow(row), 0);
   });
 
   it('weights no-release-fix proof shapes as unresolved unsupported closure risk', () => {

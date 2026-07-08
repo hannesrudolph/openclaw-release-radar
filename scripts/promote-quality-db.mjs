@@ -2680,21 +2680,156 @@ function readExactActiveReleaseCatalogProjection(db) {
 function readExactGithubAuthorizedReleaseCatalogProjection(db, label) {
   const activeCatalog = readExactActiveReleaseCatalogProjection(db);
   const outsideRows = db.prepare(`
-    SELECT tag, catalog_active
+    SELECT
+      catalog_rank,
+      node_id,
+      catalog_tag_commit_oid,
+      tag,
+      name,
+      published_at,
+      created_at,
+      updated_at,
+      html_url,
+      prerelease,
+      body,
+      catalog_digest,
+      catalog_active
     FROM releases
     WHERE catalog_active IS NOT 1
     ORDER BY tag
   `).all();
-  if (outsideRows.length > 0) {
-    const examples = outsideRows.slice(0, 10).map((row) =>
+  const candidateTombstones = new Set(
+    outsideRows.filter(isStructurallyValidInactiveCatalogTombstone),
+  );
+  const authorizedHistoricalMemberships =
+    candidateTombstones.size > 0
+      ? readVerifiedHistoricalReleaseCatalogMemberships(db, label)
+      : new Set();
+  const unauthorizedRows = outsideRows.filter((row) =>
+    !candidateTombstones.has(row) ||
+    !authorizedHistoricalMemberships.has(
+      historicalReleaseCatalogMembershipKey({
+        digest: row.catalog_digest,
+        rank: row.catalog_rank,
+        tag: row.tag,
+      }),
+    ));
+  if (unauthorizedRows.length > 0) {
+    const examples = unauthorizedRows.slice(0, 10).map((row) =>
       `${JSON.stringify(String(row.tag))} ` +
       `(catalog_active=${String(row.catalog_active)})`);
     throw new Error(
-      `${label} release catalog contains ${outsideRows.length} row(s) outside ` +
+      `${label} release catalog contains ${unauthorizedRows.length} row(s) outside ` +
       `the exact active GitHub catalog: ${examples.join(', ')}`,
     );
   }
   return activeCatalog;
+}
+
+function isStructurallyValidInactiveCatalogTombstone(row) {
+  const hasHistoricalCoordinates =
+    row.catalog_active === 0 &&
+    Number.isSafeInteger(row.catalog_rank) &&
+    row.catalog_rank >= 0 &&
+    /^[0-9a-f]{64}$/.test(String(row.catalog_digest ?? '')) &&
+    typeof row.tag === 'string' &&
+    row.tag.length > 0 &&
+    row.tag.trim() === row.tag;
+  if (!hasHistoricalCoordinates) return false;
+  try {
+    projectReleaseCatalogActiveRows([{
+      catalog_rank: 0,
+      node_id: row.node_id,
+      catalog_tag_commit_oid: row.catalog_tag_commit_oid,
+      tag: row.tag,
+      name: row.name,
+      published_at: row.published_at,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+      html_url: row.html_url,
+      prerelease: row.prerelease,
+      body: row.body,
+    }]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function readVerifiedHistoricalReleaseCatalogMemberships(db, label) {
+  verifyOperationReceiptLedgerRows(db, label);
+  verifyReleaseCatalogCaptureReceiptLedgerRows(db, label);
+  const receiptRows = db.prepare(`
+    SELECT
+      catalog.payload_json AS catalog_payload_json,
+      terminal.status AS terminal_status,
+      terminal.payload_json AS terminal_payload_json
+    FROM ${RELEASE_CATALOG_RECEIPT_TABLE} catalog
+    LEFT JOIN ${OPERATION_RECEIPT_TABLE} terminal
+      ON terminal.run_id=catalog.operation_run_id
+    ORDER BY catalog.id
+  `).all();
+  const memberships = new Set();
+  for (const row of receiptRows) {
+    if (row.terminal_status !== 'success') continue;
+    let catalogPayload;
+    let terminalPayload;
+    try {
+      catalogPayload = JSON.parse(String(row.catalog_payload_json));
+      terminalPayload = JSON.parse(String(row.terminal_payload_json));
+    } catch {
+      continue;
+    }
+    if (
+      !successfulHistoricalReleaseCatalogBinding(
+        catalogPayload,
+        terminalPayload,
+      )
+    ) {
+      continue;
+    }
+    for (
+      let rank = 0;
+      rank < catalogPayload.activeCatalog.tags.length;
+      rank++
+    ) {
+      memberships.add(historicalReleaseCatalogMembershipKey({
+        digest: catalogPayload.activeCatalog.digest,
+        rank,
+        tag: catalogPayload.activeCatalog.tags[rank],
+      }));
+    }
+  }
+  return memberships;
+}
+
+function successfulHistoricalReleaseCatalogBinding(
+  catalogPayload,
+  terminalPayload,
+) {
+  const remoteCatalog = catalogPayload?.remoteCatalog;
+  const releaseCatalog = terminalPayload?.releaseCatalog;
+  const attestation = releaseCatalog?.attestation;
+  const localActiveCatalog = attestation?.localActiveCatalog;
+  return (
+    catalogPayload?.source === 'github_graphql' &&
+    terminalPayload?.operation === catalogPayload.operation &&
+    remoteCatalog != null &&
+    releaseCatalog?.digest === remoteCatalog.digest &&
+    releaseCatalog?.nodeCount === remoteCatalog.nodeCount &&
+    releaseCatalog?.totalCount === remoteCatalog.totalCount &&
+    localActiveCatalog?.digest === catalogPayload.activeCatalog?.digest &&
+    localActiveCatalog?.releaseCount ===
+      catalogPayload.activeCatalog?.releaseCount &&
+    canonicalOperationJson(attestation?.latestStable ?? null) ===
+      canonicalOperationJson(
+        catalogPayload.activeCatalog?.latestStable ?? null,
+      )
+  );
+}
+
+function historicalReleaseCatalogMembershipKey({ digest, rank, tag }) {
+  return canonicalOperationJson([digest, rank, tag]);
 }
 
 export async function verifyPromotionGithubReleaseCatalog({

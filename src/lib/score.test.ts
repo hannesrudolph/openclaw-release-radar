@@ -12,6 +12,7 @@ import {
   cveDecayLoad,
   explainOpenDebtLoad,
   feltLoad,
+  isDefaultPathImpact,
   openDebtLoad,
   REC_THRESHOLD,
   RECOMMENDATION_RECENCY_TOLERANCE,
@@ -923,6 +924,7 @@ describe('feltLoad — reach-weighted visible bugs', () => {
 
   it('ignores docs, medium/low severity, and non-negative', () => {
     assert.equal(feltLoad([fc({ functionality: 'docs' })]), 0);
+    assert.equal(feltLoad([fc({ functionality: 'tooling' })]), 0);
     assert.equal(feltLoad([fc({ severity: 'medium' })]), 0);
     assert.equal(feltLoad([fc({ sentiment: 'positive' })]), 0);
   });
@@ -1399,6 +1401,7 @@ describe('openDebtLoad — current issue debt', () => {
     assert.deepEqual(openDebtLoad([dc({ state: 'closed' })]), { verified: 0, carryover: 0, stale: 0 });
     assert.deepEqual(openDebtLoad([dc({ sentiment: 'positive' })]), { verified: 0, carryover: 0, stale: 0 });
     assert.deepEqual(openDebtLoad([dc({ functionality: 'docs' })]), { verified: 0, carryover: 0, stale: 0 });
+    assert.deepEqual(openDebtLoad([dc({ functionality: 'tooling' })]), { verified: 0, carryover: 0, stale: 0 });
     assert.deepEqual(openDebtLoad([dc({ severity: 'low' })]), { verified: 0, carryover: 0, stale: 0 });
   });
 
@@ -1861,6 +1864,38 @@ describe('openDebtLoad — current issue debt', () => {
       explanation.evidence[0]?.releaseLocalEvidence,
       exactReleaseEvidence(),
     );
+  });
+
+  it('excludes tooling from default-path impact despite broad or priority signals', () => {
+    assert.equal(isDefaultPathImpact(dc({
+      functionality: 'tooling',
+      scope: 'broad',
+      affectedUsers: 'many',
+      labels: ['P0', 'beta-blocker', 'impact:data-loss'],
+    })), false);
+    assert.equal(isDefaultPathImpact(dc({
+      functionality: 'core',
+      scope: 'broad',
+      affectedUsers: 'many',
+      labels: ['P0'],
+    })), true);
+  });
+
+  it('keeps release-local confirmed tooling failures at zero weight', () => {
+    const explanation = explainOpenDebtLoad([
+      dc({
+        issueNumber: 103,
+        labels: ['P0'],
+        confirmationReasons: [labelConfirmation('P0')],
+        releaseLocal: true,
+        functionality: 'tooling',
+        severity: 'critical',
+        scope: 'broad',
+        affectedUsers: 'many',
+      }),
+    ]);
+    assert.deepEqual(explanation.loads, { verified: 0, carryover: 0, stale: 0 });
+    assert.deepEqual(explanation.evidence, []);
   });
 
   it('treats release-local P1 bug regressions as verified field debt', () => {

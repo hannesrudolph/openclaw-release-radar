@@ -119,6 +119,7 @@ const functionalityRiskWeights = new Map([
   ['core', 1.25],
   ['integration', 1],
   ['provider', 0.8],
+  ['tooling', 0],
   ['docs', 0],
 ]);
 const scopeRiskWeights = new Map([
@@ -339,8 +340,8 @@ const releaseHistoryRowSchemaVersion = 2;
 const releaseSnapshotSchemaVersion = 1;
 const publicReleaseSchemaVersion = 4;
 const gateEvidenceSchemaVersion = GATE_EVIDENCE_SCHEMA_VERSION;
-const closureProofSchemaVersion = 1;
-const closureProofAuditSchemaVersion = 1;
+const closureProofSchemaVersion = 2;
+const closureProofAuditSchemaVersion = 2;
 const releaseFixCreditSchemaVersion = 1;
 const issueEvidenceSchemaVersion = ISSUE_EVIDENCE_SCHEMA_VERSION;
 const issueEvidenceAuditSchemaVersion = RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION;

@@ -361,7 +361,10 @@ void (async () => {
     id: provenance.responseId,
     model: provenance.responseModel,
     service_tier: provenance.responseServiceTier,
-    choices: [{ message: { content: rawModelOutput } }],
+    choices: [{
+      finish_reason: 'stop',
+      message: { content: rawModelOutput, refusal: null },
+    }],
   });
   const attempt = classifierLedger.appendClassifierAttempt(attemptRun, [], {
     attemptId: 'calibration-classifier-attempt-' + issueNumber,

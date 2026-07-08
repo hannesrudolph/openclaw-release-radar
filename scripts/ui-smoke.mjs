@@ -2693,7 +2693,7 @@ async function assertFailedSnapshotRebaseDropsRows(browser, {
       if (releaseCalls === 1) return fulfillJson(route, first.releases);
       if (releaseCalls === 2) {
         return route.fulfill({
-          status: 503,
+          status: 500,
           contentType: 'text/plain',
           body: rawFailureMarker,
         });
@@ -2746,7 +2746,7 @@ async function assertFailedSnapshotRebaseDropsRows(browser, {
     await unavailable.waitFor({ state: 'visible' });
     await unavailable.locator('[data-release-retry]').waitFor();
     if (await page.locator('#releases .release').count() !== 0) {
-      throw new Error('Release 503 retained untrusted release rows');
+      throw new Error('Release load failure retained untrusted release rows');
     }
     const clientState = await page.evaluate(() => ({
       releaseCount: allReleases.length,
@@ -2761,14 +2761,14 @@ async function assertFailedSnapshotRebaseDropsRows(browser, {
       || clientState.reviewLoadCount !== 0
     ) {
       throw new Error(
-        `Release 503 retained untrusted client state: ${JSON.stringify(clientState)}`,
+        `Release load failure retained untrusted client state: ${JSON.stringify(clientState)}`,
       );
     }
     const bodyText = await page.locator('body').innerText();
     if (bodyText.includes(rawFailureMarker) || /\b503\b/.test(bodyText)) {
       throw new Error(`Unsafe failed-rebase content reached the UI: ${bodyText}`);
     }
-    await assertNoActionableRetainedUi(page, 'Release 503 after snapshot rebase');
+    await assertNoActionableRetainedUi(page, 'Release load failure after snapshot rebase');
 
     await unavailable.locator('[data-release-retry]').click();
     await waitForCondition(() => releaseCalls === 3, 'failed-rebase manual retry');

@@ -1,6 +1,11 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
-import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleIssueShapeHint } from './labelOverrides.ts';
+import {
+  applyClosureRiskSentimentHint,
+  applyLabelOverrides,
+  applyTitleFunctionalityHint,
+  applyTitleIssueShapeHint,
+} from './labelOverrides.ts';
 import {
   LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
   repositoryPermissionObservationRowHash,
@@ -365,6 +370,104 @@ describe('applyLabelOverrides', () => {
       ['regression', 'impact:data-loss'],
     );
     assert.equal(out.severity, 'critical');
+  });
+});
+
+describe('applyTitleFunctionalityHint', () => {
+  it('preserves model-selected tooling for clear test and developer-tooling titles', () => {
+    const titles = [
+      'CI: integration test suite fails on Windows',
+      'Build pipeline breaks lint and formatting checks',
+      'Test fixture harness leaks temporary directories',
+      'Developer tooling cannot resolve workspace paths',
+    ];
+    for (const title of titles) {
+      const out = applyTitleFunctionalityHint(
+        mk({ functionality: 'tooling' }),
+        title,
+      );
+      assert.equal(out.functionality, 'tooling', title);
+    }
+  });
+
+  it('preserves genuine tooling when a tooling title mentions channel and provider names', () => {
+    const out = applyTitleFunctionalityHint(
+      mk({ functionality: 'tooling' }),
+      'Discord OpenAI integration tests fail in CI',
+    );
+    assert.equal(out.functionality, 'tooling');
+  });
+
+  it('does not let ambiguous runtime words override channel, provider, or core routing', () => {
+    for (const [title, functionality] of [
+      ['Telegram test message is dropped', 'integration'],
+      ['OpenAI response format is wrong', 'provider'],
+      ['Gateway build crashes on startup', 'core'],
+      ['[Bug] Build: gateway fails', 'core'],
+      ['[Bug] Formatting: Telegram markdown broken', 'integration'],
+      ['Discord formatter drops mentions', 'integration'],
+    ] as const) {
+      const out = applyTitleFunctionalityHint(
+        mk({ functionality: 'core' }),
+        title,
+      );
+      assert.equal(out.functionality, functionality, title);
+    }
+  });
+
+  it('does not downcast body-grounded runtime classifications for tooling-only titles', () => {
+    for (const [functionality, title] of [
+      ['core', 'Test fixture harness leaks temporary directories'],
+      ['integration', 'Discord integration test suite fails in CI'],
+      ['provider', 'OpenAI provider test suite is flaky in the CI workflow'],
+    ] as const) {
+      const out = applyTitleFunctionalityHint(
+        mk({ functionality }),
+        title,
+      );
+      assert.equal(out.functionality, functionality, title);
+    }
+  });
+
+  it('recovers model-selected tooling when the title identifies a runtime failure', () => {
+    for (const [title, functionality] of [
+      ['Gateway crashes on startup', 'core'],
+      ['Telegram drops messages during delivery', 'integration'],
+      ['OpenAI response failure returns empty output', 'provider'],
+    ] as const) {
+      const out = applyTitleFunctionalityHint(
+        mk({ functionality: 'tooling' }),
+        title,
+      );
+      assert.equal(out.functionality, functionality, title);
+    }
+  });
+
+  it('keeps runtime failure targets out of zero-weight tooling', () => {
+    for (const [functionality, title, expected] of [
+      ['core', 'CI workflow reproduces gateway crash on startup', 'core'],
+      ['core', 'Gateway startup fails in CI tests', 'core'],
+      ['core', 'Telegram integration tests expose dropped messages', 'integration'],
+      ['core', 'OpenAI build pipeline exposes authentication failure', 'provider'],
+      ['provider', 'OpenAI response streaming fails in integration tests', 'provider'],
+    ] as const) {
+      const out = applyTitleFunctionalityHint(
+        mk({ functionality }),
+        title,
+      );
+      assert.equal(out.functionality, expected, title);
+    }
+  });
+
+  it('preserves non-tooling runtime routing and docs classifications', () => {
+    for (const [functionality, title] of [
+      ['integration', 'OpenAI response format is wrong'],
+      ['provider', 'Discord formatter drops mentions'],
+      ['docs', 'CI workflow test suite is flaky'],
+    ] as const) {
+      const base = mk({ functionality });
+      assert.deepEqual(applyTitleFunctionalityHint(base, title), base, title);
+    }
   });
 });
 

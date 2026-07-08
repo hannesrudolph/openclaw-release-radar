@@ -28,7 +28,7 @@ import { compareVersions } from './versionMatch';
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v29-authority-reference-manifest';
+export const SCORE_MODEL_VERSION = 'evidence-v30-tooling-exclusion';
 export const REC_THRESHOLD = 7;
 export const RECOMMENDATION_RECENCY_TOLERANCE = 0.5;
 
@@ -82,6 +82,7 @@ const FUNCTIONALITY_WEIGHT: Record<string, number> = {
   core: 1.25,
   integration: 1,
   provider: 1,
+  tooling: 0,
   docs: 0,
 };
 const SCOPE_WEIGHT: Record<string, number> = {
@@ -1249,12 +1250,11 @@ function trustedReleaseLocalEvidence(
   return true;
 }
 
-function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
-  const releaseSpecific =
-    trustedReleaseLocalEvidence(item.releaseLocalEvidence) &&
-    item.releaseLocal === true;
-  const defaultPathImpact =
-    item.functionality !== 'docs' &&
+export function isDefaultPathImpact(
+  item: Pick<DebtClassification, 'functionality' | 'scope' | 'affectedUsers' | 'labels'>,
+): boolean {
+  return item.functionality !== 'docs' &&
+    item.functionality !== 'tooling' &&
     (
       item.scope === 'broad' ||
       item.affectedUsers === 'many' ||
@@ -1267,6 +1267,13 @@ function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
         'impact:crash-loop',
       ])
     );
+}
+
+function classifyDebtTier(item: DebtClassification): keyof DebtLoads {
+  const releaseSpecific =
+    trustedReleaseLocalEvidence(item.releaseLocalEvidence) &&
+    item.releaseLocal === true;
+  const defaultPathImpact = isDefaultPathImpact(item);
   const weak = isWeakEvidence(item);
 
   if (

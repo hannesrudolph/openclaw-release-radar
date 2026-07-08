@@ -1376,7 +1376,10 @@ async function seedSimpleNeutralIssue(
     id: responseId,
     model: sourceIdentity.model,
     service_tier: sourceIdentity.serviceTier,
-    choices: [{ message: { content: rawModelOutput } }],
+    choices: [{
+      finish_reason: 'stop',
+      message: { content: rawModelOutput, refusal: null },
+    }],
   });
   const classifierAttempt = appendClassifierAttempt(classifierRun, [], {
     attemptId:

@@ -36,7 +36,7 @@ import {
 export type Sentiment = 'negative' | 'positive' | 'neutral';
 export type Severity = 'critical' | 'high' | 'medium' | 'low';
 export type Scope = 'broad' | 'moderate' | 'niche';
-export type Functionality = 'core' | 'integration' | 'provider' | 'docs';
+export type Functionality = 'core' | 'integration' | 'provider' | 'tooling' | 'docs';
 export type AffectedUsers = 'many' | 'some' | 'few' | 'unknown';
 export type WorkaroundStatus = 'none' | 'partial' | 'confirmed' | 'unknown';
 export type ClassificationEvidenceField =
@@ -132,6 +132,24 @@ export interface ClassificationEvidenceQuality {
     sourceDiversity: number;
     inputCompleteness: number;
   };
+}
+
+export interface ClassificationEvidenceNormalizationField {
+  field: ClassificationEvidenceField;
+  value: string | null;
+  diagnosticCodes: string[];
+  originalCitations: ClassificationCitation[];
+  effectiveCitations: ClassificationCitation[];
+}
+
+export interface ClassificationEvidenceNormalization {
+  schemaVersion: 1;
+  policy: 'preserve_model_values_canonicalize_citations';
+  modelValuesHash: string;
+  originalEvidenceHash: string;
+  effectiveEvidenceHash: string;
+  fields: ClassificationEvidenceNormalizationField[];
+  contentHash: string;
 }
 
 export interface IssueClassification {
@@ -231,6 +249,7 @@ export interface GroundedIssueClassificationProvenance
   groundingSources: ClassifierSource[];
   groundingSourcesHash: string;
   inputTruncation: ClassifierInputTruncationProvenance;
+  evidenceNormalization?: ClassificationEvidenceNormalization | null;
 }
 
 export type IssueClassificationProvenance =
@@ -240,12 +259,16 @@ export type IssueClassificationProvenance =
 // Reserved for intentional classifier data-contract migrations. The algorithm fingerprint
 // below covers declarative classifier behavior; implementation-only changes use the explicit
 // implementation contract revision instead of requiring a prompt-version bump.
-export const PROMPT_VERSION = 9;
+export const PROMPT_VERSION = 10;
+const GROUNDED_PROVENANCE_PROMPT_VERSION = 9;
+// Prompt 10 introduced tooling plus citation-normalization provenance. Keep
+// this compatibility boundary fixed when the active prompt version advances.
+const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 4;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 5;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -274,7 +297,7 @@ Return ONLY one JSON object with exactly these top-level keys:
   "sentiment": "negative" | "positive" | "neutral",
   "severity": "critical" | "high" | "medium" | "low",
   "scope": "broad" | "moderate" | "niche",
-  "functionality": "core" | "integration" | "provider" | "docs",
+  "functionality": "core" | "integration" | "provider" | "tooling" | "docs",
   "affected_users": "many" | "some" | "few" | "unknown",
   "workaroundStatus": "none" | "partial" | "confirmed" | "unknown",
   "duplicateCluster": "<lowercase-kebab-slug>" | null,
@@ -320,7 +343,8 @@ CLASSIFICATION ANCHORS:
 - scope: broad requires explicit multi-OS/provider/surface impact; moderate is one common
   OS/provider/surface; niche is a specialized combination or non-default flag.
 - functionality: core is install/gateway/chat/session/auth/exec/doctor; integration is a
-  channel/UI/plugin; provider is one model/provider; docs is documentation/examples only.
+  channel/UI/plugin; provider is one model/provider; tooling is tests/CI/build/lint/format
+  or developer infrastructure only; docs is documentation/examples only.
 - affected_users: many requires explicit all/most/default-wide impact; some requires one
   common population/configuration; few requires a specialized population; otherwise unknown.
 - workaroundStatus: confirmed is explicitly working; partial is fragile/manual/intermittent;
@@ -349,7 +373,7 @@ const USER_MESSAGE_RULES = {
 } as const;
 
 const CLASSIFICATION_REQUEST_RULES = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   endpoint: 'https://api.openai.com/v1/chat/completions',
   method: 'POST',
   contentType: 'application/json',
@@ -371,7 +395,13 @@ const CLASSIFICATION_REQUEST_RULES = {
       'system prompt, rendered user message, then zero or more semantic retry feedback messages',
     temperature: 'conditional constant',
   },
-  responseFormat: { type: 'json_object' },
+  responseFormat: {
+    type: 'json_schema',
+    name: 'issue_classification',
+    strict: true,
+    schemaPolicy:
+      'exact required object shape, closed enums, included source IDs, and exact known tags',
+  },
   initialMessageRoles: ['system', 'user'],
   semanticRetryMessageRole: 'user',
   temperature: {
@@ -484,7 +514,13 @@ const OPENAI_RETRY_RULES = {
 } as const;
 
 interface OpenAIResp {
-  choices: { message: { content: string } }[];
+  choices: {
+    message: {
+      content: string | null;
+      refusal?: string | null;
+    };
+    finish_reason?: string | null;
+  }[];
   id?: string | null;
   model?: string | null;
   service_tier?: string | null;
@@ -706,14 +742,145 @@ function buildUserMessage(
   return buildClassifierPromptInput(issue, comments, knownTags).userMessage;
 }
 
+function classificationCitationSchema(
+  sourceIds: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    properties: {
+      source_id: {
+        type: 'string',
+        enum: [...sourceIds],
+      },
+      excerpt: {
+        type: 'string',
+        minLength: CLASSIFICATION_SCHEMA_RULES.citations.minLength,
+        maxLength: CLASSIFICATION_SCHEMA_RULES.citations.maxLength,
+        pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+      },
+    },
+    required: ['source_id', 'excerpt'],
+  };
+}
+
+function classificationCitationArraySchema(
+  sourceIds: readonly string[],
+): Record<string, unknown> {
+  return {
+    type: 'array',
+    maxItems: CLASSIFICATION_SCHEMA_RULES.citations.maxPerField,
+    items: classificationCitationSchema(sourceIds),
+  };
+}
+
+function classificationResponseFormat(
+  knownTags: readonly string[],
+  groundingSources: readonly ClassifierSource[],
+): Record<string, unknown> {
+  const sourceIds = groundingSources.length > 0
+    ? groundingSources.map((source) => source.sourceId)
+    : ['issue:title', 'issue:body'];
+  const evidenceProperties = Object.fromEntries(
+    [
+      'sentiment',
+      'severity',
+      'scope',
+      'functionality',
+      'affected_users',
+      'workaroundStatus',
+      'duplicateCluster',
+      'affectsVersion',
+    ].map((field) => [
+      field,
+      classificationCitationArraySchema(sourceIds),
+    ]),
+  );
+  return {
+    type: CLASSIFICATION_REQUEST_RULES.responseFormat.type,
+    json_schema: {
+      name: CLASSIFICATION_REQUEST_RULES.responseFormat.name,
+      strict: CLASSIFICATION_REQUEST_RULES.responseFormat.strict,
+      schema: {
+        type: 'object',
+        additionalProperties: false,
+        properties: {
+          sentiment: {
+            type: 'string',
+            enum: ['negative', 'positive', 'neutral'],
+          },
+          severity: {
+            type: 'string',
+            enum: ['critical', 'high', 'medium', 'low'],
+          },
+          scope: {
+            type: 'string',
+            enum: ['broad', 'moderate', 'niche'],
+          },
+          functionality: {
+            type: 'string',
+            enum: ['core', 'integration', 'provider', 'tooling', 'docs'],
+          },
+          affected_users: {
+            type: 'string',
+            enum: ['many', 'some', 'few', 'unknown'],
+          },
+          workaroundStatus: {
+            type: 'string',
+            enum: ['none', 'partial', 'confirmed', 'unknown'],
+          },
+          duplicateCluster: {
+            type: ['string', 'null'],
+            minLength: 1,
+            maxLength: CLASSIFICATION_SCHEMA_RULES.duplicateCluster.maxLength,
+            pattern: CLASSIFICATION_SCHEMA_RULES.duplicateCluster.pattern.source,
+          },
+          affectsVersion: {
+            type: ['string', 'null'],
+            enum: [null, ...knownTags],
+          },
+          evidence: {
+            type: 'object',
+            additionalProperties: false,
+            properties: evidenceProperties,
+            required: Object.keys(evidenceProperties),
+          },
+          rationale: {
+            type: 'string',
+            minLength: CLASSIFICATION_SCHEMA_RULES.rationale.minLength,
+            maxLength: CLASSIFICATION_SCHEMA_RULES.rationale.maxLength,
+            pattern: '^\\S(?:[\\s\\S]*\\S)?$',
+          },
+        },
+        required: [
+          'sentiment',
+          'severity',
+          'scope',
+          'functionality',
+          'affected_users',
+          'workaroundStatus',
+          'duplicateCluster',
+          'affectsVersion',
+          'evidence',
+          'rationale',
+        ],
+      },
+    },
+  };
+}
+
 function buildClassificationRequest(
   messages: Array<{ role: string; content: string }>,
+  promptInput?: Pick<ClassifierPromptInput, 'groundingSources' | 'inputTruncation'>,
 ): Record<string, unknown> {
+  const knownTags =
+    promptInput?.inputTruncation.knownTags.includedValues ?? [];
+  const groundingSources = promptInput?.groundingSources ?? [];
   const values: Record<string, unknown> = {
     model: config.openai.model,
     reasoning_effort: config.openai.reasoningEffort,
     service_tier: config.openai.serviceTier,
-    response_format: CLASSIFICATION_REQUEST_RULES.responseFormat,
+    response_format: classificationResponseFormat(knownTags, groundingSources),
     messages,
     temperature: CLASSIFICATION_REQUEST_RULES.temperature.value,
   };
@@ -769,7 +936,7 @@ export async function classifyIssueTerminalResult(
     { role: 'user', content: promptInput.userMessage },
   ];
   let messages = initialMessages;
-  let body = buildClassificationRequest(messages);
+  let body = buildClassificationRequest(messages, promptInput);
   let serializedRequestBody = JSON.stringify(body);
   const initialRequestHash = sha256(serializedRequestBody);
   const run = createClassifierAttemptRun({
@@ -882,7 +1049,8 @@ export async function classifyIssueTerminalResult(
       const rawResponse = captureClassifierRawResponse(
         completedAttempt.rawResponse,
       );
-      const rawModelOutput = data.choices?.[0]?.message?.content;
+      const completionChoice = data.choices?.[0];
+      const rawModelOutput = completionChoice?.message?.content;
       const capturedRawModelOutput = typeof rawModelOutput === 'string'
         ? captureClassifierRawModelOutput(rawModelOutput)
         : null;
@@ -896,12 +1064,14 @@ export async function classifyIssueTerminalResult(
       try {
         if (usageError) throw usageError;
         assertResponseIdentity(body, data);
-        const classification = parseRawClassification(
+        const parsedClassification = parseRawClassificationDetailed(
           rawModelOutput,
           promptInput.inputTruncation.knownTags.includedValues,
           promptInput.groundingSources,
           promptInput.inputTruncation,
+          true,
         );
+        const classification = parsedClassification.classification;
         const acceptedRawModelOutput = rawModelOutput as string;
         const acceptedClassification: IssueClassification = {
           ...classification,
@@ -930,6 +1100,8 @@ export async function classifyIssueTerminalResult(
             groundingSources: promptInput.groundingSources,
             groundingSourcesHash: sha256(canonicalJson(promptInput.groundingSources)),
             inputTruncation: promptInput.inputTruncation,
+            evidenceNormalization:
+              parsedClassification.evidenceNormalization,
           },
         };
         await appendAttempt({
@@ -1022,7 +1194,7 @@ export async function classifyIssueTerminalResult(
               ),
             },
           ];
-          const nextBody = buildClassificationRequest(nextMessages);
+          const nextBody = buildClassificationRequest(nextMessages, promptInput);
           const nextSerializedRequestBody = JSON.stringify(nextBody);
           if (sha256(nextSerializedRequestBody) === currentRequestHash) {
             semanticRetryPreparationError = new Error(
@@ -1355,14 +1527,20 @@ async function requestChatCompletionAttempt(
       }
       let data: OpenAIResp;
       try {
-        data = JSON.parse(text) as OpenAIResp;
+        data = parseOpenAIResponseEnvelope(text);
       } catch (error) {
+        const duplicateKey = error instanceof DuplicateJsonKeyError;
         throw new OpenAITransportError(
-          `OpenAI returned non-JSON response: ${text.slice(0, 200)}`,
-          'OPENAI_RESPONSE_NOT_JSON',
+          duplicateKey
+            ? `OpenAI response contains ${error.message}`
+            : `OpenAI returned invalid JSON response: ${text.slice(0, 200)}`,
+          duplicateKey
+            ? 'OPENAI_RESPONSE_DUPLICATE_JSON_KEY'
+            : 'OPENAI_RESPONSE_NOT_JSON',
           { rawResponse: text, cause: error },
         );
       }
+      assertClassifierCompletionEnvelope(data, text);
       return {
         data,
         rawResponse: text,
@@ -1488,7 +1666,7 @@ function classifierResponseIdentityFromRaw(
     };
   }
   try {
-    const parsed = JSON.parse(rawResponse) as OpenAIResp;
+    const parsed = parseOpenAIResponseEnvelope(rawResponse);
     return classifierResponseIdentity(parsed);
   } catch {
     return {
@@ -1504,7 +1682,7 @@ function classifierResponseUsageFromRaw(
 ): ClassifierProviderUsage | null {
   if (rawResponse === null) return null;
   try {
-    const parsed = JSON.parse(rawResponse) as OpenAIResp;
+    const parsed = parseOpenAIResponseEnvelope(rawResponse);
     return normalizeOpenAIClassifierUsage(parsed.usage);
   } catch {
     return null;
@@ -2199,7 +2377,7 @@ interface GroundedClassificationValues {
   affectsVersion: string | null;
 }
 const CLASSIFICATION_SCHEMA_RULES = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   rawKeys: RAW_CLASSIFICATION_KEYS,
   evidenceKeys: EVIDENCE_FIELDS,
   rejectDuplicateJsonKeys: 'all object depths before JSON.parse',
@@ -2208,7 +2386,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
     sentiment: ['negative', 'positive', 'neutral'],
     severity: ['critical', 'high', 'medium', 'low'],
     scope: ['broad', 'moderate', 'niche'],
-    functionality: ['core', 'integration', 'provider', 'docs'],
+    functionality: ['core', 'integration', 'provider', 'tooling', 'docs'],
     affectedUsers: ['many', 'some', 'few', 'unknown'],
     workaroundStatus: ['none', 'partial', 'confirmed', 'unknown'],
   },
@@ -2256,6 +2434,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
           '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
+          '\\b(?:flaky|tests?|test suite|test harness|fixture|ci|lint|formatter|formatting|typecheck|build-only|developer tooling)\\b',
         ],
       },
       scope: {
@@ -2271,7 +2450,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
         ],
         niche: [
-          '\\b(?:niche|non-default|experimental|alpha|rare|edge case)\\b',
+          '\\b(?:niche|non-default|experimental|alpha|rare|edge case|environment-sensitive|wsl2?|windows subsystem for linux)\\b',
           '\\b(?:specific|single|custom)\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface|flag|combination)\\b',
           '\\bone\\s+(?:user|setup|configuration|config|environment|machine|deployment|provider|platform|channel|integration|surface)\\b',
           '\\b(?:proxy|hardware)\\s+(?:setup|configuration|environment|deployment|combination|issue|failure)\\b',
@@ -2282,10 +2461,23 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:core|install(?:er|ation)?|update|gateway|startup|boot|cli|chat|session|auth(?:entication)?|login|exec|approval|doctor|command|daemon|storage)\\b',
         ],
         integration: [
-          '\\b(?:integration|channel|plugin|extension|ui|tui|webchat|webhook|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\b',
+          '\\b(?:(?:tray|menu bar|discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\s+)?(?:integration|channel|plugin|extension|ui|tui|webchat|webhook)\\b',
+          '\\b(?:discord|telegram|slack|feishu|mattermost|whatsapp|imessage|signal|teams|matrix|ide)\\b',
         ],
         provider: [
           '\\b(?:provider|model|inference|embedding|ollama|openai|anthropic|codex|deepseek|minimax|xai|bedrock|gemini|google ai|azure openai|mistral|groq)\\b',
+        ],
+        tooling: [
+          '\\b(?:test|testing)\\s+(?:infrastructure|suite|runner|harness|fixtures?|coverage)\\b',
+          '\\bfixture\\s+harness\\b',
+          '\\b(?:unit|integration|end[- ]to[- ]end|e2e|smoke|snapshot|flaky)\\s+tests?\\b',
+          '\\b(?:ci|continuous integration|github actions?)\\s+(?:workflow|job|pipeline|runner)\\b',
+          '\\bbuild[- ]only\\b',
+          '\\bbuild\\s+(?:pipeline|system|scripts?|tooling)\\b',
+          '\\b(?:lint(?:er|ing)?|eslint|prettier|type[- ]?check(?:er|ing)?|type checking|developer tooling|dev tooling)\\b',
+          '\\b(?:code|source)\\s+(?:formatter|formatting)\\b',
+          '\\bformatting\\s+(?:checks?|tooling)\\b',
+          '\\b(?:test harness|fixture)\\s+(?:issue|failure|bug)\\b',
         ],
         docs: [
           '\\b(?:docs?|documentation|readme|guide|example|tutorial|typo|jsdoc)\\b',
@@ -2309,6 +2501,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
   },
   duplicateCluster: {
     nullable: true,
+    maxLength: 120,
     pattern: { source: '^[a-z0-9]+(?:-[a-z0-9]+)*$', flags: '' },
     explicitEvidencePattern: {
       source: '\\bduplicate(?:\\s+of)?\\b|\\bsame\\s+(?:bug|issue|root cause|problem)\\b|\\btracked\\s+in\\b',
@@ -2469,12 +2662,33 @@ function assertNoDuplicateJsonKeys(json: string): void {
   if (index !== json.length) throw new SyntaxError('unexpected trailing JSON content');
 }
 
+interface ParsedRawClassification {
+  classification: IssueClassification;
+  evidenceNormalization: ClassificationEvidenceNormalization | null;
+}
+
 function parseRawClassification(
   raw: string | null | undefined,
   knownTags: string[],
   groundingSources: ClassifierSource[],
   inputTruncation: ClassifierInputTruncationProvenance,
 ): IssueClassification {
+  return parseRawClassificationDetailed(
+    raw,
+    knownTags,
+    groundingSources,
+    inputTruncation,
+    false,
+  ).classification;
+}
+
+function parseRawClassificationDetailed(
+  raw: string | null | undefined,
+  knownTags: string[],
+  groundingSources: ClassifierSource[],
+  inputTruncation: ClassifierInputTruncationProvenance,
+  allowEvidenceNormalization: boolean,
+): ParsedRawClassification {
   if (typeof raw !== 'string' || !raw.trim()) {
     throw new Error('classification content must be a non-empty JSON string');
   }
@@ -2512,10 +2726,13 @@ function parseRawClassification(
     row.duplicateCluster !== null &&
     (
       typeof row.duplicateCluster !== 'string' ||
+      row.duplicateCluster.length > CLASSIFICATION_SCHEMA_RULES.duplicateCluster.maxLength ||
       !DUPLICATE_CLUSTER_RE.test(row.duplicateCluster)
     )
   ) {
-    throw new Error('duplicateCluster must be null or a lowercase kebab-case slug');
+    throw new Error(
+      'duplicateCluster must be null or a lowercase kebab-case slug with at most 120 characters',
+    );
   }
   if (
     row.affectsVersion !== null &&
@@ -2536,54 +2753,370 @@ function parseRawClassification(
   }
   const duplicateCluster = row.duplicateCluster as string | null;
   const affectsVersion = row.affectsVersion as string | null;
-  const evidence = requireGroundedEvidence(
-    row.evidence,
-    groundingSources,
-    {
-      sentiment,
-      severity,
-      scope,
-      functionality,
-      affectedUsers,
-      workaroundStatus,
-      duplicateCluster,
-      affectsVersion,
-    },
-  );
-  const evidenceQuality = deriveEvidenceQuality(
-    evidence,
-    groundingSources,
-    inputTruncation,
-    {
-      sentiment,
-      severity,
-      scope,
-      functionality,
-      affectedUsers,
-      workaroundStatus,
-      duplicateCluster,
-      affectsVersion,
-    },
-  );
-  const hasWorkaround = workaroundStatus === 'partial' || workaroundStatus === 'confirmed';
-
-  return {
+  const classificationValues = {
     sentiment,
     severity,
     scope,
     functionality,
     affectedUsers,
-    affectedUsersEvidence: evidence.affected_users[0]?.excerpt ?? null,
-    hasWorkaround,
     workaroundStatus,
     duplicateCluster,
     affectsVersion,
-    confidence: evidenceQuality.value,
-    confidenceAuthority: 'deterministic_verified_citations',
-    evidenceQuality,
-    evidence,
-    rationale: row.rationale,
   };
+  const groundedEvidence = allowEvidenceNormalization
+    ? requireOrNormalizeGroundedEvidence(
+      row.evidence,
+      groundingSources,
+      classificationValues,
+    )
+    : {
+      evidence: requireGroundedEvidence(
+        row.evidence,
+        groundingSources,
+        classificationValues,
+      ),
+      normalization: null,
+    };
+  const evidence = groundedEvidence.evidence;
+  const evidenceQuality = deriveEvidenceQuality(
+    evidence,
+    groundingSources,
+    inputTruncation,
+    classificationValues,
+  );
+  const hasWorkaround = workaroundStatus === 'partial' || workaroundStatus === 'confirmed';
+
+  return {
+    classification: {
+      sentiment,
+      severity,
+      scope,
+      functionality,
+      affectedUsers,
+      affectedUsersEvidence: evidence.affected_users[0]?.excerpt ?? null,
+      hasWorkaround,
+      workaroundStatus,
+      duplicateCluster,
+      affectsVersion,
+      confidence: evidenceQuality.value,
+      confidenceAuthority: 'deterministic_verified_citations',
+      evidenceQuality,
+      evidence,
+      rationale: row.rationale,
+    },
+    evidenceNormalization: groundedEvidence.normalization,
+  };
+}
+
+const CLASSIFICATION_EVIDENCE_NORMALIZATION_CODES = new Set([
+  'abstention_has_citations',
+  'cross_field_citation_reuse',
+  'duplicate_citation',
+  'too_many_citations',
+]);
+
+function requireOrNormalizeGroundedEvidence(
+  value: unknown,
+  groundingSources: ClassifierSource[],
+  classification: GroundedClassificationValues,
+): {
+  evidence: ClassificationEvidence;
+  normalization: ClassificationEvidenceNormalization | null;
+} {
+  try {
+    return {
+      evidence: requireGroundedEvidence(value, groundingSources, classification),
+      normalization: null,
+    };
+  } catch (error) {
+    if (
+      !(error instanceof ClassificationGroundingError) ||
+      error.diagnostics.length === 0 ||
+      !error.diagnostics.every((diagnostic) =>
+        diagnostic.field !== 'evidence' &&
+        CLASSIFICATION_EVIDENCE_NORMALIZATION_CODES.has(diagnostic.code))
+    ) {
+      throw error;
+    }
+    const originalEvidence = rawEvidenceCitations(value);
+    const candidate = canonicalGroundedEvidence(
+      originalEvidence,
+      groundingSources,
+      classification,
+    );
+    if (candidate === null) throw error;
+    let evidence: ClassificationEvidence;
+    try {
+      evidence = requireGroundedEvidence(
+        classificationEvidenceToRaw(candidate),
+        groundingSources,
+        classification,
+      );
+    } catch {
+      throw error;
+    }
+    const normalization = createEvidenceNormalization(
+      originalEvidence,
+      evidence,
+      classification,
+      error.diagnostics,
+    );
+    if (normalization.fields.length === 0) throw error;
+    return { evidence, normalization };
+  }
+}
+
+function rawEvidenceCitations(value: unknown): ClassificationEvidence {
+  const row = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : {};
+  const evidence = {} as ClassificationEvidence;
+  for (const field of EVIDENCE_FIELDS) {
+    const citations = Array.isArray(row[field]) ? row[field] : [];
+    evidence[field] = citations.flatMap((citation) => {
+      if (!citation || typeof citation !== 'object' || Array.isArray(citation)) return [];
+      const sourceId = (citation as Record<string, unknown>).source_id;
+      const excerpt = (citation as Record<string, unknown>).excerpt;
+      return typeof sourceId === 'string' && typeof excerpt === 'string'
+        ? [{ sourceId, excerpt }]
+        : [];
+    });
+  }
+  return evidence;
+}
+
+function classificationEvidenceToRaw(
+  evidence: ClassificationEvidence,
+): Record<ClassificationEvidenceField, Array<{ source_id: string; excerpt: string }>> {
+  return Object.fromEntries(EVIDENCE_FIELDS.map((field) => [
+    field,
+    evidence[field].map((citation) => ({
+      source_id: citation.sourceId,
+      excerpt: citation.excerpt,
+    })),
+  ])) as Record<
+    ClassificationEvidenceField,
+    Array<{ source_id: string; excerpt: string }>
+  >;
+}
+
+function canonicalGroundedEvidence(
+  original: ClassificationEvidence,
+  groundingSources: ClassifierSource[],
+  classification: GroundedClassificationValues,
+): ClassificationEvidence | null {
+  const bindings = mandatoryEvidenceBindings(classification);
+  const candidates = new Map<MandatoryEvidenceField, ClassificationCitation[]>();
+  for (const { field, value } of bindings) {
+    const fieldCandidates = mandatoryEvidenceCandidates(
+      field,
+      value,
+      original[field],
+      groundingSources,
+    );
+    if (fieldCandidates.length === 0) return null;
+    candidates.set(field, fieldCandidates);
+  }
+  const assigned = assignDistinctMandatoryCitations(bindings, candidates);
+  if (assigned === null) return null;
+
+  const evidence: ClassificationEvidence = {
+    sentiment: [],
+    severity: [],
+    scope: [],
+    functionality: [],
+    affected_users: [],
+    workaroundStatus: [],
+    duplicateCluster: [],
+    affectsVersion: [],
+  };
+  for (const { field } of bindings) {
+    evidence[field] = [assigned.get(field)!];
+  }
+  if (classification.affectedUsers === 'unknown') {
+    evidence.affected_users = [];
+  }
+  if (classification.workaroundStatus !== 'unknown') {
+    const workaround = optionalEvidenceCandidate(
+      original.workaroundStatus,
+      groundingSources,
+      (excerpt) => workaroundCitationSupports(classification.workaroundStatus, excerpt),
+    );
+    if (workaround === null) return null;
+    evidence.workaroundStatus = [workaround];
+  }
+  if (classification.duplicateCluster !== null) {
+    const duplicate = optionalEvidenceCandidate(
+      original.duplicateCluster,
+      groundingSources,
+      (excerpt) => DUPLICATE_EVIDENCE_RE.test(excerpt),
+    );
+    if (duplicate === null) return null;
+    evidence.duplicateCluster = [duplicate];
+  }
+  if (classification.affectsVersion !== null) {
+    const affectsVersion = optionalEvidenceCandidate(
+      original.affectsVersion,
+      groundingSources,
+      (excerpt) => citationSupportsVersion(excerpt, classification.affectsVersion!),
+    );
+    if (affectsVersion === null) return null;
+    evidence.affectsVersion = [affectsVersion];
+  }
+  return evidence;
+}
+
+function mandatoryEvidenceCandidates(
+  field: MandatoryEvidenceField,
+  value: string,
+  original: ClassificationCitation[],
+  groundingSources: ClassifierSource[],
+): ClassificationCitation[] {
+  const sources = new Map(
+    groundingSources.map((source) => [source.sourceId, source]),
+  );
+  const candidates: ClassificationCitation[] = [];
+  const identities = new Set<string>();
+  const add = (citation: ClassificationCitation): void => {
+    if (candidates.length >= 24) return;
+    const source = sources.get(citation.sourceId);
+    if (
+      !source ||
+      !source.text.includes(citation.excerpt) ||
+      !mandatoryCitationSupports(field, value, citation.excerpt)
+    ) {
+      return;
+    }
+    const identity = citationIdentity(citation);
+    if (identities.has(identity)) return;
+    identities.add(identity);
+    candidates.push(citation);
+  };
+  original.forEach(add);
+  return candidates;
+}
+
+function assignDistinctMandatoryCitations(
+  bindings: Array<{ field: MandatoryEvidenceField; value: string }>,
+  candidates: Map<MandatoryEvidenceField, ClassificationCitation[]>,
+): Map<MandatoryEvidenceField, ClassificationCitation> | null {
+  const ordered = [...bindings].sort((left, right) =>
+    (candidates.get(left.field)?.length ?? 0) -
+      (candidates.get(right.field)?.length ?? 0) ||
+    MANDATORY_EVIDENCE_FIELDS.indexOf(left.field) -
+      MANDATORY_EVIDENCE_FIELDS.indexOf(right.field));
+  const selected = new Map<MandatoryEvidenceField, ClassificationCitation>();
+  const identities = new Set<string>();
+  const visit = (index: number): boolean => {
+    if (index >= ordered.length) return true;
+    const field = ordered[index].field;
+    for (const citation of candidates.get(field) ?? []) {
+      const identity = citationIdentity(citation);
+      if (identities.has(identity)) continue;
+      identities.add(identity);
+      selected.set(field, citation);
+      if (visit(index + 1)) return true;
+      selected.delete(field);
+      identities.delete(identity);
+    }
+    return false;
+  };
+  return visit(0) ? selected : null;
+}
+
+function optionalEvidenceCandidate(
+  original: ClassificationCitation[],
+  groundingSources: ClassifierSource[],
+  supports: (excerpt: string) => boolean,
+): ClassificationCitation | null {
+  const sources = new Map(
+    groundingSources.map((source) => [source.sourceId, source]),
+  );
+  for (const citation of original) {
+    const source = sources.get(citation.sourceId);
+    if (source?.text.includes(citation.excerpt) && supports(citation.excerpt)) {
+      return citation;
+    }
+  }
+  return null;
+}
+
+function createEvidenceNormalization(
+  originalEvidence: ClassificationEvidence,
+  effectiveEvidence: ClassificationEvidence,
+  classification: GroundedClassificationValues,
+  diagnostics: ClassificationGroundingDiagnostic[],
+): ClassificationEvidenceNormalization {
+  const modelValues = {
+    sentiment: classification.sentiment,
+    severity: classification.severity,
+    scope: classification.scope,
+    functionality: classification.functionality,
+    affectedUsers: classification.affectedUsers,
+    workaroundStatus: classification.workaroundStatus,
+    duplicateCluster: classification.duplicateCluster,
+    affectsVersion: classification.affectsVersion,
+  };
+  const fields = EVIDENCE_FIELDS.flatMap((field) => {
+    if (
+      canonicalJson(originalEvidence[field]) ===
+      canonicalJson(effectiveEvidence[field])
+    ) {
+      return [];
+    }
+    const diagnosticCodes = [...new Set(
+      diagnostics
+        .filter((diagnostic) => diagnostic.field === field)
+        .map((diagnostic) => diagnostic.code),
+    )];
+    return [{
+      field,
+      value: classificationEvidenceFieldValue(field, classification),
+      diagnosticCodes: diagnosticCodes.length > 0
+        ? diagnosticCodes
+        : ['canonical_independence_assignment'],
+      originalCitations: originalEvidence[field],
+      effectiveCitations: effectiveEvidence[field],
+    }];
+  });
+  const withoutHash = {
+    schemaVersion: 1 as const,
+    policy: 'preserve_model_values_canonicalize_citations' as const,
+    modelValuesHash: sha256(canonicalJson(modelValues)),
+    originalEvidenceHash: sha256(canonicalJson(originalEvidence)),
+    effectiveEvidenceHash: sha256(canonicalJson(effectiveEvidence)),
+    fields,
+  };
+  return {
+    ...withoutHash,
+    contentHash: sha256(canonicalJson(withoutHash)),
+  };
+}
+
+function classificationEvidenceFieldValue(
+  field: ClassificationEvidenceField,
+  classification: GroundedClassificationValues,
+): string | null {
+  switch (field) {
+    case 'sentiment':
+      return classification.sentiment;
+    case 'severity':
+      return classification.severity;
+    case 'scope':
+      return classification.scope;
+    case 'functionality':
+      return classification.functionality;
+    case 'affected_users':
+      return classification.affectedUsers;
+    case 'workaroundStatus':
+      return classification.workaroundStatus;
+    case 'duplicateCluster':
+      return classification.duplicateCluster;
+    case 'affectsVersion':
+      return classification.affectsVersion;
+  }
+  const exhaustiveField: never = field;
+  throw new Error(`Unsupported normalization field: ${exhaustiveField}`);
 }
 
 function requireGroundedEvidence(
@@ -2885,10 +3418,11 @@ function mandatoryCitationSupports(
   ) {
     return false;
   }
-  return citationMatchesAnyPattern(
-    mandatoryCitationPatterns(field, value),
-    excerpt,
-  );
+  const patterns = mandatoryCitationPatterns(field, value);
+  if (field === 'sentiment' && value === 'negative') {
+    return citationMatchesAnyPattern(patterns, excerpt);
+  }
+  return citationMatchesUnnegatedPattern(patterns, excerpt);
 }
 
 function mandatoryCitationPatterns(
@@ -2928,6 +3462,31 @@ function citationMatchesAnyPattern(
   return patterns.some((pattern) => new RegExp(pattern, 'iu').test(excerpt));
 }
 
+function citationMatchesUnnegatedPattern(
+  patterns: readonly string[],
+  excerpt: string,
+): boolean {
+  for (const pattern of patterns) {
+    const expression = new RegExp(pattern, 'giu');
+    for (const match of excerpt.matchAll(expression)) {
+      const start = match.index ?? 0;
+      const end = start + match[0].length;
+      const before = excerpt.slice(Math.max(0, start - 48), start);
+      const after = excerpt.slice(end, Math.min(excerpt.length, end + 32));
+      if (
+        /\b(?:not|never|no|without|isn.t|aren.t|wasn.t|weren.t)\b[^.!?]{0,40}$/iu
+          .test(before) ||
+        /^[^.!?]{0,16}\b(?:is|are|was|were|seems?|appears?)\s+(?:not|never)\b/iu
+          .test(after)
+      ) {
+        continue;
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 function citationIdentity(citation: ClassificationCitation): string {
   return `${citation.sourceId}\u0000${citation.excerpt}`;
 }
@@ -2954,25 +3513,43 @@ function requireAbstentionAwareEvidence(
 }
 
 function workaroundCitationSupports(status: WorkaroundStatus, excerpt: string): boolean {
+  return citationMatchesAnyPattern(workaroundCitationPatterns(status), excerpt);
+}
+
+function workaroundCitationPatterns(status: WorkaroundStatus): readonly string[] {
   if (status === 'none') {
-    return /\bno\b.{0,40}\bworkaround\b|\bworkaround\b.{0,40}\b(?:none|unavailable|does not exist)\b/i
-      .test(excerpt);
+    return [
+      '\\bno\\b.{0,40}\\bworkaround\\b',
+      '\\bworkaround\\b.{0,40}\\b(?:none|unavailable|does not exist)\\b',
+    ];
   }
   if (status === 'partial') {
-    return /\bworkaround\b|\bworks?\s+(?:sometimes|partially|only)\b|\bmanual(?:ly)?\b|\bfragile\b/i
-      .test(excerpt);
+    return [
+      '\\bworkaround\\b',
+      '\\bworks?\\s+(?:sometimes|partially|only)\\b',
+      '\\bmanual(?:ly)?\\b',
+      '\\bfragile\\b',
+    ];
   }
   if (status === 'confirmed') {
-    return /\bworkaround\b|\bworks?\s+(?:if|when|after|by)\b|\buse\b.+\binstead\b|\b(?:disable|downgrade|restart|revert)\b/i
-      .test(excerpt);
+    return [
+      '\\bworkaround\\b',
+      '\\bworks?\\s+(?:if|when|after|by)\\b',
+      '\\buse\\b.+\\binstead\\b',
+      '\\b(?:disable|downgrade|restart|revert)\\b',
+    ];
   }
-  return false;
+  return [];
 }
 
 function citationSupportsVersion(excerpt: string, canonicalTag: string): boolean {
+  return new RegExp(versionCitationPattern(canonicalTag), 'i').test(excerpt);
+}
+
+function versionCitationPattern(canonicalTag: string): string {
   const version = canonicalTag.replace(/^v/i, '');
   const escaped = version.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`(?:^|[^0-9A-Za-z])v?${escaped}(?=$|[^0-9A-Za-z])`, 'i').test(excerpt);
+  return `(?:^|[^0-9A-Za-z])v?${escaped}(?![0-9A-Za-z+\\-]|\\.[0-9])`;
 }
 
 function deriveEvidenceQuality(
@@ -3167,6 +3744,76 @@ function assertResponseIdentity(
   );
 }
 
+function assertClassifierCompletionEnvelope(
+  response: OpenAIResp,
+  rawResponse: string,
+): void {
+  if (!Array.isArray(response.choices) || response.choices.length !== 1) {
+    throw new NonRetryableOpenAITransportError(
+      `OpenAI classifier response contained ${
+        Array.isArray(response.choices) ? response.choices.length : 0
+      } choices; exactly one is required`,
+      'OPENAI_RESPONSE_CHOICE_COUNT',
+      { rawResponse },
+    );
+  }
+  const choice = response.choices[0];
+  if (!choice || typeof choice !== 'object' || Array.isArray(choice)) {
+    throw new NonRetryableOpenAITransportError(
+      'OpenAI classifier response choice must be an object',
+      'OPENAI_RESPONSE_CHOICE_SHAPE',
+      { rawResponse },
+    );
+  }
+  const message = choice.message;
+  if (!message || typeof message !== 'object' || Array.isArray(message)) {
+    throw new NonRetryableOpenAITransportError(
+      'OpenAI classifier response choice must contain a message object',
+      'OPENAI_RESPONSE_MESSAGE_SHAPE',
+      { rawResponse },
+    );
+  }
+  const refusal = message.refusal;
+  if (refusal !== undefined && refusal !== null) {
+    const message = typeof refusal === 'string' && refusal.trim()
+      ? refusal.trim()
+      : 'provider returned a refusal marker without a message';
+    throw new NonRetryableOpenAITransportError(
+      `OpenAI classifier refused the request: ${message}`,
+      'OPENAI_RESPONSE_REFUSAL',
+      { rawResponse },
+    );
+  }
+  const finishReason = choice.finish_reason;
+  if (finishReason !== 'stop') {
+    throw new NonRetryableOpenAITransportError(
+      `OpenAI classifier completion ended with finish_reason=${
+        typeof finishReason === 'string' && finishReason
+          ? finishReason
+          : 'missing'
+      }`,
+      'OPENAI_RESPONSE_FINISH_REASON',
+      { rawResponse },
+    );
+  }
+  if (typeof message.content !== 'string') {
+    throw new NonRetryableOpenAITransportError(
+      'OpenAI classifier response is missing assistant message content',
+      'OPENAI_RESPONSE_CONTENT',
+      { rawResponse },
+    );
+  }
+}
+
+function parseOpenAIResponseEnvelope(rawResponse: string): OpenAIResp {
+  assertNoDuplicateJsonKeys(rawResponse);
+  const parsed = JSON.parse(rawResponse) as unknown;
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('OpenAI response envelope must be a JSON object');
+  }
+  return parsed as OpenAIResp;
+}
+
 function responseModelMatchesRequested(requestedModel: string, responseModel: string): boolean {
   if (responseModel === requestedModel) return true;
   if (/-\d{4}-\d{2}-\d{2}$/.test(requestedModel)) return false;
@@ -3214,17 +3861,23 @@ export function rawClassificationStorageProblems(
   }
   let provenance: IssueClassificationProvenance | null = null;
   try {
-    provenance = typeof row.provenance_json === 'string'
-      ? JSON.parse(row.provenance_json) as IssueClassificationProvenance
-      : null;
-  } catch {
-    problems.push('provenance_json must be valid JSON');
+    if (typeof row.provenance_json === 'string') {
+      assertNoDuplicateJsonKeys(row.provenance_json);
+      provenance = JSON.parse(row.provenance_json) as IssueClassificationProvenance;
+    }
+  } catch (error) {
+    problems.push(
+      error instanceof DuplicateJsonKeyError
+        ? 'provenance_json must use unique object keys'
+        : 'provenance_json must be valid JSON',
+    );
   }
   if (!provenance || typeof provenance !== 'object' || Array.isArray(provenance)) {
     problems.push('provenance_json must contain an object');
     return problems;
   }
   let raw: IssueClassification;
+  let replayedNormalization: ClassificationEvidenceNormalization | null = null;
   try {
     if (provenance.schemaVersion === 2) {
       const groundingProblems = groundedProvenanceProblems(provenance);
@@ -3232,12 +3885,15 @@ export function rawClassificationStorageProblems(
         problems.push(...groundingProblems);
         return problems;
       }
-      raw = parseRawClassification(
+      const replayed = parseRawClassificationDetailed(
         row.raw_model_output,
         provenance.inputTruncation.knownTags.includedValues,
         provenance.groundingSources,
         provenance.inputTruncation,
+        expectedPromptVersion >= TOOLING_PROVENANCE_PROMPT_VERSION,
       );
+      raw = replayed.classification;
+      replayedNormalization = replayed.evidenceNormalization;
     } else {
       raw = parseLegacyRawClassification(
         row.raw_model_output,
@@ -3250,7 +3906,8 @@ export function rawClassificationStorageProblems(
     problems.push(error instanceof Error ? error.message : String(error));
     return problems;
   }
-  const expectedProvenanceSchemaVersion = expectedPromptVersion >= PROMPT_VERSION ? 2 : 1;
+  const expectedProvenanceSchemaVersion =
+    expectedPromptVersion >= GROUNDED_PROVENANCE_PROMPT_VERSION ? 2 : 1;
   if (provenance.schemaVersion !== expectedProvenanceSchemaVersion) {
     problems.push(
       `provenance schemaVersion must equal ${expectedProvenanceSchemaVersion} ` +
@@ -3278,7 +3935,12 @@ export function rawClassificationStorageProblems(
   if (row.prompt_version !== expectedPromptVersion) {
     problems.push(`row prompt_version must equal ${expectedPromptVersion}`);
   }
-  if (provenance.promptTemplateHash !== CLASSIFICATION_PROMPT_TEMPLATE_HASH) {
+  if (!/^[0-9a-f]{64}$/.test(provenance.promptTemplateHash)) {
+    problems.push('provenance promptTemplateHash must be a lowercase SHA-256 hex string');
+  } else if (
+    expectedPromptVersion >= PROMPT_VERSION &&
+    provenance.promptTemplateHash !== CLASSIFICATION_PROMPT_TEMPLATE_HASH
+  ) {
     problems.push('provenance promptTemplateHash does not match the active template');
   }
   if (provenance.rawModelOutput !== row.raw_model_output) {
@@ -3286,6 +3948,23 @@ export function rawClassificationStorageProblems(
   }
   if (provenance.rawModelOutputHash !== sha256(row.raw_model_output)) {
     problems.push('provenance rawModelOutputHash is invalid');
+  }
+  if (
+    provenance.schemaVersion === 2 &&
+    canonicalJson(provenance.evidenceNormalization ?? null) !==
+      canonicalJson(replayedNormalization)
+  ) {
+    problems.push(
+      'provenance evidenceNormalization does not match deterministic replay',
+    );
+  }
+  if (
+    expectedPromptVersion < TOOLING_PROVENANCE_PROMPT_VERSION &&
+    raw.functionality === 'tooling'
+  ) {
+    problems.push(
+      `functionality tooling is not valid for prompt version ${expectedPromptVersion}`,
+    );
   }
   if (
     !responseModelMatchesRequested(provenance.requestedModel, provenance.responseModel) ||
@@ -3384,6 +4063,21 @@ function groundedProvenanceProblems(
     provenance.groundingSourcesHash !== sha256(canonicalJson(provenance.groundingSources))
   ) {
     problems.push('provenance groundingSourcesHash is invalid');
+  }
+  const normalization = provenance.evidenceNormalization;
+  if (
+    normalization !== undefined &&
+    normalization !== null &&
+    (
+      typeof normalization !== 'object' ||
+      Array.isArray(normalization) ||
+      normalization.schemaVersion !== 1 ||
+      normalization.policy !== 'preserve_model_values_canonicalize_citations' ||
+      !Array.isArray(normalization.fields) ||
+      !/^[0-9a-f]{64}$/.test(normalization.contentHash)
+    )
+  ) {
+    problems.push('provenance evidenceNormalization is invalid');
   }
   const comments = provenance.inputTruncation.comments;
   if (
@@ -3539,6 +4233,7 @@ const CLASSIFIER_ALGORITHM_MANIFEST = {
     covers: [
       'classification parsing',
       'citation support predicates',
+      'structural citation normalization',
       'input normalization',
       'deterministic confidence policy',
     ],
@@ -3555,6 +4250,15 @@ const CLASSIFIER_ALGORITHM_MANIFEST = {
     persistedInputTruncation: true,
   },
   evidenceQuality: CLASSIFICATION_SCHEMA_RULES.evidenceQuality,
+  evidenceNormalization: {
+    schemaVersion: 1,
+    policy: 'preserve_model_values_canonicalize_citations',
+    eligibility: [...CLASSIFICATION_EVIDENCE_NORMALIZATION_CODES].sort(),
+    assignment:
+      'use only exact supported model citations with distinct mandatory identities',
+    provenance:
+      'raw model bytes remain unchanged; before/after citation hashes and repairs are persisted',
+  },
   retry: OPENAI_RETRY_RULES,
   semanticRetryFeedback: CLASSIFICATION_SEMANTIC_RETRY_RULES,
   attemptLedger: {
@@ -3618,7 +4322,9 @@ function classifierAlgorithmManifest(): Record<string, unknown> {
 export const CLASSIFICATION_PROMPT_TEMPLATE_HASH = classifierAlgorithmFingerprint();
 
 export const __llmTest = {
+  TOOLING_PROVENANCE_PROMPT_VERSION,
   assertNoDuplicateJsonKeys,
+  assertClassifierCompletionEnvelope,
   assertResponseIdentity,
   buildClassificationRequest,
   buildClassifierPromptInput,

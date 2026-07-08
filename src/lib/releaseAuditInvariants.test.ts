@@ -1075,7 +1075,7 @@ function debtTierSummaryFixture() {
 
 function issueEvidenceFixture() {
   return {
-    schemaVersion: 2,
+    schemaVersion: 3,
     evidenceCounts: {
       verifiedDebt: 0,
       carryoverDebt: 0,
@@ -1239,7 +1239,7 @@ function closureProofFixture(overrides: any = {}) {
     invalid: fixCreditDecisions.filter((decision: any) => decision.status === 'invalid').length,
   };
   const proof = {
-    schemaVersion: 1,
+    schemaVersion: 2,
     creditedCount,
     notCreditedCount,
     analyzedClosedCount,
@@ -2192,7 +2192,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     profileEvidence: {
       schemaVersion: 2,
       sourceMode: 'sealed_score_replay',
-      issueEvidenceSchemaVersion: 2,
+      issueEvidenceSchemaVersion: 3,
       profileRowCount: 1,
       profileRowsDigest,
       publicationBinding: profilePublicationBinding,
@@ -2336,7 +2336,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
       ? cursor + pageRows.length
       : null;
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       snapshotId,
       auditDigest: scoreAudit.auditDigest,
       auditIdentity: scoreAudit.auditDigest,
@@ -2592,7 +2592,7 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         ? cursor + pageRows.length
         : null;
     return {
-      schemaVersion: 1,
+      schemaVersion: 2,
       snapshotId,
       auditDigest: scoreAudit.auditDigest,
       auditIdentity: scoreAudit.auditDigest,
@@ -2966,7 +2966,7 @@ function unscoredApiFixtureFetchJson() {
           profileEvidence: {
             schemaVersion: 2,
             sourceMode: 'current_diagnostic_evidence',
-            issueEvidenceSchemaVersion: 2,
+            issueEvidenceSchemaVersion: 3,
             profileRowCount: 0,
             profileRowsDigest: '0'.repeat(64),
             publicationBinding: null,

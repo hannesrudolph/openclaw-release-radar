@@ -252,8 +252,10 @@ function acceptedClassifierLedger(
     model: input.sourceIdentity.model,
     service_tier: input.sourceIdentity.serviceTier,
     choices: [{
+      finish_reason: 'stop',
       message: {
         content: input.rawModelOutput,
+        refusal: null,
       },
     }],
   });
@@ -364,8 +366,10 @@ function acceptedClassifierSemanticRetryLedger(
       model: input.sourceIdentity.model,
       service_tier: input.sourceIdentity.serviceTier,
       choices: [{
+        finish_reason: 'stop',
         message: {
           content: rejectedRawModelOutput,
+          refusal: null,
         },
       }],
     })),
@@ -402,8 +406,10 @@ function acceptedClassifierSemanticRetryLedger(
       model: input.sourceIdentity.model,
       service_tier: input.sourceIdentity.serviceTier,
       choices: [{
+        finish_reason: 'stop',
         message: {
           content: input.rawModelOutput,
+          refusal: null,
         },
       }],
     })),
@@ -4712,8 +4718,10 @@ describe('release fix provenance', () => {
         model: sourceIdentity.model,
         service_tier: sourceIdentity.serviceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: rawOutput,
+            refusal: null,
           },
         }],
       })),
@@ -4844,8 +4852,10 @@ describe('release fix provenance', () => {
           model: sourceIdentity.model,
           service_tier: sourceIdentity.serviceTier,
           choices: [{
+            finish_reason: 'stop',
             message: {
               content: transportRawOutput,
+              refusal: null,
             },
           }],
         })),
@@ -12817,7 +12827,7 @@ describe('release fix provenance', () => {
       schemaVersion: 1,
       fixProvenance: {
         closureProof: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           creditedCount: 1,
           notCreditedCount: 2,
           analyzedClosedCount: 3,
@@ -12848,7 +12858,7 @@ describe('release fix provenance', () => {
       schemaVersion: 1,
       fixProvenance: {
         closureProof: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           creditedCount: 0,
           notCreditedCount: 1,
           analyzedClosedCount: 1,

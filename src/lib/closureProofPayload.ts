@@ -32,7 +32,7 @@ import type { IssueClassification } from './llm';
 import { aggregateClosureRisk } from './closureRiskAggregation';
 import { scoringLabelInfoAtCutoff } from './scoringLabelAuthority';
 export { CLOSURE_RISK_DISPOSITIONS, closureRiskDisposition } from './closureProofTaxonomy';
-export const CLOSURE_PROOF_SCHEMA_VERSION = 1;
+export const CLOSURE_PROOF_SCHEMA_VERSION = 2;
 export const RELEASE_FIX_CREDIT_SCHEMA_VERSION = 1;
 export const AFFIRMATIVE_CLOSURE_RISK_DISPOSITIONS = [
   'known_not_in_release',
@@ -69,6 +69,7 @@ const FUNCTIONALITY_RISK_WEIGHT: Record<string, number> = {
   core: 1.25,
   integration: 1,
   provider: 0.8,
+  tooling: 0,
   docs: 0,
 };
 

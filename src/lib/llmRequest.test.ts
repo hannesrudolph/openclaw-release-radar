@@ -189,6 +189,7 @@ describe('OpenAI classification request', () => {
       requestBody = JSON.parse(String(init?.body ?? '{}'));
       return new Response(JSON.stringify({
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(groundedOutput()),
           },
@@ -219,7 +220,47 @@ describe('OpenAI classification request', () => {
       assert.equal(requestBody?.model, 'gpt-5.5');
       assert.equal(requestBody?.reasoning_effort, 'medium');
       assert.equal(requestBody?.service_tier, 'priority');
-      assert.deepEqual(requestBody?.response_format, { type: 'json_object' });
+      assert.equal((requestBody?.response_format as any)?.type, 'json_schema');
+      assert.equal(
+        (requestBody?.response_format as any)?.json_schema?.name,
+        'issue_classification',
+      );
+      assert.equal(
+        (requestBody?.response_format as any)?.json_schema?.strict,
+        true,
+      );
+      const schema = (requestBody?.response_format as any)?.json_schema?.schema;
+      assert.equal(schema?.additionalProperties, false);
+      assert.deepEqual(
+        schema?.properties?.functionality?.enum,
+        ['core', 'integration', 'provider', 'tooling', 'docs'],
+      );
+      assert.deepEqual(
+        schema?.properties?.affectsVersion?.enum,
+        [null],
+      );
+      assert.deepEqual(
+        schema?.properties?.evidence?.properties?.sentiment?.items
+          ?.properties?.source_id?.enum,
+        ['issue:title', 'issue:body'],
+      );
+      assert.equal(
+        schema?.properties?.evidence?.properties?.sentiment?.maxItems,
+        3,
+      );
+      assert.equal(
+        schema?.properties?.evidence?.properties?.sentiment?.items
+          ?.properties?.excerpt?.minLength,
+        2,
+      );
+      assert.equal(
+        schema?.properties?.evidence?.properties?.sentiment?.items
+          ?.properties?.excerpt?.maxLength,
+        400,
+      );
+      assert.equal(schema?.properties?.duplicateCluster?.maxLength, 120);
+      assert.equal(schema?.properties?.rationale?.minLength, 1);
+      assert.equal(schema?.properties?.rationale?.maxLength, 400);
       assert.deepEqual(Object.keys(requestBody ?? {}), [
         'model',
         'reasoning_effort',
@@ -271,6 +312,7 @@ describe('OpenAI classification request', () => {
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(groundedOutput()),
           },
@@ -527,7 +569,7 @@ describe('OpenAI classification request', () => {
     } = await import(`./llm.ts?algorithm-fingerprint=${Date.now()}`);
     const manifest = __llmTest.classifierAlgorithmManifest() as any;
     const baseline = __llmTest.classifierAlgorithmFingerprint(manifest);
-    assert.equal(PROMPT_VERSION, 9);
+    assert.equal(PROMPT_VERSION, 10);
     assert.equal(CLASSIFICATION_PROMPT_TEMPLATE_HASH, baseline);
     assert.match(baseline, /^[0-9a-f]{64}$/);
 
@@ -540,7 +582,7 @@ describe('OpenAI classification request', () => {
       ['evidence quality', (value) => { value.evidenceQuality.weights.sourceDiversity += 0.01; }],
       ['duplicate-key policy', (value) => { value.parser.rejectDuplicateJsonKeys = 'allow'; }],
       ['temperature', (value) => { value.request.temperature.value = 0.2; }],
-      ['response format', (value) => { value.request.responseFormat.type = 'json_schema'; }],
+      ['response format', (value) => { value.request.responseFormat.type = 'json_object'; }],
       ['request shape', (value) => { value.request.bodyFieldOrder.reverse(); }],
       ['retry budget', (value) => { value.retry.maxHttpAttempts++; }],
       ['semantic retry feedback', (value) => {
@@ -577,6 +619,7 @@ describe('OpenAI classification request', () => {
     assert.deepEqual(manifest.implementationContract.covers, [
       'classification parsing',
       'citation support predicates',
+      'structural citation normalization',
       'input normalization',
       'deterministic confidence policy',
     ]);
@@ -729,7 +772,7 @@ describe('OpenAI classification request', () => {
       ['v2026.7.4'],
     );
 
-    assert.equal(PROMPT_VERSION, 9);
+    assert.equal(PROMPT_VERSION, 10);
     assert.equal(highParticipation, lowParticipation);
     assert.doesNotMatch(lowParticipation, /Author:|Comments count:|@one-commenter/);
     assert.match(lowParticipation, /BEGIN UNTRUSTED SOURCE DATA JSON/);
@@ -939,6 +982,31 @@ describe('OpenAI classification request', () => {
     );
   });
 
+  it('rejects duplicate keys in the provider response envelope', async () => {
+    const { __llmTest } = await import(`./llm.ts?duplicate-envelope=${Date.now()}`);
+    await assert.rejects(
+      __llmTest.requestChatCompletion(
+        { model: 'gpt-5.5', messages: [] },
+        {
+          attemptBudget: __llmTest.createOpenAIAttemptBudget(1),
+          fetch: (async () => new Response(
+            '{"id":"first","id":"second","choices":[]}',
+            { status: 200 },
+          )) as typeof fetch,
+        },
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof Error);
+        assert.equal(
+          (error as Error & { code?: string }).code,
+          'OPENAI_RESPONSE_DUPLICATE_JSON_KEY',
+        );
+        assert.match(error.message, /duplicate JSON key "id"/);
+        return true;
+      },
+    );
+  });
+
   it('retries transient 503 responses and preserves the request payload', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     process.env.OPENAI_RETRY_BASE_MS = '100';
@@ -962,7 +1030,10 @@ describe('OpenAI classification request', () => {
             });
           }
           return new Response(JSON.stringify({
-            choices: [{ message: { content: '{}' } }],
+            choices: [{
+              finish_reason: 'stop',
+              message: { content: '{}' },
+            }],
           }), {
             status: 200,
             headers: { 'Content-Type': 'application/json' },
@@ -1100,11 +1171,7 @@ describe('OpenAI classification request', () => {
     (config.openai as any).retryMaxMs = 0;
     let attempts = 0;
     const requestBodies: string[] = [];
-    const invalidGrounding = structuredClone(groundedOutput()) as any;
-    invalidGrounding.evidence.sentiment = [{
-      source_id: 'issue:body',
-      excerpt: 'not present in the issue',
-    }];
+    const invalidGrounding = groundedOutput({ sentiment: 'positive' });
     globalThis.fetch = (async (_input, init) => {
       attempts++;
       requestBodies.push(String(init?.body ?? ''));
@@ -1118,7 +1185,7 @@ describe('OpenAI classification request', () => {
         id: `chatcmpl-attempt-${attempts}`,
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
-        choices: [{ message: { content } }],
+        choices: [{ finish_reason: 'stop', message: { content } }],
       }), {
         status: 200,
         headers: { 'Content-Type': 'application/json' },
@@ -1157,7 +1224,7 @@ describe('OpenAI classification request', () => {
       );
       assert.equal(
         result.ledger.attempts[1].semanticDiagnostics[0]?.code,
-        'excerpt_not_exact',
+        'excerpt_not_field_relevant',
       );
       assert.equal(requestBodies[0], requestBodies[1]);
       assert.notEqual(requestBodies[1], requestBodies[2]);
@@ -1334,6 +1401,7 @@ describe('OpenAI classification request', () => {
         model: responseModel,
         service_tier: responseServiceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(groundedOutput()),
           },
@@ -1435,6 +1503,7 @@ describe('OpenAI classification request', () => {
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(groundedOutput()),
           },
@@ -1475,6 +1544,103 @@ describe('OpenAI classification request', () => {
         },
       );
       assert.equal(attempts, 1);
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
+  it('records refusals and non-stop completions as terminal semantic rejections', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 3;
+    let attempts = 0;
+    let finishReason: string | null = 'stop';
+    let refusal: string | null = null;
+    let choiceCount = 1;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: `chatcmpl-completion-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: Array.from({ length: choiceCount }, () => ({
+          finish_reason: finishReason,
+          message: {
+            content: JSON.stringify(groundedOutput()),
+            refusal,
+          },
+        })),
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const {
+        ClassifierAttemptLedgerTerminalError,
+        classifyIssueWithAttemptLedger,
+      } = await import(`./llm.ts?completion-ledger=${Date.now()}`);
+      for (const testCase of [
+        {
+          name: 'refusal',
+          expected: /refused the request/,
+          errorCode: 'OPENAI_RESPONSE_REFUSAL',
+          nextFinishReason: 'stop',
+          nextRefusal: 'I cannot classify this issue.',
+          nextChoiceCount: 1,
+        },
+        {
+          name: 'length-limited completion',
+          expected: /finish_reason=length/,
+          errorCode: 'OPENAI_RESPONSE_FINISH_REASON',
+          nextFinishReason: 'length',
+          nextRefusal: null,
+          nextChoiceCount: 1,
+        },
+        {
+          name: 'multiple choices',
+          expected: /exactly one is required/,
+          errorCode: 'OPENAI_RESPONSE_CHOICE_COUNT',
+          nextFinishReason: 'stop',
+          nextRefusal: null,
+          nextChoiceCount: 2,
+        },
+      ]) {
+        finishReason = testCase.nextFinishReason;
+        refusal = testCase.nextRefusal;
+        choiceCount = testCase.nextChoiceCount;
+        const attemptsBefore = attempts;
+        await assert.rejects(
+          classifyIssueWithAttemptLedger(
+            groundingIssue(DEFAULT_GROUNDING_BODY) as any,
+            [],
+            [],
+          ),
+          (error: unknown) => {
+            assert.ok(
+              error instanceof ClassifierAttemptLedgerTerminalError,
+              testCase.name,
+            );
+            assert.equal(error.terminalStatus, 'terminal_failure', testCase.name);
+            assert.match(error.message, testCase.expected, testCase.name);
+            assert.equal(verifyClassifierAttemptLedger(error.ledger).valid, true);
+            assert.equal(error.ledger.attempts.length, 1, testCase.name);
+            const attempt = error.ledger.attempts[0];
+            assert.equal(attempt.status, 'transport_failure', testCase.name);
+            assert.deepEqual(attempt.retry, {
+              decision: 'stop',
+              retryable: false,
+              delayMs: null,
+              reason: 'non_retryable_transport_failure',
+            });
+            assert.equal(attempt.error?.code, testCase.errorCode, testCase.name);
+            assert.deepEqual(attempt.semanticDiagnostics, [], testCase.name);
+            assert.equal(attempt.rawModelOutput, null, testCase.name);
+            return true;
+          },
+        );
+        assert.equal(attempts, attemptsBefore + 1, testCase.name);
+      }
     } finally {
       globalThis.fetch = previousFetch;
       (config.openai as any).maxAttempts = originalMaxAttempts;
@@ -1722,6 +1888,7 @@ describe('OpenAI classification request', () => {
       name: string;
       content: string | undefined;
       diagnosticCode: string;
+      transportCode?: string;
     }> = [
       {
         name: 'malformed JSON',
@@ -1742,6 +1909,7 @@ describe('OpenAI classification request', () => {
         name: 'missing assistant content',
         content: undefined,
         diagnosticCode: 'missing_response_content',
+        transportCode: 'OPENAI_RESPONSE_CONTENT',
       },
     ];
     let attempts = 0;
@@ -1752,7 +1920,7 @@ describe('OpenAI classification request', () => {
         id: `chatcmpl-semantic-${attempts}`,
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
-        choices: [{ message: { content } }],
+        choices: [{ finish_reason: 'stop', message: { content } }],
       }), { status: 200 });
     }) as typeof fetch;
     try {
@@ -1780,18 +1948,30 @@ describe('OpenAI classification request', () => {
             assert.equal(verifyClassifierAttemptLedger(error.ledger).valid, true);
             assert.equal(error.ledger.attempts.length, 1, testCase.name);
             const attempt = error.ledger.attempts[0];
-            assert.equal(attempt.status, 'semantic_rejection', testCase.name);
-            assert.deepEqual(attempt.retry, {
-              decision: 'stop',
-              retryable: false,
-              delayMs: null,
-              reason: 'deterministic_semantic_rejection',
-            });
-            assert.equal(
-              attempt.semanticDiagnostics[0]?.code,
-              testCase.diagnosticCode,
-              testCase.name,
-            );
+            if (testCase.transportCode) {
+              assert.equal(attempt.status, 'transport_failure', testCase.name);
+              assert.deepEqual(attempt.retry, {
+                decision: 'stop',
+                retryable: false,
+                delayMs: null,
+                reason: 'non_retryable_transport_failure',
+              });
+              assert.equal(attempt.error?.code, testCase.transportCode, testCase.name);
+              assert.deepEqual(attempt.semanticDiagnostics, [], testCase.name);
+            } else {
+              assert.equal(attempt.status, 'semantic_rejection', testCase.name);
+              assert.deepEqual(attempt.retry, {
+                decision: 'stop',
+                retryable: false,
+                delayMs: null,
+                reason: 'deterministic_semantic_rejection',
+              });
+              assert.equal(
+                attempt.semanticDiagnostics[0]?.code,
+                testCase.diagnosticCode,
+                testCase.name,
+              );
+            }
             return true;
           },
         );
@@ -1810,13 +1990,15 @@ describe('OpenAI classification request', () => {
     const previousFetch = globalThis.fetch;
     const originalMaxAttempts = config.openai.maxAttempts;
     (config.openai as any).maxAttempts = 2;
-    const rejectedRaw = JSON.stringify(issue75GroundedOutput(
-      { source_id: 'issue:body', excerpt: 'macOS tray behavior' },
+    const rejected = issue75GroundedOutput(
+      { source_id: 'issue:body', excerpt: 'Feature request' },
       {
-        source_id: 'comment:4345729906',
-        excerpt: 'menu bar entry',
+        source_id: 'comment:4351288700',
+        excerpt: 'tray integration',
       },
-    ));
+    );
+    rejected.scope = 'broad';
+    const rejectedRaw = JSON.stringify(rejected);
     let attempts = 0;
     const requestBodies: string[] = [];
     globalThis.fetch = (async (_input, init) => {
@@ -1826,7 +2008,10 @@ describe('OpenAI classification request', () => {
         id: `chatcmpl-exhausted-${attempts}`,
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
-        choices: [{ message: { content: rejectedRaw } }],
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: rejectedRaw },
+        }],
       }), { status: 200 });
     }) as typeof fetch;
     try {
@@ -1878,8 +2063,8 @@ describe('OpenAI classification request', () => {
             error.ledger.attempts.map((attempt) =>
               attempt.semanticDiagnostics.map((diagnostic) => diagnostic.code)),
             [
-              ['excerpt_not_field_relevant', 'excerpt_not_field_relevant'],
-              ['excerpt_not_field_relevant', 'excerpt_not_field_relevant'],
+              ['excerpt_not_field_relevant'],
+              ['excerpt_not_field_relevant'],
             ],
           );
           return true;
@@ -1919,6 +2104,7 @@ describe('OpenAI classification request', () => {
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(outputs[attempts - 1]),
           },
@@ -2097,6 +2283,7 @@ describe('OpenAI classification request', () => {
         model: config.openai.model,
         service_tier: config.openai.serviceTier,
         choices: [{
+          finish_reason: 'stop',
           message: {
             content: JSON.stringify(attempts === 1 ? invalid : corrected),
           },
@@ -2195,23 +2382,22 @@ describe('OpenAI classification request', () => {
     (config.openai as any).maxAttempts = 3;
     let attempts = 0;
     const requestBodies: string[] = [];
+    const sentimentCitation = {
+      source_id: 'issue:body',
+      excerpt: 'Feature request',
+    };
+    const functionalityCitation = {
+      source_id: 'comment:4351288700',
+      excerpt: 'tray integration',
+    };
     const rejected = issue75GroundedOutput(
-      { source_id: 'issue:body', excerpt: 'macOS tray behavior' },
-      {
-        source_id: 'comment:4345729906',
-        excerpt: 'menu bar entry',
-      },
+      sentimentCitation,
+      functionalityCitation,
     );
-    const corrected = issue75GroundedOutput(
-      { source_id: 'issue:body', excerpt: 'Feature request' },
-      {
-        source_id: 'comment:4351288700',
-        excerpt: 'tray integration',
-      },
-    );
+    (rejected.evidence as any).sentiment.push(sentimentCitation);
+    (rejected.evidence as any).functionality.push(functionalityCitation);
     const rejectedJson = JSON.stringify(rejected);
     const rejectedRaw = `${rejectedJson}${' '.repeat(17_000)}`;
-    const correctedRaw = JSON.stringify(corrected);
     globalThis.fetch = (async (_input, init) => {
       attempts++;
       requestBodies.push(String(init?.body ?? ''));
@@ -2220,8 +2406,9 @@ describe('OpenAI classification request', () => {
         model: 'gpt-5.5',
         service_tier: 'priority',
         choices: [{
+          finish_reason: 'stop',
           message: {
-            content: attempts === 1 ? rejectedRaw : correctedRaw,
+            content: rejectedRaw,
           },
         }],
       }), {
@@ -2248,7 +2435,7 @@ describe('OpenAI classification request', () => {
         labels: [],
       }, ISSUE_75_COMMENTS as any, []);
       const { classification, ledger, selectedAttemptBinding } = result;
-      assert.equal(attempts, 2);
+      assert.equal(attempts, 1);
       assert.equal(classification.sentiment, 'neutral');
       assert.equal(classification.functionality, 'integration');
       assert.deepEqual(classification.evidence?.sentiment, [{
@@ -2261,7 +2448,7 @@ describe('OpenAI classification request', () => {
       }]);
       assert.equal(classification.confidenceAuthority, 'deterministic_verified_citations');
       assert.equal(classification.confidence, classification.evidenceQuality?.value);
-      assert.equal(classification.provenance?.rawModelOutput, correctedRaw);
+      assert.equal(classification.provenance?.rawModelOutput, rejectedRaw);
       assert.match(classification.provenance?.promptHash ?? '', /^[0-9a-f]{64}$/);
       assert.match(classification.provenance?.promptTemplateHash ?? '', /^[0-9a-f]{64}$/);
       assert.equal(classification.provenance?.schemaVersion, 2);
@@ -2274,6 +2461,50 @@ describe('OpenAI classification request', () => {
           classification.provenance.inputTruncation.comments.includedIds,
           [4_345_729_906, 4_351_288_700],
         );
+        const normalization = classification.provenance.evidenceNormalization;
+        assert.equal(normalization?.schemaVersion, 1);
+        assert.equal(
+          normalization?.policy,
+          'preserve_model_values_canonicalize_citations',
+        );
+        assert.match(normalization?.contentHash ?? '', /^[0-9a-f]{64}$/);
+        assert.deepEqual(
+          normalization?.fields.map((field) => [
+            field.field,
+            field.value,
+            field.diagnosticCodes,
+            field.originalCitations,
+            field.effectiveCitations,
+          ]),
+          [
+            [
+              'sentiment',
+              'neutral',
+              ['duplicate_citation'],
+              [
+                { sourceId: 'issue:body', excerpt: 'Feature request' },
+                { sourceId: 'issue:body', excerpt: 'Feature request' },
+              ],
+              [{ sourceId: 'issue:body', excerpt: 'Feature request' }],
+            ],
+            [
+              'functionality',
+              'integration',
+              ['duplicate_citation'],
+              [
+                {
+                  sourceId: 'comment:4351288700',
+                  excerpt: 'tray integration',
+                },
+                {
+                  sourceId: 'comment:4351288700',
+                  excerpt: 'tray integration',
+                },
+              ],
+              [{ sourceId: 'comment:4351288700', excerpt: 'tray integration' }],
+            ],
+          ],
+        );
       }
       assert.equal(verifyClassifierAttemptLedger(ledger).valid, true);
       assert.equal(ledger.run.issueNumber, 75);
@@ -2281,82 +2512,24 @@ describe('OpenAI classification request', () => {
         ledger.run.requestHash,
         createHash('sha256').update(requestBodies[0]).digest('hex'),
       );
-      assert.equal(new Set(requestBodies).size, 2);
+      assert.equal(new Set(requestBodies).size, 1);
       assert.equal(
         ledger.run.classifierIdentityHash,
         CLASSIFICATION_PROMPT_TEMPLATE_HASH,
       );
       assert.deepEqual(
         ledger.attempts.map((attempt) => attempt.status),
-        ['semantic_rejection', 'accepted_success'],
+        ['accepted_success'],
       );
-      assert.deepEqual(
-        ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
-          diagnostic.field,
-          diagnostic.code,
-          diagnostic.sourceId,
-        ]),
-        [
-          ['sentiment', 'excerpt_not_field_relevant', 'issue:body'],
-          [
-            'functionality',
-            'excerpt_not_field_relevant',
-            'comment:4345729906',
-          ],
-        ],
-      );
+      assert.deepEqual(ledger.attempts[0].semanticDiagnostics, []);
       assert.deepEqual(ledger.attempts[0].retry, {
-        decision: 'retry',
-        retryable: true,
-        delayMs: 0,
-        reason: 'retryable_semantic_rejection',
+        decision: 'stop',
+        retryable: false,
+        delayMs: null,
+        reason: 'accepted_success',
       });
       const firstBody = JSON.parse(requestBodies[0]);
-      const secondBody = JSON.parse(requestBodies[1]);
       assert.equal(firstBody.messages.length, 2);
-      assert.equal(secondBody.messages.length, 3);
-      assert.notEqual(
-        createHash('sha256').update(JSON.stringify(firstBody.messages)).digest('hex'),
-        createHash('sha256').update(JSON.stringify(secondBody.messages)).digest('hex'),
-      );
-      const feedbackText = secondBody.messages[2].content as string;
-      const feedbackJson = feedbackText
-        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
-        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
-      assert.ok(feedbackJson);
-      const feedback = JSON.parse(feedbackJson);
-      assert.equal(
-        feedback.rejected_assistant_output.text.startsWith(rejectedJson),
-        true,
-      );
-      assert.equal(feedback.rejected_assistant_output.truncated, true);
-      assert.ok(
-        Buffer.byteLength(feedback.rejected_assistant_output.text, 'utf8') <=
-          16_384,
-      );
-      assert.equal(
-        feedback.rejected_assistant_output.original_byte_length,
-        Buffer.byteLength(rejectedRaw, 'utf8'),
-      );
-      assert.equal(
-        feedback.rejected_assistant_output.full_sha256,
-        createHash('sha256').update(rejectedRaw).digest('hex'),
-      );
-      assert.deepEqual(
-        feedback.semantic_diagnostics.entries.map((diagnostic: any) => [
-          diagnostic.field,
-          diagnostic.code,
-          diagnostic.source_id,
-        ]),
-        [
-          ['sentiment', 'excerpt_not_field_relevant', 'issue:body'],
-          [
-            'functionality',
-            'excerpt_not_field_relevant',
-            'comment:4345729906',
-          ],
-        ],
-      );
       const requestHashes = requestBodies.map((requestBody) =>
         createHash('sha256').update(requestBody).digest('hex'));
       assert.deepEqual(
@@ -2365,11 +2538,11 @@ describe('OpenAI classification request', () => {
       );
       assert.equal(
         selectedAttemptBinding.attemptId,
-        ledger.attempts[1].attemptId,
+        ledger.attempts[0].attemptId,
       );
       assert.equal(
         selectedAttemptBinding.rawResponseHash,
-        ledger.attempts[1].rawResponse?.fullContentHash,
+        ledger.attempts[0].rawResponse?.fullContentHash,
       );
       assert.equal(ledger.attempts[0].rawResponse?.truncated, false);
       assert.equal(ledger.attempts[0].rawModelOutput?.truncated, false);
@@ -2385,12 +2558,12 @@ describe('OpenAI classification request', () => {
       }
       assert.equal(
         selectedAttemptBinding.provenance.requestHash,
-        requestHashes[1],
+        requestHashes[0],
       );
       assert.equal(
         classification.provenance?.promptHash,
         createHash('sha256')
-          .update(JSON.stringify(secondBody.messages))
+          .update(JSON.stringify(firstBody.messages))
           .digest('hex'),
       );
     } finally {
@@ -2398,6 +2571,146 @@ describe('OpenAI classification request', () => {
       (config.openai as any).model = original.model;
       (config.openai as any).serviceTier = original.serviceTier;
       (config.openai as any).maxAttempts = original.maxAttempts;
+    }
+  });
+
+  it('classifies test-only issue #7057 as tooling and seals citation repair provenance', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const body =
+      'When running the test suite under WSL, a small set of flaky tests fail. ' +
+      'The production build succeeds; this is an environment-sensitive test harness issue.';
+    const rawOutput = JSON.stringify(groundedOutput({
+      sentiment: 'negative',
+      severity: 'low',
+      scope: 'niche',
+      functionality: 'tooling',
+      evidence: {
+        sentiment: [
+          { source_id: 'issue:body', excerpt: 'flaky tests fail' },
+          { source_id: 'issue:body', excerpt: 'flaky tests fail' },
+        ],
+        severity: [
+          { source_id: 'issue:body', excerpt: 'flaky tests' },
+          { source_id: 'issue:body', excerpt: 'flaky tests' },
+        ],
+        scope: [
+          { source_id: 'issue:body', excerpt: 'environment-sensitive' },
+          { source_id: 'issue:body', excerpt: 'environment-sensitive' },
+        ],
+        functionality: [
+          { source_id: 'issue:body', excerpt: 'test harness' },
+          { source_id: 'issue:body', excerpt: 'test harness' },
+        ],
+        affected_users: [],
+        workaroundStatus: [],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+      rationale: 'Issue #7057 is confined to the WSL test harness.',
+    }));
+    let attempts = 0;
+    globalThis.fetch = (async () => {
+      attempts++;
+      return new Response(JSON.stringify({
+        id: 'chatcmpl-7057',
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          finish_reason: 'stop',
+          message: { content: rawOutput },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const {
+        __llmTest,
+        classifyIssueWithAttemptLedger,
+        rawClassificationStorageProblems,
+      } = await import(`./llm.ts?issue-7057-tooling=${Date.now()}`);
+      assert.equal(__llmTest.TOOLING_PROVENANCE_PROMPT_VERSION, 10);
+      const result = await classifyIssueWithAttemptLedger(
+        {
+          ...groundingIssue(
+            body,
+            'Flaky tests on Windows/WSL: timeouts and ENOENT in workspace paths',
+          ),
+          number: 7057,
+        } as any,
+        [],
+        [],
+      );
+      assert.equal(attempts, 1);
+      assert.equal(result.classification.sentiment, 'negative');
+      assert.equal(result.classification.severity, 'low');
+      assert.equal(result.classification.scope, 'niche');
+      assert.equal(result.classification.functionality, 'tooling');
+      assert.equal(result.classification.provenance?.rawModelOutput, rawOutput);
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['accepted_success'],
+      );
+      const normalization = result.classification.provenance?.schemaVersion === 2
+        ? result.classification.provenance.evidenceNormalization
+        : null;
+      assert.equal(normalization?.fields.length, 4);
+      assert.deepEqual(
+        normalization?.fields.map((field) => field.field),
+        ['sentiment', 'severity', 'scope', 'functionality'],
+      );
+      assert.equal(
+        normalization?.fields.every((field) =>
+          field.originalCitations.length === 2 &&
+          field.effectiveCitations.length === 1),
+        true,
+      );
+
+      const classification = result.classification;
+      const provenance = classification.provenance!;
+      const prompt10Provenance = {
+        ...provenance,
+        promptVersion: __llmTest.TOOLING_PROVENANCE_PROMPT_VERSION,
+      };
+      const row = {
+        sentiment: classification.sentiment,
+        severity: classification.severity,
+        scope: classification.scope,
+        functionality: classification.functionality,
+        affected_users: classification.affectedUsers,
+        has_workaround: classification.hasWorkaround ? 1 : 0,
+        workaround_status: classification.workaroundStatus,
+        duplicate_cluster: classification.duplicateCluster,
+        affects_version: classification.affectsVersion,
+        confidence: classification.confidence,
+        rationale: classification.rationale,
+        prompt_version: __llmTest.TOOLING_PROVENANCE_PROMPT_VERSION,
+        classification_origin: 'raw_model',
+        raw_model_output: rawOutput,
+        provenance_json: JSON.stringify(prompt10Provenance),
+      };
+      assert.deepEqual(
+        rawClassificationStorageProblems(
+          row,
+          __llmTest.TOOLING_PROVENANCE_PROMPT_VERSION,
+        ),
+        [],
+      );
+      const tampered = structuredClone(prompt10Provenance) as any;
+      tampered.evidenceNormalization.fields[0].effectiveCitations[0].excerpt =
+        'tampered';
+      assert.match(
+        rawClassificationStorageProblems({
+          ...row,
+          provenance_json: JSON.stringify(tampered),
+        }, __llmTest.TOOLING_PROVENANCE_PROMPT_VERSION).join('\n'),
+        /evidenceNormalization does not match deterministic replay/,
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
     }
   });
 });
@@ -2527,13 +2840,17 @@ describe('LLM source grounding', () => {
       ClassificationGroundingError,
     } = await import(`./llm.ts?generic-cue-grounding=${Date.now()}`);
     const prompt = __llmTest.buildClassifierPromptInput(
-      groundingIssue(`${body} The feature is not working. all OpenClaw.`) as any,
+      groundingIssue(
+        `${body} The feature is not working. all OpenClaw. ` +
+        'This is not a security issue.',
+      ) as any,
       [],
       ['v2026.7.4'],
     );
     const cases = [
       ['sentiment', 'positive', 'not working'],
       ['severity', 'high', 'fails'],
+      ['severity', 'critical', 'not a security issue'],
       ['scope', 'broad', 'all'],
       ['functionality', 'core', 'OpenClaw'],
       ['affected_users', 'many', 'all'],
@@ -2558,6 +2875,39 @@ describe('LLM source grounding', () => {
         },
       );
     }
+  });
+
+  it('does not accept a prerelease citation as proof of a stable affectsVersion', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?stable-version-boundary=${Date.now()}`);
+    const betaBody = body.replace('v2026.7.4', 'v2026.7.4-beta.2');
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(betaBody) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const raw = structuredClone(fullyGroundedOutput()) as any;
+    raw.evidence.affectsVersion = [{
+      source_id: 'issue:body',
+      excerpt: 'v2026.7.4-beta.2',
+    }];
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'affectsVersion' &&
+          diagnostic.code === 'unsupported_affects_version'));
+        return true;
+      },
+    );
   });
 
   it('does not treat multiple sessions or both options as broad-scope evidence', async () => {
@@ -2982,6 +3332,24 @@ describe('LLM source grounding', () => {
       provenance_json: JSON.stringify(provenance),
     };
     assert.deepEqual(llm.rawClassificationStorageProblems(row), []);
+    const prompt9Provenance = {
+      ...provenance,
+      promptVersion: 9,
+    };
+    assert.deepEqual(llm.rawClassificationStorageProblems({
+      ...row,
+      prompt_version: 9,
+      provenance_json: JSON.stringify(prompt9Provenance),
+    }, 9), []);
+
+    const duplicateProvenance = JSON.stringify(provenance).replace(
+      '"schemaVersion":2',
+      '"schemaVersion":1,"schemaVersion":2',
+    );
+    assert.ok(llm.rawClassificationStorageProblems({
+      ...row,
+      provenance_json: duplicateProvenance,
+    }).some((problem) => problem.includes('unique object keys')));
 
     const tampered = structuredClone(provenance);
     tampered.groundingSources.find((source) => source.sourceId === 'issue:body')!.text =

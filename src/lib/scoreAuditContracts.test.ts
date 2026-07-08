@@ -683,7 +683,7 @@ function validPayloads(overrides: Record<string, any> = {}): any {
           predecessorTag: 'v-previous',
         },
         closureProof: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           creditedCount: 1,
           notCreditedCount: 0,
           analyzedClosedCount: 1,

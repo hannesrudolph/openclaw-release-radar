@@ -172,7 +172,7 @@ api.use((req, res, next) => {
   next();
 });
 
-const CLOSURE_PROOF_AUDIT_SCHEMA_VERSION = 1;
+const CLOSURE_PROOF_AUDIT_SCHEMA_VERSION = 2;
 const CLOSURE_PROOF_AUDIT_DEFAULT_LIMIT = 50;
 const CLOSURE_PROOF_AUDIT_MAX_LIMIT = 100;
 const ISSUE_EVIDENCE_AUDIT_DEFAULT_LIMIT = 50;
@@ -182,7 +182,13 @@ const PR_REACHABILITY_AUDIT_DEFAULT_LIMIT = 100;
 const PR_REACHABILITY_AUDIT_MAX_LIMIT = 250;
 const ISSUE_EVIDENCE_SENTIMENTS = ['negative', 'positive', 'neutral'] as const;
 const ISSUE_EVIDENCE_SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
-const ISSUE_EVIDENCE_FUNCTIONALITIES = ['core', 'integration', 'provider', 'docs'] as const;
+const ISSUE_EVIDENCE_FUNCTIONALITIES = [
+  'core',
+  'integration',
+  'provider',
+  'tooling',
+  'docs',
+] as const;
 const ISSUE_EVIDENCE_SCOPES = ['broad', 'moderate', 'niche'] as const;
 const ISSUE_EVIDENCE_AFFECTED_USERS = ['many', 'some', 'few', 'unknown'] as const;
 const ISSUE_EVIDENCE_SORTS = ['rank', 'weight', 'updated', 'created', 'closed', 'number'] as const;

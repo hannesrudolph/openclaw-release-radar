@@ -259,7 +259,7 @@ before(async () => {
   seedIssue({
     number: 105,
     state: 'closed',
-    title: 'neutral issue with unknown source commit proof',
+    title: 'neutral test harness issue with unknown source commit proof',
     createdAt: '2026-06-01T16:00:00Z',
     updatedAt: '2026-06-05T00:00:00Z',
     closedAt: '2026-06-05T00:00:00Z',
@@ -267,7 +267,7 @@ before(async () => {
     classification: {
       sentiment: 'neutral',
       severity: 'low',
-      functionality: 'docs',
+      functionality: 'tooling',
       scope: 'niche',
       affectedUsers: 'few',
     },
@@ -3900,6 +3900,17 @@ describe('audit API routes', () => {
     assert.ok(negative.body.rows.every((row: any) => row.issue.classification.sentiment === 'negative'));
     assert.ok(negative.body.rows.every((row: any) => row.issue.number !== 108));
 
+    const tooling = await getJson(
+      '/api/releases/v2026.6.1/review/issues?functionality=tooling&limit=250',
+    );
+    assert.equal(tooling.status, 200);
+    assert.equal(tooling.body.filters.functionality, 'tooling');
+    assert.deepEqual(tooling.body.filters.functionalities, ['tooling']);
+    assert.ok(tooling.body.rows.some((row: any) => row.issue.number === 105));
+    assert.ok(tooling.body.rows.every(
+      (row: any) => row.issue.classification.functionality === 'tooling',
+    ));
+
     const byIssue = await getJson('/api/releases/v2026.6.1/review/issues?issue=101');
     assert.equal(byIssue.status, 200);
     assert.equal(byIssue.body.filters.issue, 101);
@@ -3917,7 +3928,8 @@ describe('audit API routes', () => {
   it('preserves repeated enum filters in review pagination links', async () => {
     const response = await getJson(
       '/api/releases/v2026.6.1/review/issues?' +
-        'state=open&state=closed&sentiment=negative&sentiment=neutral&limit=1',
+        'state=open&state=closed&sentiment=negative&sentiment=neutral&' +
+        'functionality=tooling&functionality=core&limit=1',
     );
     assert.equal(response.status, 200);
     assert.notEqual(response.body.links.next, null);
@@ -3928,6 +3940,10 @@ describe('audit API routes', () => {
       assert.deepEqual(
         url.searchParams.getAll('sentiment'),
         ['negative', 'neutral'],
+      );
+      assert.deepEqual(
+        url.searchParams.getAll('functionality'),
+        ['tooling', 'core'],
       );
       assert.equal(url.searchParams.get('limit'), '1');
       assert.match(
@@ -4481,7 +4497,7 @@ function seedScoreAuditState(overrides: ScoreAuditSeedOverrides = {}) {
           predecessorTag,
         },
         closureProof: {
-          schemaVersion: 1,
+          schemaVersion: 2,
           creditedCount: 1,
           notCreditedCount: 0,
           analyzedClosedCount: 1,
@@ -5591,7 +5607,10 @@ function recordAcceptedClassifierLedger(input: {
     id: input.responseId,
     model: input.sourceIdentity.model,
     service_tier: input.sourceIdentity.serviceTier,
-    choices: [{ message: { content: input.rawModelOutput } }],
+    choices: [{
+      finish_reason: 'stop',
+      message: { content: input.rawModelOutput, refusal: null },
+    }],
   });
   const attempt = appendClassifierAttempt(run, [], {
     attemptId: `classifier-attempt-${input.issueNumber}-${input.responseId}`,

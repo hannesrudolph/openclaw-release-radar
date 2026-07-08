@@ -59,7 +59,7 @@ import {
   type ReleaseFixCreditDecision,
 } from './db';
 
-export const RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION = 1;
+export const RELEASE_ISSUE_EVIDENCE_SCHEMA_VERSION = 2;
 const UNCLASSIFIED_ISSUE_AUDIT_LIMIT = 1_000_000;
 
 export const RELEASE_ISSUE_EVIDENCE_TIERS = [

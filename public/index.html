@@ -3725,10 +3725,6 @@ function isCanceledRequest(error) {
   return error?.kind === 'aborted';
 }
 
-function isAuthorityUnavailableError(error) {
-  return error?.kind === 'http' && error?.status === 503;
-}
-
 async function api(path, options = {}) {
   const {
     signal: parentSignal,
@@ -3792,77 +3788,6 @@ let userLoadCycle = 0;
 let automaticSnapshotRebaseUsed = false;
 let scheduledSnapshotRebaseCycle = null;
 let scheduledStatusVerificationSnapshot = '';
-
-function retainedDiagnosticRelease(release, cause, message) {
-  const previousStatus = release?.diagnosticStatus
-    ?? release?.staleAudit?.previousStatus
-    ?? (release?.status === 'stale' ? null : release?.status)
-    ?? null;
-  const auditedAt = release?.staleAudit?.auditedAt ?? release?.scoredAt ?? null;
-  const diagnosticMessage = `${STALE_ANALYSIS_PREFIX} ${boundedUiMessage(
-    message,
-    'The current API snapshot is unavailable.',
-  )} Retained metadata is diagnostic only. Refresh before installing.`;
-  return {
-    ...release,
-    finalScore: null,
-    band: 'wait',
-    status: 'stale',
-    diagnosticStatus: previousStatus,
-    recommended: false,
-    reason: diagnosticMessage,
-    brokenSurfaces: [],
-    negativeIssues: null,
-    positiveIssues: null,
-    closedSeriousFixed: null,
-    openedSeriousDuringReign: null,
-    scoredAt: null,
-    scoreAudit: null,
-    explanation: null,
-    staleAudit: {
-      schemaVersion: 1,
-      state: 'stale',
-      message: diagnosticMessage,
-      previousStatus,
-      auditedAt,
-      causes: [cause],
-    },
-    diagnosticOnly: true,
-  };
-}
-
-function invalidateRetainedActionability(cause, message) {
-  if (!allReleases.length) return false;
-  releaseRequestController?.abort();
-  releaseLoadEpoch += 1;
-  actionabilityHold = null;
-  allReleases = allReleases.map((release) =>
-    retainedDiagnosticRelease(release, cause, message));
-  releaseSnapshot = '';
-  scheduledStatusVerificationSnapshot = '';
-  chartReleases = [];
-  publicReleaseDetails = new Map();
-  reviewByTag = new Map();
-  reviewLoadStateByTag = new Map();
-  reviewRequests.clear();
-  publicLoadState = {
-    status: 'error',
-    snapshot: releaseSnapshot,
-    message: boundedUiMessage(
-      `${message} Retained issue evidence is unavailable for this diagnostic snapshot.`,
-      'Related issue evidence is unavailable for this diagnostic snapshot.',
-    ),
-  };
-  setReleaseLoadState(
-    'stale',
-    `${boundedUiMessage(message, 'The current API snapshot is unavailable.')} Retained release metadata is diagnostic only.`,
-  );
-  renderScoreHistory();
-  applyRoute();
-  renderPackageCard();
-  markActionabilityUiRendered();
-  return true;
-}
 
 function holdDownstreamActionability(cause, message, options = {}) {
   if (!releaseSnapshotRowsVerified()) return false;
@@ -4061,19 +3986,7 @@ async function loadReleases(options = {}) {
     if (epoch !== releaseLoadEpoch) return;
     if (isCanceledRequest(error)) return;
     const message = requestErrorMessage(error, 'Could not load releases.');
-    if (isAuthorityUnavailableError(error)) {
-      clearLoadedReleaseAuthority(message);
-      return;
-    }
-    if (allReleases.length) {
-      invalidateRetainedActionability('release_load_failed', message);
-    } else {
-      setReleaseLoadState('error', message);
-    }
-    if (!allReleases.length) {
-      applyRoute();
-      renderPackageCard();
-    }
+    clearLoadedReleaseAuthority(message);
     return;
   }
   renderPackageCard();

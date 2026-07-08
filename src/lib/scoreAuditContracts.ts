@@ -2510,7 +2510,7 @@ function verifyClosureProofContract({ failures, tag, path, closureProof }) {
     value: closureProof,
     allowedKeys: SCORE_AUDIT_ALLOWED_NESTED_KEYS.closureProof,
     requiredKeys: SCORE_AUDIT_REQUIRED_KEYS.closureProof,
-    expectedSchemaVersion: 1,
+    expectedSchemaVersion: 2,
   })) return;
   verifyObjectContract({
     failures,

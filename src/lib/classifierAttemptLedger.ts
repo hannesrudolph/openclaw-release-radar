@@ -1,6 +1,8 @@
 import { createHash } from 'node:crypto';
 
 export const CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION = 1;
+// Persisted v1 attempts retain legacy evidence rules; new writes use strict v2.
+export const CLASSIFIER_ATTEMPT_SCHEMA_VERSION = 2;
 export const CLASSIFIER_RAW_RESPONSE_MAX_BYTES = 1_048_576;
 export const CLASSIFIER_RAW_MODEL_OUTPUT_MAX_BYTES = 1_048_576;
 export const CLASSIFIER_ERROR_MESSAGE_MAX_BYTES = 65_536;
@@ -122,7 +124,7 @@ export interface ClassifierAttemptRun {
 }
 
 export interface ClassifierAttempt {
-  readonly schemaVersion: 1;
+  readonly schemaVersion: 1 | typeof CLASSIFIER_ATTEMPT_SCHEMA_VERSION;
   readonly attemptId: string;
   readonly runId: string;
   readonly issueNumber: number;
@@ -270,7 +272,7 @@ const classifierRetrySentiments = new Set(['negative', 'positive', 'neutral']);
 const classifierRetrySeverities = new Set(['critical', 'high', 'medium', 'low']);
 const classifierRetryScopes = new Set(['broad', 'moderate', 'niche']);
 const classifierRetryFunctionalities =
-  new Set(['core', 'integration', 'provider', 'docs']);
+  new Set(['core', 'integration', 'provider', 'tooling', 'docs']);
 const classifierRetryAffectedUsers = new Set(['many', 'some', 'few', 'unknown']);
 const classifierRetryWorkaroundStatuses =
   new Set(['none', 'partial', 'confirmed', 'unknown']);
@@ -342,7 +344,8 @@ export function classifierAttemptContentHash(
   attempt: Omit<ClassifierAttempt, 'contentHash'>,
 ): string {
   return sha256(
-    `classifier-attempt-v1\0${attempt.previousContentHash}\0` +
+    `classifier-attempt-v${attempt.schemaVersion}\0` +
+    `${attempt.previousContentHash}\0` +
     canonicalClassifierAttemptLedgerJson({
       schemaVersion: attempt.schemaVersion,
       attemptId: attempt.attemptId,
@@ -552,7 +555,7 @@ export function appendClassifierAttempt(
   }
   const previous = existingAttempts.at(-1);
   const withoutHash: Omit<ClassifierAttempt, 'contentHash'> = {
-    schemaVersion: CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION,
+    schemaVersion: CLASSIFIER_ATTEMPT_SCHEMA_VERSION,
     attemptId: input.attemptId,
     runId: run.runId,
     issueNumber: run.issueNumber,
@@ -823,9 +826,9 @@ function classifierAttemptProblems(value: unknown, path: string): string[] {
     path,
     problems,
   );
-  if (value.schemaVersion !== CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION) {
+  if (!isClassifierAttemptSchemaVersion(value.schemaVersion)) {
     problems.push(
-      `${path}.schemaVersion must equal ${CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION}`,
+      `${path}.schemaVersion must equal 1 or ${CLASSIFIER_ATTEMPT_SCHEMA_VERSION}`,
     );
   }
   validateIdentifier(value.attemptId, `${path}.attemptId`, problems);
@@ -922,6 +925,15 @@ function classifierAttemptProblems(value: unknown, path: string): string[] {
   } else if (value.status === 'semantic_rejection') {
     if (value.rawResponse === null) {
       problems.push(`${path} semantic_rejection requires a rawResponse`);
+    }
+    if (
+      usesStrictClassifierResponseEvidence(value) &&
+      isRecord(value.rawResponse) &&
+      value.rawResponse.truncated !== false
+    ) {
+      problems.push(
+        `${path} semantic_rejection requires a complete rawResponse`,
+      );
     }
     if (value.error === null) {
       problems.push(`${path} semantic_rejection requires an error`);
@@ -1602,6 +1614,9 @@ function classifierSemanticRetryUsageProblems(
   }
   let response: unknown;
   try {
+    if (usesStrictClassifierResponseEvidence(value)) {
+      assertClassifierRetryJsonHasUniqueKeys(value.rawResponse.text);
+    }
     response = JSON.parse(value.rawResponse.text) as unknown;
   } catch {
     return [];
@@ -1739,22 +1754,25 @@ function acceptedResponseEvidenceProblems(
   value: Record<string, unknown>,
   path: string,
 ): string[] {
-  return completedResponseEvidenceProblems(value, path, true);
+  return completedResponseEvidenceProblems(value, path, 'accepted');
 }
 
 function semanticResponseEvidenceProblems(
   value: Record<string, unknown>,
   path: string,
 ): string[] {
-  return completedResponseEvidenceProblems(value, path, false);
+  return completedResponseEvidenceProblems(value, path, 'semantic_rejection');
 }
 
 function completedResponseEvidenceProblems(
   value: Record<string, unknown>,
   path: string,
-  requireAssistantContent: boolean,
+  responseKind: 'accepted' | 'semantic_rejection',
 ): string[] {
   const problems: string[] = [];
+  const strictEvidence = usesStrictClassifierResponseEvidence(value);
+  const requireAssistantContent =
+    responseKind === 'accepted' || strictEvidence;
   if (
     !isRecord(value.rawResponse) ||
     typeof value.rawResponse.text !== 'string' ||
@@ -1767,6 +1785,9 @@ function completedResponseEvidenceProblems(
   }
   let response: Record<string, unknown>;
   try {
+    if (strictEvidence) {
+      assertClassifierRetryJsonHasUniqueKeys(value.rawResponse.text);
+    }
     const parsed = JSON.parse(value.rawResponse.text) as unknown;
     if (!isRecord(parsed)) {
       problems.push(`${path} completed rawResponse must contain a JSON object`);
@@ -1774,7 +1795,9 @@ function completedResponseEvidenceProblems(
     }
     response = parsed;
   } catch {
-    problems.push(`${path} completed rawResponse must contain valid JSON`);
+    problems.push(strictEvidence
+      ? `${path} completed rawResponse must contain valid JSON with unique object keys`
+      : `${path} completed rawResponse must contain valid JSON`);
     return problems;
   }
 
@@ -1783,9 +1806,28 @@ function completedResponseEvidenceProblems(
   const message = isRecord(firstChoice) && isRecord(firstChoice.message)
     ? firstChoice.message
     : null;
+  if (strictEvidence) {
+    if (!Array.isArray(choices) || choices.length !== 1) {
+      problems.push(
+        `${path} ${responseKind} rawResponse must contain exactly one choice`,
+      );
+    }
+    if (!isRecord(firstChoice) || firstChoice.finish_reason !== 'stop') {
+      problems.push(
+        `${path} ${responseKind} rawResponse choice finish_reason must equal "stop"`,
+      );
+    }
+    if (message?.refusal !== undefined && message.refusal !== null) {
+      problems.push(
+        `${path} ${responseKind} rawResponse must not contain a refusal`,
+      );
+    }
+  }
   const content = message?.content;
   if (typeof content !== 'string' && requireAssistantContent) {
-    problems.push(`${path} accepted rawResponse is missing assistant message content`);
+    problems.push(
+      `${path} ${responseKind} rawResponse is missing assistant message content`,
+    );
   } else if (typeof content === 'string' && !isRecord(value.rawModelOutput)) {
     problems.push(
       `${path} completed response requires rawModelOutput for assistant message content`,
@@ -1807,7 +1849,7 @@ function completedResponseEvidenceProblems(
     );
   } else if (
     typeof content !== 'string' &&
-    !requireAssistantContent &&
+    responseKind === 'semantic_rejection' &&
     value.rawModelOutput !== null
   ) {
     problems.push(
@@ -1840,7 +1882,10 @@ function completedResponseEvidenceProblems(
       problems.push(`${path}.usage does not match normalized rawResponse usage`);
     }
   } catch (error) {
-    if (requireAssistantContent || value.usage !== null) {
+    if (
+      !isExplicitInvalidProviderUsageRejection(value) &&
+      (requireAssistantContent || value.usage !== null)
+    ) {
       problems.push(
         `${path}.usage cannot be verified: ${
           error instanceof Error ? error.message : String(error)
@@ -2411,6 +2456,33 @@ function isAttemptStatus(value: unknown): value is ClassifierAttemptStatus {
   return value === 'transport_failure' ||
     value === 'semantic_rejection' ||
     value === 'accepted_success';
+}
+
+function isClassifierAttemptSchemaVersion(
+  value: unknown,
+): value is ClassifierAttempt['schemaVersion'] {
+  return value === 1 || value === CLASSIFIER_ATTEMPT_SCHEMA_VERSION;
+}
+
+function usesStrictClassifierResponseEvidence(
+  value: Record<string, unknown>,
+): boolean {
+  return value.schemaVersion === CLASSIFIER_ATTEMPT_SCHEMA_VERSION;
+}
+
+function isExplicitInvalidProviderUsageRejection(
+  value: Record<string, unknown>,
+): boolean {
+  const error = isRecord(value.error) ? value.error : null;
+  const diagnostics = Array.isArray(value.semanticDiagnostics)
+    ? value.semanticDiagnostics
+    : [];
+  return value.status === 'semantic_rejection' &&
+    value.usage === null &&
+    error?.code === 'CLASSIFIER_RESPONSE_USAGE' &&
+    diagnostics.some((diagnostic) =>
+      isRecord(diagnostic) &&
+      diagnostic.code === 'response_usage_invalid');
 }
 
 function isTerminalStatus(value: unknown): value is ClassifierTerminalStatus {

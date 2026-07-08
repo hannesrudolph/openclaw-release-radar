@@ -1105,7 +1105,10 @@ function recordAcceptedClassifierLedger(db: any, input: {
       id: input.responseId,
       model: input.sourceIdentity.model,
       service_tier: input.sourceIdentity.serviceTier,
-      choices: [{ message: { content: input.rawModelOutput } }],
+      choices: [{
+        finish_reason: 'stop',
+        message: { content: input.rawModelOutput, refusal: null },
+      }],
     })),
     rawModelOutput: captureClassifierRawModelOutput(input.rawModelOutput),
     error: null,
