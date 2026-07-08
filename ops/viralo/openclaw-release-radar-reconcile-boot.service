@@ -1,0 +1,18 @@
+[Unit]
+Description=Reconcile Release Radar deployment transaction before startup
+After=local-fs.target
+Before=openclaw-release-radar.service
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+Environment=PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+UnsetEnvironment=NODE_OPTIONS NODE_PATH BASH_ENV ENV SHELLOPTS BASHOPTS PS4 BASH_XTRACEFD CDPATH GLOBIGNORE POSIXLY_CORRECT
+UnsetEnvironment=DOTENV_CONFIG_PATH DOTENV_CONFIG_OVERRIDE LD_PRELOAD LD_LIBRARY_PATH LD_AUDIT
+UnsetEnvironment=DYLD_INSERT_LIBRARIES DYLD_LIBRARY_PATH DYLD_FRAMEWORK_PATH DYLD_FALLBACK_LIBRARY_PATH DYLD_FALLBACK_FRAMEWORK_PATH
+UnsetEnvironment=OPENSSL_CONF OPENSSL_MODULES NODE_EXTRA_CA_CERTS NODE_TLS_REJECT_UNAUTHORIZED SSL_CERT_FILE SSL_CERT_DIR
+UnsetEnvironment=NPM_CONFIG_NODE_OPTIONS npm_config_node_options NPM_CONFIG_SCRIPT_SHELL npm_config_script_shell
+ExecStart=/usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release reconcile --boot
+TimeoutStartSec=10min
+UMask=0027

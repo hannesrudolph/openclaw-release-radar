@@ -1,26 +1,26 @@
 export function releaseTagArg(argv, {
-  defaultTag = 'v2026.6.10',
   command,
   description,
 } = {}) {
   const args = [...argv];
+  const invocation = command ?? 'script';
   if (args.includes('--help') || args.includes('-h')) {
     console.log([
       description,
       '',
-      `Usage: ${command ?? 'script'} [release-tag]`,
+      `Usage: ${invocation} <release-tag>`,
       '',
-      `Default release tag: ${defaultTag}`,
+      'A release tag is required; this command never infers the latest release.',
       'Examples:',
-      `  ${command ?? 'script'} ${defaultTag}`,
-      `  ${command ?? 'script'} --help`,
+      `  ${invocation} <release-tag>`,
+      `  ${invocation} --help`,
     ].filter(Boolean).join('\n'));
     process.exit(0);
   }
-  if (args.length > 1) {
-    fail(`Expected at most one release tag, got ${args.length}.`, command);
+  if (args.length !== 1) {
+    fail(`Expected exactly one release tag, got ${args.length}.`, command);
   }
-  const tag = args[0] ?? defaultTag;
+  const tag = args[0];
   if (!tag || tag.startsWith('-') || /\s/.test(tag)) {
     fail(`Invalid release tag: ${JSON.stringify(tag)}.`, command);
   }

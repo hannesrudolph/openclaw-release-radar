@@ -6,6 +6,7 @@ data/*.db-journal
 data/*.db-wal
 data/*.db-shm
 data/.fuse_hidden*
+data/validation/
 .env
 .env.bak
 .env.local
@@ -15,6 +16,7 @@ data/.fuse_hidden*
 .codex-local/
 .cache/
 *.log
+test/test-baseline.candidate.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

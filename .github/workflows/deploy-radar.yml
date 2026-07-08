@@ -6,26 +6,64 @@ on:
       - main
   workflow_dispatch:
 
+env:
+  BASH_ENV: ""
+  ENV: ""
+  NODE_OPTIONS: ""
+  NODE_PATH: ""
+  DOTENV_CONFIG_PATH: ""
+  DOTENV_CONFIG_OVERRIDE: ""
+  LD_PRELOAD: ""
+  LD_LIBRARY_PATH: ""
+  LD_AUDIT: ""
+  DYLD_INSERT_LIBRARIES: ""
+  DYLD_LIBRARY_PATH: ""
+  DYLD_FRAMEWORK_PATH: ""
+  DYLD_FALLBACK_LIBRARY_PATH: ""
+  DYLD_FALLBACK_FRAMEWORK_PATH: ""
+  OPENSSL_CONF: ""
+  OPENSSL_MODULES: ""
+  NODE_EXTRA_CA_CERTS: ""
+  NODE_TLS_REJECT_UNAUTHORIZED: ""
+  SSL_CERT_FILE: ""
+  SSL_CERT_DIR: ""
+  NPM_CONFIG_NODE_OPTIONS: ""
+  npm_config_node_options: ""
+  NPM_CONFIG_SCRIPT_SHELL: ""
+  npm_config_script_shell: ""
+
+defaults:
+  run:
+    shell: >-
+      /usr/bin/env -u BASH_ENV -u ENV -u NODE_OPTIONS -u NODE_PATH
+      -u DOTENV_CONFIG_PATH -u DOTENV_CONFIG_OVERRIDE
+      -u LD_PRELOAD -u LD_LIBRARY_PATH -u LD_AUDIT
+      -u DYLD_INSERT_LIBRARIES -u DYLD_LIBRARY_PATH -u DYLD_FRAMEWORK_PATH
+      -u DYLD_FALLBACK_LIBRARY_PATH -u DYLD_FALLBACK_FRAMEWORK_PATH
+      -u OPENSSL_CONF -u OPENSSL_MODULES -u NODE_EXTRA_CA_CERTS
+      -u NODE_TLS_REJECT_UNAUTHORIZED -u SSL_CERT_FILE -u SSL_CERT_DIR
+      -u NPM_CONFIG_NODE_OPTIONS -u npm_config_node_options
+      -u NPM_CONFIG_SCRIPT_SHELL -u npm_config_script_shell
+      -u SHELLOPTS -u BASHOPTS -u PS4 -u BASH_XTRACEFD
+      -u CDPATH -u GLOBIGNORE -u POSIXLY_CORRECT
+      /bin/bash -p --noprofile --norc -e -o pipefail -- {0}
+
 concurrency:
   group: deploy-release-radar
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+  verify-authoritative:
+    runs-on: macos-latest
+    timeout-minutes: 180
     permissions:
       contents: read
-    env:
-      RELEASE_NAME: release-${{ github.sha }}
-      RELEASE_TARBALL: openclaw-release-radar.tar.gz
-      HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTH_URL || secrets.DEPLOY_HEALTH_URL }}
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
 
       - name: Set up Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
           cache: npm
@@ -33,44 +71,1221 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Verify authoritative runner prerequisites
+        run: |
+          test -x /usr/bin/sandbox-exec
+          test -x /usr/bin/cc
+          node -e '
+            const fs = require("node:fs");
+            const root = process.env.RUNNER_TEMP;
+            if (!root) throw new Error("RUNNER_TEMP is required");
+            const stats = fs.statfsSync(root, { bigint: true });
+            if (stats.bavail * stats.bsize < 10n * 1024n * 1024n * 1024n) {
+              throw new Error("authoritative suite requires at least 10 GiB free");
+            }
+          '
+
+      - name: Run authoritative test candidate
+        run: npm run verify:authoritative-ci
+
+  deploy:
+    needs: verify-authoritative
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      RELEASE_NAME: release-${{ github.sha }}
+      RELEASE_TARBALL: openclaw-release-radar.tar.gz
+      INSTALLER_PROTOCOL: "5"
+      HEALTHCHECK_URL: ${{ vars.DEPLOY_HEALTH_URL || secrets.DEPLOY_HEALTH_URL }}
+      MAX_SCORE_AGE_HOURS: ${{ vars.DEPLOY_MAX_SCORE_AGE_HOURS || '24' }}
+      MAX_REFRESH_AGE_HOURS: ${{ vars.DEPLOY_MAX_REFRESH_AGE_HOURS || '24' }}
+      REQUIRED_PROMOTION_RECEIPT_ID: ${{ vars.DEPLOY_REQUIRED_PROMOTION_RECEIPT_ID }}
+      QUALITY_DB_PATH: ${{ vars.DEPLOY_QUALITY_DB_PATH }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Validate deployment inputs
+        run: |
+          : "${HEALTHCHECK_URL:?Set DEPLOY_HEALTH_URL to https://your-domain.example/api/health}"
+          : "${QUALITY_DB_PATH:?Set DEPLOY_QUALITY_DB_PATH to the absolute server-side quality database path}"
+          : "${REQUIRED_PROMOTION_RECEIPT_ID:?Set DEPLOY_REQUIRED_PROMOTION_RECEIPT_ID to the quality database current-score receipt}"
+          case "$QUALITY_DB_PATH" in
+            /*) ;;
+            *)
+              printf 'DEPLOY_QUALITY_DB_PATH must be absolute: %s\n' "$QUALITY_DB_PATH" >&2
+              exit 1
+              ;;
+          esac
+          case "$REQUIRED_PROMOTION_RECEIPT_ID" in
+            *[!0-9a-f]*|'')
+              printf 'DEPLOY_REQUIRED_PROMOTION_RECEIPT_ID must be lowercase hexadecimal\n' >&2
+              exit 1
+              ;;
+          esac
+          test "${#REQUIRED_PROMOTION_RECEIPT_ID}" -eq 64
+          HEALTHCHECK_URL="$HEALTHCHECK_URL" node <<'NODE' >> "$GITHUB_ENV"
+          const raw = process.env.HEALTHCHECK_URL;
+          let url;
+          try {
+            url = new URL(raw);
+          } catch {
+            throw new Error(`DEPLOY_HEALTH_URL must be an absolute URL: ${raw}`);
+          }
+          const hostname = url.hostname.toLowerCase().replace(/^\[(.*)\]$/, '$1');
+          const loopback = new Set(['127.0.0.1', '::1', 'localhost']).has(hostname);
+          if (
+            !['http:', 'https:'].includes(url.protocol) ||
+            url.username ||
+            url.password ||
+            url.search ||
+            url.hash
+          ) {
+            throw new Error(
+              'DEPLOY_HEALTH_URL must be an absolute HTTP(S) URL without ' +
+              'credentials, query, or fragment',
+            );
+          }
+          if (url.protocol === 'http:' && !loopback) {
+            throw new Error(
+              `DEPLOY_HEALTH_URL must use HTTPS for non-loopback hosts: ${raw}`,
+            );
+          }
+          if (!url.pathname.endsWith('/api/health')) {
+            throw new Error(`DEPLOY_HEALTH_URL must end in /api/health: ${raw}`);
+          }
+          const basePath = url.pathname.slice(0, -'/api/health'.length);
+          process.stdout.write(`PUBLIC_BASE=${url.origin}${basePath}\n`);
+          NODE
+
+      - name: Establish deployment transaction
+        env:
+          DEPLOY_VERIFIER_HMAC_KEY: ${{ secrets.DEPLOY_VERIFIER_HMAC_KEY }}
+        run: |
+          : "${DEPLOY_VERIFIER_HMAC_KEY:?Set DEPLOY_VERIFIER_HMAC_KEY to the server verifier key}"
+          transaction_id="$(node -e 'process.stdout.write(require("node:crypto").randomUUID())')"
+          verification_id="${GITHUB_RUN_ID}:${GITHUB_RUN_ATTEMPT}"
+          verifier_key_id="$(
+            node -e '
+              const { createHash } = require("node:crypto");
+              const key = process.env.DEPLOY_VERIFIER_HMAC_KEY.trim();
+              if (
+                Buffer.byteLength(key) < 32 ||
+                key.includes("\0") ||
+                key.includes("\n")
+              ) {
+                throw new Error(
+                  "DEPLOY_VERIFIER_HMAC_KEY must contain at least 32 safe bytes",
+                );
+              }
+              process.stdout.write(
+                createHash("sha256")
+                  .update(key)
+                  .digest("hex"),
+              );
+            '
+          )"
+          printf 'DEPLOY_TRANSACTION_ID=%s\n' "$transaction_id" >> "$GITHUB_ENV"
+          printf 'DEPLOY_VERIFICATION_ID=%s\n' "$verification_id" >> "$GITHUB_ENV"
+          printf 'DEPLOY_VERIFIER_KEY_ID=%s\n' "$verifier_key_id" >> "$GITHUB_ENV"
+
       - name: Verify app
         run: npm run verify:ci
 
-      - name: Package release artifact
+      - name: Install UI smoke browser
+        run: npx playwright install --with-deps chromium
+
+      - name: Stage and verify production release
         run: |
-          tar -czf "$RELEASE_TARBALL" \
-            dist \
-            public \
-            package.json \
-            package-lock.json \
-            README.md
+          release_root="$RUNNER_TEMP/$RELEASE_NAME"
+          install -d "$release_root"
+          cp -a dist public package.json package-lock.json README.md "$release_root/"
+          install -d "$release_root/ops/viralo"
+          cp -a ops/viralo/. "$release_root/ops/viralo/"
+          install -d "$release_root/promotion-runtime"
+          cp -a src scripts tsconfig.json "$release_root/promotion-runtime/"
+          cp -a \
+            ops/promotion-runtime/package.json \
+            ops/promotion-runtime/package-lock.json \
+            "$release_root/promotion-runtime/"
+          npm ci --omit=dev --prefix "$release_root"
+          npm ci --omit=dev --prefix "$release_root/promotion-runtime"
+
+          test -f "$release_root/dist/index.js"
+          test -f "$release_root/dist/routes/api.js"
+          test -f "$release_root/dist/lib/releaseValidationOpportunityStatus.js"
+          test -f "$release_root/node_modules/express/package.json"
+          test -f "$release_root/node_modules/dotenv/package.json"
+          test -x "$release_root/ops/viralo/openclaw-release-radar-install-release.sh"
+          test -f "$release_root/ops/viralo/openclaw-release-radar.service"
+          test -f "$release_root/ops/viralo/openclaw-release-radar-reconcile-boot.service"
+          test -f "$release_root/ops/viralo/openclaw-release-radar-reconcile.service"
+          test -f "$release_root/ops/viralo/openclaw-release-radar-reconcile.timer"
+          test -f "$release_root/ops/viralo/openclaw-release-radar.service.d/10-deploy-reconcile.conf"
+          test ! -e "$release_root/node_modules/tsx"
+          test -f "$release_root/promotion-runtime/scripts/promote-quality-db.mjs"
+          test -f "$release_root/promotion-runtime/scripts/run-promote-quality-db.sh"
+          test -f "$release_root/promotion-runtime/node_modules/tsx/dist/cli.mjs"
+          test -f "$release_root/promotion-runtime/node_modules/esbuild/package.json"
+          test "$(
+            "$release_root/ops/viralo/openclaw-release-radar-install-release.sh" \
+              protocol "$INSTALLER_PROTOCOL"
+          )" = "$INSTALLER_PROTOCOL"
+
+          smoke_root="$RUNNER_TEMP/release-artifact-smoke"
+          install -d -m 700 "$smoke_root"
+          install -m 600 /dev/null "$smoke_root/radar.db"
+          cat > "$release_root/.env" <<EOF
+          PORT=8787
+          DB_PATH=$smoke_root/radar.db
+          RADAR_DB_READ_ONLY=1
+          RADAR_DB_BOOTSTRAP_MODE=existing
+          REFRESH_ON_STARTUP=false
+          REFRESH_MINUTES=0
+          RADAR_CODE_REVISION=$GITHUB_SHA
+          EOF
+          chmod 600 "$release_root/.env"
+
+          effective_config="$(
+            NODE_ENV=production \
+            DB_PATH=/tmp/inherited-db-must-be-ignored \
+            REFRESH_ON_STARTUP=true \
+            REFRESH_MINUTES=99 \
+            RADAR_CODE_REVISION=ffffffffffffffffffffffffffffffffffffffff \
+            DOTENV_CONFIG_PATH=/tmp/inherited-dotenv-must-be-ignored \
+              node "$release_root/dist/index.js" --print-effective-config
+          )"
+          EFFECTIVE_CONFIG="$effective_config" \
+          RELEASE_ROOT="$release_root" \
+          SMOKE_DB="$smoke_root/radar.db" \
+          GIT_SHA="$GITHUB_SHA" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const payload = JSON.parse(process.env.EFFECTIVE_CONFIG);
+          const expectedKeys = [
+            'database',
+            'mode',
+            'refresh',
+            'release',
+            'schemaVersion',
+            'source',
+          ];
+          if (
+            JSON.stringify(Object.keys(payload).sort()) !== JSON.stringify(expectedKeys) ||
+            payload.schemaVersion !== 1 ||
+            payload.mode !== 'production' ||
+            payload.source?.kind !== 'release-runtime-env' ||
+            payload.source?.path !== path.join(process.env.RELEASE_ROOT, '.env') ||
+            payload.source?.realPath !== fs.realpathSync(path.join(process.env.RELEASE_ROOT, '.env')) ||
+            payload.database?.path !== fs.realpathSync(process.env.SMOKE_DB) ||
+            payload.refresh?.onStartup !== false ||
+            payload.refresh?.intervalMinutes !== 0 ||
+            payload.release?.revision !== process.env.GIT_SHA
+          ) {
+            throw new Error('production effective config attestation is invalid');
+          }
+          NODE
+
+          NODE_ENV=production \
+          RELEASE_ROOT="$release_root" \
+          DB_PATH=/tmp/inherited-db-must-be-ignored \
+          DOTENV_CONFIG_PATH=/tmp/inherited-dotenv-must-be-ignored \
+          REFRESH_ON_STARTUP=true \
+          REFRESH_MINUTES=99 \
+          node <<'NODE'
+          const { api } = require(`${process.env.RELEASE_ROOT}/dist/routes/api.js`);
+          const paths = new Set(
+            api.stack
+              .filter((layer) => layer.route)
+              .map((layer) => layer.route.path),
+          );
+          for (const path of ['/live', '/health', '/validation/opportunities']) {
+            if (!paths.has(path)) throw new Error(`production API is missing ${path}`);
+          }
+          NODE
+          rm -f \
+            "$release_root/.env" \
+            "$smoke_root/radar.db" \
+            "$smoke_root/radar.db-wal" \
+            "$smoke_root/radar.db-shm"
+
+          artifact_digest="$(
+            RELEASE_ROOT="$release_root" node <<'NODE'
+          const { createHash } = require('node:crypto');
+          const fs = require('node:fs');
+          const path = require('node:path');
+
+          const root = process.env.RELEASE_ROOT;
+          const excluded = new Set(['.env', 'public/release-manifest.json']);
+          const hash = createHash('sha256');
+          function visit(relative) {
+            const absolute = path.join(root, relative);
+            const entries = fs.readdirSync(absolute, { withFileTypes: true })
+              .sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+            for (const entry of entries) {
+              const child = relative ? path.join(relative, entry.name) : entry.name;
+              if (excluded.has(child)) continue;
+              const childPath = path.join(root, child);
+              const info = fs.lstatSync(childPath);
+              if (info.isDirectory()) {
+                hash.update(`D\0${child}\0`);
+                visit(child);
+              } else if (info.isSymbolicLink()) {
+                hash.update(`L\0${child}\0${fs.readlinkSync(childPath)}\0`);
+              } else if (info.isFile()) {
+                hash.update(`F\0${child}\0${info.size}\0`);
+                hash.update(fs.readFileSync(childPath));
+                hash.update('\0');
+              } else {
+                throw new Error(`unsupported release artifact entry: ${child}`);
+              }
+            }
+          }
+          visit('');
+          process.stdout.write(`sha256:${hash.digest('hex')}`);
+          NODE
+          )"
+          installer_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar-install-release.sh" |
+              awk '{print $1}'
+          )"
+          application_service_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar.service" |
+              awk '{print $1}'
+          )"
+          reconcile_boot_unit_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar-reconcile-boot.service" |
+              awk '{print $1}'
+          )"
+          reconcile_unit_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar-reconcile.service" |
+              awk '{print $1}'
+          )"
+          reconcile_timer_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar-reconcile.timer" |
+              awk '{print $1}'
+          )"
+          service_dropin_sha256="$(
+            sha256sum "$release_root/ops/viralo/openclaw-release-radar.service.d/10-deploy-reconcile.conf" |
+              awk '{print $1}'
+          )"
+          RELEASE_ROOT="$release_root" \
+          RELEASE_NAME="$RELEASE_NAME" \
+          GIT_SHA="$GITHUB_SHA" \
+          ARTIFACT_DIGEST="$artifact_digest" \
+          INSTALLER_PROTOCOL="$INSTALLER_PROTOCOL" \
+          INSTALLER_SHA256="$installer_sha256" \
+          APPLICATION_SERVICE_SHA256="$application_service_sha256" \
+          RECONCILE_BOOT_UNIT_SHA256="$reconcile_boot_unit_sha256" \
+          RECONCILE_UNIT_SHA256="$reconcile_unit_sha256" \
+          RECONCILE_TIMER_SHA256="$reconcile_timer_sha256" \
+          SERVICE_DROPIN_SHA256="$service_dropin_sha256" \
+          node <<'NODE'
+          const fs = require('node:fs');
+          const path = require('node:path');
+          const manifest = {
+            schemaVersion: 4,
+            releaseName: process.env.RELEASE_NAME,
+            githubSha: process.env.GIT_SHA,
+            runtimeCodeRevision: process.env.GIT_SHA,
+            artifactDigest: process.env.ARTIFACT_DIGEST,
+            installerProtocol: Number(process.env.INSTALLER_PROTOCOL),
+            controlPlane: {
+              installer: {
+                path: 'ops/viralo/openclaw-release-radar-install-release.sh',
+                sha256: process.env.INSTALLER_SHA256,
+              },
+              applicationService: {
+                path: 'ops/viralo/openclaw-release-radar.service',
+                sha256: process.env.APPLICATION_SERVICE_SHA256,
+              },
+              reconcileBootService: {
+                path: 'ops/viralo/openclaw-release-radar-reconcile-boot.service',
+                sha256: process.env.RECONCILE_BOOT_UNIT_SHA256,
+              },
+              reconcileService: {
+                path: 'ops/viralo/openclaw-release-radar-reconcile.service',
+                sha256: process.env.RECONCILE_UNIT_SHA256,
+              },
+              reconcileTimer: {
+                path: 'ops/viralo/openclaw-release-radar-reconcile.timer',
+                sha256: process.env.RECONCILE_TIMER_SHA256,
+              },
+              serviceDropIn: {
+                path: 'ops/viralo/openclaw-release-radar.service.d/10-deploy-reconcile.conf',
+                sha256: process.env.SERVICE_DROPIN_SHA256,
+              },
+            },
+          };
+          fs.writeFileSync(
+            path.join(process.env.RELEASE_ROOT, 'public', 'release-manifest.json'),
+            `${JSON.stringify(manifest, null, 2)}\n`,
+          );
+          NODE
+          printf 'ARTIFACT_DIGEST=%s\n' "$artifact_digest" >> "$GITHUB_ENV"
+          printf 'INSTALLER_SHA256=%s\n' "$installer_sha256" >> "$GITHUB_ENV"
+          printf 'APPLICATION_SERVICE_SHA256=%s\n' "$application_service_sha256" >> "$GITHUB_ENV"
+          printf 'RECONCILE_BOOT_UNIT_SHA256=%s\n' "$reconcile_boot_unit_sha256" >> "$GITHUB_ENV"
+          printf 'RECONCILE_UNIT_SHA256=%s\n' "$reconcile_unit_sha256" >> "$GITHUB_ENV"
+          printf 'RECONCILE_TIMER_SHA256=%s\n' "$reconcile_timer_sha256" >> "$GITHUB_ENV"
+          printf 'SERVICE_DROPIN_SHA256=%s\n' "$service_dropin_sha256" >> "$GITHUB_ENV"
+
+          tar -C "$release_root" -czf "$GITHUB_WORKSPACE/$RELEASE_TARBALL" .
+
+      - name: Publish deployment identity
+        run: |
+          {
+            printf '## Deployment identity\n\n'
+            printf '```json\n'
+            printf '{\n'
+            printf '  "releaseName": "%s",\n' "$RELEASE_NAME"
+            printf '  "githubSha": "%s",\n' "$GITHUB_SHA"
+            printf '  "artifactDigest": "%s",\n' "$ARTIFACT_DIGEST"
+            printf '  "transactionId": "%s"\n' "$DEPLOY_TRANSACTION_ID"
+            printf '}\n'
+            printf '```\n'
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configure SSH
         run: |
           install -d -m 700 ~/.ssh
           printf '%s\n' "${{ secrets.DEPLOY_SSH_KEY }}" > ~/.ssh/id_ed25519
           chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan -p "${{ secrets.DEPLOY_SSH_PORT }}" -H "${{ secrets.DEPLOY_SSH_HOST }}" >> ~/.ssh/known_hosts
+          printf '%s\n' "${{ secrets.DEPLOY_SSH_KNOWN_HOSTS }}" > ~/.ssh/known_hosts
+          grep -q '[^[:space:]]' ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+
+      - name: Install and verify deployment control plane
+        timeout-minutes: 5
+        run: |
+          remote_control="/tmp/$RELEASE_NAME-control"
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+            "rm -rf '$remote_control' && install -d -m 700 '$remote_control'"
+          scp \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -P "${{ secrets.DEPLOY_SSH_PORT }}" \
+            ops/viralo/openclaw-release-radar-install-release.sh \
+            ops/viralo/openclaw-release-radar.service \
+            ops/viralo/openclaw-release-radar-reconcile-boot.service \
+            ops/viralo/openclaw-release-radar-reconcile.service \
+            ops/viralo/openclaw-release-radar-reconcile.timer \
+            ops/viralo/openclaw-release-radar.service.d/10-deploy-reconcile.conf \
+            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}:$remote_control/"
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+            sudo /usr/bin/env -i \
+              PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin \
+              /bin/bash -p --noprofile --norc -s -- \
+              "$remote_control" \
+              "$RELEASE_NAME" \
+              "$INSTALLER_SHA256" \
+              "$APPLICATION_SERVICE_SHA256" \
+              "$RECONCILE_BOOT_UNIT_SHA256" \
+              "$RECONCILE_UNIT_SHA256" \
+              "$RECONCILE_TIMER_SHA256" \
+              "$SERVICE_DROPIN_SHA256" \
+              "$DEPLOY_VERIFIER_KEY_ID" <<'REMOTE'
+          set -euo pipefail
+          source_root="$1"
+          release_name="$2"
+          installer_sha="$3"
+          application_service_sha="$4"
+          boot_sha="$5"
+          service_sha="$6"
+          timer_sha="$7"
+          dropin_sha="$8"
+          verifier_key_id="$9"
+          trap 'rm -rf "$source_root"' EXIT
+
+          sudo test -x /opt/node-v24/bin/node
+          sudo test -x /opt/node-v24/bin/npm
+          command -v lsof >/dev/null
+          command -v getfacl >/dev/null
+          command -v getfattr >/dev/null
+
+          verify_digest() {
+            local path="$1"
+            local expected="$2"
+            test -f "$path"
+            test ! -L "$path"
+            test "$(sha256sum "$path" | awk '{print $1}')" = "$expected"
+          }
+
+          publish_root_file() {
+            local source="$1"
+            local destination="$2"
+            local mode="$3"
+            local expected="$4"
+            local temporary="${destination}.new-${release_name}"
+            sudo install -o root -g root -m "$mode" "$source" "$temporary"
+            sudo test -f "$temporary"
+            sudo test ! -L "$temporary"
+            test "$(sudo stat -c '%U:%G:%a' "$temporary")" = "root:root:$mode"
+            test "$(sudo sha256sum "$temporary" | awk '{print $1}')" = "$expected"
+            sudo mv -f "$temporary" "$destination"
+            sudo test -f "$destination"
+            sudo test ! -L "$destination"
+            test "$(sudo stat -c '%U:%G:%a' "$destination")" = "root:root:$mode"
+            test "$(sudo sha256sum "$destination" | awk '{print $1}')" = "$expected"
+          }
+
+          verify_digest \
+            "$source_root/openclaw-release-radar-install-release.sh" \
+            "$installer_sha"
+          verify_digest \
+            "$source_root/openclaw-release-radar.service" \
+            "$application_service_sha"
+          verify_digest \
+            "$source_root/openclaw-release-radar-reconcile-boot.service" \
+            "$boot_sha"
+          verify_digest \
+            "$source_root/openclaw-release-radar-reconcile.service" \
+            "$service_sha"
+          verify_digest \
+            "$source_root/openclaw-release-radar-reconcile.timer" \
+            "$timer_sha"
+          verify_digest \
+            "$source_root/10-deploy-reconcile.conf" \
+            "$dropin_sha"
+
+          sudo test ! -e /opt/openclaw-release-radar/.pending-deploy
+          test -z "$(
+            sudo find /opt/openclaw-release-radar -maxdepth 1 \
+              \( -name '.pending-deploy.finalized-*' -o -name '.deploy-intent-*' \) \
+              -print -quit
+          )"
+          sudo test -f /etc/openclaw-release-radar/deploy-verifier.key
+          sudo test ! -L /etc/openclaw-release-radar/deploy-verifier.key
+          verifier_key_mode="$(
+            sudo stat -c '%U:%G:%a' /etc/openclaw-release-radar/deploy-verifier.key
+          )"
+          case "$verifier_key_mode" in
+            root:root:400|root:root:600) ;;
+            *)
+              printf 'Invalid verifier key owner/mode: %s\n' "$verifier_key_mode" >&2
+              exit 1
+              ;;
+          esac
+          test "$(
+            sudo /usr/bin/env -i \
+              PATH=/opt/node-v24/bin:/usr/local/bin:/usr/bin:/bin \
+              /opt/node-v24/bin/node -e '
+              const { createHash } = require("node:crypto");
+              const fs = require("node:fs");
+              const key = fs.readFileSync(process.argv[1], "utf8").trim();
+              if (
+                Buffer.byteLength(key) < 32 ||
+                key.includes("\0") ||
+                key.includes("\n")
+              ) {
+                throw new Error("deployment verifier key is too short or unsafe");
+              }
+              process.stdout.write(
+                createHash("sha256")
+                  .update(key)
+                  .digest("hex"),
+              );
+            ' /etc/openclaw-release-radar/deploy-verifier.key
+          )" = "$verifier_key_id"
+          sudo install -d -o root -g root -m 0755 \
+            /etc/systemd/system/openclaw-release-radar.service.d
+          publish_root_file \
+            "$source_root/openclaw-release-radar-install-release.sh" \
+            /usr/local/bin/openclaw-release-radar-install-release \
+            755 \
+            "$installer_sha"
+          publish_root_file \
+            "$source_root/openclaw-release-radar.service" \
+            /etc/systemd/system/openclaw-release-radar.service \
+            644 \
+            "$application_service_sha"
+          publish_root_file \
+            "$source_root/openclaw-release-radar-reconcile-boot.service" \
+            /etc/systemd/system/openclaw-release-radar-reconcile-boot.service \
+            644 \
+            "$boot_sha"
+          publish_root_file \
+            "$source_root/openclaw-release-radar-reconcile.service" \
+            /etc/systemd/system/openclaw-release-radar-reconcile.service \
+            644 \
+            "$service_sha"
+          publish_root_file \
+            "$source_root/openclaw-release-radar-reconcile.timer" \
+            /etc/systemd/system/openclaw-release-radar-reconcile.timer \
+            644 \
+            "$timer_sha"
+          publish_root_file \
+            "$source_root/10-deploy-reconcile.conf" \
+            /etc/systemd/system/openclaw-release-radar.service.d/10-deploy-reconcile.conf \
+            644 \
+            "$dropin_sha"
+          sudo systemctl daemon-reload
+          sudo systemctl cat openclaw-release-radar.service >/dev/null
+          sudo systemctl enable --now openclaw-release-radar-reconcile.timer
+          test "$(sudo systemctl is-enabled openclaw-release-radar-reconcile.timer)" = enabled
+          test "$(sudo systemctl is-active openclaw-release-radar-reconcile.timer)" = active
+          REMOTE
+
+      - name: Verify server installer protocol
+        timeout-minutes: 5
+        run: |
+          installed_protocol="$(
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release protocol $INSTALLER_PROTOCOL"
+          )"
+          test "$installed_protocol" = "$INSTALLER_PROTOCOL"
 
       - name: Upload release tarball
+        timeout-minutes: 5
         run: |
-          scp -P "${{ secrets.DEPLOY_SSH_PORT }}" \
+          remote_upload="/tmp/$RELEASE_NAME-$DEPLOY_TRANSACTION_ID.tar.gz"
+          printf 'REMOTE_RELEASE_TARBALL=%s\n' "$remote_upload" >> "$GITHUB_ENV"
+          scp \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -P "${{ secrets.DEPLOY_SSH_PORT }}" \
             "$RELEASE_TARBALL" \
-            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}:/tmp/$RELEASE_NAME.tar.gz"
+            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}:$remote_upload"
 
-      - name: Install release on server
+      - name: Activate release pending verification
+        id: activate
+        timeout-minutes: 10
         run: |
-          ssh -p "${{ secrets.DEPLOY_SSH_PORT }}" \
-            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
-            "sudo /usr/local/bin/openclaw-release-radar-install-release /tmp/$RELEASE_NAME.tar.gz $RELEASE_NAME"
+          printf -v remote_command \
+            'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release activate %q %q %q %q %q %q %q' \
+            "$REMOTE_RELEASE_TARBALL" \
+            "$RELEASE_NAME" \
+            "$GITHUB_SHA" \
+            "$ARTIFACT_DIGEST" \
+            "$DEPLOY_TRANSACTION_ID" \
+            "$QUALITY_DB_PATH" \
+            "$REQUIRED_PROMOTION_RECEIPT_ID"
+          set +e
+          activation_output="$(
+            timeout --signal=TERM --kill-after=15s 8m \
+              ssh \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o IdentitiesOnly=yes \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=2 \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+                "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+                "$remote_command"
+          )"
+          activation_rc=$?
+          set -e
+          if [ "$activation_rc" -ne 0 ]; then
+            printf -v status_command \
+              'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release status %q %q %q %q' \
+              "$RELEASE_NAME" \
+              "$GITHUB_SHA" \
+              "$ARTIFACT_DIGEST" \
+              "$DEPLOY_TRANSACTION_ID"
+            activation_output="$(
+              ssh \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o IdentitiesOnly=yes \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=2 \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+                "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+                "$status_command"
+            )"
+          fi
+          ACTIVATION_OUTPUT="$activation_output" node <<'NODE'
+          const payload = JSON.parse(process.env.ACTIVATION_OUTPUT);
+          if (
+            payload.schemaVersion !== 1 ||
+            payload.status !== 'pending_verification' ||
+            payload.releaseName !== process.env.RELEASE_NAME ||
+            payload.releaseSha !== process.env.GITHUB_SHA ||
+            payload.artifactDigest !== process.env.ARTIFACT_DIGEST ||
+            payload.transactionId !== process.env.DEPLOY_TRANSACTION_ID ||
+            typeof payload.pendingStateHash !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(payload.pendingStateHash) ||
+            !Number.isSafeInteger(payload.deadlineEpoch) ||
+            payload.deadlineEpoch < Math.floor(Date.now() / 1000)
+          ) {
+            throw new Error('activation did not reach the exact pending-verification transaction');
+          }
+          NODE
+          printf '%s\n' "$activation_output" > "$RUNNER_TEMP/deploy-activation.json"
 
-      - name: Verify public health endpoint
+      - name: Verify public health endpoint and exact release
+        timeout-minutes: 10
         run: |
-          : "${HEALTHCHECK_URL:?Set DEPLOY_HEALTH_URL to https://your-domain.example/api/health}"
+          manifest_url="$PUBLIC_BASE/release-manifest.json?release=$GITHUB_SHA"
+          last_manifest=
+          last_payload=
           for _ in $(seq 1 20); do
-            if curl -fsS "$HEALTHCHECK_URL"; then
-              exit 0
+            if last_manifest="$(
+              curl \
+                --fail \
+                --silent \
+                --show-error \
+                --connect-timeout 5 \
+                --max-time 10 \
+                -H 'Cache-Control: no-cache' \
+                "$manifest_url"
+            )" &&
+              node -e '
+                const payload = JSON.parse(process.argv[1]);
+                const expectedControlPlane = {
+                  installer: {
+                    path: "ops/viralo/openclaw-release-radar-install-release.sh",
+                    sha256: process.argv[6],
+                  },
+                  applicationService: {
+                    path: "ops/viralo/openclaw-release-radar.service",
+                    sha256: process.argv[7],
+                  },
+                  reconcileBootService: {
+                    path: "ops/viralo/openclaw-release-radar-reconcile-boot.service",
+                    sha256: process.argv[8],
+                  },
+                  reconcileService: {
+                    path: "ops/viralo/openclaw-release-radar-reconcile.service",
+                    sha256: process.argv[9],
+                  },
+                  reconcileTimer: {
+                    path: "ops/viralo/openclaw-release-radar-reconcile.timer",
+                    sha256: process.argv[10],
+                  },
+                  serviceDropIn: {
+                    path: "ops/viralo/openclaw-release-radar.service.d/10-deploy-reconcile.conf",
+                    sha256: process.argv[11],
+                  },
+                };
+                const expectedKeys = [
+                  "artifactDigest",
+                  "controlPlane",
+                  "githubSha",
+                  "installerProtocol",
+                  "releaseName",
+                  "runtimeCodeRevision",
+                  "schemaVersion",
+                ];
+                if (
+                  JSON.stringify(Object.keys(payload).sort()) !== JSON.stringify(expectedKeys) ||
+                  payload.schemaVersion !== 4 ||
+                  payload.releaseName !== process.argv[2] ||
+                  payload.githubSha !== process.argv[3] ||
+                  payload.runtimeCodeRevision !== process.argv[3] ||
+                  payload.artifactDigest !== process.argv[4] ||
+                  payload.installerProtocol !== Number(process.argv[5]) ||
+                  JSON.stringify(payload.controlPlane) !== JSON.stringify(expectedControlPlane)
+                ) process.exit(1);
+              ' \
+                "$last_manifest" \
+                "$RELEASE_NAME" \
+                "$GITHUB_SHA" \
+                "$ARTIFACT_DIGEST" \
+                "$INSTALLER_PROTOCOL" \
+                "$INSTALLER_SHA256" \
+                "$APPLICATION_SERVICE_SHA256" \
+                "$RECONCILE_BOOT_UNIT_SHA256" \
+                "$RECONCILE_UNIT_SHA256" \
+                "$RECONCILE_TIMER_SHA256" \
+                "$SERVICE_DROPIN_SHA256" &&
+              last_payload="$(
+                curl \
+                  --fail \
+                  --silent \
+                  --show-error \
+                  --connect-timeout 5 \
+                  --max-time 10 \
+                  "$HEALTHCHECK_URL"
+              )"; then
+              if node -e '
+                const payload = JSON.parse(process.argv[1]);
+                const requiredChecks = [
+                  "closureProof",
+                  "database",
+                  "ingestion",
+                  "recommendation",
+                  "releaseWindow",
+                  "scoreAudit",
+                  "sourceIdentity",
+                ];
+                const checks = payload.checks;
+                const checkNames =
+                  checks && typeof checks === "object" && !Array.isArray(checks)
+                    ? Object.keys(checks).sort()
+                    : [];
+                if (
+                  payload.schemaVersion !== 1 ||
+                  payload.ok !== true ||
+                  payload.status !== "ready" ||
+                  !Array.isArray(payload.failures) ||
+                  payload.failures.length !== 0 ||
+                  JSON.stringify(checkNames) !==
+                    JSON.stringify([...requiredChecks].sort()) ||
+                  requiredChecks.some((name) => checks[name]?.ok !== true)
+                ) process.exit(1);
+              ' "$last_payload"; then
+                exit 0
+              fi
             fi
             sleep 3
           done
+          printf '%s\n' "$last_manifest" >&2
+          printf '%s\n' "$last_payload" >&2
           exit 1
+
+      - name: Verify deployed DB provenance and promotion gate
+        timeout-minutes: 5
+        run: |
+          status_payload="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 10 \
+              -H 'Cache-Control: no-cache' \
+              "$PUBLIC_BASE/api/status"
+          )"
+          provenance_payload="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 10 \
+              -H 'Cache-Control: no-cache' \
+              "$PUBLIC_BASE/api/validation/opportunities"
+          )"
+          receipt_payload="$(
+            curl \
+              --fail \
+              --silent \
+              --show-error \
+              --connect-timeout 5 \
+              --max-time 10 \
+              -H 'Cache-Control: no-cache' \
+              "$PUBLIC_BASE/api/receipts/$REQUIRED_PROMOTION_RECEIPT_ID"
+          )"
+          STATUS_PAYLOAD="$status_payload" \
+          PROVENANCE_PAYLOAD="$provenance_payload" \
+          RECEIPT_PAYLOAD="$receipt_payload" \
+          GIT_SHA="$GITHUB_SHA" \
+          REQUIRED_PROMOTION_RECEIPT_ID="$REQUIRED_PROMOTION_RECEIPT_ID" \
+          MAX_SCORE_AGE_HOURS="$MAX_SCORE_AGE_HOURS" \
+          MAX_REFRESH_AGE_HOURS="$MAX_REFRESH_AGE_HOURS" \
+          node <<'NODE'
+          const status = JSON.parse(process.env.STATUS_PAYLOAD);
+          const provenance = JSON.parse(process.env.PROVENANCE_PAYLOAD);
+          const receipt = JSON.parse(process.env.RECEIPT_PAYLOAD);
+          const expectedRevision = process.env.GIT_SHA;
+          const expectedReceiptId = process.env.REQUIRED_PROMOTION_RECEIPT_ID;
+
+          function positiveHours(name) {
+            const value = Number(process.env[name]);
+            if (!Number.isFinite(value) || value <= 0) {
+              throw new Error(`${name} must be a positive number`);
+            }
+            return value;
+          }
+
+          function requireFresh(timestamp, maxHours, label) {
+            const time = Date.parse(timestamp);
+            if (!Number.isFinite(time)) throw new Error(`${label} timestamp is invalid`);
+            const ageHours = (Date.now() - time) / 3_600_000;
+            if (ageHours < 0 || ageHours > maxHours) {
+              throw new Error(`${label} age ${ageHours.toFixed(2)}h exceeds ${maxHours}h`);
+            }
+          }
+
+          if (
+            status.schemaVersion !== 1 ||
+            status.refreshing !== false ||
+            status.lastError !== null ||
+            status.currentScoreAuthorizationStatus !== 'authorized' ||
+            status.currentScoreReceiptStatus !== 'success' ||
+            status.currentScoreReceiptId !== expectedReceiptId
+          ) {
+            throw new Error('status does not identify the explicitly promoted current score receipt');
+          }
+          if (
+            provenance.schemaVersion !== 2 ||
+            provenance.currentSeries?.codeRevision !== expectedRevision
+          ) {
+            throw new Error('runtime API code revision does not match the release manifest SHA');
+          }
+          if (
+            receipt.schemaVersion !== 1 ||
+            receipt.receipt?.receiptId !== expectedReceiptId ||
+            receipt.receipt?.outcome !== 'success' ||
+            receipt.receipt?.attempt?.codeRevision !== expectedRevision ||
+            receipt.receipt?.terminal?.payload?.codeRevision !== expectedRevision ||
+            receipt.receipt?.verification?.verified !== true
+          ) {
+            throw new Error('promoted receipt does not bind verified DB provenance to this release SHA');
+          }
+          requireFresh(
+            status.lastScoredAt,
+            positiveHours('MAX_SCORE_AGE_HOURS'),
+            'current score',
+          );
+          requireFresh(
+            receipt.receipt.terminal.finishedAt,
+            positiveHours('MAX_REFRESH_AGE_HOURS'),
+            'promoted refresh receipt',
+          );
+          NODE
+
+      - name: Verify deployed public UI
+        run: |
+          export public_base="$PUBLIC_BASE"
+          timeout --signal=TERM --kill-after=15s 8m \
+            bash -c 'API_BASE="$public_base" npm run ui:smoke'
+
+      - name: Authorize externally verified release
+        id: authorize
+        timeout-minutes: 10
+        env:
+          DEPLOY_VERIFIER_HMAC_KEY: ${{ secrets.DEPLOY_VERIFIER_HMAC_KEY }}
+        run: |
+          verifier_attestation="$(
+            ACTIVATION_PAYLOAD="$(
+              cat "$RUNNER_TEMP/deploy-activation.json"
+            )" node <<'NODE'
+          const { createHmac } = require('node:crypto');
+          const activation = JSON.parse(process.env.ACTIVATION_PAYLOAD);
+          const payload = {
+            schemaVersion: 1,
+            verificationId: process.env.DEPLOY_VERIFICATION_ID,
+            transactionId: process.env.DEPLOY_TRANSACTION_ID,
+            pendingStateHash: activation.pendingStateHash,
+            releaseName: process.env.RELEASE_NAME,
+            releaseSha: process.env.GITHUB_SHA,
+            artifactDigest: process.env.ARTIFACT_DIGEST,
+            deadlineEpoch: activation.deadlineEpoch,
+            phaseTransitionHash: activation.phaseTransitionHash,
+          };
+          if (
+            typeof payload.pendingStateHash !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(payload.pendingStateHash) ||
+            !Number.isSafeInteger(payload.deadlineEpoch) ||
+            typeof payload.phaseTransitionHash !== 'string' ||
+            !/^[0-9a-f]{64}$/.test(payload.phaseTransitionHash)
+          ) {
+            throw new Error('activation payload cannot produce a verifier attestation');
+          }
+          process.stdout.write(
+            createHmac('sha256', process.env.DEPLOY_VERIFIER_HMAC_KEY.trim())
+              .update(
+                `installer-verifier-attestation-v1\0${JSON.stringify(payload)}`,
+              )
+              .digest('hex'),
+          );
+          NODE
+          )"
+          printf -v authorize_command \
+            'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release authorize %q %q %q %q %q %q' \
+            "$RELEASE_NAME" \
+            "$GITHUB_SHA" \
+            "$ARTIFACT_DIGEST" \
+            "$DEPLOY_TRANSACTION_ID" \
+            "$DEPLOY_VERIFICATION_ID" \
+            "$verifier_attestation"
+          set +e
+          authorization_output="$(
+            timeout --signal=TERM --kill-after=15s 8m \
+              ssh \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o IdentitiesOnly=yes \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=2 \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+                "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+                "$authorize_command"
+          )"
+          authorization_rc=$?
+          set -e
+          if [ "$authorization_rc" -ne 0 ]; then
+            printf -v status_command \
+              'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release status %q %q %q %q' \
+              "$RELEASE_NAME" \
+              "$GITHUB_SHA" \
+              "$ARTIFACT_DIGEST" \
+              "$DEPLOY_TRANSACTION_ID"
+            authorization_output="$(
+              ssh \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o IdentitiesOnly=yes \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=2 \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+                "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+                "$status_command"
+            )"
+          fi
+          AUTHORIZATION_OUTPUT="$authorization_output" node <<'NODE'
+          const payload = JSON.parse(process.env.AUTHORIZATION_OUTPUT);
+          const allowed = new Set(['verified', 'commit_decided', 'committed']);
+          if (
+            payload.schemaVersion !== 1 ||
+            !allowed.has(payload.status) ||
+            payload.releaseName !== process.env.RELEASE_NAME ||
+            payload.releaseSha !== process.env.GITHUB_SHA ||
+            payload.artifactDigest !== process.env.ARTIFACT_DIGEST ||
+            payload.transactionId !== process.env.DEPLOY_TRANSACTION_ID
+          ) {
+            throw new Error('authorization did not durably bind the exact deployment transaction');
+          }
+          if (
+            payload.status === 'verified' &&
+            payload.verificationId !== process.env.DEPLOY_VERIFICATION_ID
+          ) {
+            throw new Error('authorization verification identity does not match this workflow run');
+          }
+          NODE
+
+      - name: Commit verified release
+        id: commit
+        timeout-minutes: 10
+        run: |
+          printf -v commit_command \
+            'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release commit %q %q %q %q' \
+            "$RELEASE_NAME" \
+            "$GITHUB_SHA" \
+            "$ARTIFACT_DIGEST" \
+            "$DEPLOY_TRANSACTION_ID"
+          set +e
+          timeout --signal=TERM --kill-after=15s 8m \
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "$commit_command"
+          commit_rc=$?
+          set -e
+          printf -v status_command \
+            'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release status %q %q %q %q' \
+            "$RELEASE_NAME" \
+            "$GITHUB_SHA" \
+            "$ARTIFACT_DIGEST" \
+            "$DEPLOY_TRANSACTION_ID"
+          deployment_status="$(
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "$status_command"
+          )"
+          current_state="$(
+            STATUS_PAYLOAD="$deployment_status" node -e '
+              process.stdout.write(JSON.parse(process.env.STATUS_PAYLOAD).status);
+            '
+          )"
+          if [ "$commit_rc" -ne 0 ] &&
+            { [ "$current_state" = "verified" ] ||
+              [ "$current_state" = "commit_decided" ]; }; then
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release reconcile"
+            deployment_status="$(
+              ssh \
+                -o BatchMode=yes \
+                -o ConnectTimeout=10 \
+                -o IdentitiesOnly=yes \
+                -o ServerAliveInterval=15 \
+                -o ServerAliveCountMax=2 \
+                -o StrictHostKeyChecking=yes \
+                -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+                -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+                "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+                "$status_command"
+            )"
+          fi
+          STATUS_PAYLOAD="$deployment_status" node <<'NODE'
+          const payload = JSON.parse(process.env.STATUS_PAYLOAD);
+          if (
+            payload.schemaVersion !== 1 ||
+            payload.status !== 'committed' ||
+            payload.outcome !== 'committed' ||
+            payload.releaseName !== process.env.RELEASE_NAME ||
+            payload.releaseSha !== process.env.GITHUB_SHA ||
+            payload.artifactDigest !== process.env.ARTIFACT_DIGEST ||
+            payload.transactionId !== process.env.DEPLOY_TRANSACTION_ID
+          ) {
+            throw new Error('deployment did not reach the exact committed transaction');
+          }
+          NODE
+
+      - name: Reconcile failed or interrupted deployment
+        if: ${{ always() && steps.activate.outcome != 'skipped' && steps.commit.outcome != 'success' }}
+        timeout-minutes: 10
+        run: |
+          printf -v status_command \
+            'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release status %q %q %q %q' \
+            "$RELEASE_NAME" \
+            "$GITHUB_SHA" \
+            "$ARTIFACT_DIGEST" \
+            "$DEPLOY_TRANSACTION_ID"
+          deployment_status="$(
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "$status_command"
+          )"
+          current_state="$(
+            STATUS_PAYLOAD="$deployment_status" node -e '
+              process.stdout.write(JSON.parse(process.env.STATUS_PAYLOAD).status);
+            '
+          )"
+          case "$current_state" in
+            committed|rolled_back|not_found)
+              exit 0
+              ;;
+            verified|commit_decided)
+              remote_action="sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release reconcile"
+              expected_state=committed
+              ;;
+            pending_verification)
+              printf -v remote_action \
+                'sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release rollback %q %q %q %q' \
+                "$RELEASE_NAME" \
+                "$GITHUB_SHA" \
+                "$ARTIFACT_DIGEST" \
+                "$DEPLOY_TRANSACTION_ID"
+              expected_state=rolled_back
+              ;;
+            preparing|rollback_decided)
+              remote_action="sudo /usr/bin/env -i PATH=/opt/node-v24/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin /bin/bash -p --noprofile --norc /usr/local/bin/openclaw-release-radar-install-release reconcile"
+              expected_state=
+              ;;
+            *)
+              printf 'Refusing recovery from unknown deployment state: %s\n' "$current_state" >&2
+              exit 1
+              ;;
+          esac
+          ssh \
+            -o BatchMode=yes \
+            -o ConnectTimeout=10 \
+            -o IdentitiesOnly=yes \
+            -o ServerAliveInterval=15 \
+            -o ServerAliveCountMax=2 \
+            -o StrictHostKeyChecking=yes \
+            -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+            -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+            "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+            "$remote_action"
+          final_status="$(
+            ssh \
+              -o BatchMode=yes \
+              -o ConnectTimeout=10 \
+              -o IdentitiesOnly=yes \
+              -o ServerAliveInterval=15 \
+              -o ServerAliveCountMax=2 \
+              -o StrictHostKeyChecking=yes \
+              -o UserKnownHostsFile="$HOME/.ssh/known_hosts" \
+              -p "${{ secrets.DEPLOY_SSH_PORT }}" \
+              "${{ secrets.DEPLOY_SSH_USER }}@${{ secrets.DEPLOY_SSH_HOST }}" \
+              "$status_command"
+          )"
+          STATUS_PAYLOAD="$final_status" EXPECTED_STATE="$expected_state" node <<'NODE'
+          const payload = JSON.parse(process.env.STATUS_PAYLOAD);
+          const acceptable = process.env.EXPECTED_STATE
+            ? new Set([process.env.EXPECTED_STATE])
+            : new Set(['rolled_back', 'not_found']);
+          if (
+            payload.schemaVersion !== 1 ||
+            !acceptable.has(payload.status) ||
+            payload.releaseName !== process.env.RELEASE_NAME ||
+            payload.releaseSha !== process.env.GITHUB_SHA ||
+            payload.artifactDigest !== process.env.ARTIFACT_DIGEST ||
+            payload.transactionId !== process.env.DEPLOY_TRANSACTION_ID
+          ) {
+            throw new Error('deployment recovery did not reach the expected exact terminal state');
+          }
+          NODE

@@ -199,7 +199,7 @@ export const CLOSURE_RISK_DISPOSITION_WEIGHT: Record<ClosureRiskDisposition, num
   open_canonical_risk: 1.2,
   unsupported_closure_claim: 0.8,
   neutral_or_non_actionable: 0,
-  missing_evidence: 1.5,
+  missing_evidence: 0,
 };
 
 export function closureRiskDisposition(status: string): ClosureRiskDisposition {

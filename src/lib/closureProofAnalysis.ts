@@ -1,32 +1,90 @@
-import { createHash } from 'node:crypto';
 import { config } from '../config';
 import {
+  CLOSURE_PROOF_ANALYZER_VERSION,
+  RAW_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+} from './analysisVersions';
+import {
+  AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION,
+  commentEvidenceDigest,
+} from './commentEvidence';
+import {
+  acquireRenewableRefreshLease,
+  assertIssueEvidenceRevisions,
   db,
+  closureEvidenceIssuesNeedingRefresh,
   deleteCommentIssuePrLinksForIssues,
   deleteIssueClosureProofsForRelease,
-  deleteIssuePrLinksForIssues,
+  deleteIssueCommitReferencesForIssues,
+  deleteStateDerivedIssuePrLinksForIssues,
   getRelease,
+  getIssue,
+  validateIssueStateEventSnapshot,
   issueLabelEventCount,
   issueLabelSnapshotCountAt,
+  issueEvidenceRevisions,
   labelsForIssueAt,
+  latestIssueLabelEventAt,
+  markIssueClosureEvidenceRefreshed,
+  releaseClosureDependencyMembership,
+  releaseClosureDependencyIdentity,
+  releaseClosureProofIntegrity,
+  replaceReleaseClosureDependencySnapshot,
+  replaceIssueStateEventSnapshot,
   runInWriteTransaction,
-  upsertIssueClosureEvent,
-  upsertIssueCommentSnapshot,
   upsertIssueClosureProof,
   upsertIssueCommitReference,
   upsertIssuePrLink,
-  upsertIssueReopenEvent,
   upsertPullRequestFix,
+  type IssueEvidenceRevision,
 } from './db';
 import { classifyClosureProof, closureRationaleComments, type ClosureProofResult, type ClosureProofStatus } from './closureProof';
 import { closureRiskDisposition } from './closureProofTaxonomy';
 import { creditedFixLinkSql } from './fixProvenance';
-import { closureCommentCommitMentions, closureCommentPrMentions, listIssueCommentsBatch, listIssueFixEvidenceBatch, listPullRequestFixesBatch, pullRequestKey, type ClosureCommentCommitMention, type GhComment } from './github';
-import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleFunctionalityHint, applyTitleIssueShapeHint } from './labelOverrides';
+import {
+  closureCommentCommitMentions,
+  closureCommentPrMentions,
+  listIssueCommentSnapshotsBatch,
+  listIssueFixEvidenceBatch,
+  listPullRequestFixesBatch,
+  pullRequestKey,
+  type ClosureCommentCommitMention,
+  type GhComment,
+  type GhIssueCommentSnapshot,
+  type GhIssueFixEvidence,
+  type GhPullRequestFix,
+  type PullRequestLookup,
+} from './github';
+import {
+  applyClosureRiskSentimentHint,
+  applyLabelOverrides,
+  applyTitleFunctionalityHint,
+  applyTitleIssueShapeHint,
+} from './labelOverrides';
 import type { IssueClassification } from './llm';
-import { persistClosureProofInScoreAudit } from './closureProofPayload';
 import { releaseLabelCutoff } from './labelCutoff';
-import { checkReleaseCommitReachability, checkReleasePrReachability, resolveCommitOidPrefix, type CommitReachability } from './releaseReachability';
+import {
+  labelEventAuthorityReference,
+  scoringLabelInfoAtCutoff,
+} from './scoringLabelAuthority';
+import {
+  checkDirectCommitFirstContainingReleaseBulk,
+  checkReleaseCommitReachability,
+  checkReleasePrReachability,
+  createReleaseReachabilityRefreshContext,
+  resolveCommitOidPrefix,
+  UNKNOWN_REACHABILITY_RETRY_MS,
+  type CommitReachability,
+  type DirectCommitFirstContainingResult,
+  type ReleaseReachabilityRefreshContext,
+} from './releaseReachability';
+import {
+  ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION,
+  assertAuthoritativeIssueStateEvents,
+  issueStateEventSweepDigest,
+  issueStateEventsDigest,
+  normalizeIssueStateEvents,
+} from './stateEventSnapshot';
+import { throwIfAborted } from './cooperativeCancellation';
 
 export interface ClosureProofAnalysisResult {
   releaseTag: string;
@@ -42,12 +100,114 @@ export interface ClosureProofAnalysisResult {
 }
 
 export interface AnalyzeClosureProofOptions {
-  persistScoreAuditPayload?: boolean;
+  persistScoreAuditPayload?: false;
   refreshCommentPrMentionEvidence?: boolean;
+  refreshPrReachability?: boolean;
+  runContext?: ClosureProofRunContext;
+  preparedDependencies?: ClosureProofPreparedDependencies;
+  reachabilityContext?: ReleaseReachabilityRefreshContext;
+}
+
+export interface ClosureProofRunContext {
+  signal?: AbortSignal;
+  commentSnapshotsByIssue: Map<number, GhIssueCommentSnapshot>;
+  commentSnapshotRequests: Map<number, Promise<GhIssueCommentSnapshot>>;
+  commentsByIssue: Map<number, GhComment[]>;
+  commentSnapshotMetadataDriftIssueNumbers: Set<number>;
+  stateSnapshotMetadataDriftIssueNumbers: Set<number>;
+  fixEvidenceByIssue: Map<number, GhIssueFixEvidence>;
+  fixEvidenceRequests: Map<number, Promise<GhIssueFixEvidence | null>>;
+  pullRequestsByKey: Map<string, GhPullRequestFix | null>;
+  pullRequestRequests: Map<string, Promise<GhPullRequestFix | null>>;
+  permissiveMissingPullRequestKeys?: Set<string>;
+  assertCanWrite?: (stage: string) => void;
+  issueEvidenceRevisionsByIssue: Map<number, IssueEvidenceRevision>;
+}
+
+export interface ClosureProofPreparedDependencies {
+  releaseTag: string;
+  analysisStartedAt: string;
+  labelCutoff: string | null;
+  issueNumbers: number[];
+  sourceIssueNumbers: Set<number>;
+  allCommentsByIssue: Map<number, GhComment[]>;
+  canonicalGraph: Map<number, number[]>;
+  analysisIssueNumbers: number[];
+}
+
+export function createClosureProofRunContext(
+  options: {
+    assertCanWrite?: (stage: string) => void;
+    signal?: AbortSignal;
+  } = {},
+): ClosureProofRunContext {
+  return {
+    signal: options.signal,
+    commentSnapshotsByIssue: new Map(),
+    commentSnapshotRequests: new Map(),
+    commentsByIssue: new Map(),
+    commentSnapshotMetadataDriftIssueNumbers: new Set(),
+    stateSnapshotMetadataDriftIssueNumbers: new Set(),
+    fixEvidenceByIssue: new Map(),
+    fixEvidenceRequests: new Map(),
+    pullRequestsByKey: new Map(),
+    pullRequestRequests: new Map(),
+    permissiveMissingPullRequestKeys: new Set(),
+    assertCanWrite: options.assertCanWrite,
+    issueEvidenceRevisionsByIssue: new Map(),
+  };
+}
+
+async function withClosureProofWriteLease<T>(
+  runContext: ClosureProofRunContext | undefined,
+  operation: string,
+  work: (context: ClosureProofRunContext) => Promise<T>,
+): Promise<T> {
+  if (runContext?.assertCanWrite) return work(runContext);
+  const lease = acquireRenewableRefreshLease(`closure-proof:${operation}`);
+  const context = runContext ?? createClosureProofRunContext();
+  const previousAssertCanWrite = context.assertCanWrite;
+  context.assertCanWrite = (stage) => lease.assertHeld(stage);
+  try {
+    return await work(context);
+  } finally {
+    context.assertCanWrite = previousAssertCanWrite;
+    lease.release();
+  }
 }
 
 const trackedPrRepositorySqlLiteral = `${config.github.owner}/${config.github.repo}`.replace(/'/g, "''");
 const trackedPrRepositoryNameWithOwner = `${config.github.owner}/${config.github.repo}`;
+const FINAL_CLOSURE_COMMENT_LOOKBACK_MS = 72 * 60 * 60 * 1000;
+const FINAL_CLOSURE_TIMESTAMP_TOLERANCE_MS = 2_000;
+const CLOSURE_COMMENT_LINK_SOURCES = ['ClosureComment.fixProof', 'ClosureComment.prMention'] as const;
+const CLOSURE_COMMENT_LINK_SOURCES_SQL = CLOSURE_COMMENT_LINK_SOURCES.map((source) => `'${source}'`).join(', ');
+const STATUS_BEARING_PR_SOURCES = new Set([
+  'closedByPullRequestsReferences',
+  'ClosedEvent.closer',
+  ...CLOSURE_COMMENT_LINK_SOURCES,
+]);
+const AGGREGATE_CREDITED_FIX_LINK_SQL = creditedFixLinkSql('l', 'p');
+const FINAL_CLOSURE_EVENT_CTES = `
+ranked_closure AS (
+  SELECT
+    event.*,
+    ROW_NUMBER() OVER (
+      PARTITION BY event.issue_number
+      ORDER BY
+        julianday(event.closed_at) DESC,
+        event.connection_ordinal DESC,
+        event.event_id DESC
+    ) AS final_close_rank
+  FROM issue_closure_events event
+  WHERE event.closed_at IS NOT NULL
+),
+final_closure AS (
+  SELECT *
+  FROM ranked_closure
+  WHERE final_close_rank=1
+)
+`;
 const LINKED_PR_SOURCE_PRIORITY_SQL = `
   CASE l2.source
     WHEN 'closedByPullRequestsReferences' THEN 0
@@ -58,9 +218,305 @@ const LINKED_PR_SOURCE_PRIORITY_SQL = `
   END
 `;
 
+export function issueStateSnapshotMetadataMatches(
+  evidence: GhIssueFixEvidence | undefined,
+  issue: Pick<
+    NonNullable<ReturnType<typeof getIssue>>,
+    'number' | 'node_id' | 'state' | 'updated_at'
+  > | undefined,
+  commentSnapshot: Pick<
+    GhIssueCommentSnapshot,
+    'repositoryNodeId' | 'issueNumber' | 'issueNodeId' | 'issueNodeType' | 'issueUpdatedAt'
+  > | undefined,
+): boolean {
+  const stateSnapshot = evidence?.stateSnapshot;
+  return !!stateSnapshot &&
+    !!issue &&
+    !!commentSnapshot &&
+    stateSnapshot.schemaVersion === ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION &&
+    evidence.repositoryNodeId === commentSnapshot.repositoryNodeId &&
+    stateSnapshot.repositoryNodeId === evidence.repositoryNodeId &&
+    stateSnapshot.issueNumber === issue.number &&
+    stateSnapshot.issueNumber === commentSnapshot.issueNumber &&
+    evidence.issueNodeId === issue.node_id &&
+    evidence.issueNodeId === commentSnapshot.issueNodeId &&
+    evidence.issueNodeType === 'Issue' &&
+    commentSnapshot.issueNodeType === 'Issue' &&
+    stateSnapshot.issueState === issue.state &&
+    stateSnapshot.issueUpdatedAt === issue.updated_at &&
+    stateSnapshot.issueUpdatedAt === commentSnapshot.issueUpdatedAt &&
+    stateSnapshot.fetchedCount === stateSnapshot.totalCount &&
+    stateSnapshot.sweepCount >= 2 &&
+    stateSnapshot.stabilized === true &&
+    stateSnapshot.stabilization?.sweepCount === stateSnapshot.sweepCount &&
+    stateSnapshot.stabilization.secondSweep.sweepDigest === stateSnapshot.authorityDigest;
+}
+
+export function replaceVerifiedIssueStateEventSnapshot(
+  evidence: GhIssueFixEvidence,
+): void {
+  const snapshot = evidence.stateSnapshot;
+  const stabilization = snapshot.stabilization;
+  if (snapshot.repositoryNodeId !== evidence.repositoryNodeId) {
+    throw new Error(
+      `Issue #${evidence.issueNumber} state-event snapshot repository identity ` +
+      `${snapshot.repositoryNodeId} does not match fix evidence ${evidence.repositoryNodeId}`,
+    );
+  }
+  if (snapshot.issueNumber !== evidence.issueNumber) {
+    throw new Error(
+      `State-event snapshot issue #${snapshot.issueNumber} does not match fix evidence ` +
+      `issue #${evidence.issueNumber}`,
+    );
+  }
+  if (
+    typeof evidence.issueNodeId !== 'string' ||
+    evidence.issueNodeId.length === 0 ||
+    evidence.issueNodeId.trim() !== evidence.issueNodeId ||
+    evidence.issueNodeType !== 'Issue'
+  ) {
+    throw new Error(
+      `Issue #${evidence.issueNumber} fix evidence is missing a canonical Issue node identity`,
+    );
+  }
+  if (!snapshot.stabilized || !stabilization) {
+    throw new Error(
+      `Issue #${evidence.issueNumber} state-event snapshot is missing stabilization proof`,
+    );
+  }
+  const normalizedEvents = normalizeIssueStateEvents([
+    ...evidence.closureEvents.map((event) => {
+      if (event.issueNumber !== evidence.issueNumber) {
+        throw new Error(
+          `Closure event ${event.eventId} belongs to issue #${event.issueNumber}, ` +
+          `not #${evidence.issueNumber}`,
+        );
+      }
+      return {
+        eventId: event.eventId,
+        eventNodeType: event.eventType,
+        type: 'closed' as const,
+        occurredAt: event.closedAt ?? '',
+        connectionOrdinal: event.connectionOrdinal,
+        actorNodeId: event.actorNodeId,
+        actorLogin: event.actorLogin,
+        actorType: event.actorType,
+        stateReason: event.stateReason,
+        closerNodeId: event.closerNodeId,
+        closerType: event.closerType,
+        closerNumber: event.closerNumber,
+        closerOid: event.closerOid,
+      };
+    }),
+    ...evidence.reopenEvents.map((event) => {
+      if (event.issueNumber !== evidence.issueNumber) {
+        throw new Error(
+          `Reopen event ${event.eventId} belongs to issue #${event.issueNumber}, ` +
+          `not #${evidence.issueNumber}`,
+        );
+      }
+      return {
+        eventId: event.eventId,
+        eventNodeType: event.eventType,
+        type: 'reopened' as const,
+        occurredAt: event.reopenedAt ?? '',
+        connectionOrdinal: event.connectionOrdinal,
+        actorNodeId: event.actorNodeId,
+        actorLogin: event.actorLogin,
+        actorType: event.actorType,
+        stateReason: null,
+        closerNodeId: null,
+        closerType: null,
+        closerNumber: null,
+        closerOid: null,
+      };
+    }),
+  ]);
+  assertAuthoritativeIssueStateEvents(normalizedEvents);
+  const identity = {
+    repositoryNodeId: evidence.repositoryNodeId,
+    issueNodeId: evidence.issueNodeId,
+    issueNodeType: evidence.issueNodeType,
+  };
+  if (issueStateEventsDigest(normalizedEvents, identity) !== snapshot.eventsDigest) {
+    throw new Error(
+      `Issue #${evidence.issueNumber} state-event snapshot issue node identity or events ` +
+      `do not match the fix evidence`,
+    );
+  }
+  const authorityDigest = issueStateEventSweepDigest({
+    repositoryNodeId: evidence.repositoryNodeId,
+    issueNumber: evidence.issueNumber,
+    issueNodeId: evidence.issueNodeId,
+    issueNodeType: evidence.issueNodeType,
+    issueState: snapshot.issueState,
+    issueUpdatedAt: snapshot.issueUpdatedAt,
+    totalCount: snapshot.totalCount,
+    events: normalizedEvents,
+  });
+  if (
+    authorityDigest !== snapshot.authorityDigest ||
+    snapshot.sweepIdentity.sweepDigest !== authorityDigest ||
+    stabilization.secondSweep.sweepDigest !== authorityDigest
+  ) {
+    throw new Error(
+      `Issue #${evidence.issueNumber} state-event snapshot authority identity ` +
+      `does not match the fix evidence`,
+    );
+  }
+  runInWriteTransaction(() => {
+    replaceIssueStateEventSnapshot({
+      issue_number: evidence.issueNumber,
+      repository_node_id: evidence.repositoryNodeId,
+      issue_node_id: evidence.issueNodeId,
+      issue_node_type: evidence.issueNodeType,
+      schema_version: snapshot.schemaVersion,
+      issue_state: snapshot.issueState,
+      issue_updated_at: snapshot.issueUpdatedAt,
+      total_count: snapshot.totalCount,
+      fetched_count: snapshot.fetchedCount,
+      events_digest: snapshot.eventsDigest,
+      authority_digest: snapshot.authorityDigest,
+      sweep_count: snapshot.sweepCount,
+      stabilized: snapshot.stabilized,
+      stabilization,
+      closure_events: evidence.closureEvents.map((event) => ({
+        issue_number: event.issueNumber,
+        issue_node_id: evidence.issueNodeId,
+        event_id: event.eventId,
+        closed_at: event.closedAt,
+        connection_ordinal: event.connectionOrdinal,
+        actor_node_id: event.actorNodeId,
+        actor_login: event.actorLogin,
+        actor_type: event.actorType,
+        state_reason: event.stateReason,
+        closer_type: event.closerType,
+        closer_number: event.closerNumber,
+        closer_node_id: event.closerNodeId,
+        closer_oid: event.closerOid,
+        raw_json: JSON.stringify(event.raw),
+      })),
+      reopen_events: evidence.reopenEvents.map((event) => ({
+        issue_number: event.issueNumber,
+        issue_node_id: evidence.issueNodeId,
+        event_id: event.eventId,
+        reopened_at: event.reopenedAt,
+        connection_ordinal: event.connectionOrdinal,
+        actor_node_id: event.actorNodeId,
+        actor_login: event.actorLogin,
+        actor_type: event.actorType,
+        raw_json: JSON.stringify(event.raw),
+      })),
+    });
+    deleteStateDerivedIssuePrLinksForIssues([evidence.issueNumber]);
+    deleteIssueCommitReferencesForIssues([evidence.issueNumber]);
+    for (const link of evidence.prLinks) {
+      upsertIssuePrLink({
+        issue_number: link.issueNumber,
+        issue_node_id: evidence.issueNodeId,
+        pr_repository_owner: link.prRepositoryOwner,
+        pr_repository_name: link.prRepositoryName,
+        pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
+        pr_number: link.prNumber,
+        source: link.source,
+        will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
+        referenced_at: link.referencedAt,
+      });
+    }
+    for (const ref of evidence.commitReferences) {
+      upsertIssueCommitReference({
+        issue_number: ref.issueNumber,
+        issue_node_id: evidence.issueNodeId,
+        event_id: ref.eventId,
+        commit_oid: ref.commitOid,
+        commit_message_headline: ref.commitMessageHeadline,
+        commit_repository_owner: ref.commitRepositoryOwner,
+        commit_repository_name: ref.commitRepositoryName,
+        commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
+        is_cross_repository: ref.isCrossRepository ? 1 : 0,
+        is_direct_reference: ref.isDirectReference ? 1 : 0,
+        referenced_at: ref.referencedAt,
+        actor_login: ref.actorLogin,
+        raw_json: JSON.stringify(ref.raw),
+      });
+    }
+    for (const pr of evidence.pullRequests) {
+      upsertPullRequestFix({
+        pr_repository_owner: pr.repositoryOwner,
+        pr_repository_name: pr.repositoryName,
+        pr_repository_name_with_owner: pr.repositoryNameWithOwner,
+        pr_number: pr.number,
+        title: pr.title,
+        url: pr.url,
+        state: pr.state,
+        merged: pr.merged ? 1 : 0,
+        merged_at: pr.mergedAt,
+        merge_commit_oid: pr.mergeCommitOid,
+        base_ref_name: pr.baseRefName,
+      });
+    }
+  });
+}
+
+function finalClosureCommentLinkSql(linkAlias: string, closureAlias: string): string {
+  return `(
+    ${closureAlias}.event_id IS NOT NULL
+    AND ${linkAlias}.referenced_at IS NOT NULL
+    AND julianday(${linkAlias}.referenced_at) < julianday(${closureAlias}.closed_at)
+    AND julianday(${linkAlias}.referenced_at) >= julianday(${closureAlias}.closed_at, '-${FINAL_CLOSURE_COMMENT_LOOKBACK_MS / (60 * 60 * 1000)} hours')
+    AND (
+      ${closureAlias}.final_reopened_at IS NULL
+      OR julianday(${linkAlias}.referenced_at) > julianday(${closureAlias}.final_reopened_at)
+    )
+  )`;
+}
+
+function finalClosureCreditedFixLinkSql(
+  linkAlias: string,
+  prAlias: string,
+  closureAlias: string,
+): string {
+  const creditedLinkSql = linkAlias === 'l' && prAlias === 'p'
+    ? AGGREGATE_CREDITED_FIX_LINK_SQL
+    : creditedFixLinkSql(linkAlias, prAlias);
+  return `(
+    ${creditedLinkSql}
+    AND (
+      (
+        ${linkAlias}.source='ClosureComment.fixProof'
+        AND ${finalClosureCommentLinkSql(linkAlias, closureAlias)}
+      )
+      OR (
+        ${linkAlias}.source!='ClosureComment.fixProof'
+        AND ${closureAlias}.closer_type='PullRequest'
+        AND ${closureAlias}.closer_number=${linkAlias}.pr_number
+      )
+    )
+  )`;
+}
+
+function finalClosureLinkedPrContextSql(linkAlias: string, closureAlias: string): string {
+  return `(
+    (
+      ${linkAlias}.source IN (${CLOSURE_COMMENT_LINK_SOURCES_SQL})
+      AND ${finalClosureCommentLinkSql(linkAlias, closureAlias)}
+    )
+    OR (
+      ${linkAlias}.source IN ('closedByPullRequestsReferences', 'ClosedEvent.closer')
+      AND ${closureAlias}.closer_type='PullRequest'
+      AND ${closureAlias}.closer_number=${linkAlias}.pr_number
+    )
+    OR ${linkAlias}.source NOT IN (
+      ${CLOSURE_COMMENT_LINK_SOURCES_SQL},
+      'closedByPullRequestsReferences',
+      'ClosedEvent.closer'
+    )
+  )`;
+}
+
 const closedIssueRowsStmt = db.prepare(`
 WITH target AS (
-  SELECT * FROM releases WHERE tag=?
+  SELECT * FROM releases WHERE tag=? AND catalog_active=1
 )
 SELECT DISTINCT
   i.number,
@@ -73,7 +529,9 @@ WHERE i.closed_at IS NOT NULL
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
     (SELECT MIN(next.published_at) FROM releases next
-     WHERE next.published_at > target.published_at AND next.prerelease=0),
+     WHERE next.published_at > target.published_at
+       AND next.prerelease=0
+       AND next.catalog_active=1),
     '9999-12-31T23:59:59Z'
   )
 ORDER BY i.closed_at DESC
@@ -81,7 +539,7 @@ ORDER BY i.closed_at DESC
 
 const allClosedIssueRowsStmt = db.prepare(`
 WITH target AS (
-  SELECT * FROM releases WHERE tag=?
+  SELECT * FROM releases WHERE tag=? AND catalog_active=1
 )
 SELECT DISTINCT i.number
 FROM issues i
@@ -91,7 +549,9 @@ WHERE i.closed_at IS NOT NULL
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
     (SELECT MIN(next.published_at) FROM releases next
-     WHERE next.published_at > target.published_at AND next.prerelease=0),
+     WHERE next.published_at > target.published_at
+       AND next.prerelease=0
+       AND next.catalog_active=1),
     '9999-12-31T23:59:59Z'
   )
 ORDER BY i.number DESC
@@ -101,12 +561,32 @@ const aggregateRowsStmt = db.prepare(`
 WITH selected(issue_number) AS (
   SELECT value FROM json_each(?)
 ),
+${FINAL_CLOSURE_EVENT_CTES},
 window_closure AS (
-  SELECT e.*
-  FROM issue_closure_events e
+  SELECT
+    e.*,
+    wi.closed_at AS issue_closed_at,
+    (
+      SELECT r.reopened_at
+      FROM issue_reopen_events r
+      WHERE r.issue_number=e.issue_number
+        AND r.reopened_at IS NOT NULL
+        AND (
+          julianday(r.reopened_at) < julianday(e.closed_at)
+          OR (
+            julianday(r.reopened_at)=julianday(e.closed_at)
+            AND r.connection_ordinal < e.connection_ordinal
+          )
+        )
+      ORDER BY
+        julianday(r.reopened_at) DESC,
+        r.connection_ordinal DESC,
+        r.event_id DESC
+      LIMIT 1
+    ) AS final_reopened_at
+  FROM final_closure e
   JOIN issues wi
     ON wi.number=e.issue_number
-   AND ABS(unixepoch(wi.closed_at) - unixepoch(e.closed_at)) <= 2
 )
 SELECT
   i.number,
@@ -127,26 +607,28 @@ SELECT
   c.affects_version,
   c.confidence,
   c.rationale,
-  GROUP_CONCAT(DISTINCT e.state_reason) AS state_reasons,
-  GROUP_CONCAT(DISTINCT e.actor_login) AS closure_actors,
-  GROUP_CONCAT(DISTINCT e.closed_at) AS closure_event_closed_at,
-  COUNT(DISTINCT e.event_id) AS closure_events,
+  e.state_reason AS state_reasons,
+  e.actor_login AS closure_actors,
+  e.closed_at AS closure_event_closed_at,
+  e.connection_ordinal AS closure_event_connection_ordinal,
+  e.final_reopened_at,
+  CASE WHEN e.event_id IS NULL THEN 0 ELSE 1 END AS closure_events,
     COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l', 'p')}
+       AND ${finalClosureCreditedFixLinkSql('l', 'p', 'e')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
       THEN l.pr_repository_name_with_owner || '#' || l.pr_number END
   ) AS closing_links,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l', 'p')}
+       AND ${finalClosureCreditedFixLinkSql('l', 'p', 'e')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
       THEN p.pr_repository_name_with_owner || '#' || p.pr_number END
   ) AS merged_closing_prs,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l', 'p')}
+       AND ${finalClosureCreditedFixLinkSql('l', 'p', 'e')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
        AND rpr.status='reachable'
@@ -154,7 +636,7 @@ SELECT
   ) AS reachable_closing_prs,
   COUNT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l', 'p')}
+       AND ${finalClosureCreditedFixLinkSql('l', 'p', 'e')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
        AND p.merged=1
        AND rpr.status='not_reachable'
@@ -162,7 +644,7 @@ SELECT
   ) AS not_reachable_closing_prs,
   GROUP_CONCAT(DISTINCT CASE
       WHEN e.state_reason='COMPLETED'
-       AND ${creditedFixLinkSql('l', 'p')}
+       AND ${finalClosureCreditedFixLinkSql('l', 'p', 'e')}
        AND l.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
       THEN p.pr_repository_name_with_owner || '#' || p.pr_number || ':' || COALESCE(p.title, '')
     END
@@ -181,6 +663,7 @@ SELECT
         'repositoryName', linked.pr_repository_name,
         'repositoryNameWithOwner', linked.pr_repository_name_with_owner,
         'source', linked.source,
+        'trustedFixProof', linked.trusted_fix_proof,
       'willCloseTarget', linked.will_close_target,
       'referencedAt', linked.referenced_at,
       'sourceCommentDatabaseId', linked.source_comment_database_id,
@@ -208,10 +691,18 @@ SELECT
         p2.url,
         p2.state,
         p2.merged,
-        p2.merged_at
+        p2.merged_at,
+        CASE
+          WHEN e.state_reason='COMPLETED'
+           AND ${finalClosureCreditedFixLinkSql('l2', 'p2', 'e')}
+           AND l2.pr_repository_name_with_owner='${trackedPrRepositorySqlLiteral}'
+          THEN 1
+          ELSE 0
+        END AS trusted_fix_proof
       FROM issue_pr_links l2
         LEFT JOIN pull_request_fixes p2 ON p2.pr_repository_name_with_owner=l2.pr_repository_name_with_owner AND p2.pr_number=l2.pr_number
       WHERE l2.issue_number=i.number
+        AND ${finalClosureLinkedPrContextSql('l2', 'e')}
         ORDER BY
           CASE WHEN p2.state='OPEN' AND p2.merged=0 THEN 0 ELSE 1 END,
           l2.pr_repository_name_with_owner,
@@ -252,8 +743,22 @@ ORDER BY r.referenced_at
 `);
 
 const releasePublishedAtStmt = db.prepare(`
-SELECT published_at FROM releases WHERE tag=?
+SELECT published_at FROM releases WHERE tag=? AND catalog_active=1
 `);
+
+const activeStableReleaseBoundaryRowsStmt = db.prepare(`
+SELECT tag
+FROM releases
+WHERE prerelease=0
+  AND catalog_active=1
+ORDER BY catalog_rank IS NULL, catalog_rank, published_at DESC, tag
+`);
+
+function immediateStablePredecessorTag(targetTag: string): string | null {
+  const rows = activeStableReleaseBoundaryRowsStmt.all() as Array<{ tag: string }>;
+  const targetIndex = rows.findIndex((row) => row.tag === targetTag);
+  return targetIndex >= 0 ? rows[targetIndex + 1]?.tag ?? null : null;
+}
 
 const crossReleaseTerminalProofRowsStmt = db.prepare(`
 SELECT p.release_tag, p.status, p.summary, p.evidence_json, r.published_at
@@ -261,6 +766,7 @@ FROM issue_closure_proofs p
 LEFT JOIN releases r ON r.tag=p.release_tag
 WHERE p.issue_number=?
   AND p.release_tag!=?
+  AND r.catalog_active=1
 ORDER BY r.published_at IS NULL, r.published_at DESC, p.release_tag DESC
 `);
 
@@ -270,7 +776,9 @@ FROM releases source
 JOIN releases later
   ON later.prerelease=0
  AND later.published_at > source.published_at
+ AND later.catalog_active=1
 WHERE source.tag=?
+  AND source.catalog_active=1
 ORDER BY later.published_at ASC
 `);
 
@@ -278,7 +786,8 @@ const latestStableReleaseStmt = db.prepare(`
 SELECT tag, published_at
 FROM releases
 WHERE prerelease=0
-ORDER BY published_at DESC
+  AND catalog_active=1
+ORDER BY catalog_rank IS NULL, catalog_rank, published_at DESC
 LIMIT 1
 `);
 
@@ -293,7 +802,9 @@ JOIN releases r
   ON r.tag=rpr.tag
  AND r.prerelease=0
  AND r.published_at > source.published_at
+ AND r.catalog_active=1
 WHERE source.tag=?
+  AND source.catalog_active=1
 ORDER BY r.published_at ASC
 LIMIT 1
 `);
@@ -307,12 +818,127 @@ WHERE tag=?
 `);
 
 const issueExistsStmt = db.prepare(`SELECT 1 FROM issues WHERE number=?`);
+const issueFinalClosureContextRowsStmt = db.prepare(`
+WITH ${FINAL_CLOSURE_EVENT_CTES}
+SELECT
+  i.number,
+  i.closed_at AS issue_closed_at,
+  closure.closed_at AS final_closed_at,
+  closure.connection_ordinal AS final_connection_ordinal,
+  closure.actor_login AS final_actor_login,
+  (
+    SELECT r.reopened_at
+    FROM issue_reopen_events r
+    WHERE r.issue_number=i.number
+      AND r.reopened_at IS NOT NULL
+      AND closure.event_id IS NOT NULL
+      AND (
+        julianday(r.reopened_at) < julianday(closure.closed_at)
+        OR (
+          julianday(r.reopened_at)=julianday(closure.closed_at)
+          AND r.connection_ordinal < closure.connection_ordinal
+        )
+      )
+    ORDER BY
+      julianday(r.reopened_at) DESC,
+      r.connection_ordinal DESC,
+      r.event_id DESC
+    LIMIT 1
+  ) AS final_reopened_at
+FROM issues i
+LEFT JOIN final_closure closure ON closure.issue_number=i.number
+WHERE i.number IN (SELECT value FROM json_each(?))
+`);
+const issueCommentMetadataRowsStmt = db.prepare(`
+SELECT
+  issues.number,
+  issues.updated_at,
+  issues.comments,
+  snapshots.schema_version AS snapshot_schema_version,
+  snapshots.issue_updated_at AS snapshot_issue_updated_at,
+  snapshots.comment_count AS snapshot_comment_count,
+  snapshots.fetched_comment_count AS snapshot_fetched_comment_count,
+  snapshots.comments_digest AS snapshot_comments_digest,
+  snapshots.repository_node_id AS snapshot_repository_node_id,
+  snapshots.issue_node_id AS snapshot_issue_node_id,
+  snapshots.issue_author_node_id AS snapshot_issue_author_node_id,
+  snapshots.issue_author_login AS snapshot_issue_author_login,
+  snapshots.issue_author_type AS snapshot_issue_author_type,
+  snapshots.authority_digest AS snapshot_authority_digest,
+  snapshots.stabilization_identity_digest AS snapshot_stabilization_identity_digest,
+  classifications.classified_updated_at,
+  classifications.classified_comments_digest,
+  classifications.source_identity_digest AS classification_source_identity_digest
+FROM issues
+LEFT JOIN issue_comment_snapshots snapshots ON snapshots.issue_number=issues.number
+LEFT JOIN classifications ON classifications.issue_number=issues.number
+WHERE issues.number IN (SELECT value FROM json_each(?))
+`);
+const mutablePullRequestLookupsStmt = db.prepare(`
+SELECT DISTINCT
+  links.pr_repository_owner,
+  links.pr_repository_name,
+  links.pr_repository_name_with_owner,
+  links.pr_number
+FROM issue_pr_links links
+LEFT JOIN pull_request_fixes pull
+  ON pull.pr_repository_name_with_owner=links.pr_repository_name_with_owner
+ AND pull.pr_number=links.pr_number
+WHERE pull.pr_number IS NULL
+   OR (
+     UPPER(COALESCE(pull.state, ''))='OPEN'
+     AND (
+       pull.checked_at IS NULL
+       OR unixepoch(pull.checked_at) < unixepoch('now', '-' || ? || ' minutes')
+     )
+   )
+   OR (
+     pull.merged=0
+     AND UPPER(COALESCE(pull.state, ''))!='OPEN'
+     AND (
+       pull.checked_at IS NULL
+       OR unixepoch(pull.checked_at) < unixepoch('now', '-' || ? || ' minutes')
+     )
+   )
+ORDER BY links.pr_repository_name_with_owner, links.pr_number
+`);
+const deleteExpiredUnknownDirectCommitProofsStmt = db.prepare(`
+DELETE FROM issue_closure_proofs
+WHERE release_tag=?
+  AND checked_at < ?
+  AND EXISTS (
+    SELECT 1
+    FROM json_each(
+      CASE WHEN json_valid(issue_closure_proofs.evidence_json)
+        THEN issue_closure_proofs.evidence_json
+        ELSE '{}'
+      END,
+      '$.directFixCommitProof'
+    ) proof
+    WHERE json_extract(proof.value, '$.status')='unknown'
+  )
+`);
 
-export async function analyzeClosureProofsForRelease(
+export async function discoverClosureProofDependenciesForRelease(
   releaseTag: string,
-  options: AnalyzeClosureProofOptions = {},
-): Promise<ClosureProofAnalysisResult> {
-  const persistScoreAuditPayload = options.persistScoreAuditPayload ?? true;
+  options: {
+    runContext?: ClosureProofRunContext;
+    refreshCommentPrMentionEvidence?: boolean;
+  } = {},
+): Promise<ClosureProofPreparedDependencies> {
+  if (!options.runContext?.assertCanWrite) {
+    return withClosureProofWriteLease(
+      options.runContext,
+      `discover:${releaseTag}`,
+      (runContext) => discoverClosureProofDependenciesForRelease(releaseTag, {
+        ...options,
+        runContext,
+      }),
+    );
+  }
+  const runContext = options.runContext;
+  assertClosureProofWriteAllowed(runContext, `unknown direct commit proof freshness for ${releaseTag}`);
+  invalidateExpiredUnknownDirectCommitProofs(releaseTag);
   const refreshCommentPrMentions = options.refreshCommentPrMentionEvidence ?? true;
   const analysisStartedAt = new Date().toISOString();
   const release = getRelease(releaseTag);
@@ -320,49 +946,193 @@ export async function analyzeClosureProofsForRelease(
   const closedRows = closedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = closedRows.map((row) => row.number);
   const sourceIssueNumbers = new Set(issueNumbers);
+  const commentsByIssue = await commentsForIssues(runContext, issueNumbers);
   const sourceAggregateRows = issueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(issueNumbers), releaseTag) as Array<any>
     : [];
-  const commentsByIssue = await listIssueCommentsBatch(issueNumbers);
-  persistCommentSnapshots(commentsByIssue);
-  const allCommentsByIssue = new Map(commentsByIssue);
+  const allCommentsByIssue = runContext.commentsByIssue;
   const canonicalIssueNumbers = new Set<number>();
   const canonicalGraph = new Map<number, number[]>();
-  const sourceClosedAtByIssue = new Map(sourceAggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
+  const sourceClosureContextByIssue = new Map(sourceAggregateRows.map((row: any) => [
+    Number(row.number),
+    {
+      closedAt: (row.closure_event_closed_at ?? row.closed_at) as string | null,
+      finalReopenedAt: row.final_reopened_at as string | null,
+      closureActors: splitCsv(row.closure_actors),
+    },
+  ]));
   for (const issueNumber of issueNumbers) {
-    const closureContextComments = closureRationaleComments(commentsByIssue.get(issueNumber) ?? [], sourceClosedAtByIssue.get(issueNumber));
-    const numbers = canonicalIssueNumbersFromComments(closureContextComments, issueNumber, knownIssueNumber);
+    const numbers = trustedCanonicalIssueNumbersFromComments(
+      commentsByIssue.get(issueNumber) ?? [],
+      issueNumber,
+      sourceClosureContextByIssue.get(issueNumber),
+      knownIssueNumber,
+    );
     canonicalGraph.set(issueNumber, numbers);
     for (const number of numbers) canonicalIssueNumbers.add(number);
   }
-  await expandCanonicalGraph(canonicalGraph, allCommentsByIssue, [...canonicalIssueNumbers]);
+  await expandCanonicalGraph(
+    canonicalGraph,
+    allCommentsByIssue,
+    [...canonicalIssueNumbers],
+    (numbers) => commentsForIssues(runContext, numbers),
+    false,
+  );
   const terminalCanonicalIssuesToBackfill = terminalCanonicalIssuesNeedingEvidence(releaseTag, issueNumbers, canonicalGraph);
   if (terminalCanonicalIssuesToBackfill.length) {
-    await refreshRawClosureEvidence(terminalCanonicalIssuesToBackfill);
-    await checkReleasePrReachability(releaseTag);
-    const missingComments = terminalCanonicalIssuesToBackfill.filter((number) => !allCommentsByIssue.has(number));
-    if (missingComments.length) {
-      const fetched = await listIssueCommentsBatch(missingComments);
-      persistCommentSnapshots(fetched);
-      for (const number of missingComments) allCommentsByIssue.set(number, fetched.get(number) ?? []);
-    }
+    await refreshRawClosureEvidence(terminalCanonicalIssuesToBackfill, runContext);
+    await commentsForIssues(runContext, terminalCanonicalIssuesToBackfill);
   }
-  const analysisIssueNumbers = uniqueNumbers([...issueNumbers, ...terminalCanonicalIssuesToBackfill]);
+  const analysisIssueNumbers = closureProofDependencyIssueNumbers(
+    issueNumbers,
+    canonicalGraph,
+    terminalCanonicalIssuesToBackfill,
+  );
   if (refreshCommentPrMentions) {
-    await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue);
+    await refreshClosureCommentPrMentionEvidence(analysisIssueNumbers, allCommentsByIssue, runContext);
   }
-  await checkReleasePrReachability(releaseTag);
+  return {
+    releaseTag,
+    analysisStartedAt,
+    labelCutoff,
+    issueNumbers,
+    sourceIssueNumbers,
+    allCommentsByIssue,
+    canonicalGraph,
+    analysisIssueNumbers,
+  };
+}
+
+export async function refreshMutablePullRequestMetadata(
+  runContext?: ClosureProofRunContext,
+): Promise<number> {
+  if (!runContext?.assertCanWrite) {
+    return withClosureProofWriteLease(
+      runContext,
+      'mutable-pr-metadata',
+      (leasedContext) => refreshMutablePullRequestMetadata(leasedContext),
+    );
+  }
+  const lookups = (mutablePullRequestLookupsStmt.all(
+    config.refresh.openPullRequestRefreshMinutes,
+    config.refresh.closedPullRequestRefreshMinutes,
+  ) as unknown as Array<{
+    pr_repository_owner: string;
+    pr_repository_name: string;
+    pr_repository_name_with_owner: string;
+    pr_number: number;
+  }>).map((row) => ({
+    prNumber: row.pr_number,
+    prRepositoryOwner: row.pr_repository_owner,
+    prRepositoryName: row.pr_repository_name,
+    prRepositoryNameWithOwner: row.pr_repository_name_with_owner,
+  }));
+  const pullRequests = await pullRequestsForLookups(runContext, lookups, {
+    allowMissing: true,
+    refreshMissing: true,
+  });
+  assertClosureProofWriteAllowed(runContext, 'mutable pull request metadata persistence');
+  runInWriteTransaction(() => {
+    assertClosureProofWriteAllowed(
+      runContext,
+      'mutable pull request metadata persistence transaction',
+    );
+    for (const pullRequest of pullRequests.values()) {
+      upsertPullRequestFix({
+        pr_repository_owner: pullRequest.repositoryOwner,
+        pr_repository_name: pullRequest.repositoryName,
+        pr_repository_name_with_owner: pullRequest.repositoryNameWithOwner,
+        pr_number: pullRequest.number,
+        title: pullRequest.title,
+        url: pullRequest.url,
+        state: pullRequest.state,
+        merged: pullRequest.merged ? 1 : 0,
+        merged_at: pullRequest.mergedAt,
+        merge_commit_oid: pullRequest.mergeCommitOid,
+        base_ref_name: pullRequest.baseRefName,
+      });
+    }
+  });
+  return pullRequests.size;
+}
+
+export async function analyzeClosureProofsForRelease(
+  releaseTag: string,
+  options: AnalyzeClosureProofOptions = {},
+): Promise<ClosureProofAnalysisResult> {
+  if (!options.runContext?.assertCanWrite) {
+    return withClosureProofWriteLease(
+      options.runContext,
+      `analyze:${releaseTag}`,
+      (runContext) => analyzeClosureProofsForRelease(releaseTag, {
+        ...options,
+        runContext,
+      }),
+    );
+  }
+  const legacyPersistScoreAuditPayload = (
+    options as AnalyzeClosureProofOptions & { persistScoreAuditPayload?: unknown }
+  ).persistScoreAuditPayload;
+  if (legacyPersistScoreAuditPayload !== undefined && legacyPersistScoreAuditPayload !== false) {
+    throw new Error(
+      'persistScoreAuditPayload=true is disabled because closure proof analysis cannot mutate ' +
+      'the current score audit without rebuilding and sealing the full score run',
+    );
+  }
+  const refreshPrReachability = options.refreshPrReachability ?? true;
+  throwIfAborted(options.runContext!.signal);
+  const prepared = options.preparedDependencies ?? await discoverClosureProofDependenciesForRelease(releaseTag, {
+    runContext: options.runContext,
+    refreshCommentPrMentionEvidence: options.refreshCommentPrMentionEvidence,
+  });
+  if (prepared.releaseTag !== releaseTag) {
+    throw new Error(`Prepared closure-proof dependencies for ${prepared.releaseTag} cannot analyze ${releaseTag}`);
+  }
+  const {
+    labelCutoff,
+    issueNumbers,
+    sourceIssueNumbers,
+    allCommentsByIssue,
+    canonicalGraph,
+    analysisIssueNumbers: preparedAnalysisIssueNumbers,
+  } = prepared;
+  const analysisIssueNumbers = closureProofDependencyIssueNumbers(
+    issueNumbers,
+    canonicalGraph,
+    preparedAnalysisIssueNumbers,
+  );
+  captureClosureIssueRevisionBaselines(options.runContext!, analysisIssueNumbers);
+  const reachabilityContext = options.reachabilityContext ??
+    createReleaseReachabilityRefreshContext({
+      signal: options.runContext!.signal,
+    });
+  if (refreshPrReachability) {
+    await checkReleasePrReachability(releaseTag, {
+      context: reachabilityContext,
+      signal: options.runContext!.signal,
+      assertCanWrite: options.runContext!.assertCanWrite,
+    });
+  }
   const rawEvidence = rawClosureEvidenceCounts(issueNumbers);
   const aggregateRows = analysisIssueNumbers.length
     ? aggregateRowsStmt.all(JSON.stringify(analysisIssueNumbers), releaseTag) as Array<any>
     : [];
+  assertAggregateFinalClosureAuthority(aggregateRows);
   const aggregateByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row]));
-  const closedAtByIssue = new Map(aggregateRows.map((row: any) => [Number(row.number), row.closed_at as string | null]));
+  const closureWindowIssueNumbers = uniqueNumbers([
+    ...analysisIssueNumbers,
+    ...analysisIssueNumbers.flatMap((issueNumber) =>
+      canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph)),
+  ]);
+  const finalClosureWindowByIssue = finalClosureWindowsForIssues(closureWindowIssueNumbers);
   const closureContextCommentsByIssue = new Map<number, GhComment[]>();
   for (const issueNumber of analysisIssueNumbers) {
     closureContextCommentsByIssue.set(
       issueNumber,
-      closureRationaleComments(allCommentsByIssue.get(issueNumber) ?? [], closedAtByIssue.get(issueNumber)),
+      closureRationaleCommentsForFinalClosure(
+        allCommentsByIssue.get(issueNumber) ?? [],
+        finalClosureWindowByIssue.get(issueNumber),
+      ),
     );
   }
   const commitMentionsByIssue = new Map<number, ClosureCommentCommitMention[]>();
@@ -376,13 +1146,23 @@ export async function analyzeClosureProofsForRelease(
       closureContextCommentsByIssue.get(issueNumber) ?? [],
       issueNumber,
       resolveCommitOidPrefix,
+      {
+        finalClosureActors: finalClosureWindowByIssue.get(issueNumber)?.closureActors ?? [],
+      },
     );
     const canonicalMentions = canonicalIssueNumbersReachableFrom(issueNumber, canonicalGraph).flatMap((canonicalIssueNumber) =>
       closureCommentCommitMentions(
         issueNumber,
-        allCommentsByIssue.get(canonicalIssueNumber) ?? [],
+        closureRationaleCommentsForFinalClosure(
+          allCommentsByIssue.get(canonicalIssueNumber) ?? [],
+          finalClosureWindowByIssue.get(canonicalIssueNumber),
+        ),
         canonicalIssueNumber,
         resolveCommitOidPrefix,
+        {
+          finalClosureActors:
+            finalClosureWindowByIssue.get(canonicalIssueNumber)?.closureActors ?? [],
+        },
       ),
     );
     const mentions = [...directMentions, ...canonicalMentions];
@@ -402,8 +1182,29 @@ export async function analyzeClosureProofsForRelease(
       if (fullCommitOidRe.test(commitOid)) allCommitOids.add(commitOid.toLowerCase());
     }
   }
-  const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids]);
-  const laterCommitReachability = await laterReachableReleaseByCommit(releaseTag, commitReachability);
+  const commitReachability = await checkReleaseCommitReachability(releaseTag, [...allCommitOids], {
+    context: reachabilityContext,
+  });
+  const predecessorTag = immediateStablePredecessorTag(releaseTag);
+  const directCommitFirstContainingProofs = await checkDirectCommitFirstContainingReleaseBulk(
+    [...allCommitOids]
+      .sort()
+      .map((commitOid) => ({
+        repositoryNameWithOwner: trackedPrRepositoryNameWithOwner,
+        commitOid,
+        targetTag: releaseTag,
+        predecessorTag,
+      })),
+    { context: reachabilityContext },
+  );
+  const directCommitFirstContainingProofByCommit = new Map(
+    directCommitFirstContainingProofs.map((proof) => [proof.commitOid, proof]),
+  );
+  const laterCommitReachability = await laterReachableReleaseByCommit(
+    releaseTag,
+    commitReachability,
+    reachabilityContext,
+  );
   const preparedRows: Array<{
     issueNumber: number;
     result: ClosureProofResult;
@@ -411,7 +1212,12 @@ export async function analyzeClosureProofsForRelease(
   }> = [];
 
   for (const row of aggregateRows) {
-    const comments = (allCommentsByIssue.get(row.number) ?? []).map((comment) => ({
+    const trustedClosureComments = trustedClosureRationaleComments(
+      closureContextCommentsByIssue.get(row.number) ?? [],
+      row.author,
+      splitCsv(row.closure_actors),
+    );
+    const comments = trustedClosureComments.map((comment) => ({
       id: comment.id,
       issueNumber: row.number,
       url: comment.url ?? null,
@@ -426,7 +1232,11 @@ export async function analyzeClosureProofsForRelease(
     );
     const directMentions = (commitMentionsByIssue.get(row.number) ?? [])
       .filter((mention) => !canonicalMentionKeys.has(`${mention.sourceIssueNumber}:${mention.commitOid}`));
-    const closureCommitMentions = directClosureCommitMentions(row.number, row.direct_closer_commits, row.closed_at);
+    const closureCommitMentions = directClosureCommitMentions(
+      row.number,
+      row.direct_closer_commits,
+      row.closure_event_closed_at ?? row.closed_at,
+    );
     const directCommitProof = commitProofEvidence([
       ...directMentions,
       ...(useReferencedCommitProofIssues.has(row.number) ? referencedCommitMentionsByIssue.get(row.number) ?? [] : []),
@@ -436,18 +1246,20 @@ export async function analyzeClosureProofsForRelease(
       canonicalCommitMentionsByIssue.get(row.number) ?? [],
       commitReachability,
     );
-    const commitProof = directCommitProof;
-    const reachableFixCommits = unique(commitProof.filter((item) => item.status === 'reachable').map((item) => item.commitOid));
-    const notReachableFixCommits = unique(commitProof.filter((item) => item.status === 'not_reachable').map((item) => item.commitOid));
-    const unknownFixCommits = unique(commitProof.filter((item) => item.status === 'unknown').map((item) => item.commitOid));
-    const fixCommitSummary = {
-      hasReachableFixCommit: reachableFixCommits.length > 0,
-      hasNotReachableFixCommit: notReachableFixCommits.length > 0,
-      hasUnknownFixCommit: unknownFixCommits.length > 0,
-      reachableFixCommits,
-      notReachableFixCommits,
-      unknownFixCommits,
-    };
+    const trustedCanonicalIssues = canonicalIssueNumbersReachableFrom(
+      row.number,
+      canonicalGraph,
+    );
+    const releaseTagAnchorCommitContext = directCommitProof.filter((item) => item.releaseTagAnchor);
+    const commitProof = creditableDirectCommitProof(directCommitProof);
+    const fixCommitSummary = summarizeDirectCommitFirstContainingProofs({
+      releaseTag,
+      issueNumber: row.number,
+      commitProof,
+      proofByCommit: directCommitFirstContainingProofByCommit,
+    });
+    const issueDirectCommitFirstContainingProofs =
+      fixCommitSummary.directCommitFirstContainingProofs;
     const closureClassification = effectiveClosureProofClassification(row, labelCutoff);
     const result = closureClassification.missingClassification
       ? missingClassificationClosureProof(row, fixCommitSummary)
@@ -478,9 +1290,14 @@ export async function analyzeClosureProofsForRelease(
       fixCommitProof: commitProof,
       canonicalFixCommitProof: canonicalCommitProof,
       directFixCommitProof: directCommitProof,
+      directCommitFirstContainingProofs: issueDirectCommitFirstContainingProofs,
+      ...(releaseTagAnchorCommitContext.length > 0
+        ? { releaseTagAnchorCommitContext }
+        : {}),
       referencedCommitContext: referencedCommitMentionsByIssue.get(row.number) ?? [],
       canonicalFixCommitProofCount: canonicalCommitMentionsByIssue.get(row.number)?.length ?? 0,
-      canonicalIssueDetails: canonicalIssueDetails(row.number, (result.evidence.canonicalIssues ?? []) as number[]),
+      canonicalIssues: trustedCanonicalIssues,
+      canonicalIssueDetails: canonicalIssueDetails(row.number, trustedCanonicalIssues),
     };
     const relatedPrContext = relatedPrContextEvidence(releaseTag, evidence);
     if (hasRelatedPrContext(relatedPrContext)) evidence.relatedPrContext = relatedPrContext;
@@ -492,11 +1309,15 @@ export async function analyzeClosureProofsForRelease(
   }
 
   for (const item of preparedRows) {
-    const canonicalIssues = Array.isArray(item.evidence.canonicalIssues)
-      ? (item.evidence.canonicalIssues as unknown[])
-        .filter((n): n is number => typeof n === 'number' && knownIssueNumber(n))
-      : [];
-    canonicalGraph.set(item.issueNumber, canonicalIssues);
+    const canonicalIssues = canonicalIssueNumbersReachableFrom(
+      item.issueNumber,
+      canonicalGraph,
+    );
+    item.evidence.canonicalIssues = canonicalIssues;
+    item.evidence.canonicalIssueDetails = canonicalIssueDetails(
+      item.issueNumber,
+      canonicalIssues,
+    );
   }
   const resultByIssue = new Map(preparedRows.map((item) => [item.issueNumber, item.result]));
 
@@ -507,18 +1328,48 @@ export async function analyzeClosureProofsForRelease(
       issue_number: item.issueNumber,
       status: adjusted.status,
       summary: adjusted.summary,
-      evidence_json: JSON.stringify(adjusted.evidence),
+      evidence_json: JSON.stringify({
+        ...adjusted.evidence,
+        proofAnalyzerVersion: CLOSURE_PROOF_ANALYZER_VERSION,
+      }),
     };
   });
   const counts = new Map<string, number>();
   for (const row of proofRows) {
     counts.set(row.status, (counts.get(row.status) ?? 0) + 1);
   }
+  const dependencyMembership = releaseClosureDependencyMembership(issueNumbers, proofRows);
+  if (dependencyMembership.invalidEvidenceCount > 0) {
+    throw new Error(
+      `Closure proof construction produced ${dependencyMembership.invalidEvidenceCount} ` +
+      `invalid evidence row(s) for ${releaseTag}`,
+    );
+  }
+  const persistedDependencyIssueNumbers = new Set(dependencyMembership.issueNumbers);
+  const omittedGraphIssueNumbers = analysisIssueNumbers.filter(
+    (issueNumber) => !persistedDependencyIssueNumbers.has(issueNumber),
+  );
+  if (omittedGraphIssueNumbers.length > 0) {
+    throw new Error(
+      `Closure proof construction omitted canonical graph issue(s) for ${releaseTag}: ` +
+      omittedGraphIssueNumbers.map((issueNumber) => `#${issueNumber}`).join(', '),
+    );
+  }
+  const dependencyIdentity = releaseClosureDependencyIdentity(
+    releaseTag,
+    dependencyMembership.issueNumbers,
+  );
 
+  assertClosureProofWriteAllowed(options.runContext, `closure proof persistence for ${releaseTag}`);
   runInWriteTransaction(() => {
+    assertClosureProofWriteAllowed(
+      options.runContext,
+      `closure proof persistence transaction for ${releaseTag}`,
+    );
     deleteIssueClosureProofsForRelease(releaseTag);
+    assertClosureIssueRevisions(options.runContext!, analysisIssueNumbers);
     for (const row of proofRows) upsertIssueClosureProof(row);
-    if (persistScoreAuditPayload) persistClosureProofInScoreAudit(releaseTag);
+    replaceReleaseClosureDependencySnapshot(dependencyIdentity);
   });
 
   return {
@@ -536,16 +1387,100 @@ function commitProofEvidence(
   status: CommitReachability['status'];
   tagCommitOid: string | null;
   evidence: string;
+  releaseTagAnchor: boolean;
+  creditEligible: boolean;
 }> {
   return mentions.map((mention) => {
     const result = reachability.get(mention.commitOid);
+    const tagCommitOid = result?.tagCommitOid?.toLowerCase() ?? null;
+    const releaseTagAnchor = mention.source === 'ClosureComment.fixProof' &&
+      tagCommitOid != null &&
+      mention.commitOid.toLowerCase() === tagCommitOid;
     return {
       ...mention,
       status: result?.status ?? 'unknown',
       tagCommitOid: result?.tagCommitOid ?? null,
       evidence: result?.evidence ?? 'reachability_not_checked',
+      releaseTagAnchor,
+      creditEligible: !releaseTagAnchor,
     };
   });
+}
+
+function creditableDirectCommitProof<T extends { creditEligible?: boolean }>(proof: T[]): T[] {
+  return proof.filter((item) => item.creditEligible !== false);
+}
+
+type DirectCommitProofEvidenceRow = ReturnType<typeof commitProofEvidence>[number];
+
+function summarizeDirectCommitFirstContainingProofs(input: {
+  releaseTag: string;
+  issueNumber: number;
+  commitProof: DirectCommitProofEvidenceRow[];
+  proofByCommit: ReadonlyMap<string, DirectCommitFirstContainingResult>;
+}) {
+  const issueCommitOids = unique(input.commitProof.map((item) => item.commitOid));
+  const directCommitFirstContainingProofs = issueCommitOids
+    .map((commitOid) => input.proofByCommit.get(commitOid))
+    .filter((proof): proof is DirectCommitFirstContainingResult => proof != null);
+  if (directCommitFirstContainingProofs.length !== issueCommitOids.length) {
+    throw new Error(
+      `Direct-commit first-containing proof coverage is incomplete for ` +
+      `${input.releaseTag} issue #${input.issueNumber}`,
+    );
+  }
+  const targetReachableFixCommits = unique(
+    input.commitProof
+      .filter((item) => item.status === 'reachable')
+      .map((item) => item.commitOid),
+  );
+  const targetNotReachableFixCommits = unique(
+    input.commitProof
+      .filter((item) => item.status === 'not_reachable')
+      .map((item) => item.commitOid),
+  );
+  const targetUnknownFixCommits = unique(
+    input.commitProof
+      .filter((item) => item.status === 'unknown')
+      .map((item) => item.commitOid),
+  );
+  const reachableFixCommits = unique(
+    directCommitFirstContainingProofs
+      .filter((proof) => proof.creditEligible === true)
+      .map((proof) => proof.commitOid),
+  );
+  const predecessorContainedFixCommits = unique(
+    directCommitFirstContainingProofs
+      .filter((proof) => proof.reasonCode === 'predecessor_contains_commit')
+      .map((proof) => proof.commitOid),
+  );
+  const firstContainingUnknownFixCommits = unique(
+    directCommitFirstContainingProofs
+      .filter((proof) =>
+        proof.creditEligible !== true &&
+        proof.reasonCode !== 'predecessor_contains_commit' &&
+        proof.reasonCode !== 'target_commit_not_reachable')
+      .map((proof) => proof.commitOid),
+  );
+  const notReachableFixCommits = targetNotReachableFixCommits;
+  const unknownFixCommits = unique([
+    ...targetUnknownFixCommits,
+    ...firstContainingUnknownFixCommits,
+  ]);
+  return {
+    hasReachableFixCommit: targetReachableFixCommits.length > 0,
+    hasNotReachableFixCommit: notReachableFixCommits.length > 0,
+    hasUnknownFixCommit: unknownFixCommits.length > 0,
+    reachableFixCommits,
+    notReachableFixCommits,
+    unknownFixCommits,
+    targetReachableFixCommits,
+    targetNotReachableFixCommits,
+    targetUnknownFixCommits,
+    predecessorContainedFixCommits,
+    firstContainingUnknownFixCommits,
+    directCommitFirstContainingProofs,
+  };
 }
 
 function shouldUseReferencedCommitProof({
@@ -619,6 +1554,8 @@ function effectiveClosureProofClassification(
   labelResolver = labelsForIssueAt,
   eventCount = issueLabelEventCount,
   snapshotCountAt = issueLabelSnapshotCountAt,
+  labelEventResolver = latestIssueLabelEventAt,
+  eventAuthorizedForScoring = labelEventAuthorityReference,
 ): {
   labels: string[];
   currentLabels: string[];
@@ -626,6 +1563,7 @@ function effectiveClosureProofClassification(
   labelSource: 'current' | 'timeline' | 'snapshot' | 'missing_timeline';
   labelTimelineEventCount: number;
   labelSnapshotCount: number;
+  labelActors: Record<string, string | null>;
   rawClassification: IssueClassification;
   classification: IssueClassification;
   classificationDiff: Record<string, { raw: unknown; effective: unknown }>;
@@ -636,12 +1574,30 @@ function effectiveClosureProofClassification(
   const currentLabels = parseJsonArray(row.labels).filter((label): label is string => typeof label === 'string');
   const labelTimelineEventCount = Number.isInteger(issueNumber) && issueNumber > 0 ? eventCount(issueNumber) : 0;
   const labelSnapshotCount = Number.isInteger(issueNumber) && issueNumber > 0 ? snapshotCountAt(issueNumber, labelCutoff) : 0;
-  const labels = Number.isInteger(issueNumber) && issueNumber > 0
+  const labelsAtCutoff = Number.isInteger(issueNumber) && issueNumber > 0
     ? labelResolver(issueNumber, currentLabels, labelCutoff, {
       useFallbackWhenNoEvents: labelCutoff == null,
       useSnapshotWhenNoEvents: labelCutoff != null,
     })
     : currentLabels;
+  const labelAuthority = Number.isInteger(issueNumber) && issueNumber > 0
+    ? scoringLabelInfoAtCutoff(
+        issueNumber,
+        labelsAtCutoff,
+        labelCutoff,
+        eventAuthorizedForScoring,
+        labelEventResolver,
+      )
+    : {
+        labels: labelsAtCutoff,
+        authorizedScoringLabels: [],
+        labelActors: Object.fromEntries(
+          labelsAtCutoff.map((label) => [label, null]),
+        ),
+        authorityReferences: {},
+      };
+  const labels = labelAuthority.labels;
+  const labelActors = labelAuthority.labelActors;
   const labelSource = closureProofLabelSource(labelCutoff, labelTimelineEventCount, labelSnapshotCount);
   const labelEvidence = {
     labels,
@@ -650,6 +1606,7 @@ function effectiveClosureProofClassification(
     labelSource,
     labelTimelineEventCount,
     labelSnapshotCount,
+    labelActors,
   };
   if (!hasClassification(row)) {
     const fallback = missingClassificationFallback(row);
@@ -668,12 +1625,15 @@ function effectiveClosureProofClassification(
       applyLabelOverrides(
         applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
         labels,
+        labelAuthority,
       ),
       row.title ?? '',
       labels,
+      labelAuthority,
     ),
     row.title ?? '',
     labels,
+    labelAuthority,
   );
   return {
     ...labelEvidence,
@@ -728,6 +1688,12 @@ function missingClassificationClosureProof(
     reachableFixCommits?: string[];
     notReachableFixCommits?: string[];
     unknownFixCommits?: string[];
+    targetReachableFixCommits?: string[];
+    targetNotReachableFixCommits?: string[];
+    targetUnknownFixCommits?: string[];
+    predecessorContainedFixCommits?: string[];
+    firstContainingUnknownFixCommits?: string[];
+    directCommitFirstContainingProofs?: DirectCommitFirstContainingResult[];
   } = {},
 ): ClosureProofResult {
   const evidence = {
@@ -740,6 +1706,12 @@ function missingClassificationClosureProof(
     reachableFixCommits: fixCommitSummary.reachableFixCommits ?? [],
     notReachableFixCommits: fixCommitSummary.notReachableFixCommits ?? [],
     unknownFixCommits: fixCommitSummary.unknownFixCommits ?? [],
+    targetReachableFixCommits: fixCommitSummary.targetReachableFixCommits ?? [],
+    targetNotReachableFixCommits: fixCommitSummary.targetNotReachableFixCommits ?? [],
+    targetUnknownFixCommits: fixCommitSummary.targetUnknownFixCommits ?? [],
+    predecessorContainedFixCommits: fixCommitSummary.predecessorContainedFixCommits ?? [],
+    firstContainingUnknownFixCommits: fixCommitSummary.firstContainingUnknownFixCommits ?? [],
+    directCommitFirstContainingProofs: fixCommitSummary.directCommitFirstContainingProofs ?? [],
   };
   if (fixCommitSummary.hasUnknownFixCommit) {
     return {
@@ -889,6 +1861,60 @@ function canonicalIssueNumbersFromComments(
   return [...numbers].sort((a, b) => a - b);
 }
 
+type CanonicalClosureContext = {
+  closedAt: string | null;
+  finalReopenedAt: string | null;
+  closureActors: string[];
+};
+
+const TRUSTED_CLOSURE_RATIONALE_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+function normalizeCanonicalLogin(login: string | null | undefined): string {
+  return String(login ?? '').trim().toLowerCase();
+}
+
+function trustedClosureRationaleComments(
+  comments: GhComment[],
+  issueAuthor: string | null | undefined,
+  closureActors: string[],
+): GhComment[] {
+  const trustedAuthors = new Set([
+    normalizeCanonicalLogin(issueAuthor),
+    ...closureActors.map(normalizeCanonicalLogin),
+  ].filter(Boolean));
+  return comments.filter((comment) => {
+    const author = normalizeCanonicalLogin(comment.user?.login);
+    const association = String(comment.author_association ?? '').toUpperCase();
+    return TRUSTED_CLOSURE_RATIONALE_ASSOCIATIONS.has(association) ||
+      (!!author && trustedAuthors.has(author));
+  });
+}
+
+function trustedCanonicalIssueNumbersFromComments(
+  comments: GhComment[],
+  sourceIssueNumber: number,
+  context: CanonicalClosureContext | undefined,
+  issueNumberAllowed: (number: number) => boolean = () => true,
+): number[] {
+  if (!context?.closedAt) return [];
+  const closureActors = new Set(context.closureActors.map(normalizeCanonicalLogin).filter(Boolean));
+  const trustedComments = closureRationaleCommentsForFinalClosure(comments, {
+    closedAt: context.closedAt,
+    finalReopenedAt: context.finalReopenedAt,
+    closureActors: context.closureActors,
+  }).filter((comment) => {
+    const author = normalizeCanonicalLogin(comment.user?.login);
+    const association = String(comment.author_association ?? '').toUpperCase();
+    return TRUSTED_CLOSURE_RATIONALE_ASSOCIATIONS.has(association) ||
+      (!!author && closureActors.has(author));
+  });
+  return canonicalIssueNumbersFromComments(trustedComments, sourceIssueNumber, issueNumberAllowed);
+}
+
+function canonicalClosureContextsForIssues(issueNumbers: number[]): Map<number, CanonicalClosureContext> {
+  return selectedFinalClosureContextsForIssues(issueNumbers);
+}
+
 function canonicalIssueNumbersFromText(text: string): number[] {
   const numbers = new Set<number>();
   const canonicalReferenceRes = [
@@ -899,6 +1925,8 @@ function canonicalIssueNumbersFromText(text: string): number[] {
     /\b(?:close[sd]?|closing)\s+as\s+(?:a\s+)?(?:duplicate|dupe|superseded)\s*:\s*(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
     /\b(?:as\s+(?:a\s+)?)?(?:duplicate|dupe|superseded)\s+(?:of|by)\s+(?:the\s+)?(?:open\s+|closed\s+)?(?:canonical\s+)?(?:(?:issue|tracker|report)\s+)?(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
     /\b(?:tracked|centralized|consolidated)\s+(?:in|under|by)\s+(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/)?#?(\d+)\b/gim,
+    /\bconsolidat(?:e|es|ed|ing)\s+(?:this\s+)?(?:issue\s+|report\s+)?(?:in|into|under)\s+.{0,160}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)\b/gim,
+    /\bsuperseded\s+by\b.{0,160}(?:https?:\/\/github\.com\/openclaw\/openclaw\/issues\/|#)(\d+)\b/gim,
   ];
   for (const re of canonicalReferenceRes) {
     re.lastIndex = 0;
@@ -912,42 +1940,647 @@ function canonicalIssueNumbersFromText(text: string): number[] {
   return [...numbers].sort((a, b) => a - b);
 }
 
-function persistCommentSnapshots(commentsByIssue: Map<number, GhComment[]>): void {
-  if (commentsByIssue.size === 0) return;
-  runInWriteTransaction(() => {
-    for (const [issueNumber, comments] of commentsByIssue) {
-      upsertIssueCommentSnapshot({
-        issue_number: issueNumber,
-        comment_count: comments.length,
-        fetched_comment_count: comments.length,
-        latest_comment_updated_at: latestCommentUpdatedAt(comments),
-        comments_digest: commentDigest(comments),
+async function commentsForIssues(
+  runContext: ClosureProofRunContext,
+  issueNumbers: number[],
+  options: {
+    allowMetadataDrift?: boolean;
+    fetchSnapshots?: typeof listIssueCommentSnapshotsBatch;
+  } = {},
+): Promise<Map<number, GhComment[]>> {
+  const requested = uniqueNumbers(issueNumbers);
+  const fetchSnapshots = options.fetchSnapshots ?? listIssueCommentSnapshotsBatch;
+  const missing = requested.filter((issueNumber) =>
+    !runContext.commentSnapshotsByIssue.has(issueNumber) &&
+    !runContext.commentSnapshotRequests.has(issueNumber)
+  );
+  if (missing.length) {
+    throwIfAborted(runContext.signal);
+    captureClosureIssueRevisionBaselines(runContext, missing);
+    const batch = fetchSnapshots(missing, { signal: runContext.signal }).then((fetched) => {
+      const accepted = new Map<number, GhIssueCommentSnapshot>();
+      for (const issueNumber of missing) {
+        const snapshot = fetched.get(issueNumber);
+        if (!snapshot) {
+          throw new Error(`GitHub comment snapshot missing requested issue #${issueNumber}`);
+        }
+        accepted.set(
+          issueNumber,
+          acceptedClosureCommentSnapshot(issueNumber, snapshot),
+        );
+      }
+      recordCommentSnapshotMetadataDrift(runContext, accepted);
+      for (const [issueNumber, snapshot] of accepted) {
+        runContext.commentSnapshotsByIssue.set(issueNumber, snapshot);
+        runContext.commentsByIssue.set(issueNumber, snapshot.comments);
+      }
+      return accepted;
+    });
+    for (const issueNumber of missing) {
+      const request = batch.then((fetched) => {
+        const snapshot = fetched.get(issueNumber);
+        if (!snapshot) {
+          throw new Error(`GitHub comment snapshot missing requested issue #${issueNumber}`);
+        }
+        return snapshot;
       });
+      runContext.commentSnapshotRequests.set(issueNumber, request);
+      void request.then(
+        () => runContext.commentSnapshotRequests.delete(issueNumber),
+        () => runContext.commentSnapshotRequests.delete(issueNumber),
+      );
     }
+  }
+  await Promise.all(requested.map(async (issueNumber) => {
+    if (runContext.commentSnapshotsByIssue.has(issueNumber)) return;
+    const snapshot = await runContext.commentSnapshotRequests.get(issueNumber);
+    if (!snapshot) {
+      throw new Error(`No accepted comment snapshot available for issue #${issueNumber}`);
+    }
+    runContext.commentSnapshotsByIssue.set(issueNumber, snapshot);
+    runContext.commentsByIssue.set(issueNumber, snapshot.comments);
+  }));
+  for (const issueNumber of requested) {
+    const snapshot = runContext.commentSnapshotsByIssue.get(issueNumber);
+    if (!snapshot) {
+      throw new Error(`No accepted comment snapshot available for issue #${issueNumber}`);
+    }
+    runContext.commentsByIssue.set(issueNumber, snapshot.comments);
+  }
+  const unresolvedDrift = unresolvedCommentSnapshotMetadataDriftIssueNumbers(runContext, requested);
+  if (!options.allowMetadataDrift && unresolvedDrift.length) {
+    throw new Error(
+      `Closure comment snapshot metadata drift for issue(s) ${unresolvedDrift.map((number) => `#${number}`).join(', ')}; ` +
+      `reconcile full issue and classification state before closure proof`,
+    );
+  }
+  return new Map(requested.map((issueNumber) => [
+    issueNumber,
+    runContext.commentSnapshotsByIssue.get(issueNumber)?.comments ?? [],
+  ]));
+}
+
+async function fixEvidenceForIssues(
+  runContext: ClosureProofRunContext,
+  issueNumbers: number[],
+): Promise<Map<number, GhIssueFixEvidence>> {
+  const requested = uniqueNumbers(issueNumbers);
+  const missing = requested.filter((issueNumber) =>
+    !runContext.fixEvidenceByIssue.has(issueNumber) &&
+    !runContext.fixEvidenceRequests.has(issueNumber)
+  );
+  if (missing.length) {
+    throwIfAborted(runContext.signal);
+    const batch = listIssueFixEvidenceBatch(missing, {
+      signal: runContext.signal,
+    }).then((fetched) => {
+      for (const issueNumber of missing) {
+        const evidence = fetched.get(issueNumber);
+        if (evidence) runContext.fixEvidenceByIssue.set(issueNumber, evidence);
+      }
+      return fetched;
+    });
+    for (const issueNumber of missing) {
+      const request = batch.then((fetched) => fetched.get(issueNumber) ?? null);
+      runContext.fixEvidenceRequests.set(issueNumber, request);
+      void request.then(
+        () => runContext.fixEvidenceRequests.delete(issueNumber),
+        () => runContext.fixEvidenceRequests.delete(issueNumber),
+      );
+    }
+  }
+  await Promise.all(requested.map(async (issueNumber) => {
+    if (runContext.fixEvidenceByIssue.has(issueNumber)) return;
+    const evidence = await runContext.fixEvidenceRequests.get(issueNumber);
+    if (evidence) runContext.fixEvidenceByIssue.set(issueNumber, evidence);
+  }));
+  return new Map(requested.flatMap((issueNumber) => {
+    const evidence = runContext.fixEvidenceByIssue.get(issueNumber);
+    return evidence ? [[issueNumber, evidence] as const] : [];
+  }));
+}
+
+function persistedIssueStateSnapshotMatchesAcceptedEvidence(
+  runContext: ClosureProofRunContext,
+  issueNumber: number,
+): boolean {
+  const validation = validateIssueStateEventSnapshot(issueNumber);
+  const persisted = validation.snapshot;
+  const issue = getIssue(issueNumber);
+  const commentSnapshot = runContext.commentSnapshotsByIssue.get(issueNumber);
+  return validation.reusable &&
+    !!persisted &&
+    !!issue &&
+    !!commentSnapshot &&
+    persisted.issue_number === issue.number &&
+    persisted.issue_node_id === issue.node_id &&
+    persisted.issue_node_id === commentSnapshot.issueNodeId &&
+    persisted.issue_node_type === 'Issue' &&
+    persisted.schema_version === ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION &&
+    persisted.issue_state === issue.state &&
+    persisted.issue_updated_at === issue.updated_at &&
+    persisted.issue_updated_at === commentSnapshot.issueUpdatedAt &&
+    persisted.fetched_count === persisted.total_count &&
+    persisted.authority_digest != null &&
+    persisted.stabilization_json != null &&
+    persisted.stabilization_identity_digest != null;
+}
+
+export function unresolvedStateSnapshotMetadataDriftIssueNumbers(
+  runContext: ClosureProofRunContext,
+  candidates?: number[],
+): number[] {
+  const selected = candidates
+    ? uniqueNumbers(candidates).filter((issueNumber) =>
+        runContext.stateSnapshotMetadataDriftIssueNumbers.has(issueNumber))
+    : [...runContext.stateSnapshotMetadataDriftIssueNumbers];
+  return selected.filter((issueNumber) => !issueStateSnapshotMetadataMatches(
+    runContext.fixEvidenceByIssue.get(issueNumber),
+    getIssue(issueNumber),
+    runContext.commentSnapshotsByIssue.get(issueNumber),
+  ));
+}
+
+async function pullRequestsForLookups(
+  runContext: ClosureProofRunContext,
+  lookups: PullRequestLookup[],
+  options: { allowMissing?: boolean; refreshMissing?: boolean } = {},
+  lookupPullRequests: typeof listPullRequestFixesBatch = listPullRequestFixesBatch,
+): Promise<Map<string, GhPullRequestFix>> {
+  const permissiveMissingPullRequestKeys = runContext.permissiveMissingPullRequestKeys ??= new Set();
+  const lookupByKey = new Map<string, PullRequestLookup>();
+  for (const lookup of lookups) {
+    if (!Number.isInteger(lookup.prNumber) || lookup.prNumber <= 0) continue;
+    const key = pullRequestKey(
+      lookup.prRepositoryNameWithOwner ??
+        (lookup.prRepositoryOwner && lookup.prRepositoryName
+          ? `${lookup.prRepositoryOwner}/${lookup.prRepositoryName}`
+          : trackedPrRepositoryNameWithOwner),
+      lookup.prNumber,
+    );
+    lookupByKey.set(key, lookup);
+  }
+  const allowMissing = options.allowMissing !== false;
+  const refreshMissing = options.refreshMissing === true;
+  const missingKeys = [...lookupByKey.keys()].filter((key) =>
+    (
+      !runContext.pullRequestsByKey.has(key) ||
+      (refreshMissing && runContext.pullRequestsByKey.get(key) === null) ||
+      (!allowMissing &&
+        runContext.pullRequestsByKey.get(key) === null &&
+        permissiveMissingPullRequestKeys.has(key))
+    ) &&
+    !runContext.pullRequestRequests.has(key)
+  );
+  if (missingKeys.length) {
+    const missingLookups = missingKeys.map((key) => lookupByKey.get(key)!);
+    const missingFromGithub = new Set<string>();
+    const lookupOptions = {
+      signal: runContext.signal,
+      ...(!allowMissing
+        ? {}
+        : {
+        onMissingPullRequest: ({ repositoryNameWithOwner, prNumber }: {
+          repositoryNameWithOwner: string;
+          prNumber: number;
+        }) => {
+          missingFromGithub.add(pullRequestKey(repositoryNameWithOwner, prNumber));
+        },
+        }),
+    };
+    throwIfAborted(runContext.signal);
+    const batch = lookupPullRequests(missingLookups, lookupOptions).then((fetched) => {
+      for (const key of missingKeys) {
+        const pullRequest = fetched.get(key) ?? null;
+        if (!pullRequest && !allowMissing) {
+          throw new Error(`Strict pull request lookup returned no result for ${key}`);
+        }
+        runContext.pullRequestsByKey.set(key, pullRequest);
+        if (pullRequest) permissiveMissingPullRequestKeys.delete(key);
+        else if (allowMissing) permissiveMissingPullRequestKeys.add(key);
+      }
+      for (const key of missingFromGithub) {
+        runContext.pullRequestsByKey.set(key, null);
+        permissiveMissingPullRequestKeys.add(key);
+      }
+      return fetched;
+    });
+    for (const key of missingKeys) {
+      const request = batch.then((fetched) => fetched.get(key) ?? null);
+      runContext.pullRequestRequests.set(key, request);
+      void request.then(
+        () => runContext.pullRequestRequests.delete(key),
+        () => runContext.pullRequestRequests.delete(key),
+      );
+    }
+  }
+  await Promise.all([...lookupByKey.keys()].map(async (key) => {
+    if (runContext.pullRequestsByKey.has(key)) return;
+    const pullRequest = await runContext.pullRequestRequests.get(key);
+    runContext.pullRequestsByKey.set(key, pullRequest ?? null);
+  }));
+  if (!allowMissing && [...lookupByKey.keys()].some((key) =>
+    runContext.pullRequestsByKey.get(key) === null &&
+    permissiveMissingPullRequestKeys.has(key)
+  )) {
+    return pullRequestsForLookups(runContext, [...lookupByKey.values()], options, lookupPullRequests);
+  }
+  return new Map([...lookupByKey.keys()].flatMap((key) => {
+    const pullRequest = runContext.pullRequestsByKey.get(key);
+    return pullRequest ? [[key, pullRequest] as const] : [];
+  }));
+}
+
+type FinalClosureWindow = {
+  closedAt: string;
+  finalReopenedAt: string | null;
+  closureActors: string[];
+};
+
+type ClosureCommentTimestamp = {
+  created_at?: string | null;
+  createdAt?: string | null;
+  updated_at?: string | null;
+  updatedAt?: string | null;
+};
+
+function assertAggregateFinalClosureAuthority(rows: Array<Record<string, unknown>>): void {
+  for (const row of rows) {
+    if (Number(row.closure_events ?? 0) === 0) continue;
+    assertIssueClosedAtMatchesSelectedFinalEvent(
+      Number(row.number),
+      String(row.closed_at ?? ''),
+      String(row.closure_event_closed_at ?? ''),
+    );
+  }
+}
+
+function selectedFinalClosureContextsForIssues(
+  issueNumbers: number[],
+): Map<number, CanonicalClosureContext> {
+  if (!issueNumbers.length) return new Map();
+  const rows = issueFinalClosureContextRowsStmt.all(
+    JSON.stringify(uniqueNumbers(issueNumbers)),
+  ) as unknown as Array<{
+    number: number;
+    issue_closed_at: string | null;
+    final_closed_at: string | null;
+    final_connection_ordinal: number | null;
+    final_actor_login: string | null;
+    final_reopened_at: string | null;
+  }>;
+  return new Map(rows.flatMap((row) => {
+    if (!row.issue_closed_at) return [];
+    if (row.final_closed_at) {
+      assertIssueClosedAtMatchesSelectedFinalEvent(
+        row.number,
+        row.issue_closed_at,
+        row.final_closed_at,
+      );
+    }
+    return [[row.number, {
+      closedAt: row.final_closed_at ?? row.issue_closed_at,
+      finalReopenedAt: row.final_reopened_at ?? null,
+      closureActors: row.final_actor_login ? [row.final_actor_login] : [],
+    }] as const];
+  }));
+}
+
+function assertIssueClosedAtMatchesSelectedFinalEvent(
+  issueNumber: number,
+  issueClosedAt: string,
+  finalEventClosedAt: string,
+): void {
+  const issueClosedAtMs = Date.parse(issueClosedAt);
+  const finalEventClosedAtMs = Date.parse(finalEventClosedAt);
+  if (
+    !Number.isFinite(issueClosedAtMs) ||
+    !Number.isFinite(finalEventClosedAtMs) ||
+    Math.abs(issueClosedAtMs - finalEventClosedAtMs) > FINAL_CLOSURE_TIMESTAMP_TOLERANCE_MS
+  ) {
+    throw new Error(
+      `Issue #${issueNumber} closed_at ${JSON.stringify(issueClosedAt)} does not match ` +
+      `selected final closure event ${JSON.stringify(finalEventClosedAt)}`,
+    );
+  }
+}
+
+function finalClosureWindowsForIssues(issueNumbers: number[]): Map<number, FinalClosureWindow> {
+  return new Map(
+    [...selectedFinalClosureContextsForIssues(issueNumbers)]
+      .flatMap(([issueNumber, context]) => context.closedAt
+        ? [[issueNumber, {
+          closedAt: context.closedAt,
+          finalReopenedAt: context.finalReopenedAt,
+          closureActors: context.closureActors,
+        }] as const]
+        : []),
+  );
+}
+
+function latestReopenBeforeFinalClosure(
+  reopenedAtValues: Array<string | null | undefined>,
+  closedAt: string,
+): string | null {
+  const closedMs = Date.parse(closedAt);
+  if (!Number.isFinite(closedMs)) return null;
+  return reopenedAtValues
+    .filter((value): value is string => !!value)
+    .filter((value) => {
+      const reopenedMs = Date.parse(value);
+      return Number.isFinite(reopenedMs) && reopenedMs <= closedMs;
+    })
+    .sort((left, right) => Date.parse(right) - Date.parse(left))[0] ?? null;
+}
+
+function closureCommentIsInFinalClosureWindow(
+  comment: ClosureCommentTimestamp,
+  window: FinalClosureWindow,
+): boolean {
+  const closedMs = Date.parse(window.closedAt);
+  const createdAt = comment.createdAt ?? comment.created_at ?? null;
+  const updatedAt = comment.updatedAt ?? comment.updated_at ?? null;
+  const createdMs = createdAt ? Date.parse(createdAt) : Number.NaN;
+  const updatedMs = updatedAt ? Date.parse(updatedAt) : Number.NaN;
+  if (!Number.isFinite(closedMs) || !Number.isFinite(createdMs)) return false;
+  if (Number.isFinite(updatedMs) && updatedMs > closedMs) return false;
+  const effectiveMs = Number.isFinite(updatedMs) && updatedMs > createdMs
+    ? updatedMs
+    : createdMs;
+  const reopenedMs = window.finalReopenedAt ? Date.parse(window.finalReopenedAt) : Number.NaN;
+  return effectiveMs >= closedMs - FINAL_CLOSURE_COMMENT_LOOKBACK_MS &&
+    effectiveMs < closedMs &&
+    (!Number.isFinite(reopenedMs) || effectiveMs > reopenedMs);
+}
+
+function invalidateExpiredUnknownDirectCommitProofs(
+  releaseTag: string,
+  nowMs = Date.now(),
+): number {
+  if (!Number.isFinite(nowMs)) {
+    throw new Error(`Unknown reachability retry clock must be finite, got ${nowMs}`);
+  }
+  const cutoff = new Date(nowMs - UNKNOWN_REACHABILITY_RETRY_MS).toISOString();
+  return Number(deleteExpiredUnknownDirectCommitProofsStmt.run(releaseTag, cutoff).changes ?? 0);
+}
+
+function closureRationaleCommentsForFinalClosure<T extends ClosureCommentTimestamp>(
+  comments: T[],
+  window: FinalClosureWindow | undefined,
+): T[] {
+  if (!window) return [];
+  return closureRationaleComments(
+    comments.filter((comment) => closureCommentIsInFinalClosureWindow(comment, window)),
+    window.closedAt,
+  );
+}
+
+function closureCommentPrMentionsForFinalClosure(
+  issueNumber: number,
+  comments: GhComment[],
+  window: FinalClosureWindow | undefined,
+) {
+  if (!window) return [];
+  return closureCommentPrMentions(
+    issueNumber,
+    comments.filter((comment) => closureCommentIsInFinalClosureWindow(comment, window)),
+    { finalClosureActors: window.closureActors },
+  );
+}
+
+function validateClosureCommentSnapshot(expectedCount: number, comments: GhComment[]): {
+  complete: boolean;
+  expectedCount: number;
+  fetchedCount: number;
+  invalidIdIndexes: number[];
+  duplicateIds: number[];
+} {
+  const invalidIdIndexes: number[] = [];
+  const idCounts = new Map<number, number>();
+  comments.forEach((comment, index) => {
+    const id = comment.id;
+    if (!Number.isInteger(id) || id <= 0) {
+      invalidIdIndexes.push(index);
+      return;
+    }
+    idCounts.set(id, (idCounts.get(id) ?? 0) + 1);
   });
+  const duplicateIds = [...idCounts.entries()]
+    .filter(([, count]) => count > 1)
+    .map(([id]) => id)
+    .sort((left, right) => left - right);
+  return {
+    complete:
+      Number.isInteger(expectedCount) &&
+      expectedCount >= 0 &&
+      comments.length === expectedCount &&
+      invalidIdIndexes.length === 0 &&
+      duplicateIds.length === 0,
+    expectedCount,
+    fetchedCount: comments.length,
+    invalidIdIndexes,
+    duplicateIds,
+  };
 }
 
-function latestCommentUpdatedAt(comments: GhComment[]): string | null {
-  return comments
-    .map((comment) => comment.updated_at ?? comment.created_at ?? null)
-    .filter((value): value is string => typeof value === 'string' && Number.isFinite(Date.parse(value)))
-    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? null;
+function assertCompleteClosureCommentSnapshot(
+  issueNumber: number,
+  expectedCount: number,
+  comments: GhComment[],
+): void {
+  const validation = validateClosureCommentSnapshot(expectedCount, comments);
+  if (validation.complete) return;
+  throw new Error(
+    `Refusing incomplete closure comment snapshot for issue #${issueNumber}: ` +
+    `expected ${validation.expectedCount} from the remote snapshot, fetched ${validation.fetchedCount}, ` +
+    `invalid ID indexes ${validation.invalidIdIndexes.join(',') || 'none'}, ` +
+    `duplicate IDs ${validation.duplicateIds.join(',') || 'none'}`,
+  );
 }
 
-function commentDigest(comments: GhComment[]): string {
-  const hash = createHash('sha256');
-  hash.update(JSON.stringify(comments
-    .map((comment) => ({
-      id: comment.id,
-      author: comment.user?.login ?? null,
-      association: comment.author_association ?? null,
-      body: comment.body,
-      createdAt: comment.created_at,
-      updatedAt: comment.updated_at,
-    }))
-    .sort((a, b) => String(a.updatedAt ?? a.createdAt ?? '').localeCompare(String(b.updatedAt ?? b.createdAt ?? '')) ||
-      Number(a.id ?? 0) - Number(b.id ?? 0))));
-  return hash.digest('hex');
+function acceptedClosureCommentSnapshot(
+  requestedIssueNumber: number,
+  snapshot: GhIssueCommentSnapshot,
+): GhIssueCommentSnapshot {
+  if (snapshot.issueNumber !== requestedIssueNumber) {
+    throw new Error(
+      `GitHub comment snapshot key #${requestedIssueNumber} returned issue #${snapshot.issueNumber}`,
+    );
+  }
+  if (!snapshot.issueUpdatedAt || !Number.isFinite(Date.parse(snapshot.issueUpdatedAt))) {
+    throw new Error(`GitHub comment snapshot for issue #${requestedIssueNumber} has invalid issueUpdatedAt`);
+  }
+  const canonical = {
+    ...snapshot,
+    comments: [...snapshot.comments].sort(compareClosureCommentOrder),
+  };
+  assertCompleteClosureCommentSnapshot(
+    requestedIssueNumber,
+    canonical.totalCount,
+    canonical.comments,
+  );
+  const computedDigest = commentEvidenceDigest(canonical.totalCount, canonical.comments);
+  if (computedDigest !== canonical.commentsDigest) {
+    throw new Error(
+      `GitHub comment snapshot digest mismatch for issue #${requestedIssueNumber}: ` +
+      `expected ${canonical.commentsDigest}, computed ${computedDigest}`,
+    );
+  }
+  if (!canonical.issueAuthor) {
+    throw new Error(
+      `GitHub comment snapshot for issue #${requestedIssueNumber} is missing issue author identity`,
+    );
+  }
+  const computedAuthorityDigest = commentEvidenceDigest(
+    canonical.totalCount,
+    canonical.comments,
+    {
+      repositoryNodeId: canonical.repositoryNodeId,
+      issueNodeId: canonical.issueNodeId,
+      issueNodeType: canonical.issueNodeType,
+      issueAuthor: canonical.issueAuthor,
+    },
+  );
+  if (computedAuthorityDigest !== canonical.authorityDigest) {
+    throw new Error(
+      `GitHub comment snapshot authority digest mismatch for issue #${requestedIssueNumber}: ` +
+      `expected ${canonical.authorityDigest}, computed ${computedAuthorityDigest}`,
+    );
+  }
+  return canonical;
+}
+
+function compareClosureCommentOrder(left: GhComment, right: GhComment): number {
+  const created = compareNullableCommentOrderField(left.created_at, right.created_at);
+  if (created !== 0) return created;
+  const updated = compareNullableCommentOrderField(left.updated_at, right.updated_at);
+  if (updated !== 0) return updated;
+  return left.id - right.id;
+}
+
+function compareNullableCommentOrderField(
+  left: string | null | undefined,
+  right: string | null | undefined,
+): number {
+  if (left === right) return 0;
+  if (left == null) return -1;
+  if (right == null) return 1;
+  return left.localeCompare(right);
+}
+
+type IssueCommentMetadata = {
+  number: number;
+  updated_at: string;
+  comments: number;
+  snapshot_schema_version: number | null;
+  snapshot_issue_updated_at: string | null;
+  snapshot_comment_count: number | null;
+  snapshot_fetched_comment_count: number | null;
+  snapshot_comments_digest: string | null;
+  snapshot_repository_node_id: string | null;
+  snapshot_issue_node_id: string | null;
+  snapshot_issue_author_node_id: string | null;
+  snapshot_issue_author_login: string | null;
+  snapshot_issue_author_type: string | null;
+  snapshot_authority_digest: string | null;
+  snapshot_stabilization_identity_digest: string | null;
+  classified_updated_at: string | null;
+  classified_comments_digest: string | null;
+  classification_source_identity_digest: string | null;
+};
+
+function issueCommentMetadata(issueNumbers: number[]): Map<number, IssueCommentMetadata> {
+  if (!issueNumbers.length) return new Map();
+  return new Map(
+    (issueCommentMetadataRowsStmt.all(JSON.stringify(uniqueNumbers(issueNumbers))) as unknown as IssueCommentMetadata[])
+      .map((row) => [row.number, row]),
+  );
+}
+
+function snapshotTokenDiffersFromIssueMetadata(
+  snapshot: GhIssueCommentSnapshot,
+  issue: IssueCommentMetadata | undefined,
+): boolean {
+  return !issue ||
+    issue.updated_at !== snapshot.issueUpdatedAt ||
+    issue.comments !== snapshot.totalCount ||
+    issue.snapshot_schema_version !== AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION ||
+    issue.snapshot_issue_updated_at !== snapshot.issueUpdatedAt ||
+    issue.snapshot_comment_count !== snapshot.totalCount ||
+    issue.snapshot_fetched_comment_count !== snapshot.comments.length ||
+    issue.snapshot_comments_digest !== snapshot.commentsDigest ||
+    issue.snapshot_repository_node_id !== snapshot.repositoryNodeId ||
+    issue.snapshot_issue_node_id !== snapshot.issueNodeId ||
+    issue.snapshot_issue_author_node_id !== snapshot.issueAuthor?.nodeId ||
+    issue.snapshot_issue_author_login !== snapshot.issueAuthor?.login ||
+    issue.snapshot_issue_author_type !== snapshot.issueAuthor?.actorType ||
+    issue.snapshot_authority_digest !== snapshot.authorityDigest ||
+    issue.snapshot_stabilization_identity_digest !== snapshot.stabilization.identityDigest ||
+    issue.classified_updated_at !== snapshot.issueUpdatedAt ||
+    issue.classified_comments_digest !== snapshot.commentsDigest ||
+    !issue.classification_source_identity_digest;
+}
+
+function recordCommentSnapshotMetadataDrift(
+  runContext: ClosureProofRunContext,
+  snapshotsByIssue: Map<number, GhIssueCommentSnapshot>,
+): void {
+  const metadata = issueCommentMetadata([...snapshotsByIssue.keys()]);
+  for (const [issueNumber, snapshot] of snapshotsByIssue) {
+    if (snapshotTokenDiffersFromIssueMetadata(snapshot, metadata.get(issueNumber))) {
+      runContext.commentSnapshotMetadataDriftIssueNumbers.add(issueNumber);
+    }
+  }
+}
+
+export function unresolvedCommentSnapshotMetadataDriftIssueNumbers(
+  runContext: ClosureProofRunContext,
+  issueNumbers: number[],
+): number[] {
+  const requested = uniqueNumbers(issueNumbers);
+  const metadata = issueCommentMetadata(requested);
+  const drifted = requested.filter((issueNumber) => {
+    const snapshot = runContext.commentSnapshotsByIssue.get(issueNumber);
+    return !!snapshot && snapshotTokenDiffersFromIssueMetadata(snapshot, metadata.get(issueNumber));
+  });
+  for (const issueNumber of drifted) {
+    runContext.commentSnapshotMetadataDriftIssueNumbers.add(issueNumber);
+  }
+  return drifted;
+}
+
+export function closureProofCommentSnapshotDriftIssueNumbers(
+  runContext: ClosureProofRunContext,
+  issueNumbers?: number[],
+): number[] {
+  const requested = issueNumbers ? new Set(uniqueNumbers(issueNumbers)) : null;
+  return uniqueNumbers([...runContext.commentSnapshotMetadataDriftIssueNumbers])
+    .filter((issueNumber) => !requested || requested.has(issueNumber));
+}
+
+function captureClosureIssueRevisionBaselines(
+  runContext: ClosureProofRunContext,
+  issueNumbers: number[],
+): void {
+  const missing = uniqueNumbers(issueNumbers).filter(
+    (issueNumber) => !runContext.issueEvidenceRevisionsByIssue.has(issueNumber),
+  );
+  for (const [issueNumber, revision] of issueEvidenceRevisions(missing)) {
+    runContext.issueEvidenceRevisionsByIssue.set(issueNumber, revision);
+  }
+}
+
+function assertClosureIssueRevisions(
+  runContext: ClosureProofRunContext,
+  issueNumbers: number[],
+): void {
+  captureClosureIssueRevisionBaselines(runContext, issueNumbers);
+  const expected = new Map(uniqueNumbers(issueNumbers).map((issueNumber) => {
+    const revision = runContext.issueEvidenceRevisionsByIssue.get(issueNumber);
+    if (!revision) throw new Error(`Missing closure evidence revision baseline for issue #${issueNumber}`);
+    return [issueNumber, revision] as const;
+  }));
+  assertIssueEvidenceRevisions(expected);
 }
 
 function canonicalIssueNumbersFromSignalLines(text: string): number[] {
@@ -984,8 +2617,10 @@ async function expandCanonicalGraph(
   canonicalGraph: Map<number, number[]>,
   commentsByIssue: Map<number, GhComment[]>,
   seedIssueNumbers: number[],
-  fetchComments: (issueNumbers: number[]) => Promise<Map<number, GhComment[]>> = listIssueCommentsBatch,
-  persistFetchedCommentSnapshots = true,
+  fetchComments: (issueNumbers: number[]) => Promise<Map<number, GhComment[]>>,
+  _persistFetchedCommentSnapshots = false,
+  closureContextLookup: (issueNumbers: number[]) => Map<number, CanonicalClosureContext> = canonicalClosureContextsForIssues,
+  issueNumberAllowed: (number: number) => boolean = knownIssueNumber,
 ): Promise<void> {
   const parsed = new Set(canonicalGraph.keys());
   let frontier = uniqueNumbers(seedIssueNumbers.filter((number) => Number.isInteger(number)));
@@ -993,17 +2628,18 @@ async function expandCanonicalGraph(
     const missing = frontier.filter((number) => !commentsByIssue.has(number));
     if (missing.length) {
       const fetched = await fetchComments(missing);
-      if (persistFetchedCommentSnapshots) persistCommentSnapshots(fetched);
       for (const number of missing) commentsByIssue.set(number, fetched.get(number) ?? []);
     }
+    const closureContexts = closureContextLookup(frontier);
     const nextFrontier: number[] = [];
     for (const issueNumber of frontier) {
       if (parsed.has(issueNumber)) continue;
       parsed.add(issueNumber);
-      const targets = canonicalIssueNumbersFromComments(
+      const targets = trustedCanonicalIssueNumbersFromComments(
         commentsByIssue.get(issueNumber) ?? [],
         issueNumber,
-        knownIssueNumber,
+        closureContexts.get(issueNumber),
+        issueNumberAllowed,
       );
       canonicalGraph.set(issueNumber, targets);
       for (const target of targets) {
@@ -1015,8 +2651,9 @@ async function expandCanonicalGraph(
 }
 
 function canonicalIssueNumbersReachableFrom(sourceIssueNumber: number, graph: Map<number, number[]>): number[] {
-  const path = canonicalResolution(sourceIssueNumber, graph).path;
-  return uniqueNumbers(path.slice(1).filter((number) => number !== sourceIssueNumber));
+  const resolution = canonicalResolution(sourceIssueNumber, graph);
+  return uniqueNumbers(resolution.branches.flatMap((branch) =>
+    branch.path.slice(1).filter((number) => number !== sourceIssueNumber)));
 }
 
 function terminalCanonicalIssuesNeedingEvidence(
@@ -1024,18 +2661,19 @@ function terminalCanonicalIssuesNeedingEvidence(
   sourceIssueNumbers: number[],
   canonicalGraph: Map<number, number[]>,
   issueDetailsLookup = issueDetails,
-  terminalProofLookup = crossReleaseTerminalProofForIssue,
+  _terminalProofLookup = crossReleaseTerminalProofForIssue,
 ): number[] {
   const sourceSet = new Set(sourceIssueNumbers);
   const terminals = new Set<number>();
   for (const issueNumber of sourceIssueNumbers) {
-    const resolution = canonicalResolution(issueNumber, canonicalGraph);
-    const terminalNumber = resolution.terminalIssue?.number;
-    if (!terminalNumber || sourceSet.has(terminalNumber)) continue;
-    const terminalIssue = issueDetailsLookup(terminalNumber);
-    if (terminalIssue?.state !== 'closed') continue;
-    if (terminalProofLookup(releaseTag, terminalNumber)) continue;
-    terminals.add(terminalNumber);
+    const resolution = canonicalResolution(issueNumber, canonicalGraph, issueDetailsLookup);
+    for (const terminalIssue of resolution.terminalIssues) {
+      const terminalNumber = terminalIssue.number;
+      if (sourceSet.has(terminalNumber) || terminalIssue.state !== 'closed') continue;
+      // Prior audits are fallback context only. Every closed terminal must be
+      // re-evaluated against the current tag's reachability.
+      terminals.add(terminalNumber);
+    }
   }
   return [...terminals].sort((a, b) => a - b);
 }
@@ -1048,77 +2686,193 @@ function adjustCanonicalDuplicateStatus(
   resultByIssue: Map<number, ClosureProofResult> = new Map(),
   sourceReleaseTag: string | null = null,
   terminalProofLookup = crossReleaseTerminalProofForIssue,
+  issueDetailsLookup: (number: number) => CanonicalIssueDetails | null = issueDetails,
 ): ClosureProofResult {
   const nonBugDuplicate = result.status === 'non_bug_duplicate_or_superseded';
   if (result.status !== 'duplicate_or_superseded' && !nonBugDuplicate) return { ...result, evidence };
-  const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph);
-  const currentWindowTerminalProof = resolution.terminalIssue?.number == null
-    ? null
-    : resultByIssue.get(resolution.terminalIssue.number) ?? null;
-  const crossReleaseTerminalProof = (!currentWindowTerminalProof || currentWindowTerminalProof.status === 'no_timeline_event' || currentWindowTerminalProof.status === 'unknown') &&
-    sourceReleaseTag &&
-    resolution.terminalIssue?.number != null
-    ? terminalProofLookup(sourceReleaseTag, resolution.terminalIssue.number)
-    : null;
-  const terminalProof = currentWindowTerminalProof ?? crossReleaseTerminalProof;
+  const resolution = canonicalResolution(sourceIssueNumber, canonicalGraph, issueDetailsLookup);
   const canonicalFixCommitProof = Array.isArray(evidence.canonicalFixCommitProof)
     ? evidence.canonicalFixCommitProof
     : [];
-  const hasReachableCanonicalFixCommit = canonicalFixCommitProof.some((item: any) => item?.status === 'reachable');
-  const hasNotReachableCanonicalFixCommit = canonicalFixCommitProof.some((item: any) => item?.status === 'not_reachable');
+  const creditableCanonicalFixCommitProof =
+    creditableDirectCommitProof(canonicalFixCommitProof);
+  const relevantBranches = resolution.branches.filter((branch) => branch.path.length > 1);
+  const branchContexts = relevantBranches.map((branch) => {
+    const terminalIssueNumber = branch.terminalIssue?.number ?? null;
+    const currentWindowTerminalProof = terminalIssueNumber == null
+      ? null
+      : resultByIssue.get(terminalIssueNumber) ?? null;
+    const crossReleaseTerminalProof = (!currentWindowTerminalProof ||
+      currentWindowTerminalProof.status === 'no_timeline_event' ||
+      currentWindowTerminalProof.status === 'unknown') &&
+      sourceReleaseTag &&
+      terminalIssueNumber != null
+      ? terminalProofLookup(sourceReleaseTag, terminalIssueNumber)
+      : null;
+    const terminalProof = currentWindowTerminalProof ?? crossReleaseTerminalProof;
+    const branchFixCommitProof = creditableCanonicalFixCommitProof.filter((item: any) => {
+      const proofSourceIssueNumber = Number(item?.sourceIssueNumber);
+      return (Number.isInteger(proofSourceIssueNumber) && branch.path.includes(proofSourceIssueNumber)) ||
+        (!Number.isInteger(proofSourceIssueNumber) && relevantBranches.length === 1);
+    });
+    const terminalFixCommitProof = terminalIssueNumber == null
+      ? []
+      : branchFixCommitProof.filter((item: any) =>
+        Number(item?.sourceIssueNumber) === terminalIssueNumber);
+    const hasReachableCanonicalFixCommit = branchFixCommitProof.some((item: any) => item?.status === 'reachable');
+    const hasNotReachableCanonicalFixCommit = branchFixCommitProof.some((item: any) => item?.status === 'not_reachable');
+    const hasReachableTerminalFixCommit = terminalFixCommitProof.some((item: any) => item?.status === 'reachable');
+    const terminalIsOpen = branch.terminalIssue?.state === 'open';
+    const fixedInRelease = currentWindowTerminalProof?.status === 'fixed_in_release' ||
+      (terminalIsOpen ? hasReachableTerminalFixCommit : hasReachableCanonicalFixCommit);
+    const fixedAfterRelease = !terminalIsOpen && (
+      currentWindowTerminalProof?.status === 'fixed_after_release' ||
+      hasNotReachableCanonicalFixCommit ||
+      (crossReleaseTerminalProof?.timing === 'after' && isTerminalFixProof(crossReleaseTerminalProof.status))
+    );
+    return {
+      ...branch,
+      currentWindowTerminalProof,
+      crossReleaseTerminalProof,
+      terminalProof,
+      branchFixCommitProof,
+      terminalFixCommitProof,
+      hasReachableCanonicalFixCommit,
+      hasNotReachableCanonicalFixCommit,
+      hasReachableTerminalFixCommit,
+      fixedInRelease,
+      fixedAfterRelease,
+      openIssue: openIssueInCanonicalBranch(sourceIssueNumber, branch, issueDetailsLookup),
+    };
+  });
+  const primaryBranch = branchContexts[0] ?? null;
+  const terminalProof = primaryBranch?.terminalProof ?? null;
+  const allBranchesFixedInRelease = branchContexts.length > 0 &&
+    branchContexts.every((branch) => branch.fixedInRelease);
+  const allBranchesFixed = branchContexts.length > 0 &&
+    branchContexts.every((branch) => branch.fixedInRelease || branch.fixedAfterRelease);
+  const allBranchesResolvedForDirectProof = branchContexts.length > 0 &&
+    branchContexts.every((branch) => {
+      if (branch.fixedInRelease || branch.fixedAfterRelease) return true;
+      if (!branch.terminalProof) return false;
+      return closureRiskDisposition(branch.terminalProof.status) === 'neutral_or_non_actionable' &&
+        terminalProofCanResolveAsNonActionable(branch.terminalProof);
+    });
   const nextEvidence = {
     ...evidence,
-    canonicalResolution: terminalProof
-      ? {
-        ...resolution,
-        terminalProof: terminalProofEvidence(terminalProof),
-      }
-      : resolution,
+    canonicalResolution: {
+      ...resolution,
+      ...(terminalProof ? { terminalProof: terminalProofEvidence(terminalProof) } : {}),
+      branches: branchContexts.map((branch) => ({
+        path: branch.path,
+        terminalIssue: branch.terminalIssue,
+        cycle: branch.cycle,
+        selfReference: branch.selfReference,
+        truncated: branch.truncated,
+        fixedInRelease: branch.fixedInRelease,
+        currentTagContainsFix: branch.fixedInRelease,
+        fixedAfterRelease: branch.fixedAfterRelease,
+        ...(branch.terminalProof ? { terminalProof: terminalProofEvidence(branch.terminalProof) } : {}),
+      })),
+      currentTagContainsAllCanonicalFixes: allBranchesFixedInRelease,
+    },
   };
-  if ((currentWindowTerminalProof?.status === 'fixed_in_release') || hasReachableCanonicalFixCommit) {
+  if (allBranchesFixedInRelease) {
     return {
       status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_in_release' : 'duplicate_to_fixed_in_release',
-      summary: hasReachableCanonicalFixCommit
-        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical fix/source commit is reachable from this release tag.`
-        : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue was fixed in this release tag.`,
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; every canonical branch has fix proof reachable from this release tag, containing the duplicate risk without direct fix credit for this duplicate.`,
       evidence: nextEvidence,
     };
   }
+  if (allBranchesFixed) {
+    const fixedAfterBranch = branchContexts
+      .filter((branch) => branch.fixedAfterRelease)
+      .sort((left, right) => compareCanonicalPaths(left.path, right.path))[0] ?? null;
+    const canonicalResolution = fixedAfterBranch
+      ? canonicalResolutionForSelectedBranch(
+        nextEvidence.canonicalResolution as Record<string, unknown>,
+        fixedAfterBranch,
+      )
+      : nextEvidence.canonicalResolution;
+    return {
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_after_release' : 'duplicate_to_fixed_after_release',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; every canonical branch has fix proof, but at least one branch is not fixed in this release tag.`,
+      evidence: { ...nextEvidence, canonicalResolution },
+    };
+  }
+  const blockingOpenBranch = branchContexts.find((branch) =>
+    !!branch.openIssue && !branch.fixedInRelease && !branch.fixedAfterRelease);
+  if (blockingOpenBranch?.openIssue) {
+    const canonicalResolution = canonicalResolutionForSelectedBranch(
+      nextEvidence.canonicalResolution as Record<string, unknown>,
+      blockingOpenBranch,
+      {
+        terminalIssue: blockingOpenBranch.openIssue,
+        terminalProof: null,
+        cycleTerminalIssue: blockingOpenBranch.cycle
+          ? blockingOpenBranch.openIssue
+          : null,
+      },
+    );
+    return {
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_open_canonical' : 'duplicate_to_open_canonical',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; at least one canonical branch remains open.`,
+      evidence: { ...nextEvidence, canonicalResolution },
+    };
+  }
   const reachableTrustedFixProofPrs = trustedReachableFixProofPrs(nextEvidence);
-  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0) {
+  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0 && branchContexts.length <= 1) {
     return {
       status: 'duplicate_with_release_fix_proof',
       summary: 'Closed as duplicate/superseded, but trusted closure-comment fix proof is reachable from this release tag; this resolves closure risk without direct GitHub fix-credit.',
       evidence: { ...nextEvidence, reachableTrustedFixProofPrs },
     };
   }
-  if (
-    currentWindowTerminalProof?.status === 'fixed_after_release' ||
-    hasNotReachableCanonicalFixCommit ||
-    (crossReleaseTerminalProof?.timing === 'after' && isTerminalFixProof(crossReleaseTerminalProof.status))
-  ) {
+  const unresolvedCycleBranch = branchContexts.find((branch) =>
+    (branch.cycle || branch.selfReference || branch.truncated) &&
+    !branch.fixedInRelease &&
+    !branch.fixedAfterRelease);
+  if (unresolvedCycleBranch) {
     return {
-      status: nonBugDuplicate ? 'non_bug_duplicate_to_fixed_after_release' : 'duplicate_to_fixed_after_release',
-      summary: crossReleaseTerminalProof?.timing === 'after' && isTerminalFixProof(crossReleaseTerminalProof.status)
-        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue has terminal fix proof in a later release audit.`
-        : hasNotReachableCanonicalFixCommit
-        ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical fix/source commit is not reachable from this release tag.`
-        : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue was fixed after this release tag.`,
-      evidence: nextEvidence,
+      status: 'canonical_cycle_or_self_reference',
+      summary: 'Closed as duplicate/superseded, but at least one canonical branch cycles, self-references, or exceeds the resolution depth.',
+      evidence: {
+        ...nextEvidence,
+        canonicalResolution: canonicalResolutionForSelectedBranch(
+          nextEvidence.canonicalResolution as Record<string, unknown>,
+          unresolvedCycleBranch,
+          {
+            cycleTerminalIssue: unresolvedCycleBranch.cycle
+              ? unresolvedCycleBranch.terminalIssue
+              : null,
+          },
+        ),
+      },
     };
   }
-  const openCycleTerminalIssue = resolution.cycle || resolution.selfReference
-    ? openIssueInCanonicalPath(sourceIssueNumber, resolution)
-    : null;
-  if (resolution.terminalIssue?.state === 'open' || openCycleTerminalIssue) {
-    const canonicalResolution = {
-      ...(nextEvidence.canonicalResolution as Record<string, unknown>),
-      ...(openCycleTerminalIssue ? { terminalIssue: openCycleTerminalIssue, cycleTerminalIssue: openCycleTerminalIssue } : {}),
-    };
+  const missingProofBranch = branchContexts.find((branch) =>
+    branch.terminalIssue?.state === 'closed' &&
+    !branch.fixedInRelease &&
+    !branch.fixedAfterRelease &&
+    (!branch.terminalProof ||
+      branch.terminalProof.status === 'no_timeline_event' ||
+      branch.terminalProof.status === 'unknown'));
+  if (missingProofBranch?.terminalIssue) {
+    const canonicalResolution = canonicalResolutionForSelectedBranch(
+      nextEvidence.canonicalResolution as Record<string, unknown>,
+      missingProofBranch,
+    );
     return {
-      status: nonBugDuplicate ? 'non_bug_duplicate_to_open_canonical' : 'duplicate_to_open_canonical',
-      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue remains open.`,
+      status: nonBugDuplicate ? 'non_bug_duplicate_to_closed_canonical_missing_proof' : 'duplicate_to_closed_canonical_missing_proof',
+      summary: `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; at least one closed canonical branch lacks complete closure proof.`,
       evidence: { ...nextEvidence, canonicalResolution },
+    };
+  }
+  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0 && allBranchesResolvedForDirectProof) {
+    return {
+      status: 'duplicate_with_release_fix_proof',
+      summary: 'Closed as duplicate/superseded, but trusted closure-comment fix proof is reachable from this release tag; this resolves closure risk without direct GitHub fix-credit.',
+      evidence: { ...nextEvidence, reachableTrustedFixProofPrs },
     };
   }
   const prContext = openPrContext(evidence);
@@ -1139,26 +2893,110 @@ function adjustCanonicalDuplicateStatus(
   const relatedContext = relatedPrContextFromPayload(evidence);
   const relatedPrStatus = duplicateRelatedPrContextStatus(nonBugDuplicate, relatedContext, nextEvidence);
   if (relatedPrStatus) return relatedPrStatus;
-  if (resolution.terminalIssue?.state === 'closed') {
-    if (!terminalProof || terminalProof.status === 'no_timeline_event' || terminalProof.status === 'unknown') {
-      return {
-        status: nonBugDuplicate ? 'non_bug_duplicate_to_closed_canonical_missing_proof' : 'duplicate_to_closed_canonical_missing_proof',
-        summary: terminalProof
-          ? `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is closed, but canonical closure proof is missing or incomplete.`
-          : `${nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded'}; canonical issue is closed, but no canonical closure proof was available for this release audit.`,
-        evidence: nextEvidence,
-      };
-    }
-    return closedCanonicalRollup(nonBugDuplicate, terminalProof, nextEvidence);
-  }
-  if (resolution.cycle || resolution.selfReference) {
-    return {
-      status: 'canonical_cycle_or_self_reference',
-      summary: 'Closed as duplicate/superseded, but canonical reference loops back to the same issue.',
-      evidence: nextEvidence,
-    };
+  const conservativeTerminalBranch = worstCredibleCanonicalTerminalBranch(
+    branchContexts.filter((branch) =>
+      branch.terminalIssue?.state === 'closed' &&
+      branch.terminalProof &&
+      !branch.fixedInRelease &&
+      !branch.fixedAfterRelease),
+  );
+  if (conservativeTerminalBranch?.terminalProof) {
+    return closedCanonicalRollup(nonBugDuplicate, conservativeTerminalBranch.terminalProof, {
+      ...nextEvidence,
+      canonicalResolution: canonicalResolutionForSelectedBranch(
+        nextEvidence.canonicalResolution as Record<string, unknown>,
+        conservativeTerminalBranch,
+      ),
+    });
   }
   return { ...result, evidence: nextEvidence };
+}
+
+function canonicalResolutionForSelectedBranch(
+  resolution: Record<string, unknown>,
+  branch: CanonicalBranchResolution & {
+    terminalProof?: TerminalProofForCanonical | null;
+  },
+  options: {
+    terminalIssue?: CanonicalIssueDetails | null;
+    terminalProof?: TerminalProofForCanonical | null;
+    cycleTerminalIssue?: CanonicalIssueDetails | null;
+  } = {},
+): Record<string, unknown> {
+  const {
+    path: _stalePath,
+    terminalIssue: _staleTerminalIssue,
+    terminalProof: _staleTerminalProof,
+    blockingBranch: _staleBlockingBranch,
+    cycleTerminalIssue: _staleCycleTerminalIssue,
+    ...sharedResolution
+  } = resolution;
+  const terminalIssue = options.terminalIssue === undefined
+    ? branch.terminalIssue
+    : options.terminalIssue;
+  const terminalProof = options.terminalProof === undefined
+    ? branch.terminalProof ?? null
+    : options.terminalProof;
+  return {
+    ...sharedResolution,
+    path: [...branch.path],
+    terminalIssue,
+    blockingBranch: [...branch.path],
+    ...(terminalProof ? { terminalProof: terminalProofEvidence(terminalProof) } : {}),
+    ...(options.cycleTerminalIssue
+      ? { cycleTerminalIssue: options.cycleTerminalIssue }
+      : {}),
+  };
+}
+
+function worstCredibleCanonicalTerminalBranch<
+  T extends CanonicalBranchResolution & {
+    terminalProof: TerminalProofForCanonical | null;
+  },
+>(branches: T[]): T | null {
+  return branches
+    .slice()
+    .sort(compareCanonicalTerminalBranchRisk)[0] ?? null;
+}
+
+function compareCanonicalTerminalBranchRisk(
+  left: CanonicalBranchResolution & {
+    terminalProof: TerminalProofForCanonical | null;
+  },
+  right: CanonicalBranchResolution & {
+    terminalProof: TerminalProofForCanonical | null;
+  },
+): number {
+  const priorityDelta = canonicalTerminalProofRiskPriority(right.terminalProof) -
+    canonicalTerminalProofRiskPriority(left.terminalProof);
+  if (priorityDelta !== 0) return priorityDelta;
+  const statusDelta = String(left.terminalProof?.status ?? '')
+    .localeCompare(String(right.terminalProof?.status ?? ''));
+  if (statusDelta !== 0) return statusDelta;
+  return compareCanonicalPaths(left.path, right.path);
+}
+
+function canonicalTerminalProofRiskPriority(
+  proof: TerminalProofForCanonical | null,
+): number {
+  if (!proof) return -1;
+  const disposition = closureRiskDisposition(proof.status);
+  if (disposition === 'open_canonical_risk') return 5;
+  if (disposition === 'known_not_in_release') return 4;
+  if (disposition === 'missing_evidence') return 3;
+  if (disposition === 'unsupported_closure_claim') return 2;
+  if (disposition === 'neutral_or_non_actionable') {
+    return terminalProofCanResolveAsNonActionable(proof) ? 0 : 2;
+  }
+  return 1;
+}
+
+function compareCanonicalPaths(left: readonly number[], right: readonly number[]): number {
+  const sharedLength = Math.min(left.length, right.length);
+  for (let index = 0; index < sharedLength; index++) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  return left.length - right.length;
 }
 
 function duplicateRelatedPrContextStatus(
@@ -1167,14 +3005,6 @@ function duplicateRelatedPrContextStatus(
   evidence: Record<string, unknown>,
 ): ClosureProofResult | null {
   const prefix = nonBugDuplicate ? 'Non-negative item closed as duplicate/superseded' : 'Closed as duplicate/superseded';
-  const reachableTrustedFixProofPrs = trustedReachableFixProofPrs(evidence);
-  if (!nonBugDuplicate && reachableTrustedFixProofPrs.length > 0) {
-    return {
-      status: 'duplicate_with_release_fix_proof',
-      summary: `${prefix}; trusted closure-comment fix proof is reachable from this release tag, resolving closure risk without direct GitHub fix-credit.`,
-      evidence: { ...evidence, reachableTrustedFixProofPrs },
-    };
-  }
   if (context.reachable.length > 0) {
     return {
       status: nonBugDuplicate
@@ -1228,12 +3058,13 @@ function duplicateRelatedPrContextStatus(
     : null;
 }
 
-function openIssueInCanonicalPath(
+function openIssueInCanonicalBranch(
   sourceIssueNumber: number,
-  resolution: ReturnType<typeof canonicalResolution>,
-): { number: number; title: string | null; state: string | null; url: string | null } | null {
-  for (const number of uniqueNumbers(resolution.path.filter((item) => item !== sourceIssueNumber))) {
-    const issue = issueDetails(number);
+  branch: CanonicalBranchResolution,
+  issueDetailsLookup: (number: number) => CanonicalIssueDetails | null = issueDetails,
+): CanonicalIssueDetails | null {
+  for (const number of uniqueNumbers(branch.path.filter((item) => item !== sourceIssueNumber))) {
+    const issue = issueDetailsLookup(number);
     if (issue?.state === 'open') return issue;
   }
   return null;
@@ -1318,13 +3149,35 @@ function crossReleaseTerminalProofForIssue(
     evidence_json: string | null;
     published_at: string | null;
   }>;
+  const integrityByRelease = new Map<string, boolean>();
   const candidates = rows
     .map((row) => {
+      const evidence = parseEvidenceObject(row.evidence_json);
+      if (Number(evidence.proofAnalyzerVersion) !== CLOSURE_PROOF_ANALYZER_VERSION) {
+        return null;
+      }
+      let dependencyEvidenceCurrent = integrityByRelease.get(row.release_tag);
+      if (dependencyEvidenceCurrent === undefined) {
+        const integrity = releaseClosureProofIntegrity(row.release_tag);
+        dependencyEvidenceCurrent =
+          integrity.missingCount === 0 &&
+          integrity.extraCount === 0 &&
+          integrity.staleCount === 0 &&
+          integrity.analyzerVersionMismatchCount === 0 &&
+          integrity.dependencySnapshotMissingCount === 0 &&
+          integrity.dependencySnapshotMismatchCount === 0 &&
+          integrity.dependencySnapshotSchemaMismatchCount === 0 &&
+          integrity.dependencySnapshotMembershipMismatchCount === 0 &&
+          integrity.dependencyReferencedIssueMissingCount === 0 &&
+          integrity.dependencyEvidenceInvalidCount === 0;
+        integrityByRelease.set(row.release_tag, dependencyEvidenceCurrent);
+      }
+      if (!dependencyEvidenceCurrent) return null;
       const timing = releaseTiming(sourcePublishedAt, row.published_at);
       return {
         status: row.status,
         summary: row.summary,
-        evidence: parseEvidenceObject(row.evidence_json),
+        evidence,
         releaseTag: row.release_tag,
         timing,
         sourceReleasePublishedAt: sourcePublishedAt,
@@ -1333,6 +3186,7 @@ function crossReleaseTerminalProofForIssue(
         priority: terminalProofPriority(row.status, timing),
       };
     })
+    .filter((candidate): candidate is NonNullable<typeof candidate> => candidate != null)
     .sort((a, b) => a.priority - b.priority ||
       String(b.terminalReleasePublishedAt ?? '').localeCompare(String(a.terminalReleasePublishedAt ?? '')));
   const best = candidates[0];
@@ -1400,6 +3254,7 @@ function releaseTiming(sourcePublishedAt: string | null, terminalPublishedAt: st
 async function laterReachableReleaseByCommit(
   sourceReleaseTag: string,
   currentReachability: Map<string, CommitReachability>,
+  reachabilityContext?: ReleaseReachabilityRefreshContext,
 ): Promise<Map<string, LaterFixRelease>> {
   const remaining = [...currentReachability.values()]
     .filter((result) => result.status === 'not_reachable')
@@ -1410,7 +3265,9 @@ async function laterReachableReleaseByCommit(
   let pending = unique(remaining);
   for (const release of releases) {
     if (!pending.length) break;
-    const reachability = await checkReleaseCommitReachability(release.tag, pending);
+    const reachability = await checkReleaseCommitReachability(release.tag, pending, {
+      context: reachabilityContext,
+    });
     const nextPending: string[] = [];
     for (const commitOid of pending) {
       const result = reachability.get(commitOid);
@@ -1718,7 +3575,7 @@ function adjustNoReleaseFixProofStatus(
   evidence: Record<string, unknown>,
 ): ClosureProofResult {
   if (result.status !== 'closed_without_release_fix_proof') return result;
-  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
+  const linkedPrs = statusBearingLinkedPrEvidence(evidence);
   if (linkedPrs.length === 0) return result;
   const context = relatedPrContextFromPayload(evidence);
   if (context.externalClosing.length > 0) {
@@ -1771,13 +3628,11 @@ function adjustNoReleaseFixProofStatus(
 }
 
 function linkedClosingPrEvidence(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
-  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
-  return linkedPrs.filter((pr) => {
-    const source = String(pr.source ?? '');
-    return Number(pr.willCloseTarget ?? 0) === 1 ||
-      source === 'closedByPullRequestsReferences' ||
-      source === 'ClosedEvent.closer';
-  });
+  return statusBearingLinkedPrEvidence(evidence).filter((pr) =>
+    Number(pr.willCloseTarget ?? 0) === 1 ||
+    String(pr.source ?? '') === 'closedByPullRequestsReferences' ||
+    String(pr.source ?? '') === 'ClosedEvent.closer'
+  );
 }
 
 function adjustNotPlannedEvidenceStatus(
@@ -1785,7 +3640,7 @@ function adjustNotPlannedEvidenceStatus(
   evidence: Record<string, unknown>,
 ): ClosureProofResult {
   if (!isAdminNotPlannedRiskStatus(result.status)) return result;
-  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs as Array<Record<string, unknown>> : [];
+  const linkedPrs = statusBearingLinkedPrEvidence(evidence);
   if (evidence.hasReachableFixCommit === true || evidence.hasReachableClosingPr === true) {
     return {
       ...result,
@@ -1902,13 +3757,30 @@ function relatedPrContextFromPayload(evidence: Record<string, unknown>): Related
   if (!raw || typeof raw !== 'object') return emptyRelatedPrContext();
   const context = raw as Record<string, unknown>;
   return {
-    externalClosing: Array.isArray(context.externalClosing) ? context.externalClosing as Array<Record<string, unknown>> : [],
-    open: Array.isArray(context.open) ? context.open as Array<Record<string, unknown>> : [],
-    closedUnmerged: Array.isArray(context.closedUnmerged) ? context.closedUnmerged as Array<Record<string, unknown>> : [],
-    notReachable: Array.isArray(context.notReachable) ? context.notReachable as Array<Record<string, unknown>> : [],
-    reachable: Array.isArray(context.reachable) ? context.reachable as Array<Record<string, unknown>> : [],
-    unknownReachability: Array.isArray(context.unknownReachability) ? context.unknownReachability as Array<Record<string, unknown>> : [],
+    externalClosing: statusBearingPrRows(context.externalClosing),
+    open: statusBearingPrRows(context.open),
+    closedUnmerged: statusBearingPrRows(context.closedUnmerged),
+    notReachable: statusBearingPrRows(context.notReachable),
+    reachable: statusBearingPrRows(context.reachable),
+    unknownReachability: statusBearingPrRows(context.unknownReachability),
   };
+}
+
+function statusBearingPrRows(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter(isStatusBearingPrEvidence)
+    : [];
+}
+
+function statusBearingLinkedPrEvidence(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
+  return statusBearingPrRows(evidence.linkedPrs);
+}
+
+function isStatusBearingPrEvidence(value: unknown): value is Record<string, unknown> {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const pr = value as Record<string, unknown>;
+  return Number(pr.willCloseTarget ?? 0) === 1 ||
+    STATUS_BEARING_PR_SOURCES.has(String(pr.source ?? ''));
 }
 
 function trustedReachableFixProofPrs(evidence: Record<string, unknown>): Array<Record<string, unknown>> {
@@ -1921,9 +3793,9 @@ function relatedPrContextEvidence(
   releaseTag: string,
   evidence: Record<string, unknown>,
 ): RelatedPrContext {
-  const linkedPrs = Array.isArray(evidence.linkedPrs)
-    ? [...evidence.linkedPrs as Array<Record<string, unknown>>].sort(compareLinkedPrEvidencePriority)
-    : [];
+  const linkedPrs = statusBearingLinkedPrEvidence(evidence)
+    .slice()
+    .sort(compareLinkedPrEvidencePriority);
   const context = emptyRelatedPrContext();
   const seen = new Set<string>();
   for (const pr of linkedPrs) {
@@ -2012,58 +3884,134 @@ function linkedPrSourcePriority(source: unknown): number {
   }
 }
 
+type CanonicalIssueDetails = {
+  number: number;
+  title: string | null;
+  state: string | null;
+  url: string | null;
+};
+
+type CanonicalBranchResolution = {
+  path: number[];
+  terminalIssue: CanonicalIssueDetails | null;
+  cycle: boolean;
+  selfReference: boolean;
+  truncated: boolean;
+};
+
+type CanonicalResolution = CanonicalBranchResolution & {
+  branches: CanonicalBranchResolution[];
+  terminalIssues: CanonicalIssueDetails[];
+};
+
 function canonicalResolution(
   sourceIssueNumber: number,
   graph: Map<number, number[]>,
-): {
-  path: number[];
-  terminalIssue: { number: number; title: string | null; state: string | null; url: string | null } | null;
-  cycle: boolean;
-  selfReference: boolean;
-} {
-  const path = [sourceIssueNumber];
-  const seen = new Set(path);
-  let current = sourceIssueNumber;
-  let selfReference = false;
-  for (let depth = 0; depth < 8; depth++) {
-    const targets = (graph.get(current) ?? []).filter((number) => Number.isInteger(number));
-    const next = targets.find((number) => number !== current);
-    if (!next) {
-      selfReference = targets.includes(current);
-      break;
+  issueDetailsLookup: (number: number) => CanonicalIssueDetails | null = issueDetails,
+): CanonicalResolution {
+  const branches: CanonicalBranchResolution[] = [];
+  const walk = (current: number, path: number[], depth: number): void => {
+    const targets = uniqueNumbers((graph.get(current) ?? []).filter((number) => Number.isInteger(number)));
+    if (!targets.length) {
+      branches.push({
+        path,
+        terminalIssue: current === sourceIssueNumber ? null : issueDetailsLookup(current),
+        cycle: false,
+        selfReference: false,
+        truncated: false,
+      });
+      return;
     }
-    if (seen.has(next)) {
-      path.push(next);
-      return { path, terminalIssue: issueDetails(next), cycle: true, selfReference: next === sourceIssueNumber };
+    for (const target of targets) {
+      const nextPath = [...path, target];
+      if (path.includes(target)) {
+        branches.push({
+          path: nextPath,
+          terminalIssue: issueDetailsLookup(target),
+          cycle: true,
+          selfReference: target === sourceIssueNumber,
+          truncated: false,
+        });
+        continue;
+      }
+      if (depth >= 7) {
+        branches.push({
+          path: nextPath,
+          terminalIssue: issueDetailsLookup(target),
+          cycle: false,
+          selfReference: false,
+          truncated: true,
+        });
+        continue;
+      }
+      walk(target, nextPath, depth + 1);
     }
-    path.push(next);
-    seen.add(next);
-    current = next;
+  };
+  walk(sourceIssueNumber, [sourceIssueNumber], 0);
+  if (!branches.length) {
+    branches.push({
+      path: [sourceIssueNumber],
+      terminalIssue: null,
+      cycle: false,
+      selfReference: false,
+      truncated: false,
+    });
+  }
+  const primary = branches[0];
+  const terminalIssues = new Map<number, CanonicalIssueDetails>();
+  for (const branch of branches) {
+    if (branch.terminalIssue) terminalIssues.set(branch.terminalIssue.number, branch.terminalIssue);
   }
   return {
-    path,
-    terminalIssue: path.length > 1 ? issueDetails(path[path.length - 1]) : null,
-    cycle: false,
-    selfReference,
+    ...primary,
+    cycle: branches.some((branch) => branch.cycle),
+    selfReference: branches.some((branch) => branch.selfReference),
+    truncated: branches.some((branch) => branch.truncated),
+    branches,
+    terminalIssues: [...terminalIssues.values()].sort((left, right) => left.number - right.number),
   };
 }
 
 export const __closureProofAnalysisTest = {
+  FINAL_CLOSURE_TIMESTAMP_TOLERANCE_MS,
+  UNKNOWN_REACHABILITY_RETRY_MS,
   adjustClosureProofStatus,
   adjustCanonicalDuplicateStatus,
   adjustNotPlannedEvidenceStatus,
   adjustNoReleaseFixProofStatus,
   canonicalIssueNumbersFromText,
   canonicalIssueNumbersFromComments,
+  trustedCanonicalIssueNumbersFromComments,
+  trustedClosureRationaleComments,
   effectiveClosureProofClassification,
   enrichLinkedPrReachability,
+  commitProofEvidence,
+  creditableDirectCommitProof,
+  summarizeDirectCommitFirstContainingProofs,
   commitReferenceMentionsFromRows,
   shouldUseReferencedCommitProof,
   compareLinkedPrEvidencePriority,
   expandCanonicalGraph,
   canonicalIssueNumbersReachableFrom,
+  canonicalResolution,
   terminalCanonicalIssuesNeedingEvidence,
+  crossReleaseTerminalProofForIssue,
   missingClassificationClosureProof,
+  closureCommentIsInFinalClosureWindow,
+  assertIssueClosedAtMatchesSelectedFinalEvent,
+  invalidateExpiredUnknownDirectCommitProofs,
+  closureRationaleCommentsForFinalClosure,
+  closureCommentPrMentionsForFinalClosure,
+  commentsForIssues,
+  closureProofCommentSnapshotDriftIssueNumbers,
+  acceptedClosureCommentSnapshot,
+  issueStateSnapshotMetadataMatches,
+  pullRequestsForLookups,
+  persistedIssueStateSnapshotMatchesAcceptedEvidence,
+  replaceVerifiedIssueStateEventSnapshot,
+  unresolvedStateSnapshotMetadataDriftIssueNumbers,
+  unresolvedCommentSnapshotMetadataDriftIssueNumbers,
+  validateClosureCommentSnapshot,
 };
 
 function issueDetails(number: number): { number: number; title: string | null; state: string | null; url: string | null } | null {
@@ -2081,12 +4029,26 @@ function issueDetails(number: number): { number: number; title: string | null; s
   };
 }
 
-export async function refreshClosureEvidenceForRelease(releaseTag: string): Promise<ClosureProofAnalysisResult['rawEvidence'] & {
+export async function refreshClosureEvidenceForRelease(
+  releaseTag: string,
+  runContext?: ClosureProofRunContext,
+): Promise<ClosureProofAnalysisResult['rawEvidence'] & {
   issueCount: number;
+  refreshedIssueCount: number;
+  reusedIssueCount: number;
+  deferredIssueCount: number;
+  issueMetadataDriftIssueNumbers: number[];
 }> {
+  if (!runContext?.assertCanWrite) {
+    return withClosureProofWriteLease(
+      runContext,
+      `refresh-evidence:${releaseTag}`,
+      (leasedContext) => refreshClosureEvidenceForRelease(releaseTag, leasedContext),
+    );
+  }
   const rows = allClosedIssueRowsStmt.all(releaseTag) as Array<{ number: number }>;
   const issueNumbers = rows.map((row) => row.number);
-  const rawEvidence = await refreshRawClosureEvidence(issueNumbers);
+  const rawEvidence = await refreshRawClosureEvidence(issueNumbers, runContext);
   return { issueCount: issueNumbers.length, ...rawEvidence };
 }
 
@@ -2130,104 +4092,91 @@ function rawClosureEvidenceCounts(issueNumbers: number[]): ClosureProofAnalysisR
   };
 }
 
-async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<ClosureProofAnalysisResult['rawEvidence']> {
-  let closureEvents = 0;
-  let reopenEvents = 0;
-  let prLinks = 0;
-  let pullRequests = 0;
-  let commitReferences = 0;
-  for (let offset = 0; offset < issueNumbers.length; offset += 20) {
-    const chunk = issueNumbers.slice(offset, offset + 20);
-    const [evidence, commentsByIssue] = await Promise.all([
-      listIssueFixEvidenceBatch(chunk),
-      listIssueCommentsBatch(chunk),
-    ]);
-    persistCommentSnapshots(commentsByIssue);
-    const commentMentions = chunk.flatMap((issueNumber) =>
-      closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+async function refreshRawClosureEvidence(
+  issueNumbers: number[],
+  runContext: ClosureProofRunContext = createClosureProofRunContext(),
+): Promise<ClosureProofAnalysisResult['rawEvidence'] & {
+  refreshedIssueCount: number;
+  reusedIssueCount: number;
+  deferredIssueCount: number;
+  issueMetadataDriftIssueNumbers: number[];
+}> {
+  const requestedIssueNumbers = uniqueNumbers(issueNumbers);
+  const commentsByIssue = await commentsForIssues(runContext, requestedIssueNumbers, {
+    allowMetadataDrift: true,
+  });
+  const issueMetadataDrift = new Set(unresolvedCommentSnapshotMetadataDriftIssueNumbers(
+    runContext,
+    requestedIssueNumbers,
+  ));
+  const eligibleIssueNumbers = requestedIssueNumbers.filter((issueNumber) => !issueMetadataDrift.has(issueNumber));
+  const issueNumbersToRefresh = uniqueNumbers([
+    ...closureEvidenceIssuesNeedingRefresh(
+      eligibleIssueNumbers,
+      RAW_CLOSURE_EVIDENCE_SCHEMA_VERSION,
+    ),
+    ...eligibleIssueNumbers.filter((issueNumber) =>
+      !persistedIssueStateSnapshotMatchesAcceptedEvidence(runContext, issueNumber)),
+  ]);
+  let refreshedIssueCount = 0;
+  for (let offset = 0; offset < issueNumbersToRefresh.length; offset += 20) {
+    throwIfAborted(runContext.signal);
+    const chunk = issueNumbersToRefresh.slice(offset, offset + 20);
+    const evidence = await fixEvidenceForIssues(runContext, chunk);
+    const stableChunk = chunk.filter((issueNumber) => {
+      const matches = issueStateSnapshotMetadataMatches(
+        evidence.get(issueNumber),
+        getIssue(issueNumber),
+        runContext.commentSnapshotsByIssue.get(issueNumber),
+      );
+      if (!matches) {
+        issueMetadataDrift.add(issueNumber);
+        runContext.stateSnapshotMetadataDriftIssueNumbers.add(issueNumber);
+      }
+      return matches;
+    });
+    if (stableChunk.length === 0) continue;
+    const finalClosureWindows = finalClosureWindowsForIssues(stableChunk);
+    for (const issueNumber of stableChunk) {
+      const item = evidence.get(issueNumber);
+      if (!item) continue;
+      const window = finalClosureWindows.get(item.issueNumber);
+      if (!window) continue;
+      window.finalReopenedAt = latestReopenBeforeFinalClosure(
+        item.reopenEvents.map((event) => event.reopenedAt),
+        window.closedAt,
+      );
+    }
+    const commentMentions = stableChunk.flatMap((issueNumber) =>
+      closureCommentPrMentionsForFinalClosure(
+        issueNumber,
+        commentsByIssue.get(issueNumber) ?? [],
+        finalClosureWindows.get(issueNumber),
+      ),
     );
-    const mentionedPrs = await listPullRequestFixesBatch(
+    const mentionedPrs = await pullRequestsForLookups(
+      runContext,
       commentMentions.map((mention) => ({
         prNumber: mention.prNumber,
         prRepositoryOwner: mention.prRepositoryOwner,
         prRepositoryName: mention.prRepositoryName,
         prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
       })),
-      { onMissingPullRequest: () => {} },
     );
+    assertClosureProofWriteAllowed(runContext, 'raw closure evidence persistence');
     runInWriteTransaction(() => {
-      deleteIssuePrLinksForIssues(chunk);
-      for (const item of evidence.values()) {
-        for (const event of item.closureEvents) {
-          upsertIssueClosureEvent({
-            issue_number: event.issueNumber,
-            event_id: event.eventId,
-            closed_at: event.closedAt,
-            actor_login: event.actorLogin,
-            state_reason: event.stateReason,
-            closer_type: event.closerType,
-            closer_number: event.closerNumber,
-            closer_oid: event.closerOid,
-            raw_json: JSON.stringify(event.raw),
-          });
-          closureEvents++;
+      assertClosureProofWriteAllowed(
+        runContext,
+        'raw closure evidence persistence transaction',
+      );
+      deleteCommentIssuePrLinksForIssues(stableChunk);
+      assertClosureIssueRevisions(runContext, stableChunk);
+      for (const issueNumber of stableChunk) {
+        const item = evidence.get(issueNumber);
+        if (!item) {
+          throw new Error(`Missing verified issue state evidence for #${issueNumber}`);
         }
-        for (const event of item.reopenEvents) {
-          upsertIssueReopenEvent({
-            issue_number: event.issueNumber,
-            event_id: event.eventId,
-            reopened_at: event.reopenedAt,
-            actor_login: event.actorLogin,
-            raw_json: JSON.stringify(event.raw),
-          });
-          reopenEvents++;
-        }
-        for (const link of item.prLinks) {
-          upsertIssuePrLink({
-            issue_number: link.issueNumber,
-            pr_repository_owner: link.prRepositoryOwner,
-            pr_repository_name: link.prRepositoryName,
-            pr_repository_name_with_owner: link.prRepositoryNameWithOwner,
-            pr_number: link.prNumber,
-            source: link.source,
-            will_close_target: link.willCloseTarget == null ? null : link.willCloseTarget ? 1 : 0,
-            referenced_at: link.referencedAt,
-          });
-          prLinks++;
-        }
-        for (const ref of item.commitReferences) {
-          upsertIssueCommitReference({
-            issue_number: ref.issueNumber,
-            event_id: ref.eventId,
-            commit_oid: ref.commitOid,
-            commit_message_headline: ref.commitMessageHeadline,
-            commit_repository_owner: ref.commitRepositoryOwner,
-            commit_repository_name: ref.commitRepositoryName,
-            commit_repository_name_with_owner: ref.commitRepositoryNameWithOwner,
-            is_cross_repository: ref.isCrossRepository ? 1 : 0,
-            is_direct_reference: ref.isDirectReference ? 1 : 0,
-            referenced_at: ref.referencedAt,
-            actor_login: ref.actorLogin,
-            raw_json: JSON.stringify(ref.raw),
-          });
-          commitReferences++;
-        }
-        for (const pr of item.pullRequests) {
-          upsertPullRequestFix({
-            pr_repository_owner: pr.repositoryOwner,
-            pr_repository_name: pr.repositoryName,
-            pr_repository_name_with_owner: pr.repositoryNameWithOwner,
-            pr_number: pr.number,
-            title: pr.title,
-            url: pr.url,
-            state: pr.state,
-            merged: pr.merged ? 1 : 0,
-            merged_at: pr.mergedAt,
-            merge_commit_oid: pr.mergeCommitOid,
-            base_ref_name: pr.baseRefName,
-          });
-          pullRequests++;
-        }
+        replaceVerifiedIssueStateEventSnapshot(item);
       }
       for (const mention of commentMentions) {
         const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
@@ -2243,7 +4192,6 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
             source_comment_database_id: mention.sourceCommentDatabaseId ?? null,
             source_comment_url: mention.sourceCommentUrl ?? null,
         });
-        prLinks++;
         if (!pr) continue;
         upsertPullRequestFix({
           pr_repository_owner: pr.repositoryOwner,
@@ -2258,31 +4206,51 @@ async function refreshRawClosureEvidence(issueNumbers: number[]): Promise<Closur
           merge_commit_oid: pr.mergeCommitOid,
           base_ref_name: pr.baseRefName,
         });
-        pullRequests++;
       }
+      markIssueClosureEvidenceRefreshed(stableChunk, RAW_CLOSURE_EVIDENCE_SCHEMA_VERSION);
     });
+    refreshedIssueCount += stableChunk.length;
   }
-  return { closureEvents, reopenEvents, prLinks, pullRequests, commitReferences };
+  const issueMetadataDriftIssueNumbers = [...issueMetadataDrift].sort((a, b) => a - b);
+  return {
+    ...rawClosureEvidenceCounts(issueNumbers),
+    refreshedIssueCount,
+    reusedIssueCount: eligibleIssueNumbers.length - issueNumbersToRefresh.length,
+    deferredIssueCount: issueMetadataDriftIssueNumbers.length,
+    issueMetadataDriftIssueNumbers,
+  };
 }
 
 async function refreshClosureCommentPrMentionEvidence(
   issueNumbers: number[],
   commentsByIssue: Map<number, GhComment[]>,
+  runContext: ClosureProofRunContext = createClosureProofRunContext(),
 ): Promise<void> {
+  const finalClosureWindows = finalClosureWindowsForIssues(issueNumbers);
   const commentMentions = issueNumbers.flatMap((issueNumber) =>
-    closureCommentPrMentions(issueNumber, commentsByIssue.get(issueNumber) ?? []),
+    closureCommentPrMentionsForFinalClosure(
+      issueNumber,
+      commentsByIssue.get(issueNumber) ?? [],
+      finalClosureWindows.get(issueNumber),
+    ),
   );
-  const mentionedPrs = await listPullRequestFixesBatch(
+  const mentionedPrs = await pullRequestsForLookups(
+    runContext,
     commentMentions.map((mention) => ({
       prNumber: mention.prNumber,
       prRepositoryOwner: mention.prRepositoryOwner,
       prRepositoryName: mention.prRepositoryName,
       prRepositoryNameWithOwner: mention.prRepositoryNameWithOwner,
     })),
-    { onMissingPullRequest: () => {} },
   );
+  assertClosureProofWriteAllowed(runContext, 'closure comment PR mention persistence');
   runInWriteTransaction(() => {
+    assertClosureProofWriteAllowed(
+      runContext,
+      'closure comment PR mention persistence transaction',
+    );
     deleteCommentIssuePrLinksForIssues(issueNumbers);
+    assertClosureIssueRevisions(runContext, issueNumbers);
     for (const mention of commentMentions) {
       const pr = mentionedPrs.get(pullRequestKey(mention.prRepositoryNameWithOwner, mention.prNumber));
       upsertIssuePrLink({
@@ -2334,10 +4302,8 @@ function openPrContext(evidence: Record<string, unknown>): {
   canonical: Array<Record<string, unknown>>;
   related: Array<Record<string, unknown>>;
 } {
-  const linkedPrs = Array.isArray(evidence.linkedPrs) ? evidence.linkedPrs : [];
-  const openPrs = linkedPrs
+  const openPrs = statusBearingLinkedPrEvidence(evidence)
     .filter((item): item is Record<string, unknown> => {
-      if (!item || typeof item !== 'object') return false;
       const state = String(item.state ?? '').toUpperCase();
       return state === 'OPEN' && Number(item.merged ?? 0) === 0;
     });
@@ -2353,6 +4319,30 @@ function unique(values: string[]): string[] {
 
 function uniqueNumbers(values: number[]): number[] {
   return [...new Set(values)].sort((a, b) => a - b);
+}
+
+function closureProofDependencyIssueNumbers(
+  sourceIssueNumbers: number[],
+  canonicalGraph: Map<number, number[]>,
+  additionalIssueNumbers: number[] = [],
+): number[] {
+  return uniqueNumbers([
+    ...sourceIssueNumbers,
+    ...additionalIssueNumbers,
+    ...canonicalGraph.keys(),
+    ...[...canonicalGraph.values()].flat(),
+  ]);
+}
+
+function assertClosureProofWriteAllowed(
+  runContext: ClosureProofRunContext | undefined,
+  stage: string,
+): void {
+  throwIfAborted(runContext?.signal);
+  if (!runContext?.assertCanWrite) {
+    throw new Error(`Closure proof write "${stage}" requires the shared refresh lease`);
+  }
+  runContext.assertCanWrite(stage);
 }
 
 function knownIssueNumber(number: number): boolean {

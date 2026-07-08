@@ -1,18 +1,322 @@
-import { DatabaseSync } from 'node:sqlite';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { createHash } from 'node:crypto';
+import { DatabaseSync, type StatementSync } from 'node:sqlite';
+import { AsyncLocalStorage } from 'node:async_hooks';
+import { spawnSync } from 'node:child_process';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  readFileSync,
+  realpathSync,
+  renameSync,
+  rmSync,
+  unlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, relative, resolve, sep } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { createHash, randomUUID } from 'node:crypto';
+import dotenv from 'dotenv';
 import { config } from '../config';
-import type { IssueClassification } from './llm';
-import { creditedFixLinkSql } from './fixProvenance';
+import {
+  acquireExclusiveProcessLock,
+  acquireRepositoryDatabaseWriterLock,
+  assertRepositoryDatabaseWriterLockOwnedBy,
+  databaseFileInitializationLockPath,
+  databaseInitializationLockPath,
+  pathsReferToSameFile,
+  type ExclusiveProcessLock,
+} from './exclusiveProcessLock';
+import {
+  apiReadWorkerExpectedDatabaseIdentity,
+  type ApiReadWorkerDatabaseIdentity,
+} from './databaseWorkerContext';
+import {
+  CLASSIFICATION_PROMPT_TEMPLATE_HASH,
+  rawClassificationStorageProblems,
+  type IssueClassification,
+} from './llm';
+import {
+  CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION,
+  canonicalClassifierAttemptLedgerJson,
+  validateClassifierAttempt,
+  validateClassifierAttemptRun,
+  validateClassifierAttemptTerminalReceipt,
+  verifyClassifierAttemptLedger,
+  type ClassifierAttempt,
+  type ClassifierAttemptLedger,
+  type ClassifierAttemptRecorder,
+  type ClassifierAttemptRun,
+  type ClassifierAttemptTerminalReceipt,
+  type ClassifierSelectedAttemptBinding,
+} from './classifierAttemptLedger';
+import { CREDITED_FIX_LINK_SOURCES, creditedFixLinkSql } from './fixProvenance';
 import {
   scoreSourceIdentityForDb,
+  scoreSourceIdentityManifestProblems,
   type ScoreSourceIdentity,
+  type ScoreSourceIdentityOptions,
 } from './scoreSourceIdentity';
+import { CLOSURE_PROOF_ANALYZER_VERSION } from './analysisVersions';
+import {
+  ADVISORY_SNAPSHOT_META_KEY,
+  ADVISORY_SNAPSHOT_V2_META_KEY,
+  COMPOUND_ADVISORY_SNAPSHOT_SCHEMA_VERSION,
+  advisorySnapshotContentHash,
+  advisorySnapshotRowProblems,
+  assertCompoundAdvisorySnapshotScoreable,
+  buildCompoundAdvisorySnapshotAuditProjection,
+  canonicalCompoundAdvisoryRangeRowJson,
+  canonicalCompoundAdvisorySnapshotJson,
+  compoundAdvisoryReceiptBindingProblems,
+  compoundAdvisoryScoreRows,
+  compoundAdvisorySnapshotLedgerContentHash,
+  compoundAdvisorySnapshotMetadataDigest,
+  compoundAdvisorySnapshotPublicationAuthorizations,
+  compoundAdvisorySnapshotRowContentHash,
+  type CompoundAdvisorySnapshot,
+  type CompoundAdvisorySnapshotAuditProjection,
+  type CompoundAdvisorySnapshotMetadata,
+} from './advisorySnapshot';
+import {
+  RELEASE_VALIDATION_HORIZONS,
+  RELEASE_VALIDATION_OPPORTUNITIES,
+  buildAdvisorySnapshotValidationEvidence,
+  buildCompoundAdvisorySnapshotValidationEvidence,
+  releaseValidationDecisionId,
+  releaseCatalogAttestationProblems,
+  releaseValidationForecastContentHash,
+  releaseValidationScoreCommitTimingProblems,
+  releaseValidationForecastTiming,
+  validateReleaseValidationForecastProvenance,
+  type AdvisorySnapshotValidationEvidence,
+  type ReleaseCatalogAttestation,
+} from './releaseValidation';
+import {
+  planReleaseValidationOpportunityEnrollments,
+  releaseValidationOpportunityEnrollmentContentHash,
+  releaseValidationOpportunityId,
+  type ReleaseValidationOpportunityEnrollmentInput,
+  type ReleaseValidationOpportunityEnrollmentRow,
+} from './releaseValidationOpportunityDenominator';
+import {
+  assertValidReleaseValidationProofBundle,
+  canonicalReleaseValidationProofJson,
+  verifyReleaseValidationProofBundle,
+  type ReleaseValidationCatalogMember,
+  type ReleaseValidationCatalogObservation,
+  type ReleaseValidationCatalogReconciliation,
+  type ReleaseValidationCatalogReconciliationRow,
+  type ReleaseValidationCohort,
+  type ReleaseValidationEvaluationReceipt,
+  type ReleaseValidationForecastV2,
+  type ReleaseValidationObligation,
+  type ReleaseValidationObservationBatch as ReleaseValidationProofObservationBatch,
+  type ReleaseValidationOutcomeV2,
+  type ReleaseValidationPolicy,
+  type ReleaseValidationPromotionReceipt,
+  type ReleaseValidationProofBundle,
+  type ReleaseValidationProofEpoch,
+  type ReleaseValidationProofEpochRetirement,
+  type ReleaseValidationProofVerification,
+  type ReleaseValidationSplitAssignment,
+} from './releaseValidationProof';
+import {
+  releaseScoreAuditHistoryRowsContentHash,
+  releaseScoreAuditHistoryRunContentHash,
+} from './scoreHistoryLedger';
+import {
+  ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION,
+  assertAuthoritativeIssueStateEvents,
+  issueStateEventSweepDigest,
+  issueStateEventsDigest,
+  normalizeIssueStateEvents,
+  parseIssueStateEventStabilizationIdentity,
+  type IssueStateEventStabilizationIdentity,
+  type NormalizedIssueStateEvent,
+} from './stateEventSnapshot';
+import {
+  REACHABILITY_METHOD,
+  validateReachabilityEvidence,
+  type ReachabilityCatalogProofIdentity,
+} from './reachabilityEvidence';
+import {
+  AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION,
+  commentEvidenceDigestFromJson,
+  parseCommentEvidenceStabilizationIdentity,
+  parseCachedCommentEvidence,
+  type CommentEvidenceRow,
+} from './commentEvidence';
+import { normalizeCodeRevision } from './codeRevision';
+import {
+  assertOperationReceiptStagePrefix,
+  canonicalJson as canonicalOperationJson,
+  operationAttemptConfigHash,
+  operationAttemptContentHash,
+  operationCaptureReceiptContentHash,
+  operationCaptureReceiptId,
+  operationReceiptTerminalSemanticProblems,
+  operationStageEventContentHash,
+  verifyOperationReceiptLedger,
+  type OperationAttemptLedgerRow,
+  type OperationCaptureReceiptLedgerRow,
+  type OperationStageEventLedgerRow,
+  type OperationStageStatus,
+  type OperationTerminalStatus,
+} from './operationReceipts';
+import {
+  canonicalReleaseValidationBatchJson,
+  releaseValidationObservationBatchForecastInputs,
+  releaseValidationObservationBatchReport,
+  releaseValidationObservationBatchRowsEqual,
+  releaseValidationOutcomeRowsEqual,
+  stageReleaseValidationObservationBatchReceipt,
+  stageReleaseValidationOutcomeRows,
+  verifyReleaseValidationObservationBatchLedger,
+  type ReleaseValidationObservationBatchResult,
+  type ReleaseValidationObservationBatchReceiptRow as ValidationObservationBatchReceiptRow,
+} from './releaseValidationBatch';
+import {
+  ISSUE_CATALOG_SNAPSHOT_DEFAULT_MAX_AGE_MS,
+  issueCatalogSnapshotLedgerProblems,
+  issueCatalogSnapshotProblems,
+  issueCatalogSnapshotResumeProblems,
+  parseIssueCatalogIssueJson,
+  stageIssueCatalogSnapshot,
+  type IssueCatalogSnapshot,
+  type IssueCatalogSnapshotHeader,
+  type IssueCatalogSnapshotLedgerProblem,
+  type IssueCatalogSnapshotRow,
+} from './issueCatalogSnapshot';
+import {
+  githubReleaseCatalogActiveReleaseDigest,
+  githubReleaseCatalogPublicationEvidence,
+  type GhIssueCatalog,
+  type GhIssueCatalogIssue,
+  type GithubReleaseCatalogActiveRelease,
+  type GithubReleaseCatalogPublicationAuthorization,
+} from './github';
+import {
+  RELEASE_CATALOG_CAPTURE_RECEIPT_SCHEMA_VERSION,
+  releaseCatalogCaptureReceiptContentHash,
+  releaseCatalogCaptureReceiptId,
+  releaseCatalogCaptureReceiptPayloadProblems,
+  projectReleaseCatalogActiveRows,
+  verifyReleaseCatalogCaptureReceiptLedger,
+  type ReleaseCatalogCaptureActiveCatalog,
+  type ReleaseCatalogCaptureLedgerVerification,
+  type ReleaseCatalogCaptureOperationAttemptRow,
+  type ReleaseCatalogCaptureReceiptPayload,
+  type ReleaseCatalogCaptureReceiptStorageRow,
+  type ReleaseCatalogCaptureTerminalReceiptRow,
+} from './releaseCatalogReceipt';
+import {
+  LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+  labelAuthorityEvidenceProblems,
+  resolveLabelAuthority,
+  type ApprovedMaintainerRosterEntry,
+  type LabelAuthorityEvidence,
+  type LabelAuthorityResolution,
+  type RepositoryPermissionObservation,
+} from './labelAuthority';
+import {
+  APPROVED_ROSTER_PURPOSE,
+  APPROVED_ROSTER_SIGNATURE_ALGORITHM,
+  approvedMaintainerRosterChainState,
+  approvedMaintainerRosterSnapshotProblems,
+  canonicalApprovedMaintainerRosterChainStateJson,
+  loadApprovedMaintainerRosterChainState,
+  loadApprovedMaintainerRosterKeyring,
+  loadApprovedMaintainerRosterSnapshot,
+  repositoryCollaboratorPermissionSnapshotProblems,
+  type ApprovedMaintainerRosterChainState,
+  type ApprovedMaintainerRosterSnapshot,
+  type RepositoryCollaboratorPermissionSnapshot,
+} from './labelAuthorityEvidenceIngestion';
+import {
+  issueLabelEvidenceSnapshotProblems,
+  type IssueLabelEvidenceSnapshot,
+} from './issueLabelEvidenceSnapshot';
+import {
+  buildReleaseScoreAuditHistoryV2Seal,
+  buildScoreClosureClaimAuthorityResolution,
+  canonicalReleaseScoreAuditHistoryV2SealJson,
+  canonicalScoreAuthorityResolutionRunJson,
+  releaseScoreAuditHistoryV2SealProblems,
+  scoreAuthorityResolutionRunProblems,
+  type ReleaseScoreAuditHistoryV2Seal,
+  type ScoreClosureClaimAuthorityEvidence,
+  type ScoreClosureClaimAuthorityResolution,
+  type ScoreAuthorityResolutionRow,
+  type ScoreAuthorityResolutionRun,
+} from './scoreAuthorityResolution';
+import {
+  CLOSURE_CLAIM_CANDIDATE_LEDGER_SCHEMA_VERSION,
+  CLOSURE_CLAIM_EXTRACTION_RECEIPT_SCHEMA_VERSION,
+  CLOSURE_CLAIM_SOURCE_SNAPSHOT_LEDGER_SCHEMA_VERSION,
+  assertClosureClaimExtractionReceipt,
+  assertImmutableClosureClaimCandidate,
+  buildClosureClaimCandidateLedgerEntry,
+  buildClosureClaimExtractionReceipt,
+  buildClosureClaimSourceSnapshotLedgerEntry,
+  closureClaimExtractionReceiptMemberContentHash,
+  closureClaimIssueBodyDigest,
+  type ClosureClaimCandidate,
+  type ClosureClaimCandidateLedgerEntry,
+  type ClosureClaimExtractionEvidenceBinding,
+  type ClosureClaimExtractionReceipt,
+  type ClosureClaimExtractionReceiptMember,
+  type ClosureClaimExtractionResult,
+  type ClosureClaimSourceSnapshotLedgerEntry,
+} from './closureClaimCandidates';
+import {
+  RELEASE_ARTIFACT_OBSERVATION_SCHEMA_VERSION,
+  RELEASE_ARTIFACT_RECEIPT_SCHEMA_VERSION,
+  assertReleaseArtifactObservation,
+  assertReleaseArtifactReceipt,
+  buildReleaseArtifactObservation,
+  buildReleaseArtifactReceipt,
+  releaseArtifactObservationFromStorageRecord,
+  releaseArtifactReceiptFromStorageRecord,
+  type ReleaseArtifactIdentity,
+  type ReleaseArtifactMetadata,
+  type ReleaseArtifactObservation,
+  type ReleaseArtifactReceipt,
+} from './releaseArtifactReceipt';
+import {
+  buildReleaseArtifactPublication,
+  parseReleaseArtifactPublication,
+  releaseArtifactPublicationLink,
+  releaseIdentityKey,
+  type ReleaseArtifactPublication,
+} from './releaseArtifactPublication';
+import {
+  releaseArtifactPublicationScopeLinkProblems,
+  releaseArtifactPublicationScopeScoreProblems,
+} from './releaseArtifactPublicationScope';
+import type { ArtifactVerificationEvidence } from './artifactVerification';
+import type { EvidenceReportVerification } from './releaseEvidence';
 
 // node:sqlite is built into Node ≥ 22.5 (stable since 24). No native build, no prebuilds.
 
-export const dbReadOnly = process.env.RADAR_DB_READ_ONLY === '1' || process.env.RADAR_DB_READ_ONLY === 'true';
+const trustedApiReadWorkerDatabaseIdentity =
+  apiReadWorkerExpectedDatabaseIdentity();
+const trustedApiReadWorker = trustedApiReadWorkerDatabaseIdentity !== null;
+const explicitDatabaseReadOnly =
+  process.env.RADAR_DB_READ_ONLY === '1' ||
+  process.env.RADAR_DB_READ_ONLY === 'true';
+export const dbReadOnly =
+  explicitDatabaseReadOnly ||
+  trustedApiReadWorker;
+const repositoryRoot = resolve(__dirname, '..', '..');
+const repositoryLiveDatabasePath = resolve(repositoryRoot, 'data', 'radar.db');
+const packageManifestPath = resolve(repositoryRoot, 'package.json');
+const databasePath = normalizeDatabaseLocation(
+  process.env.DB_PATH ?? config.db.path,
+);
 const defaultPrRepositoryOwner = config.github.owner;
 const defaultPrRepositoryName = config.github.repo;
 const defaultPrRepositoryNameWithOwner = `${defaultPrRepositoryOwner}/${defaultPrRepositoryName}`;
@@ -68,14 +372,1419 @@ function prRepositoryFromUrl(url: string | null): PrRepositoryIdentity | null {
   };
 }
 
-if (!dbReadOnly) mkdirSync(dirname(config.db.path), { recursive: true });
+function runningInTestContext(): boolean {
+  return Boolean(
+    process.env.NODE_TEST_CONTEXT ||
+    process.env.RADAR_TEST_RUN_ID ||
+    process.env.RADAR_TEST_WORKER_DB_PATH ||
+    process.env.NODE_ENV === 'test',
+  );
+}
 
-export const db = dbReadOnly
-  ? new DatabaseSync(config.db.path, { readOnly: true })
-  : new DatabaseSync(config.db.path);
+const databaseGuardInstallKey =
+  Symbol.for('openclaw-release-radar.database-guard');
+const authoritativeTestDatabaseGuardPolicyKind =
+  'authoritative-test-database-guard-policy';
 
-export function scoreSourceIdentity(): ScoreSourceIdentity {
-  return scoreSourceIdentityForDb(db);
+type TestDatabaseGuardInstallation = {
+  assertActive(options?: {
+    requirePrivateArtifacts?: boolean;
+  }): {
+    policyKind: string;
+    databasePath: string;
+  };
+  assertBootstrapPolicyProbe(): {
+    policyKind: string;
+    databasePath: string;
+  };
+};
+
+function assertAuthoritativeTestDatabaseGuard(): void {
+  const descriptor = Object.getOwnPropertyDescriptor(
+    globalThis,
+    databaseGuardInstallKey,
+  );
+  const installation = descriptor?.value as
+    | TestDatabaseGuardInstallation
+    | undefined;
+  if (
+    descriptor == null ||
+    descriptor.configurable ||
+    descriptor.enumerable ||
+    descriptor.writable ||
+    typeof installation?.assertActive !== 'function'
+  ) {
+    throw new Error(
+      'Test database access requires the sealed authoritative database guard',
+    );
+  }
+  const databasePolicyProbe =
+    process.env.RADAR_TEST_DATABASE_POLICY_PROBE === '1';
+  if (
+    databasePolicyProbe &&
+    typeof installation.assertBootstrapPolicyProbe !== 'function'
+  ) {
+    throw new Error(
+      'Test database bootstrap policy probe requires a sealed guard capability',
+    );
+  }
+  const attestation = databasePolicyProbe
+    ? installation.assertBootstrapPolicyProbe()
+    : installation.assertActive();
+  if (attestation.policyKind !== authoritativeTestDatabaseGuardPolicyKind) {
+    throw new Error(
+      'Test database access requires the authoritative kernel write boundary',
+    );
+  }
+  const resolvedDatabasePath = databaseFilesystemPath(databasePath);
+  if (
+    !databasePolicyProbe &&
+    (
+      resolvedDatabasePath == null ||
+      resolve(attestation.databasePath) !== resolvedDatabasePath
+    )
+  ) {
+    throw new Error(
+      'Test database guard attestation does not match DB_PATH',
+    );
+  }
+}
+
+const supportedPackageLifecycleEntrypoints = new Map<string, string>([
+  ['analyze:closure-proofs', 'scripts/analyze-closure-proofs.mjs'],
+  ['backfill:closed-windows', 'scripts/backfill-closed-windows.mjs'],
+  ['backfill:issue-comment-snapshots', 'scripts/backfill-issue-comment-snapshots.mjs'],
+  ['backfill:issue-state-events', 'scripts/backfill-issue-state-events.mjs'],
+  ['check:release-pr-reachability', 'scripts/check-release-pr-reachability.mjs'],
+  ['dev', 'src/index.ts'],
+  ['doctor', 'scripts/doctor.mjs'],
+  ['ingest:fix-provenance', 'scripts/ingest-fix-provenance.mjs'],
+  ['promote:quality-db', 'scripts/promote-quality-db.mjs'],
+  ['refresh:quality', 'scripts/refresh-quality-db.mjs'],
+  ['scrape:upstream', 'scripts/scrape-upstream-webui.mjs'],
+  ['start', 'dist/index.js'],
+  ['test', 'test/run-tests.mjs'],
+  ['test:baseline', 'test/generate-test-baseline.mjs'],
+  ['test:baseline:accept', 'test/accept-test-baseline.mjs'],
+  ['test:safety', 'test/run-database-guard.mjs'],
+  ['validation:evaluate', 'scripts/validation/evaluate-score-quality.mjs'],
+  ['validation:observe', 'scripts/validation/observe-outcomes.mjs'],
+  ['validation:opportunities', 'scripts/validation/forecast-opportunity-status.mjs'],
+  ['validation:snapshot', 'scripts/validation/snapshot-forecast.mjs'],
+  ['verify:live', 'scripts/verify-live.mjs'],
+  ['verify:release-audit', 'scripts/verify-release-audit-invariants.mjs'],
+  ['verify:score', 'scripts/verify-new-scoring.mjs'],
+]);
+const supportedPackageLifecycleChildEntrypoints =
+  new Map<string, readonly string[]>([
+    [
+      'promote:quality-db',
+      ['scripts/validation/record-promotion.mjs'],
+    ],
+  ]);
+const maximumPackageLifecycleAncestryDepth = 16;
+
+export type PackageLifecycleProcessRecord = {
+  pid: number;
+  parentPid: number;
+  command: string;
+};
+
+export type PackageLifecycleAuthorizationInspection = {
+  authorized: boolean;
+  claimed: boolean;
+  event: string | null;
+  problem: string | null;
+};
+
+export function inspectPackageLifecycleAuthorization({
+  entrypoint = process.argv[1],
+  environment = process.env,
+  parentPid = process.ppid,
+  processTable,
+  packageScripts,
+}: {
+  entrypoint?: string;
+  environment?: NodeJS.ProcessEnv;
+  parentPid?: number;
+  processTable?: readonly PackageLifecycleProcessRecord[] | null;
+  packageScripts?: Readonly<Record<string, string>>;
+} = {}): PackageLifecycleAuthorizationInspection {
+  const lifecycleEvent = exactEnvironmentValue(
+    environment,
+    'npm_lifecycle_event',
+  );
+  if (!lifecycleEvent || !entrypoint) {
+    return {
+      authorized: false,
+      claimed: false,
+      event: lifecycleEvent,
+      problem: null,
+    };
+  }
+  const primaryEntrypoint =
+    supportedPackageLifecycleEntrypoints.get(lifecycleEvent);
+  const childEntrypoints =
+    supportedPackageLifecycleChildEntrypoints.get(lifecycleEvent) ?? [];
+  const matchesPrimary =
+    primaryEntrypoint !== undefined &&
+    pathsReferToSameFile(
+      entrypoint,
+      resolve(repositoryRoot, primaryEntrypoint),
+    );
+  const matchesChild = childEntrypoints.some((childEntrypoint) =>
+    pathsReferToSameFile(
+      entrypoint,
+      resolve(repositoryRoot, childEntrypoint),
+    ));
+  if (!matchesPrimary && !matchesChild) {
+    return {
+      authorized: false,
+      claimed: false,
+      event: lifecycleEvent,
+      problem: null,
+    };
+  }
+
+  const reject = (
+    problem: string,
+  ): PackageLifecycleAuthorizationInspection => ({
+    authorized: false,
+    claimed: true,
+    event: lifecycleEvent,
+    problem,
+  });
+  const npmPackageJson = exactEnvironmentValue(
+    environment,
+    'npm_package_json',
+  );
+  if (
+    !npmPackageJson ||
+    !pathsReferToSameFile(npmPackageJson, packageManifestPath)
+  ) {
+    return reject('npm_package_json does not identify this package manifest');
+  }
+  let declaredScripts: Readonly<Record<string, string>>;
+  try {
+    declaredScripts = packageScripts ?? readDeclaredPackageScripts();
+  } catch (error) {
+    return reject(
+      `package scripts could not be read: ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+  }
+  const declaredScript = declaredScripts[lifecycleEvent];
+  const lifecycleScript = exactEnvironmentValue(
+    environment,
+    'npm_lifecycle_script',
+  );
+  if (!declaredScript || lifecycleScript !== declaredScript) {
+    return reject(
+      'npm_lifecycle_script does not match the declared package script',
+    );
+  }
+  const npmNodeExecPath = exactEnvironmentValue(
+    environment,
+    'npm_node_execpath',
+  );
+  if (
+    !npmNodeExecPath ||
+    !pathsReferToSameFile(npmNodeExecPath, process.execPath)
+  ) {
+    return reject('npm_node_execpath does not identify the current Node binary');
+  }
+  const npmExecPath = exactEnvironmentValue(environment, 'npm_execpath');
+  if (!npmExecPath || !isTrustedNpmCliPath(npmExecPath)) {
+    return reject('npm_execpath does not identify an npm CLI installation');
+  }
+  const observedProcessTable =
+    processTable === undefined
+      ? capturePackageLifecycleProcessTable()
+      : processTable;
+  if (!observedProcessTable) {
+    return reject('npm process ancestry could not be inspected');
+  }
+  const processByPid = new Map(
+    observedProcessTable.map((record) => [record.pid, record]),
+  );
+  const visited = new Set<number>();
+  let currentParentPid = parentPid;
+  for (
+    let depth = 0;
+    depth < maximumPackageLifecycleAncestryDepth;
+    depth += 1
+  ) {
+    if (
+      !Number.isInteger(currentParentPid) ||
+      currentParentPid <= 0 ||
+      visited.has(currentParentPid)
+    ) {
+      break;
+    }
+    visited.add(currentParentPid);
+    const parent = processByPid.get(currentParentPid);
+    if (!parent) {
+      return reject('npm process ancestry is incomplete');
+    }
+    if (npmProcessTitleMatches(parent.command, lifecycleEvent)) {
+      return {
+        authorized: true,
+        claimed: true,
+        event: lifecycleEvent,
+        problem: null,
+      };
+    }
+    if (parent.parentPid === currentParentPid) break;
+    currentParentPid = parent.parentPid;
+  }
+  return reject(
+    `no npm ancestor is running the declared ${lifecycleEvent} lifecycle`,
+  );
+}
+
+let declaredPackageScripts:
+  | Readonly<Record<string, string>>
+  | null = null;
+
+function readDeclaredPackageScripts(): Readonly<Record<string, string>> {
+  if (declaredPackageScripts) return declaredPackageScripts;
+  const parsed = JSON.parse(
+    readFileSync(packageManifestPath, 'utf8'),
+  ) as { scripts?: unknown };
+  if (
+    parsed.scripts === null ||
+    typeof parsed.scripts !== 'object' ||
+    Array.isArray(parsed.scripts)
+  ) {
+    throw new Error('package.json does not contain a scripts object');
+  }
+  const scripts = Object.fromEntries(
+    Object.entries(parsed.scripts).filter(
+      (entry): entry is [string, string] => typeof entry[1] === 'string',
+    ),
+  );
+  declaredPackageScripts = Object.freeze(scripts);
+  return declaredPackageScripts;
+}
+
+function exactEnvironmentValue(
+  environment: NodeJS.ProcessEnv,
+  name: string,
+): string | null {
+  const value = environment[name];
+  if (
+    typeof value !== 'string' ||
+    value.length === 0 ||
+    value.trim() !== value
+  ) {
+    return null;
+  }
+  return value;
+}
+
+function isTrustedNpmCliPath(path: string): boolean {
+  if (!isAbsolute(path)) return false;
+  try {
+    const realPath = realpathSync(path);
+    const stats = lstatSync(realPath);
+    return stats.isFile() && basename(realPath) === 'npm-cli.js';
+  } catch {
+    return false;
+  }
+}
+
+function capturePackageLifecycleProcessTable():
+  PackageLifecycleProcessRecord[] | null {
+  const psPath = existsSync('/bin/ps')
+    ? '/bin/ps'
+    : existsSync('/usr/bin/ps')
+      ? '/usr/bin/ps'
+      : null;
+  if (!psPath) return null;
+  const result = spawnSync(
+    psPath,
+    ['-axo', 'pid=,ppid=,command='],
+    {
+      encoding: 'utf8',
+      maxBuffer: 4 * 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 2_000,
+    },
+  );
+  if (result.error || result.signal || result.status !== 0) return null;
+  return String(result.stdout ?? '')
+    .split('\n')
+    .flatMap((line) => {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.+?)\s*$/);
+      if (!match) return [];
+      return [{
+        pid: Number(match[1]),
+        parentPid: Number(match[2]),
+        command: match[3],
+      }];
+    });
+}
+
+function npmProcessTitleMatches(command: string, event: string): boolean {
+  const normalized = command.trim().replace(/\s+/g, ' ');
+  const prefixes = [
+    `npm run ${event}`,
+    `npm run-script ${event}`,
+  ];
+  if (event === 'test') {
+    prefixes.push('npm test', 'npm t', 'npm tst');
+  } else if (event === 'start') {
+    prefixes.push('npm start', 'npm restart');
+  }
+  return prefixes.some(
+    (prefix) =>
+      normalized === prefix ||
+      normalized.startsWith(`${prefix} `),
+  );
+}
+
+function normalizeDatabaseLocation(location: string): string {
+  if (!location || location.trim().length === 0) {
+    throw new Error('DB_PATH must not be empty or whitespace');
+  }
+  if (location.trim() !== location) {
+    throw new Error(
+      'DB_PATH must not contain leading or trailing whitespace',
+    );
+  }
+  return location;
+}
+
+function runningInSupportedApplicationContext(): boolean {
+  const entrypoint = process.argv[1];
+  if (!entrypoint) return false;
+  if ([
+    resolve(repositoryRoot, 'src', 'index.ts'),
+    resolve(repositoryRoot, 'dist', 'index.js'),
+  ].some((supported) => pathsReferToSameFile(entrypoint, supported))) {
+    return true;
+  }
+  const authorization = inspectPackageLifecycleAuthorization({ entrypoint });
+  if (authorization.claimed && !authorization.authorized) {
+    throw new Error(
+      `Refusing unverified npm lifecycle authorization for ` +
+      `${authorization.event}: ${authorization.problem}`,
+    );
+  }
+  return authorization.authorized;
+}
+
+function runningInInstallerSmokeContext(): boolean {
+  if (process.argv[1] || process.env.npm_lifecycle_event) return false;
+  const releaseRoot = process.env.RELEASE_ROOT;
+  if (
+    !releaseRoot ||
+    resolve(releaseRoot) !== repositoryRoot ||
+    !process.env.RADAR_CODE_REVISION ||
+    dbReadOnly ||
+    process.env.REFRESH_ON_STARTUP !== 'false' ||
+    process.env.REFRESH_MINUTES !== '0'
+  ) {
+    return false;
+  }
+  const path = databaseFilesystemPath(databasePath);
+  const smokeRoot = resolve(repositoryRoot, '..', '..', 'shared', 'install-smoke');
+  return path != null && pathIsWithin(path, smokeRoot);
+}
+
+function runningInAdHocEvaluationContext(): boolean {
+  const evalOrPrint = process.execArgv.some((argument) =>
+    argument === '-e' ||
+    argument === '--eval' ||
+    argument.startsWith('--eval=') ||
+    argument === '-p' ||
+    argument === '--print' ||
+    argument.startsWith('--print='));
+  return (
+    evalOrPrint ||
+    (
+      !runningInTestContext() &&
+      !runningInSupportedApplicationContext() &&
+      !runningInInstallerSmokeContext()
+    )
+  );
+}
+
+function databaseFilesystemPath(location: string): string | null {
+  if (location === ':memory:') return null;
+  if (location.startsWith('file:')) {
+    const url = new URL(location);
+    if (url.searchParams.get('mode') === 'memory') return null;
+    return resolve(fileURLToPath(url));
+  }
+  return resolve(location);
+}
+
+function immutableReadOnlyDatabaseLocation(
+  location: string,
+  filesystemPath: string | null,
+): string {
+  if (!filesystemPath) return location;
+  const url = location.startsWith('file:')
+    ? new URL(location)
+    : pathToFileURL(filesystemPath);
+  url.searchParams.set('mode', 'ro');
+  url.searchParams.set('immutable', '1');
+  return url.toString();
+}
+
+function configuredApplicationDatabasePaths(): string[] {
+  const protectedPaths = new Set<string>([repositoryLiveDatabasePath]);
+  const repositoryEnvPath = resolve(repositoryRoot, '.env');
+  if (!existsSync(repositoryEnvPath)) return [...protectedPaths];
+  let contents: Buffer;
+  try {
+    contents = readFileSync(repositoryEnvPath);
+  } catch (error) {
+    throw new Error(
+      `Cannot inspect configured application database path from ${repositoryEnvPath}`,
+      { cause: error },
+    );
+  }
+  const configuredLocation = dotenv.parse(contents).DB_PATH;
+  if (
+    configuredLocation == null ||
+    configuredLocation.length === 0 ||
+    configuredLocation.trim() !== configuredLocation
+  ) {
+    return [...protectedPaths];
+  }
+  let configuredPath: string | null;
+  if (configuredLocation === ':memory:') {
+    configuredPath = null;
+  } else if (configuredLocation.startsWith('file:')) {
+    const url = new URL(configuredLocation);
+    configuredPath = url.searchParams.get('mode') === 'memory'
+      ? null
+      : resolve(fileURLToPath(url));
+  } else {
+    configuredPath = resolve(repositoryRoot, configuredLocation);
+  }
+  if (configuredPath) protectedPaths.add(configuredPath);
+  return [...protectedPaths];
+}
+
+function pathIsWithin(path: string, root: string): boolean {
+  const relation = relative(resolve(root), resolve(path));
+  return relation !== '' &&
+    relation !== '..' &&
+    !relation.startsWith(`..${sep}`) &&
+    !isAbsolute(relation);
+}
+
+type DatabaseBootstrapPolicy = {
+  context:
+    | 'normal'
+    | 'test'
+    | 'evaluation'
+    | 'installer-smoke'
+    | 'api-read-worker';
+  mode: 'normal' | 'fresh' | 'existing';
+};
+
+function databaseBootstrapPolicy(): DatabaseBootstrapPolicy {
+  if (trustedApiReadWorker) {
+    return { context: 'api-read-worker', mode: 'existing' };
+  }
+  const databasePolicyProbeContext =
+    process.env.RADAR_TEST_DATABASE_POLICY_PROBE === '1'
+      ? process.env.RADAR_TEST_DATABASE_POLICY_PROBE_CONTEXT
+      : undefined;
+  if (
+    databasePolicyProbeContext !== undefined &&
+    databasePolicyProbeContext !== 'test' &&
+    databasePolicyProbeContext !== 'evaluation'
+  ) {
+    throw new Error(
+      'RADAR_TEST_DATABASE_POLICY_PROBE_CONTEXT must be test or evaluation',
+    );
+  }
+  const testContext = databasePolicyProbeContext
+    ? databasePolicyProbeContext === 'test'
+    : runningInTestContext();
+  if (databasePolicyProbeContext || testContext) {
+    assertAuthoritativeTestDatabaseGuard();
+  }
+  const installerSmokeContext = runningInInstallerSmokeContext();
+  const evaluationContext = databasePolicyProbeContext
+    ? databasePolicyProbeContext === 'evaluation'
+    : runningInAdHocEvaluationContext();
+  if (!testContext && !evaluationContext && !installerSmokeContext) {
+    return { context: 'normal', mode: 'normal' };
+  }
+  const bootstrapContext = testContext
+    ? 'test'
+    : installerSmokeContext
+      ? 'installer-smoke'
+      : 'evaluation';
+  const context = testContext
+    ? { plural: 'test', singular: 'a test' }
+    : installerSmokeContext
+      ? { plural: 'installer smoke', singular: 'an installer smoke' }
+      : { plural: 'ad hoc evaluation', singular: 'an ad hoc evaluation' };
+  const configuredPath = process.env.DB_PATH;
+  if (!configuredPath) {
+    throw new Error(
+      `DB_PATH is required in ${context.plural} contexts; ` +
+      'refusing to fall back to data/radar.db',
+    );
+  }
+  if (!installerSmokeContext) {
+    const dotenvPath = process.env.DOTENV_CONFIG_PATH;
+    if (!dotenvPath || dotenvPath.trim() !== dotenvPath) {
+      throw new Error(
+        `DOTENV_CONFIG_PATH is required in ${context.plural} contexts and ` +
+        'must reference an empty file without surrounding whitespace',
+      );
+    }
+    let dotenvContents: Buffer;
+    try {
+      dotenvContents = readFileSync(resolve(dotenvPath));
+    } catch (error) {
+      throw new Error(
+        `DOTENV_CONFIG_PATH cannot be read in ${context.singular} context: ` +
+        resolve(dotenvPath),
+        { cause: error },
+      );
+    }
+    if (dotenvContents.length !== 0) {
+      throw new Error(
+        `DOTENV_CONFIG_PATH must reference an empty file in ${context.singular} ` +
+        `context: ${resolve(dotenvPath)}`,
+      );
+    }
+  }
+  const resolvedPath = databaseFilesystemPath(configuredPath);
+  if (resolvedPath && !installerSmokeContext) {
+    const protectedPath = configuredApplicationDatabasePaths()
+      .find((candidate) => pathsReferToSameFile(resolvedPath, candidate));
+    if (protectedPath) {
+      throw new Error(
+        `Refusing to open a configured application database in ${context.singular} ` +
+        `context: ${resolvedPath} (matches ${protectedPath})`,
+      );
+    }
+  }
+  if (!resolvedPath) {
+    throw new Error(
+      `DB_PATH must reference a private on-disk database in ${context.singular} ` +
+      'context; in-memory databases are not auditable',
+    );
+  }
+  const privateRoot = dirname(resolvedPath);
+  let privateRootStats;
+  try {
+    privateRootStats = lstatSync(privateRoot);
+  } catch (error) {
+    throw new Error(
+      `DB_PATH parent must already exist in ${context.singular} context: ` +
+      privateRoot,
+      { cause: error },
+    );
+  }
+  if (
+    !privateRootStats.isDirectory() ||
+    privateRootStats.isSymbolicLink() ||
+    (typeof process.getuid === 'function' &&
+      privateRootStats.uid !== process.getuid()) ||
+    (privateRootStats.mode & 0o077) !== 0
+  ) {
+    throw new Error(
+      `DB_PATH parent must be a private directory owned by the current user ` +
+      `with no group/other permissions in ${context.singular} context: ${privateRoot}`,
+    );
+  }
+  const configuredMode = process.env.RADAR_DB_BOOTSTRAP_MODE?.trim();
+  const mode = installerSmokeContext
+    ? 'fresh'
+    : configuredMode || (dbReadOnly ? 'existing' : 'fresh');
+  if (mode !== 'fresh' && mode !== 'existing') {
+    throw new Error(
+      `RADAR_DB_BOOTSTRAP_MODE must be fresh or existing in ${context.singular} ` +
+      `context, got ${mode}`,
+    );
+  }
+  if (dbReadOnly && mode === 'fresh') {
+    throw new Error(
+      `Read-only database access requires RADAR_DB_BOOTSTRAP_MODE=existing in ` +
+      `${context.singular} context`,
+    );
+  }
+  return {
+    context: bootstrapContext,
+    mode,
+  };
+}
+
+const bootstrapPolicy = databaseBootstrapPolicy();
+
+interface DatabaseFileIdentity {
+  dev: number;
+  ino: number;
+}
+
+interface InheritedWriterAuthority {
+  pid: number;
+  token: string;
+  leasePath: string;
+  leaseIdentity: DatabaseFileIdentity;
+  tempRoot: string;
+  tempRootIdentity: DatabaseFileIdentity;
+}
+
+let inheritedWriterAuthority: InheritedWriterAuthority | null = null;
+const inheritedTestWriterToken =
+  process.env.RADAR_TEST_WRITER_LOCK_TOKEN ?? '';
+const inheritedTestWriterPidText =
+  process.env.RADAR_TEST_WRITER_LOCK_PID ?? '';
+const inheritedTestWriterLeasePath =
+  process.env.RADAR_TEST_WRITER_LEASE_PATH ?? '';
+const inheritedWriterFields = [
+  inheritedTestWriterToken,
+  inheritedTestWriterPidText,
+  inheritedTestWriterLeasePath,
+];
+if (
+  inheritedWriterFields.some((value) => value.length > 0) &&
+  !inheritedWriterFields.every((value) => value.length > 0)
+) {
+  throw new Error(
+    'RADAR_TEST_WRITER_LOCK_TOKEN, RADAR_TEST_WRITER_LOCK_PID, and ' +
+    'RADAR_TEST_WRITER_LEASE_PATH must be inherited together',
+  );
+}
+for (const [name, value] of [
+  ['RADAR_TEST_WRITER_LOCK_TOKEN', inheritedTestWriterToken],
+  ['RADAR_TEST_WRITER_LOCK_PID', inheritedTestWriterPidText],
+  ['RADAR_TEST_WRITER_LEASE_PATH', inheritedTestWriterLeasePath],
+] as const) {
+  if (value && value.trim() !== value) {
+    throw new Error(`${name} must not contain leading or trailing whitespace`);
+  }
+}
+const inheritedTestWriterPid = Number(inheritedTestWriterPidText);
+if (!dbReadOnly && inheritedTestWriterToken) {
+  if (!runningInTestContext()) {
+    throw new Error(
+      'Inherited test writer authority is valid only in a test context',
+    );
+  }
+  if (!Number.isInteger(inheritedTestWriterPid) || inheritedTestWriterPid <= 0) {
+    throw new Error('RADAR_TEST_WRITER_LOCK_PID must identify the suite lock owner');
+  }
+  const runId = process.env.RADAR_TEST_RUN_ID;
+  const tempRootValue = process.env.RADAR_TEST_TEMP_ROOT;
+  if (
+    !runId ||
+    runId.trim() !== runId ||
+    !tempRootValue ||
+    tempRootValue.trim() !== tempRootValue
+  ) {
+    throw new Error(
+      'Inherited writer authority requires RADAR_TEST_RUN_ID and ' +
+      'RADAR_TEST_TEMP_ROOT from the suite runner',
+    );
+  }
+  const tempRoot = resolve(tempRootValue);
+  const tempRootIdentity =
+    assertPrivateOwnedDirectory(tempRoot, 'Test runner temporary root');
+  if (!databaseFilePathWithinRoot(databasePath, tempRoot)) {
+    throw new Error(
+      `Inherited writer DB_PATH must stay inside RADAR_TEST_TEMP_ROOT: ${tempRoot}`,
+    );
+  }
+  const leasePath = resolve(inheritedTestWriterLeasePath);
+  if (dirname(leasePath) !== tempRoot) {
+    throw new Error(
+      'RADAR_TEST_WRITER_LEASE_PATH must be a direct child of ' +
+      'RADAR_TEST_TEMP_ROOT',
+    );
+  }
+  const leaseIdentityBefore = assertSecureOwnedFile(
+    leasePath,
+    'Inherited test writer lease',
+    true,
+  );
+  let lease: {
+    token?: string;
+    pid?: number;
+    repositoryRoot?: string;
+  };
+  try {
+    lease = JSON.parse(readFileSync(leasePath, 'utf8')) as typeof lease;
+  } catch (error) {
+    throw new Error(`Unable to read inherited test writer lease ${leasePath}`, {
+      cause: error,
+    });
+  }
+  assertFileIdentity(
+    leasePath,
+    leaseIdentityBefore,
+    'inherited writer lease read',
+    true,
+  );
+  if (
+    lease.token !== inheritedTestWriterToken ||
+    lease.pid !== inheritedTestWriterPid ||
+    resolve(lease.repositoryRoot ?? '') !== repositoryRoot
+  ) {
+    throw new Error(
+      'Inherited test writer lease does not match protected runner state',
+    );
+  }
+  assertRepositoryDatabaseWriterLockOwnedBy({
+    repositoryRoot,
+    pid: inheritedTestWriterPid,
+    token: inheritedTestWriterToken,
+  });
+  inheritedWriterAuthority = {
+    pid: inheritedTestWriterPid,
+    token: inheritedTestWriterToken,
+    leasePath,
+    leaseIdentity: leaseIdentityBefore,
+    tempRoot,
+    tempRootIdentity,
+  };
+}
+const localWriterLock =
+  !dbReadOnly &&
+  !inheritedTestWriterToken &&
+  (
+    runningInAdHocEvaluationContext() ||
+    runningInTestContext()
+  )
+    ? acquireRepositoryDatabaseWriterLock({
+        repositoryRoot,
+        label: runningInAdHocEvaluationContext()
+          ? 'ad hoc repository database evaluation'
+          : 'direct writable test process',
+        databasePath,
+      })
+    : null;
+
+const databaseFilePath = databaseFilesystemPath(databasePath);
+const databaseInitializationLocks: ExclusiveProcessLock[] = [];
+let databaseInitializationComplete = false;
+let bootstrapDatabaseIdentity: DatabaseFileIdentity | null = null;
+const bootstrapCreatedFileIdentities =
+  new Map<string, DatabaseFileIdentity>();
+let openedDatabase: DatabaseSync | null = null;
+let localWriterLockReleased = false;
+
+function releaseDatabaseInitializationResources(options: {
+  preserveDatabase?: boolean;
+} = {}): Error[] {
+  const errors: Error[] = [];
+  const preserveDatabase = options.preserveDatabase === true;
+  if (!preserveDatabase) {
+    try {
+      captureBootstrapCreatedSqliteFamily();
+    } catch (error) {
+      errors.push(normalizeCleanupError(
+        error,
+        'capture bootstrap-created SQLite files',
+      ));
+    }
+    try {
+      if (openedDatabase?.isOpen) openedDatabase.close();
+      openedDatabase = null;
+    } catch (error) {
+      if (openedDatabase && !openedDatabase.isOpen) {
+        openedDatabase = null;
+      } else {
+        errors.push(normalizeCleanupError(error, 'close failed database bootstrap'));
+      }
+    }
+  }
+  if (!preserveDatabase && openedDatabase !== null) return errors;
+  if (!preserveDatabase && openedDatabase === null) {
+    for (const [path, identity] of bootstrapCreatedFileIdentities) {
+      try {
+        unlinkFileIfIdentityMatches(path, identity);
+        bootstrapCreatedFileIdentities.delete(path);
+      } catch (error) {
+        errors.push(normalizeCleanupError(error, `remove failed bootstrap file ${path}`));
+      }
+    }
+  }
+  while (databaseInitializationLocks.length > 0) {
+    const lock = databaseInitializationLocks.at(-1)!;
+    try {
+      lock.release();
+      databaseInitializationLocks.pop();
+    } catch (error) {
+      errors.push(normalizeCleanupError(error, `release ${lock.path}`));
+      break;
+    }
+  }
+  if (
+    !preserveDatabase &&
+    localWriterLock &&
+    !localWriterLockReleased
+  ) {
+    try {
+      localWriterLock.release();
+      localWriterLockReleased = true;
+    } catch (error) {
+      errors.push(normalizeCleanupError(error, 'release local writer lock'));
+    }
+  }
+  return errors;
+}
+
+function normalizeCleanupError(error: unknown, operation: string): Error {
+  return new Error(
+    `${operation}: ${error instanceof Error ? error.message : String(error)}`,
+    { cause: error },
+  );
+}
+
+function reportDeferredInitializationCleanup(): void {
+  if (databaseInitializationComplete) return;
+  deferredInitializationCleanup = null;
+  deferredInitializationCleanupAttempts += 1;
+  const errors = releaseDatabaseInitializationResources();
+  if (errors.length > 0) {
+    console.error(new AggregateError(
+      errors,
+      'Database initialization cleanup failed after module evaluation aborted',
+    ));
+    scheduleDeferredInitializationCleanup();
+  }
+}
+
+function scheduleDeferredInitializationCleanup(): void {
+  if (
+    databaseInitializationComplete ||
+    deferredInitializationCleanup ||
+    deferredInitializationCleanupAttempts >= 3
+  ) {
+    return;
+  }
+  deferredInitializationCleanup = setImmediate(
+    reportDeferredInitializationCleanup,
+  );
+}
+
+function sqliteFamilyPaths(path: string | null): string[] {
+  if (!path) return [];
+  return [path, `${path}-wal`, `${path}-shm`, `${path}-journal`];
+}
+
+function lstatIfPresent(
+  path: string,
+): ReturnType<typeof lstatSync> | null {
+  try {
+    return lstatSync(path);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function assertSqliteFamilyAbsent(path: string, context: string): void {
+  const existing = sqliteFamilyPaths(path).filter(
+    (candidate) => lstatIfPresent(candidate) !== null,
+  );
+  if (existing.length > 0) {
+    throw new Error(
+      `${context} requires a fresh SQLite database family; existing path(s): ` +
+      existing.join(', '),
+    );
+  }
+}
+
+function assertPrivateOwnedDirectory(
+  path: string,
+  label: string,
+): DatabaseFileIdentity {
+  const stats = lstatSync(path);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    (typeof process.getuid === 'function' && stats.uid !== process.getuid()) ||
+    (stats.mode & 0o077) !== 0
+  ) {
+    throw new Error(
+      `${label} must be a private directory owned by the current user ` +
+      `with no group/other permissions: ${path}`,
+    );
+  }
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function assertSecureOwnedFile(
+  path: string,
+  label: string,
+  requireOwnerOnly = false,
+): DatabaseFileIdentity {
+  const stats = lstatSync(path);
+  const unsafePermissions = requireOwnerOnly
+    ? (stats.mode & 0o077) !== 0
+    : (stats.mode & 0o022) !== 0;
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.nlink !== 1 ||
+    (typeof process.getuid === 'function' && stats.uid !== process.getuid()) ||
+    unsafePermissions
+  ) {
+    throw new Error(
+      `${label} must be a secure owner-controlled regular file with one link: ${path}`,
+    );
+  }
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function assertSecureExistingSqliteFamily(path: string): DatabaseFileIdentity {
+  const mainIdentity = assertSecureOwnedFile(path, 'SQLite database');
+  for (const sidecar of sqliteFamilyPaths(path).slice(1)) {
+    if (lstatIfPresent(sidecar)) {
+      assertSecureOwnedFile(sidecar, 'SQLite sidecar');
+    }
+  }
+  return mainIdentity;
+}
+
+function assertSecureDatabaseParent(path: string): void {
+  const parent = dirname(path);
+  const stats = lstatSync(parent);
+  if (
+    !stats.isDirectory() ||
+    stats.isSymbolicLink() ||
+    (stats.mode & 0o022) !== 0
+  ) {
+    throw new Error(
+      `SQLite database parent must be a non-symlink directory without ` +
+      `group/other write access: ${parent}`,
+    );
+  }
+}
+
+function reserveDatabaseFile(path: string): DatabaseFileIdentity {
+  const descriptor = openSync(path, 'wx', 0o600);
+  let identity: DatabaseFileIdentity | null = null;
+  try {
+    const stats = fstatSync(descriptor);
+    identity = { dev: stats.dev, ino: stats.ino };
+    fsyncSync(descriptor);
+  } finally {
+    closeSync(descriptor);
+  }
+  if (!identity) {
+    throw new Error(`Unable to record reserved database identity: ${path}`);
+  }
+  fsyncParentDirectory(dirname(path));
+  assertFileIdentity(path, identity, 'exclusive database reservation');
+  bootstrapDatabaseIdentity = identity;
+  bootstrapCreatedFileIdentities.set(path, identity);
+  return identity;
+}
+
+function assertFileIdentity(
+  path: string,
+  expected: DatabaseFileIdentity,
+  stage: string,
+  requireOwnerOnly = false,
+): void {
+  const observed = assertSecureOwnedFile(
+    path,
+    'SQLite/bootstrap control file',
+    requireOwnerOnly,
+  );
+  if (observed.dev !== expected.dev || observed.ino !== expected.ino) {
+    throw new Error(
+      `Database pathname identity changed during ${stage}: ${path}`,
+    );
+  }
+}
+
+function assertInheritedWriterAuthority(
+  verifyProcessLock: boolean,
+): void {
+  const authority = inheritedWriterAuthority;
+  if (!authority) return;
+  try {
+    process.kill(authority.pid, 0);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code !== 'EPERM') {
+      throw new Error(
+        `Inherited writer runner pid ${authority.pid} is no longer alive`,
+        { cause: error },
+      );
+    }
+  }
+  const tempRootIdentity = assertPrivateOwnedDirectory(
+    authority.tempRoot,
+    'Test runner temporary root',
+  );
+  if (
+    tempRootIdentity.dev !== authority.tempRootIdentity.dev ||
+    tempRootIdentity.ino !== authority.tempRootIdentity.ino
+  ) {
+    throw new Error('Inherited writer temporary root identity changed');
+  }
+  assertFileIdentity(
+    authority.leasePath,
+    authority.leaseIdentity,
+    'inherited writer authority verification',
+    true,
+  );
+  let lease: {
+    token?: string;
+    pid?: number;
+    repositoryRoot?: string;
+  };
+  try {
+    lease = JSON.parse(readFileSync(authority.leasePath, 'utf8')) as typeof lease;
+  } catch (error) {
+    throw new Error(
+      `Unable to re-read inherited writer lease ${authority.leasePath}`,
+      { cause: error },
+    );
+  }
+  assertFileIdentity(
+    authority.leasePath,
+    authority.leaseIdentity,
+    'inherited writer lease re-read',
+    true,
+  );
+  if (
+    lease.token !== authority.token ||
+    lease.pid !== authority.pid ||
+    resolve(lease.repositoryRoot ?? '') !== repositoryRoot
+  ) {
+    throw new Error('Inherited writer lease changed after initial validation');
+  }
+  if (verifyProcessLock) {
+    assertRepositoryDatabaseWriterLockOwnedBy({
+      repositoryRoot,
+      pid: authority.pid,
+      token: authority.token,
+    });
+  }
+}
+
+function startInheritedWriterGuardian(): void {
+  if (!inheritedWriterAuthority) return;
+  const guardian = setInterval(() => {
+    try {
+      assertInheritedWriterAuthority(false);
+    } catch (error) {
+      clearInterval(guardian);
+      try {
+        openedDatabase?.close();
+        openedDatabase = null;
+      } catch {
+        // The process is terminated below even if SQLite refuses to close.
+      }
+      console.error(
+        '[db] inherited writer authority was lost; terminating test process:',
+        error,
+      );
+      process.exit(1);
+    }
+  }, 1_000);
+  guardian.unref();
+}
+
+function databaseFilePathWithinRoot(
+  location: string,
+  root: string,
+): boolean {
+  const path = databaseFilesystemPath(location);
+  return path != null && pathIsWithin(path, root);
+}
+
+function assertFreshReservationUncontested(
+  path: string,
+  expected: DatabaseFileIdentity,
+  stage: string,
+): void {
+  assertFileIdentity(path, expected, stage);
+  const unexpected = sqliteFamilyPaths(path)
+    .slice(1)
+    .filter((candidate) => lstatIfPresent(candidate) !== null);
+  if (unexpected.length > 0) {
+    throw new Error(
+      `Fresh SQLite reservation was raced during ${stage}; unexpected ` +
+      `sidecar path(s): ${unexpected.join(', ')}`,
+    );
+  }
+}
+
+function captureBootstrapCreatedSqliteFamily(): void {
+  if (!databaseFilePath || !bootstrapDatabaseIdentity) return;
+  assertFileIdentity(
+    databaseFilePath,
+    bootstrapDatabaseIdentity,
+    'bootstrap family capture',
+  );
+  for (const path of sqliteFamilyPaths(databaseFilePath)) {
+    if (bootstrapCreatedFileIdentities.has(path)) continue;
+    const stats = lstatIfPresent(path);
+    if (!stats) continue;
+    const identity = assertSecureOwnedFile(
+      path,
+      'Bootstrap-created SQLite family member',
+    );
+    bootstrapCreatedFileIdentities.set(path, identity);
+  }
+}
+
+function unlinkFileIfIdentityMatches(
+  path: string,
+  expected: DatabaseFileIdentity,
+): void {
+  const stats = lstatIfPresent(path);
+  if (!stats) return;
+  if (
+    !stats.isFile() ||
+    stats.isSymbolicLink() ||
+    stats.dev !== expected.dev ||
+    stats.ino !== expected.ino
+  ) {
+    throw new Error(
+      `Refusing to remove bootstrap path whose inode identity changed: ${path}`,
+    );
+  }
+  unlinkSync(path);
+  fsyncParentDirectory(dirname(path));
+}
+
+function fsyncParentDirectory(path: string): void {
+  let descriptor: number | null = null;
+  try {
+    descriptor = openSync(path, 'r');
+    fsyncSync(descriptor);
+  } catch {
+    // Some deployment filesystems do not support directory fsync.
+  } finally {
+    if (descriptor !== null) closeSync(descriptor);
+  }
+}
+
+let deferredInitializationCleanup: NodeJS.Immediate | null = null;
+let deferredInitializationCleanupAttempts = 0;
+let expectedDatabaseIdentity: DatabaseFileIdentity | null = null;
+const databaseInitializationBusyTimeoutMs =
+  trustedApiReadWorker || bootstrapPolicy.mode === 'existing' ? 10_000 : 0;
+try {
+  if (databaseFilePath) {
+    databaseInitializationLocks.push(acquireExclusiveProcessLock({
+      lockPath: databaseInitializationLockPath(databaseFilePath),
+      label: 'database pathname schema initialization',
+      resourceLabel: 'database pathname initializer',
+      databasePath: databaseFilePath,
+      busyTimeoutMs: databaseInitializationBusyTimeoutMs,
+    }));
+    if (!dbReadOnly) {
+      mkdirSync(dirname(databaseFilePath), { recursive: true });
+    }
+    assertSecureDatabaseParent(databaseFilePath);
+    if (bootstrapPolicy.mode === 'fresh') {
+      assertSqliteFamilyAbsent(databaseFilePath, bootstrapPolicy.context);
+      expectedDatabaseIdentity = reserveDatabaseFile(databaseFilePath);
+    } else if (bootstrapPolicy.mode === 'existing') {
+      if (!lstatIfPresent(databaseFilePath)) {
+        throw new Error(
+          `RADAR_DB_BOOTSTRAP_MODE=existing requires an existing database: ` +
+          databaseFilePath,
+        );
+      }
+      expectedDatabaseIdentity =
+        assertSecureExistingSqliteFamily(databaseFilePath);
+    } else if (!lstatIfPresent(databaseFilePath)) {
+      if (dbReadOnly) {
+        throw new Error(
+          `Read-only database access requires an existing database: ` +
+          databaseFilePath,
+        );
+      }
+      assertSqliteFamilyAbsent(databaseFilePath, 'normal bootstrap');
+      expectedDatabaseIdentity = reserveDatabaseFile(databaseFilePath);
+    } else {
+      expectedDatabaseIdentity =
+        assertSecureExistingSqliteFamily(databaseFilePath);
+    }
+    if (!expectedDatabaseIdentity) {
+      throw new Error(
+        `Unable to establish SQLite database identity: ${databaseFilePath}`,
+      );
+    }
+    if (
+      trustedApiReadWorkerDatabaseIdentity &&
+      (
+        expectedDatabaseIdentity.dev !==
+          trustedApiReadWorkerDatabaseIdentity.dev ||
+        expectedDatabaseIdentity.ino !==
+          trustedApiReadWorkerDatabaseIdentity.ino
+      )
+    ) {
+      throw new Error(
+        `API read worker database identity does not match the parent process: ` +
+        `${databaseFilePath}`,
+      );
+    }
+    databaseInitializationLocks.push(acquireExclusiveProcessLock({
+      lockPath: databaseFileInitializationLockPath(databaseFilePath),
+      label: 'database inode schema initialization',
+      resourceLabel: 'database inode initializer',
+      databasePath: databaseFilePath,
+      busyTimeoutMs: databaseInitializationBusyTimeoutMs,
+    }));
+    assertFileIdentity(
+      databaseFilePath,
+      expectedDatabaseIdentity,
+      'pre-open inode locking',
+    );
+    if (bootstrapDatabaseIdentity) {
+      assertFreshReservationUncontested(
+        databaseFilePath,
+        expectedDatabaseIdentity,
+        'pre-open validation',
+      );
+    }
+  }
+
+  const databaseOpenLocation =
+    explicitDatabaseReadOnly && !trustedApiReadWorker
+      ? immutableReadOnlyDatabaseLocation(databasePath, databaseFilePath)
+      : databasePath;
+  openedDatabase = dbReadOnly
+    ? new DatabaseSync(databaseOpenLocation, { readOnly: true })
+    : new DatabaseSync(databasePath);
+
+  if (databaseFilePath && expectedDatabaseIdentity) {
+    assertFileIdentity(
+      databaseFilePath,
+      expectedDatabaseIdentity,
+      'database open',
+    );
+    const expectedLockPath = databaseFileInitializationLockPath(databaseFilePath);
+    if (databaseInitializationLocks.at(-1)?.path !== expectedLockPath) {
+      throw new Error(
+        `Database inode changed between lock acquisition and open: ${databaseFilePath}`,
+      );
+    }
+    const observedIdentity =
+      assertSecureExistingSqliteFamily(databaseFilePath);
+    if (
+      observedIdentity.dev !== expectedDatabaseIdentity.dev ||
+      observedIdentity.ino !== expectedDatabaseIdentity.ino
+    ) {
+      throw new Error(
+        `Database inode changed during post-open validation: ${databaseFilePath}`,
+      );
+    }
+    captureBootstrapCreatedSqliteFamily();
+  }
+  scheduleDeferredInitializationCleanup();
+} catch (error) {
+  const cleanupErrors = releaseDatabaseInitializationResources();
+  if (cleanupErrors.length > 0) scheduleDeferredInitializationCleanup();
+  throw cleanupErrors.length > 0
+    ? new AggregateError(
+        [error, ...cleanupErrors],
+        'Database bootstrap and cleanup both failed',
+      )
+    : error;
+}
+
+export const db = openedDatabase as DatabaseSync;
+export function openedDatabaseFileIdentity(): ApiReadWorkerDatabaseIdentity {
+  if (!databaseFilePath || !expectedDatabaseIdentity) {
+    throw new Error('Opened database does not have a stable filesystem identity');
+  }
+  return { ...expectedDatabaseIdentity };
+}
+export const openedDatabasePath =
+  databaseFilePath && lstatIfPresent(databaseFilePath)
+    ? realpathSync(databaseFilePath)
+    : null;
+
+db.exec('PRAGMA recursive_triggers = ON');
+const recursiveTriggersRow = db.prepare('PRAGMA recursive_triggers').get() as
+  Record<string, unknown> | undefined;
+const recursiveTriggersEnabled = Number(
+  recursiveTriggersRow?.recursive_triggers ??
+  Object.values(recursiveTriggersRow ?? {})[0] ??
+  0,
+) === 1;
+if (!recursiveTriggersEnabled) {
+  throw new Error(
+    'SQLite recursive_triggers must be enabled before schema migration or writes',
+  );
+}
+
+if (
+  !dbReadOnly &&
+  (runningInTestContext() || runningInAdHocEvaluationContext())
+) {
+  const rawMaximumMiB = process.env.RADAR_TEST_SQLITE_MAX_MIB ?? '128';
+  if (!/^[1-9]\d*$/.test(rawMaximumMiB) || Number(rawMaximumMiB) > 256) {
+    throw new Error(
+      `RADAR_TEST_SQLITE_MAX_MIB must be an integer from 1 to 256, got ` +
+      rawMaximumMiB,
+    );
+  }
+  const maximumBytes = Number(rawMaximumMiB) * 1024 * 1024;
+  const pageSizeRow = db.prepare('PRAGMA page_size').get() as
+    Record<string, number> | undefined;
+  const pageSize = Number(
+    pageSizeRow?.page_size ?? Object.values(pageSizeRow ?? {})[0],
+  );
+  if (!Number.isInteger(pageSize) || pageSize <= 0) {
+    throw new Error(`Unable to determine SQLite page size: ${String(pageSize)}`);
+  }
+  const maximumPages = Math.max(1, Math.floor(maximumBytes / pageSize));
+  db.exec(`
+    PRAGMA max_page_count = ${maximumPages};
+    PRAGMA journal_size_limit = 8388608;
+    PRAGMA wal_autocheckpoint = 256;
+  `);
+  const configuredRow = db.prepare('PRAGMA max_page_count').get() as
+    Record<string, number> | undefined;
+  const configuredPages = Number(
+    configuredRow?.max_page_count ?? Object.values(configuredRow ?? {})[0],
+  );
+  if (
+    !Number.isInteger(configuredPages) ||
+    configuredPages <= 0 ||
+    configuredPages * pageSize > maximumBytes
+  ) {
+    throw new Error(
+      `SQLite max_page_count exceeds the test/evaluation ceiling: ` +
+      `${configuredPages} pages * ${pageSize} bytes`,
+    );
+  }
+}
+
+export function scoreSourceIdentity(
+  options: ScoreSourceIdentityOptions = {},
+): ScoreSourceIdentity {
+  return withAuthorizedReleaseCatalogRead(() => {
+    assertAcceptedClassifierClassificationPublications();
+    return scoreSourceIdentityForDb(db, options);
+  });
+}
+
+const sqliteDataVersionStmt = db.prepare(`PRAGMA data_version`);
+const sqliteTotalChangesStmt = db.prepare(`SELECT total_changes() AS changes`);
+
+export function scoreSourceIdentityCacheKey(): string {
+  const dataVersion = sqliteDataVersionStmt.get() as { data_version?: number } | undefined;
+  const totalChanges = sqliteTotalChangesStmt.get() as { changes?: number } | undefined;
+  return [
+    Number(dataVersion?.data_version ?? 0),
+    Number(totalChanges?.changes ?? 0),
+  ].join(':');
 }
 
 let writeTransactionDepth = 0;
@@ -83,13 +1792,83 @@ let writeTransactionSequence = 0;
 let readTransactionDepth = 0;
 let readTransactionSequence = 0;
 
+// Delete-and-reinsert evidence refreshes can recover prior freshness only within
+// the write transaction that bounds the atomic replacement.
+type ReplacementFreshnessSnapshot = {
+  content: string;
+  timestamp: string;
+};
+
+type ReplacementFreshnessContext = {
+  issuePrLinks: Map<string, ReplacementFreshnessSnapshot>;
+  issueCommitReferences: Map<string, ReplacementFreshnessSnapshot>;
+};
+
+const replacementFreshnessContexts: ReplacementFreshnessContext[] = [];
+
+function createReplacementFreshnessContext(): ReplacementFreshnessContext {
+  return {
+    issuePrLinks: new Map(),
+    issueCommitReferences: new Map(),
+  };
+}
+
+function currentReplacementFreshnessContext(): ReplacementFreshnessContext | undefined {
+  return replacementFreshnessContexts.at(-1);
+}
+
+function replacementFreshnessSnapshot(
+  source: keyof ReplacementFreshnessContext,
+  key: string,
+): ReplacementFreshnessSnapshot | undefined {
+  for (let index = replacementFreshnessContexts.length - 1; index >= 0; index--) {
+    const snapshot = replacementFreshnessContexts[index][source].get(key);
+    if (snapshot) return snapshot;
+  }
+  return undefined;
+}
+
+function semanticContent(values: unknown[]): string {
+  return JSON.stringify(values);
+}
+
+function assertSynchronousTransactionCallback(fn: () => unknown, kind: string): void {
+  if (fn.constructor?.name === 'AsyncFunction') {
+    throw new Error(`${kind} transaction callbacks must be synchronous`);
+  }
+}
+
+function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
+  return (
+    (typeof value === 'object' && value !== null) ||
+    typeof value === 'function'
+  ) && typeof (value as PromiseLike<unknown>).then === 'function';
+}
+
+function queryOnlyEnabled(): boolean {
+  const row = db.prepare('PRAGMA query_only').get() as Record<string, unknown> | undefined;
+  return Number(row?.query_only ?? Object.values(row ?? {})[0] ?? 0) === 1;
+}
+
 export function runInWriteTransaction<T>(fn: () => T): T {
-  const nested = writeTransactionDepth > 0 || readTransactionDepth > 0;
+  assertSynchronousTransactionCallback(fn, 'Write');
+  if (readTransactionDepth > 0 && writeTransactionDepth === 0) {
+    throw new Error('Cannot start a write transaction inside a read transaction');
+  }
+  const nested =
+    writeTransactionDepth > 0 ||
+    readTransactionDepth > 0 ||
+    db.isTransaction;
   const savepoint = nested ? `radar_write_tx_${++writeTransactionSequence}` : null;
-  db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+  db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN IMMEDIATE');
+  const freshnessContext = createReplacementFreshnessContext();
+  replacementFreshnessContexts.push(freshnessContext);
   writeTransactionDepth++;
   try {
     const result = fn();
+    if (isPromiseLike(result)) {
+      throw new Error('Write transaction callbacks must not return a promise');
+    }
     db.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
     return result;
   } catch (error) {
@@ -102,16 +1881,31 @@ export function runInWriteTransaction<T>(fn: () => T): T {
     throw error;
   } finally {
     writeTransactionDepth--;
+    replacementFreshnessContexts.pop();
   }
 }
 
 export function runInReadTransaction<T>(fn: () => T): T {
-  const nested = writeTransactionDepth > 0 || readTransactionDepth > 0;
+  assertSynchronousTransactionCallback(fn, 'Read');
+  const nested =
+    writeTransactionDepth > 0 ||
+    readTransactionDepth > 0 ||
+    db.isTransaction;
   const savepoint = nested ? `radar_read_tx_${++readTransactionSequence}` : null;
-  db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+  const enableQueryOnly = !nested && !queryOnlyEnabled();
+  if (enableQueryOnly) db.exec('PRAGMA query_only = ON');
+  try {
+    db.exec(nested ? `SAVEPOINT ${savepoint}` : 'BEGIN');
+  } catch (error) {
+    if (enableQueryOnly) db.exec('PRAGMA query_only = OFF');
+    throw error;
+  }
   readTransactionDepth++;
   try {
     const result = fn();
+    if (isPromiseLike(result)) {
+      throw new Error('Read transaction callbacks must not return a promise');
+    }
     db.exec(nested ? `RELEASE SAVEPOINT ${savepoint}` : 'COMMIT');
     return result;
   } catch (error) {
@@ -124,6 +1918,7 @@ export function runInReadTransaction<T>(fn: () => T): T {
     throw error;
   } finally {
     readTransactionDepth--;
+    if (enableQueryOnly) db.exec('PRAGMA query_only = OFF');
   }
 }
 // WAL improves concurrent reads but isn't supported on every mount (FUSE, some NFS).
@@ -136,16 +1931,203 @@ if (!dbReadOnly) {
   }
 }
 db.exec('PRAGMA foreign_keys = ON');
+db.exec('PRAGMA busy_timeout = 5000');
 if (dbReadOnly) db.exec('PRAGMA query_only = ON');
 
+const CLOSURE_CLAIM_LEDGER_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS closure_claim_source_snapshots (
+  source_identity TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL
+    CHECK(schema_version = ${CLOSURE_CLAIM_SOURCE_SNAPSHOT_LEDGER_SCHEMA_VERSION}),
+  source_revision_identity TEXT NOT NULL UNIQUE,
+  repository TEXT NOT NULL,
+  repository_node_id TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  issue_node_id TEXT NOT NULL,
+  source_kind TEXT NOT NULL
+    CHECK(source_kind IN ('issue_body', 'comment', 'closure_event')),
+  source_node_id TEXT NOT NULL,
+  source_database_id INTEGER,
+  source_url TEXT,
+  actor_node_id TEXT NOT NULL,
+  actor_login TEXT,
+  actor_type TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  text_format TEXT NOT NULL
+    CHECK(text_format IN ('utf8_text', 'canonical_event_json')),
+  text_digest TEXT NOT NULL,
+  canonical_source_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  captured_at TEXT NOT NULL,
+  FOREIGN KEY(issue_number) REFERENCES issues(number) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_closure_claim_source_snapshots_issue_time
+  ON closure_claim_source_snapshots(
+    issue_number, created_at, updated_at, source_identity
+  );
+CREATE UNIQUE INDEX IF NOT EXISTS idx_closure_claim_source_snapshots_revision
+  ON closure_claim_source_snapshots(
+    issue_node_id, source_kind, source_node_id, created_at, updated_at
+  );
+CREATE TRIGGER IF NOT EXISTS closure_claim_source_snapshots_no_update
+BEFORE UPDATE ON closure_claim_source_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_source_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS closure_claim_source_snapshots_no_delete
+BEFORE DELETE ON closure_claim_source_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_source_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS closure_claim_candidates (
+  candidate_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL
+    CHECK(schema_version = ${CLOSURE_CLAIM_CANDIDATE_LEDGER_SCHEMA_VERSION}),
+  source_identity TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  issue_node_id TEXT NOT NULL,
+  candidate_kind TEXT NOT NULL,
+  canonical_claim_json TEXT NOT NULL,
+  excerpt TEXT,
+  span_start INTEGER,
+  span_end INTEGER,
+  canonical_candidate_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  captured_at TEXT NOT NULL,
+  CHECK(
+    (span_start IS NULL AND span_end IS NULL)
+    OR (
+      span_start IS NOT NULL AND span_end IS NOT NULL
+      AND span_start >= 0 AND span_end > span_start
+    )
+  ),
+  FOREIGN KEY(source_identity)
+    REFERENCES closure_claim_source_snapshots(source_identity)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(issue_number) REFERENCES issues(number) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_closure_claim_candidates_issue_time
+  ON closure_claim_candidates(issue_number, captured_at, candidate_id);
+CREATE INDEX IF NOT EXISTS idx_closure_claim_candidates_source
+  ON closure_claim_candidates(source_identity, candidate_id);
+CREATE TRIGGER IF NOT EXISTS closure_claim_candidates_no_update
+BEFORE UPDATE ON closure_claim_candidates
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_candidates is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS closure_claim_candidates_no_delete
+BEFORE DELETE ON closure_claim_candidates
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_candidates is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS closure_claim_extraction_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL
+    CHECK(schema_version = ${CLOSURE_CLAIM_EXTRACTION_RECEIPT_SCHEMA_VERSION}),
+  extraction_schema_version INTEGER NOT NULL,
+  repository TEXT NOT NULL,
+  repository_node_id TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  issue_node_id TEXT NOT NULL,
+  issue_revision INTEGER NOT NULL CHECK(issue_revision > 0),
+  issue_updated_at TEXT NOT NULL,
+  issue_body_digest TEXT NOT NULL,
+  issue_author_node_id TEXT NOT NULL,
+  issue_author_type TEXT NOT NULL,
+  comment_snapshot_revision INTEGER NOT NULL
+    CHECK(comment_snapshot_revision > 0),
+  comment_authority_digest TEXT NOT NULL,
+  comment_stabilization_identity_digest TEXT NOT NULL,
+  state_snapshot_revision INTEGER NOT NULL
+    CHECK(state_snapshot_revision > 0),
+  state_authority_digest TEXT NOT NULL,
+  state_stabilization_identity_digest TEXT NOT NULL,
+  extraction_digest TEXT NOT NULL,
+  candidate_set_digest TEXT NOT NULL,
+  candidate_count INTEGER NOT NULL CHECK(candidate_count >= 0),
+  canonical_receipt_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  captured_at TEXT NOT NULL,
+  FOREIGN KEY(issue_number) REFERENCES issues(number) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_closure_claim_extraction_receipts_issue_evidence
+  ON closure_claim_extraction_receipts(
+    issue_number,
+    issue_revision,
+    comment_snapshot_revision,
+    state_snapshot_revision,
+    captured_at
+  );
+CREATE TRIGGER IF NOT EXISTS closure_claim_extraction_receipts_no_update
+BEFORE UPDATE ON closure_claim_extraction_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_extraction_receipts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS closure_claim_extraction_receipts_no_delete
+BEFORE DELETE ON closure_claim_extraction_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'closure_claim_extraction_receipts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS closure_claim_extraction_receipt_members (
+  receipt_id TEXT NOT NULL,
+  member_ordinal INTEGER NOT NULL CHECK(member_ordinal >= 0),
+  candidate_id TEXT NOT NULL,
+  candidate_content_hash TEXT NOT NULL,
+  source_identity TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(receipt_id, member_ordinal),
+  UNIQUE(receipt_id, candidate_id),
+  FOREIGN KEY(receipt_id)
+    REFERENCES closure_claim_extraction_receipts(receipt_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(candidate_id)
+    REFERENCES closure_claim_candidates(candidate_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(source_identity)
+    REFERENCES closure_claim_source_snapshots(source_identity)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_closure_claim_extraction_receipt_members_candidate
+  ON closure_claim_extraction_receipt_members(candidate_id, receipt_id);
+CREATE TRIGGER IF NOT EXISTS closure_claim_extraction_receipt_members_no_update
+BEFORE UPDATE ON closure_claim_extraction_receipt_members
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'closure_claim_extraction_receipt_members is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS closure_claim_extraction_receipt_members_no_delete
+BEFORE DELETE ON closure_claim_extraction_receipt_members
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'closure_claim_extraction_receipt_members is append-only'
+  );
+END;
+`;
+
 if (!dbReadOnly) {
+// Base schema, migrations, and migration backfills commit as one writer unit.
+runInWriteTransaction(() => {
 db.exec(`
 CREATE TABLE IF NOT EXISTS releases (
   tag TEXT PRIMARY KEY,
+  node_id TEXT,
+  catalog_tag_commit_oid TEXT,
   name TEXT,
   published_at TEXT,
+  created_at TEXT,
+  updated_at TEXT,
   html_url TEXT,
   prerelease INTEGER NOT NULL DEFAULT 0,
+  catalog_rank INTEGER,
+  catalog_digest TEXT,
+  catalog_active INTEGER NOT NULL DEFAULT 0,
   final_score REAL,
   risk_index REAL,
   negative_issues INTEGER,
@@ -204,9 +2186,13 @@ CREATE TABLE IF NOT EXISTS releases (
 
 CREATE TABLE IF NOT EXISTS issues (
   number INTEGER PRIMARY KEY,
+  node_id TEXT,
   state TEXT NOT NULL,
   title TEXT NOT NULL,
+  body TEXT,
   author TEXT,
+  author_node_id TEXT,
+  author_type TEXT,
   author_association TEXT,
   html_url TEXT,
   created_at TEXT NOT NULL,
@@ -221,7 +2207,10 @@ CREATE TABLE IF NOT EXISTS issues (
   positive_reactions INTEGER NOT NULL DEFAULT 0,
   labels TEXT NOT NULL DEFAULT '[]',
   is_bot INTEGER NOT NULL DEFAULT 0,
-  fetched_at TEXT
+  fetched_at TEXT,
+  checked_at TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  raw_json TEXT
 );
 
 CREATE TABLE IF NOT EXISTS classifications (
@@ -239,26 +2228,436 @@ CREATE TABLE IF NOT EXISTS classifications (
   rationale TEXT,
   classified_at TEXT NOT NULL,
   classified_updated_at TEXT NOT NULL,
+  classified_comments_digest TEXT,
   prompt_version INTEGER NOT NULL DEFAULT 0,
+  source_identity_json TEXT,
+  source_identity_digest TEXT,
+  classification_origin TEXT NOT NULL DEFAULT 'legacy_or_manual',
+  raw_model_output TEXT,
+  provenance_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
   FOREIGN KEY (issue_number) REFERENCES issues(number) ON DELETE CASCADE
 );
 
 CREATE INDEX IF NOT EXISTS idx_classifications_version ON classifications(affects_version);
 CREATE INDEX IF NOT EXISTS idx_issues_updated ON issues(updated_at);
+CREATE INDEX IF NOT EXISTS idx_issues_created_at ON issues(created_at);
+CREATE INDEX IF NOT EXISTS idx_issues_closed_at ON issues(closed_at);
+
+CREATE TABLE IF NOT EXISTS classifier_attempt_runs (
+  run_id TEXT PRIMARY KEY,
+  issue_number INTEGER NOT NULL,
+  started_at TEXT NOT NULL,
+  max_attempts INTEGER NOT NULL,
+  classifier_identity_hash TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  run_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_classifier_attempt_runs_issue_started
+  ON classifier_attempt_runs(issue_number, started_at, run_id);
+CREATE TRIGGER IF NOT EXISTS classifier_attempt_runs_no_update
+BEFORE UPDATE ON classifier_attempt_runs
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempt_runs is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS classifier_attempt_runs_no_delete
+BEFORE DELETE ON classifier_attempt_runs
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempt_runs is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS classifier_attempts (
+  attempt_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  ordinal INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'transport_failure',
+    'semantic_rejection',
+    'accepted_success'
+  )),
+  started_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL,
+  previous_content_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  attempt_json TEXT NOT NULL,
+  UNIQUE(run_id, ordinal),
+  FOREIGN KEY(run_id) REFERENCES classifier_attempt_runs(run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_classifier_attempts_run_ordinal
+  ON classifier_attempts(run_id, ordinal);
+CREATE TRIGGER IF NOT EXISTS classifier_attempts_no_update
+BEFORE UPDATE ON classifier_attempts
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS classifier_attempts_no_delete
+BEFORE DELETE ON classifier_attempts
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS classifier_attempt_terminal_receipts (
+  receipt_id TEXT PRIMARY KEY,
+  run_id TEXT NOT NULL UNIQUE,
+  issue_number INTEGER NOT NULL,
+  status TEXT NOT NULL CHECK(status IN (
+    'accepted_success',
+    'terminal_failure',
+    'abandoned'
+  )),
+  finished_at TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL,
+  previous_content_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  receipt_json TEXT NOT NULL,
+  FOREIGN KEY(run_id) REFERENCES classifier_attempt_runs(run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_classifier_attempt_receipts_finished
+  ON classifier_attempt_terminal_receipts(finished_at, receipt_id);
+CREATE TRIGGER IF NOT EXISTS classifier_attempt_terminal_receipts_no_update
+BEFORE UPDATE ON classifier_attempt_terminal_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempt_terminal_receipts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS classifier_attempt_terminal_receipts_no_delete
+BEFORE DELETE ON classifier_attempt_terminal_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_attempt_terminal_receipts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS classifier_classification_publications (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  publication_id TEXT NOT NULL UNIQUE,
+  issue_number INTEGER NOT NULL,
+  classification_revision INTEGER NOT NULL,
+  classification_content_hash TEXT NOT NULL,
+  run_id TEXT NOT NULL,
+  run_content_hash TEXT NOT NULL,
+  receipt_id TEXT NOT NULL UNIQUE,
+  receipt_content_hash TEXT NOT NULL,
+  request_hash TEXT NOT NULL,
+  selected_attempt_id TEXT NOT NULL,
+  selected_attempt_ordinal INTEGER NOT NULL,
+  selected_attempt_content_hash TEXT NOT NULL,
+  raw_response_hash TEXT NOT NULL,
+  raw_model_output_hash TEXT NOT NULL,
+  attempt_provenance_hash TEXT NOT NULL,
+  issue_revision INTEGER,
+  snapshot_revision INTEGER,
+  state_snapshot_revision INTEGER,
+  source_identity_digest TEXT NOT NULL,
+  published_at TEXT NOT NULL,
+  binding_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  UNIQUE(issue_number, classification_revision),
+  FOREIGN KEY(run_id) REFERENCES classifier_attempt_runs(run_id) ON DELETE RESTRICT,
+  FOREIGN KEY(receipt_id) REFERENCES classifier_attempt_terminal_receipts(receipt_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_classifier_publications_issue_revision
+  ON classifier_classification_publications(issue_number, classification_revision);
+CREATE TRIGGER IF NOT EXISTS classifier_classification_publications_no_update
+BEFORE UPDATE ON classifier_classification_publications
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_classification_publications is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS classifier_classification_publications_no_delete
+BEFORE DELETE ON classifier_classification_publications
+BEGIN
+  SELECT RAISE(ABORT, 'classifier_classification_publications is append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS issue_comment_snapshots (
   issue_number INTEGER PRIMARY KEY,
+  repository_node_id TEXT,
+  issue_node_id TEXT,
+  issue_author_node_id TEXT,
+  issue_author_login TEXT,
+  issue_author_type TEXT,
+  schema_version INTEGER NOT NULL DEFAULT 1,
   fetched_at TEXT NOT NULL,
+  verified_at TEXT,
   comment_count INTEGER NOT NULL,
   fetched_comment_count INTEGER NOT NULL,
   latest_comment_updated_at TEXT,
-  comments_digest TEXT NOT NULL
+  comments_digest TEXT NOT NULL,
+  authority_digest TEXT,
+  issue_updated_at TEXT,
+  comments_json TEXT,
+  stabilization_json TEXT,
+  stabilization_identity_digest TEXT,
+  revision INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS issue_closure_evidence_state (
+  issue_number INTEGER PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  issue_updated_at TEXT NOT NULL,
+  comments_digest TEXT NOT NULL,
+  checked_at TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS meta (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS score_api_source_epoch (
+  id INTEGER PRIMARY KEY CHECK(id = 1),
+  revision INTEGER NOT NULL CHECK(revision >= 0)
+);
+INSERT OR IGNORE INTO score_api_source_epoch(id, revision) VALUES(1, 0);
+CREATE TRIGGER IF NOT EXISTS score_api_source_epoch_no_delete
+BEFORE DELETE ON score_api_source_epoch
+BEGIN
+  SELECT RAISE(ABORT, 'score_api_source_epoch singleton cannot be deleted');
+END;
+CREATE TRIGGER IF NOT EXISTS score_api_source_epoch_revision_guard
+BEFORE UPDATE ON score_api_source_epoch
+WHEN
+  NEW.id IS NOT OLD.id
+  OR NEW.revision IS NOT OLD.revision + 1
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'score_api_source_epoch revision must advance exactly once'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS refresh_leases (
+  name TEXT PRIMARY KEY,
+  holder_id TEXT NOT NULL,
+  acquired_at TEXT NOT NULL,
+  expires_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS refresh_operation_attempts (
+  run_id TEXT PRIMARY KEY,
+  operation TEXT NOT NULL,
+  trigger TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  lease_name TEXT NOT NULL,
+  lease_holder_id TEXT NOT NULL,
+  lease_expires_at TEXT NOT NULL,
+  code_revision TEXT NOT NULL,
+  effective_config_json TEXT NOT NULL,
+  effective_config_hash TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_operation_attempts_started
+  ON refresh_operation_attempts(started_at, run_id);
+CREATE TRIGGER IF NOT EXISTS refresh_operation_attempts_no_update
+BEFORE UPDATE ON refresh_operation_attempts
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_operation_attempts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS refresh_operation_attempts_no_delete
+BEFORE DELETE ON refresh_operation_attempts
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_operation_attempts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS refresh_operation_stage_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_id TEXT NOT NULL UNIQUE,
+  run_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('started', 'completed', 'failed')),
+  occurred_at TEXT NOT NULL,
+  duration_ms INTEGER,
+  counts_json TEXT,
+  details_json TEXT,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  UNIQUE(run_id, sequence),
+  FOREIGN KEY(run_id) REFERENCES refresh_operation_attempts(run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_operation_stage_events_run
+  ON refresh_operation_stage_events(run_id, sequence);
+CREATE TRIGGER IF NOT EXISTS refresh_operation_stage_events_no_update
+BEFORE UPDATE ON refresh_operation_stage_events
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_operation_stage_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS refresh_operation_stage_events_no_delete
+BEFORE DELETE ON refresh_operation_stage_events
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_operation_stage_events is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS refresh_capture_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  receipt_id TEXT NOT NULL UNIQUE,
+  run_id TEXT NOT NULL UNIQUE,
+  status TEXT NOT NULL CHECK(status IN ('success', 'failure', 'abandoned')),
+  finished_at TEXT NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  stage_event_count INTEGER NOT NULL,
+  stage_chain_hash TEXT,
+  payload_json TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  FOREIGN KEY(run_id) REFERENCES refresh_operation_attempts(run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_refresh_capture_receipts_finished
+  ON refresh_capture_receipts(finished_at, id);
+CREATE TRIGGER IF NOT EXISTS refresh_capture_receipts_no_update
+BEFORE UPDATE ON refresh_capture_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_capture_receipts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS refresh_capture_receipts_no_delete
+BEFORE DELETE ON refresh_capture_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'refresh_capture_receipts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_catalog_capture_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  receipt_id TEXT NOT NULL UNIQUE
+    CHECK(length(receipt_id) = 64 AND receipt_id NOT GLOB '*[^0-9a-f]*'),
+  operation_run_id TEXT,
+  source_kind TEXT NOT NULL
+    CHECK(source_kind IN ('github_graphql', 'test_fixture')),
+  repository TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  active_catalog_digest TEXT NOT NULL
+    CHECK(
+      length(active_catalog_digest) = 64 AND
+      active_catalog_digest NOT GLOB '*[^0-9a-f]*'
+    ),
+  active_release_count INTEGER NOT NULL CHECK(active_release_count >= 0),
+  payload_json TEXT NOT NULL,
+  previous_content_hash TEXT
+    CHECK(
+      previous_content_hash IS NULL OR (
+        length(previous_content_hash) = 64 AND
+        previous_content_hash NOT GLOB '*[^0-9a-f]*'
+      )
+    ),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  CHECK(
+    (source_kind = 'github_graphql' AND operation_run_id IS NOT NULL) OR
+    (source_kind = 'test_fixture' AND operation_run_id IS NULL)
+  ),
+  FOREIGN KEY(operation_run_id)
+    REFERENCES refresh_operation_attempts(run_id)
+    ON DELETE RESTRICT
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_release_catalog_capture_operation
+  ON release_catalog_capture_receipts(operation_run_id)
+  WHERE operation_run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_release_catalog_capture_observed
+  ON release_catalog_capture_receipts(observed_at, id);
+CREATE TRIGGER IF NOT EXISTS release_catalog_capture_receipts_no_update
+BEFORE UPDATE ON release_catalog_capture_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'release_catalog_capture_receipts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_catalog_capture_receipts_no_delete
+BEFORE DELETE ON release_catalog_capture_receipts
+BEGIN
+  SELECT RAISE(ABORT, 'release_catalog_capture_receipts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_artifact_verification_receipts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  receipt_id TEXT NOT NULL UNIQUE,
+  schema_version INTEGER NOT NULL
+    CHECK(schema_version = ${RELEASE_ARTIFACT_RECEIPT_SCHEMA_VERSION}),
+  release_repository TEXT NOT NULL,
+  release_tag TEXT NOT NULL,
+  release_node_id TEXT NOT NULL,
+  release_tag_commit_oid TEXT NOT NULL,
+  release_published_at TEXT NOT NULL,
+  evidence_identity TEXT NOT NULL UNIQUE,
+  canonical_receipt_json TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_release_artifact_receipts_release
+  ON release_artifact_verification_receipts(
+    release_repository,
+    release_tag,
+    release_node_id,
+    release_tag_commit_oid,
+    id
+  );
+CREATE TRIGGER IF NOT EXISTS release_artifact_verification_receipts_no_update
+BEFORE UPDATE ON release_artifact_verification_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_artifact_verification_receipts is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_artifact_verification_receipts_no_delete
+BEFORE DELETE ON release_artifact_verification_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_artifact_verification_receipts is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_artifact_verification_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_id TEXT NOT NULL UNIQUE,
+  schema_version INTEGER NOT NULL
+    CHECK(schema_version = ${RELEASE_ARTIFACT_OBSERVATION_SCHEMA_VERSION}),
+  run_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  release_repository TEXT NOT NULL,
+  release_tag TEXT NOT NULL,
+  release_node_id TEXT NOT NULL,
+  release_tag_commit_oid TEXT NOT NULL,
+  release_published_at TEXT NOT NULL,
+  receipt_id TEXT NOT NULL,
+  receipt_content_hash TEXT NOT NULL,
+  canonical_observation_json TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  UNIQUE(
+    run_id,
+    release_repository,
+    release_node_id,
+    release_tag_commit_oid
+  ),
+  FOREIGN KEY(run_id)
+    REFERENCES refresh_operation_attempts(run_id) ON DELETE RESTRICT,
+  FOREIGN KEY(receipt_id)
+    REFERENCES release_artifact_verification_receipts(receipt_id)
+      ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_artifact_observations_run
+  ON release_artifact_verification_observations(run_id, id);
+CREATE INDEX IF NOT EXISTS idx_release_artifact_observations_release
+  ON release_artifact_verification_observations(
+    release_repository,
+    release_tag,
+    release_node_id,
+    release_tag_commit_oid,
+    id
+  );
+CREATE TRIGGER IF NOT EXISTS release_artifact_verification_observations_no_update
+BEFORE UPDATE ON release_artifact_verification_observations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_artifact_verification_observations is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_artifact_verification_observations_no_delete
+BEFORE DELETE ON release_artifact_verification_observations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_artifact_verification_observations is append-only'
+  );
+END;
 
 -- GitHub Security Advisories cached for the repo. Refreshed on each cycle.
 -- vulnerable_version_range / patched_versions are stored verbatim as GitHub
@@ -279,6 +2678,210 @@ CREATE TABLE IF NOT EXISTS advisories (
 );
 
 CREATE INDEX IF NOT EXISTS idx_advisories_ghsa ON advisories(ghsa_id);
+
+CREATE TABLE IF NOT EXISTS advisory_snapshot_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  captured_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  content_hash TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_advisory_snapshot_history_captured
+  ON advisory_snapshot_history(captured_at);
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_history_no_update
+BEFORE UPDATE ON advisory_snapshot_history
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_history is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_history_no_delete
+BEFORE DELETE ON advisory_snapshot_history
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_history is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS advisory_snapshot_rows (
+  snapshot_id INTEGER NOT NULL,
+  advisory_key TEXT NOT NULL,
+  ghsa_id TEXT NOT NULL,
+  cve_id TEXT,
+  summary TEXT NOT NULL,
+  severity TEXT NOT NULL,
+  html_url TEXT NOT NULL,
+  published_at TEXT,
+  package_ecosystem TEXT,
+  package_name TEXT,
+  vulnerable_version_range TEXT,
+  patched_versions TEXT,
+  PRIMARY KEY(snapshot_id, advisory_key),
+  FOREIGN KEY(snapshot_id) REFERENCES advisory_snapshot_history(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_advisory_snapshot_rows_published
+  ON advisory_snapshot_rows(published_at, ghsa_id);
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_rows_no_update
+BEFORE UPDATE ON advisory_snapshot_rows
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_rows_no_delete
+BEFORE DELETE ON advisory_snapshot_rows
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS advisory_snapshot_v2_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  captured_at TEXT NOT NULL,
+  repository_owner TEXT NOT NULL,
+  repository_name TEXT NOT NULL,
+  repository_url TEXT NOT NULL,
+  target_ecosystem TEXT NOT NULL,
+  target_package_name TEXT NOT NULL,
+  source_hash TEXT NOT NULL,
+  catalog_hash TEXT NOT NULL,
+  score_hash TEXT NOT NULL,
+  score_ready INTEGER NOT NULL CHECK(score_ready = 1),
+  row_count INTEGER NOT NULL,
+  score_row_count INTEGER NOT NULL,
+  score_content_digest TEXT NOT NULL,
+  snapshot_json TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_advisory_snapshot_v2_history_captured
+  ON advisory_snapshot_v2_history(captured_at, id);
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_v2_history_no_update
+BEFORE UPDATE ON advisory_snapshot_v2_history
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_v2_history is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_v2_history_no_delete
+BEFORE DELETE ON advisory_snapshot_v2_history
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_v2_history is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS advisory_snapshot_v2_rows (
+  snapshot_id INTEGER NOT NULL,
+  range_identity TEXT NOT NULL,
+  ghsa_id TEXT NOT NULL,
+  package_ecosystem TEXT NOT NULL,
+  package_name TEXT NOT NULL,
+  vulnerable_version_range TEXT NOT NULL,
+  state TEXT NOT NULL,
+  target_package INTEGER NOT NULL CHECK(target_package IN (0, 1)),
+  score_eligible INTEGER NOT NULL CHECK(score_eligible IN (0, 1)),
+  audit_only INTEGER NOT NULL CHECK(audit_only IN (0, 1)),
+  row_json TEXT NOT NULL,
+  row_hash TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, range_identity),
+  FOREIGN KEY(snapshot_id) REFERENCES advisory_snapshot_v2_history(id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_advisory_snapshot_v2_rows_ghsa
+  ON advisory_snapshot_v2_rows(snapshot_id, ghsa_id, range_identity);
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_v2_rows_no_update
+BEFORE UPDATE ON advisory_snapshot_v2_rows
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_v2_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS advisory_snapshot_v2_rows_no_delete
+BEFORE DELETE ON advisory_snapshot_v2_rows
+BEGIN
+  SELECT RAISE(ABORT, 'advisory_snapshot_v2_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS issue_catalog_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  snapshot_id TEXT NOT NULL UNIQUE,
+  schema_version INTEGER NOT NULL,
+  row_schema_version INTEGER NOT NULL,
+  repository TEXT NOT NULL,
+  source TEXT NOT NULL,
+  source_order TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  boundary_total_count INTEGER NOT NULL,
+  observed_total_count INTEGER NOT NULL,
+  post_boundary_growth_count INTEGER NOT NULL,
+  terminal_node_id TEXT,
+  terminal_issue_number INTEGER,
+  terminal_created_at TEXT,
+  fetched_count INTEGER NOT NULL,
+  unique_count INTEGER NOT NULL,
+  page_count INTEGER NOT NULL,
+  pages_fetched INTEGER NOT NULL,
+  sweep_count INTEGER NOT NULL,
+  membership_digest TEXT NOT NULL,
+  content_digest TEXT NOT NULL,
+  last_request_cursor TEXT,
+  row_count INTEGER NOT NULL,
+  row_schema_digest TEXT NOT NULL,
+  rows_content_hash TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_issue_catalog_snapshots_repository_captured
+  ON issue_catalog_snapshots(repository, captured_at, id);
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshots_no_update
+BEFORE UPDATE ON issue_catalog_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshots_no_delete
+BEFORE DELETE ON issue_catalog_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS issue_catalog_snapshot_rows (
+  snapshot_id TEXT NOT NULL,
+  source_ordinal INTEGER NOT NULL,
+  issue_number INTEGER NOT NULL,
+  node_id TEXT NOT NULL,
+  issue_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL,
+  PRIMARY KEY(snapshot_id, source_ordinal),
+  UNIQUE(snapshot_id, issue_number),
+  UNIQUE(snapshot_id, node_id),
+  FOREIGN KEY(snapshot_id) REFERENCES issue_catalog_snapshots(snapshot_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_issue_catalog_snapshot_rows_issue
+  ON issue_catalog_snapshot_rows(issue_number, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshot_rows_no_update
+BEFORE UPDATE ON issue_catalog_snapshot_rows
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshot_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshot_rows_no_delete
+BEFORE DELETE ON issue_catalog_snapshot_rows
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshot_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS issue_catalog_snapshot_consumptions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version INTEGER NOT NULL,
+  snapshot_id TEXT NOT NULL UNIQUE,
+  repository TEXT NOT NULL,
+  run_id TEXT NOT NULL UNIQUE,
+  consumed_at TEXT NOT NULL,
+  processed_row_count INTEGER NOT NULL,
+  processed_page_count INTEGER NOT NULL,
+  snapshot_content_hash TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  FOREIGN KEY(snapshot_id) REFERENCES issue_catalog_snapshots(snapshot_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_issue_catalog_snapshot_consumptions_run
+  ON issue_catalog_snapshot_consumptions(run_id, consumed_at);
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshot_consumptions_no_update
+BEFORE UPDATE ON issue_catalog_snapshot_consumptions
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshot_consumptions is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_catalog_snapshot_consumptions_no_delete
+BEFORE DELETE ON issue_catalog_snapshot_consumptions
+BEGIN
+  SELECT RAISE(ABORT, 'issue_catalog_snapshot_consumptions is append-only');
+END;
 
 -- Rendered upstream web UI snapshots used for side-by-side model comparison.
 -- These are deliberately separate from radar data so clearing/rebuilding the
@@ -329,8 +2932,826 @@ CREATE TABLE IF NOT EXISTS release_score_audits (
   issue_evidence_json TEXT NOT NULL,
   gate_evidence_json TEXT NOT NULL,
   source_identity_json TEXT,
-  FOREIGN KEY (release_tag) REFERENCES releases(tag) ON DELETE CASCADE
+  authority_run_id TEXT,
+  FOREIGN KEY (release_tag) REFERENCES releases(tag) ON DELETE CASCADE,
+  FOREIGN KEY (authority_run_id)
+    REFERENCES score_authority_resolution_runs(authority_run_id)
+    ON DELETE RESTRICT
 );
+
+CREATE TABLE IF NOT EXISTS release_score_audit_history (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  release_tag TEXT NOT NULL,
+  scored_at TEXT NOT NULL,
+  score_model_version TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  final_score REAL,
+  status TEXT NOT NULL,
+  band TEXT NOT NULL,
+  recommended INTEGER NOT NULL DEFAULT 0,
+  input_json TEXT NOT NULL,
+  components_json TEXT,
+  issue_evidence_json TEXT NOT NULL,
+  gate_evidence_json TEXT NOT NULL,
+  source_identity_json TEXT NOT NULL,
+  authority_run_id TEXT,
+  UNIQUE(run_id, release_tag),
+  FOREIGN KEY (authority_run_id)
+    REFERENCES score_authority_resolution_runs(authority_run_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_score_audit_history_tag_time
+  ON release_score_audit_history(release_tag, recorded_at);
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_no_update
+BEFORE UPDATE ON release_score_audit_history
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_no_delete
+BEFORE DELETE ON release_score_audit_history
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_score_audit_history_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id TEXT NOT NULL UNIQUE,
+  recorded_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL,
+  rows_content_hash TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_release_score_audit_history_runs_recorded
+  ON release_score_audit_history_runs(recorded_at, id);
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_runs_no_update
+BEFORE UPDATE ON release_score_audit_history_runs
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history_runs is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_runs_no_delete
+BEFORE DELETE ON release_score_audit_history_runs
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history_runs is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_forecasts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  decision_id TEXT NOT NULL UNIQUE,
+  opportunity_code TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  latest_release_tag TEXT NOT NULL,
+  latest_release_published_at TEXT NOT NULL,
+  selected_tag TEXT,
+  audit_history_run_id TEXT NOT NULL,
+  score_model_version TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  policy_code TEXT NOT NULL,
+  candidate_scores_json TEXT NOT NULL,
+  decision_json TEXT NOT NULL,
+  source_identity_json TEXT NOT NULL,
+  code_revision TEXT,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_forecasts_recorded
+  ON release_validation_forecasts(recorded_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_release_validation_forecasts_series_without_revision
+  ON release_validation_forecasts(
+    opportunity_code, latest_release_tag, score_model_version, prompt_version
+  )
+  WHERE code_revision IS NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_release_validation_forecasts_series_with_revision
+  ON release_validation_forecasts(
+    opportunity_code, latest_release_tag, score_model_version, prompt_version, code_revision
+  )
+  WHERE code_revision IS NOT NULL;
+CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_no_update
+BEFORE UPDATE ON release_validation_forecasts
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_forecasts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_no_delete
+BEFORE DELETE ON release_validation_forecasts
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_forecasts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_opportunity_enrollments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  opportunity_id TEXT NOT NULL UNIQUE,
+  enrolled_at TEXT NOT NULL,
+  cohort_inception_at TEXT NOT NULL,
+  enrollment_kind TEXT NOT NULL,
+  release_node_id TEXT NOT NULL,
+  release_tag TEXT NOT NULL,
+  release_tag_commit_oid TEXT NOT NULL,
+  release_published_at TEXT NOT NULL,
+  opportunity_code TEXT NOT NULL,
+  opens_at TEXT NOT NULL,
+  closes_at_exclusive TEXT NOT NULL,
+  score_model_version TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL,
+  code_revision TEXT NOT NULL,
+  enrollment_run_id TEXT NOT NULL,
+  operation_attempt_content_hash TEXT NOT NULL,
+  catalog_digest TEXT NOT NULL,
+  catalog_release_count INTEGER NOT NULL CHECK(catalog_release_count > 0),
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  UNIQUE(
+    release_tag,
+    opportunity_code,
+    score_model_version,
+    prompt_version,
+    code_revision
+  ),
+  FOREIGN KEY(enrollment_run_id)
+    REFERENCES refresh_operation_attempts(run_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_opportunity_enrollments_cohort
+  ON release_validation_opportunity_enrollments(
+    score_model_version, prompt_version, code_revision, enrolled_at, id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_opportunity_enrollments_release
+  ON release_validation_opportunity_enrollments(
+    release_tag, release_published_at, opportunity_code
+  );
+CREATE TRIGGER IF NOT EXISTS release_validation_opportunity_enrollments_no_update
+BEFORE UPDATE ON release_validation_opportunity_enrollments
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_opportunity_enrollments is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_opportunity_enrollments_no_delete
+BEFORE DELETE ON release_validation_opportunity_enrollments
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_opportunity_enrollments is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_outcome_observations (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  observation_id TEXT NOT NULL UNIQUE,
+  decision_id TEXT NOT NULL,
+  horizon_code TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  status TEXT NOT NULL,
+  outcome_json TEXT NOT NULL,
+  source_identity_json TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_outcomes_decision
+  ON release_validation_outcome_observations(decision_id, horizon_code, observed_at);
+CREATE TRIGGER IF NOT EXISTS release_validation_outcomes_no_update
+BEFORE UPDATE ON release_validation_outcome_observations
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_outcome_observations is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_outcomes_no_delete
+BEFORE DELETE ON release_validation_outcome_observations
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_outcome_observations is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_observation_batches (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  batch_id TEXT NOT NULL UNIQUE,
+  observed_at TEXT NOT NULL,
+  code_revision TEXT NOT NULL,
+  source_identity_digest TEXT NOT NULL,
+  forecast_count INTEGER NOT NULL CHECK(forecast_count >= 0),
+  intended_count INTEGER NOT NULL CHECK(intended_count >= 0),
+  inserted_count INTEGER NOT NULL CHECK(inserted_count >= 0),
+  already_existing_count INTEGER NOT NULL CHECK(already_existing_count >= 0),
+  pending_count INTEGER NOT NULL CHECK(pending_count >= 0),
+  excluded_count INTEGER NOT NULL CHECK(excluded_count >= 0),
+  indeterminate_count INTEGER NOT NULL CHECK(indeterminate_count >= 0),
+  results_json TEXT NOT NULL,
+  outcome_chain_previous_hash TEXT,
+  outcome_chain_content_hash TEXT,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_observation_batches_observed
+  ON release_validation_observation_batches(observed_at, id);
+CREATE TRIGGER IF NOT EXISTS release_validation_observation_batches_no_update
+BEFORE UPDATE ON release_validation_observation_batches
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_observation_batches is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_observation_batches_no_delete
+BEFORE DELETE ON release_validation_observation_batches
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_observation_batches is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_proof_epochs (
+  proof_epoch_id TEXT PRIMARY KEY
+    CHECK(length(proof_epoch_id) = 64 AND proof_epoch_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  repository TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_proof_epochs_repository
+  ON release_validation_proof_epochs(repository, starts_at, proof_epoch_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_epochs_no_update
+BEFORE UPDATE ON release_validation_proof_epochs
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_proof_epochs is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_epochs_no_delete
+BEFORE DELETE ON release_validation_proof_epochs
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_proof_epochs is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_proof_epoch_retirements (
+  retirement_id TEXT PRIMARY KEY
+    CHECK(length(retirement_id) = 64 AND retirement_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  recorded_at TEXT NOT NULL,
+  retired_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_epoch_retirements_chain
+  ON release_validation_proof_epoch_retirements(
+    proof_epoch_id, epoch_sequence, retirement_id
+  );
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_epoch_retirements_no_update
+BEFORE UPDATE ON release_validation_proof_epoch_retirements
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_proof_epoch_retirements is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_epoch_retirements_no_delete
+BEFORE DELETE ON release_validation_proof_epoch_retirements
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_proof_epoch_retirements is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_policies (
+  policy_id TEXT PRIMARY KEY
+    CHECK(length(policy_id) = 64 AND policy_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  policy_code TEXT NOT NULL,
+  policy_version INTEGER NOT NULL CHECK(policy_version > 0),
+  recorded_at TEXT NOT NULL,
+  effective_at TEXT NOT NULL,
+  retired_at TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  UNIQUE(proof_epoch_id, policy_code, policy_version, effective_at),
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_policies_chain
+  ON release_validation_policies(proof_epoch_id, epoch_sequence, policy_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_policies_no_update
+BEFORE UPDATE ON release_validation_policies
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_policies is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_policies_no_delete
+BEFORE DELETE ON release_validation_policies
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_policies is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_cohorts (
+  cohort_id TEXT PRIMARY KEY
+    CHECK(length(cohort_id) = 64 AND cohort_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  policy_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  model_version TEXT NOT NULL,
+  prompt_version INTEGER NOT NULL CHECK(prompt_version >= 0),
+  code_revision TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  starts_at TEXT NOT NULL,
+  retired_at TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  UNIQUE(
+    proof_epoch_id, policy_id, model_version, prompt_version,
+    code_revision, starts_at
+  ),
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(policy_id)
+    REFERENCES release_validation_policies(policy_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_cohorts_chain
+  ON release_validation_cohorts(proof_epoch_id, epoch_sequence, cohort_id);
+CREATE INDEX IF NOT EXISTS idx_release_validation_cohorts_series
+  ON release_validation_cohorts(
+    model_version, prompt_version, code_revision, starts_at
+  );
+CREATE TRIGGER IF NOT EXISTS release_validation_cohorts_no_update
+BEFORE UPDATE ON release_validation_cohorts
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_cohorts is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_cohorts_no_delete
+BEFORE DELETE ON release_validation_cohorts
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_cohorts is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_catalog_observations (
+  observation_id TEXT PRIMARY KEY
+    CHECK(length(observation_id) = 64 AND observation_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  source TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  member_count INTEGER NOT NULL CHECK(member_count >= 0),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_catalog_observations_chain
+  ON release_validation_catalog_observations(
+    proof_epoch_id, epoch_sequence, observation_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_catalog_observations_time
+  ON release_validation_catalog_observations(source, observed_at);
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_observations_no_update
+BEFORE UPDATE ON release_validation_catalog_observations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_observations is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_observations_no_delete
+BEFORE DELETE ON release_validation_catalog_observations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_observations is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_catalog_members (
+  member_id TEXT PRIMARY KEY
+    CHECK(length(member_id) = 64 AND member_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  observation_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  release_id TEXT NOT NULL
+    CHECK(length(release_id) = 64 AND release_id NOT GLOB '*[^0-9a-f]*'),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  UNIQUE(observation_id, ordinal),
+  UNIQUE(observation_id, release_id),
+  FOREIGN KEY(observation_id)
+    REFERENCES release_validation_catalog_observations(observation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_catalog_members_release
+  ON release_validation_catalog_members(release_id, observation_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_members_no_update
+BEFORE UPDATE ON release_validation_catalog_members
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_catalog_members is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_members_no_delete
+BEFORE DELETE ON release_validation_catalog_members
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_catalog_members is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_catalog_reconciliations (
+  reconciliation_id TEXT PRIMARY KEY
+    CHECK(
+      length(reconciliation_id) = 64 AND
+      reconciliation_id NOT GLOB '*[^0-9a-f]*'
+    ),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  previous_observation_id TEXT,
+  current_observation_id TEXT NOT NULL,
+  reconciled_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(previous_observation_id)
+    REFERENCES release_validation_catalog_observations(observation_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(current_observation_id)
+    REFERENCES release_validation_catalog_observations(observation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_catalog_reconciliations_chain
+  ON release_validation_catalog_reconciliations(
+    proof_epoch_id, epoch_sequence, reconciliation_id
+  );
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_reconciliations_no_update
+BEFORE UPDATE ON release_validation_catalog_reconciliations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_reconciliations is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_reconciliations_no_delete
+BEFORE DELETE ON release_validation_catalog_reconciliations
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_reconciliations is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_catalog_reconciliation_rows (
+  reconciliation_row_id TEXT PRIMARY KEY
+    CHECK(
+      length(reconciliation_row_id) = 64 AND
+      reconciliation_row_id NOT GLOB '*[^0-9a-f]*'
+    ),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  reconciliation_id TEXT NOT NULL,
+  ordinal INTEGER NOT NULL CHECK(ordinal >= 0),
+  release_id TEXT NOT NULL
+    CHECK(length(release_id) = 64 AND release_id NOT GLOB '*[^0-9a-f]*'),
+  status TEXT NOT NULL CHECK(status IN ('added', 'retained', 'retired')),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  UNIQUE(reconciliation_id, ordinal),
+  UNIQUE(reconciliation_id, release_id),
+  FOREIGN KEY(reconciliation_id)
+    REFERENCES release_validation_catalog_reconciliations(reconciliation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_reconciliation_rows_release
+  ON release_validation_catalog_reconciliation_rows(
+    release_id, reconciliation_id
+  );
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_reconciliation_rows_no_update
+BEFORE UPDATE ON release_validation_catalog_reconciliation_rows
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_reconciliation_rows is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_catalog_reconciliation_rows_no_delete
+BEFORE DELETE ON release_validation_catalog_reconciliation_rows
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_catalog_reconciliation_rows is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_obligations (
+  obligation_id TEXT PRIMARY KEY
+    CHECK(length(obligation_id) = 64 AND obligation_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  cohort_id TEXT NOT NULL,
+  cohort_sequence INTEGER NOT NULL CHECK(cohort_sequence > 0),
+  cell_id TEXT NOT NULL
+    CHECK(length(cell_id) = 64 AND cell_id NOT GLOB '*[^0-9a-f]*'),
+  release_id TEXT NOT NULL
+    CHECK(length(release_id) = 64 AND release_id NOT GLOB '*[^0-9a-f]*'),
+  catalog_observation_id TEXT NOT NULL,
+  reconciliation_id TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  opens_at TEXT NOT NULL,
+  closes_at_exclusive TEXT NOT NULL,
+  outcome_due_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  UNIQUE(cohort_id, cell_id, release_id),
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(cohort_id)
+    REFERENCES release_validation_cohorts(cohort_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(catalog_observation_id)
+    REFERENCES release_validation_catalog_observations(observation_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(reconciliation_id)
+    REFERENCES release_validation_catalog_reconciliations(reconciliation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_obligations_chain
+  ON release_validation_obligations(
+    cohort_id, cohort_sequence, obligation_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_obligations_due
+  ON release_validation_obligations(outcome_due_at, cohort_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_obligations_no_update
+BEFORE UPDATE ON release_validation_obligations
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_obligations is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_obligations_no_delete
+BEFORE DELETE ON release_validation_obligations
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_obligations is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_split_assignments (
+  assignment_id TEXT PRIMARY KEY
+    CHECK(length(assignment_id) = 64 AND assignment_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  cohort_id TEXT NOT NULL,
+  cohort_sequence INTEGER NOT NULL CHECK(cohort_sequence > 0),
+  obligation_id TEXT NOT NULL UNIQUE,
+  assigned_at TEXT NOT NULL,
+  arm TEXT NOT NULL CHECK(arm IN ('production', 'calibration', 'holdout')),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(cohort_id)
+    REFERENCES release_validation_cohorts(cohort_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(obligation_id)
+    REFERENCES release_validation_obligations(obligation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_split_assignments_chain
+  ON release_validation_split_assignments(
+    cohort_id, cohort_sequence, assignment_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_split_assignments_arm
+  ON release_validation_split_assignments(arm, assigned_at);
+CREATE TRIGGER IF NOT EXISTS release_validation_split_assignments_no_update
+BEFORE UPDATE ON release_validation_split_assignments
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_split_assignments is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_split_assignments_no_delete
+BEFORE DELETE ON release_validation_split_assignments
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_split_assignments is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_forecasts_v2 (
+  forecast_id TEXT PRIMARY KEY
+    CHECK(length(forecast_id) = 64 AND forecast_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  proof_epoch_id TEXT NOT NULL,
+  cohort_id TEXT NOT NULL,
+  cohort_sequence INTEGER NOT NULL CHECK(cohort_sequence > 0),
+  obligation_id TEXT NOT NULL UNIQUE,
+  split_assignment_id TEXT NOT NULL UNIQUE,
+  policy_id TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  selected_release_id TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(cohort_id)
+    REFERENCES release_validation_cohorts(cohort_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(obligation_id)
+    REFERENCES release_validation_obligations(obligation_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(split_assignment_id)
+    REFERENCES release_validation_split_assignments(assignment_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(policy_id)
+    REFERENCES release_validation_policies(policy_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_forecasts_v2_chain
+  ON release_validation_forecasts_v2(
+    cohort_id, cohort_sequence, forecast_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_forecasts_v2_recorded
+  ON release_validation_forecasts_v2(recorded_at, forecast_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_v2_no_update
+BEFORE UPDATE ON release_validation_forecasts_v2
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_forecasts_v2 is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_v2_no_delete
+BEFORE DELETE ON release_validation_forecasts_v2
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_forecasts_v2 is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_outcomes_v2 (
+  outcome_id TEXT PRIMARY KEY
+    CHECK(length(outcome_id) = 64 AND outcome_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  proof_epoch_id TEXT NOT NULL,
+  cohort_id TEXT NOT NULL,
+  cohort_sequence INTEGER NOT NULL CHECK(cohort_sequence > 0),
+  forecast_id TEXT NOT NULL UNIQUE,
+  obligation_id TEXT NOT NULL UNIQUE,
+  cell_id TEXT NOT NULL,
+  release_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  status TEXT NOT NULL CHECK(status IN ('safe', 'adverse', 'censored')),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(cohort_id)
+    REFERENCES release_validation_cohorts(cohort_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(forecast_id)
+    REFERENCES release_validation_forecasts_v2(forecast_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(obligation_id)
+    REFERENCES release_validation_obligations(obligation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_outcomes_v2_chain
+  ON release_validation_outcomes_v2(
+    cohort_id, cohort_sequence, outcome_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_outcomes_v2_observed
+  ON release_validation_outcomes_v2(observed_at, outcome_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_outcomes_v2_no_update
+BEFORE UPDATE ON release_validation_outcomes_v2
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_outcomes_v2 is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_outcomes_v2_no_delete
+BEFORE DELETE ON release_validation_outcomes_v2
+BEGIN
+  SELECT RAISE(ABORT, 'release_validation_outcomes_v2 is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_proof_observation_batches (
+  batch_id TEXT PRIMARY KEY
+    CHECK(length(batch_id) = 64 AND batch_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  cohort_id TEXT NOT NULL,
+  cohort_sequence INTEGER NOT NULL CHECK(cohort_sequence > 0),
+  observed_at TEXT NOT NULL,
+  source_identity_hash TEXT NOT NULL
+    CHECK(
+      length(source_identity_hash) = 64 AND
+      source_identity_hash NOT GLOB '*[^0-9a-f]*'
+    ),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(cohort_id)
+    REFERENCES release_validation_cohorts(cohort_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_proof_batches_chain
+  ON release_validation_proof_observation_batches(
+    cohort_id, cohort_sequence, batch_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_proof_batches_observed
+  ON release_validation_proof_observation_batches(observed_at, batch_id);
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_observation_batches_no_update
+BEFORE UPDATE ON release_validation_proof_observation_batches
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_proof_observation_batches is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_proof_observation_batches_no_delete
+BEFORE DELETE ON release_validation_proof_observation_batches
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_proof_observation_batches is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_evaluation_receipts (
+  evaluation_id TEXT PRIMARY KEY
+    CHECK(length(evaluation_id) = 64 AND evaluation_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  evaluated_at TEXT NOT NULL,
+  status TEXT NOT NULL
+    CHECK(status IN ('validated', 'insufficient', 'measurable_but_failed')),
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_evaluations_chain
+  ON release_validation_evaluation_receipts(
+    proof_epoch_id, epoch_sequence, evaluation_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_evaluations_status
+  ON release_validation_evaluation_receipts(status, evaluated_at);
+CREATE TRIGGER IF NOT EXISTS release_validation_evaluation_receipts_no_update
+BEFORE UPDATE ON release_validation_evaluation_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_evaluation_receipts is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_evaluation_receipts_no_delete
+BEFORE DELETE ON release_validation_evaluation_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_evaluation_receipts is append-only'
+  );
+END;
+
+CREATE TABLE IF NOT EXISTS release_validation_promotion_receipts (
+  promotion_id TEXT PRIMARY KEY
+    CHECK(length(promotion_id) = 64 AND promotion_id NOT GLOB '*[^0-9a-f]*'),
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  proof_epoch_id TEXT NOT NULL,
+  epoch_sequence INTEGER NOT NULL CHECK(epoch_sequence > 0),
+  evaluation_id TEXT NOT NULL,
+  environment TEXT NOT NULL CHECK(environment IN ('production', 'calibration')),
+  promoted_at TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE
+    CHECK(length(content_hash) = 64 AND content_hash NOT GLOB '*[^0-9a-f]*'),
+  record_json TEXT NOT NULL,
+  FOREIGN KEY(proof_epoch_id)
+    REFERENCES release_validation_proof_epochs(proof_epoch_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(evaluation_id)
+    REFERENCES release_validation_evaluation_receipts(evaluation_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_validation_promotions_chain
+  ON release_validation_promotion_receipts(
+    proof_epoch_id, epoch_sequence, promotion_id
+  );
+CREATE INDEX IF NOT EXISTS idx_release_validation_promotions_environment
+  ON release_validation_promotion_receipts(environment, promoted_at);
+CREATE TRIGGER IF NOT EXISTS release_validation_promotion_receipts_no_update
+BEFORE UPDATE ON release_validation_promotion_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_promotion_receipts is append-only'
+  );
+END;
+CREATE TRIGGER IF NOT EXISTS release_validation_promotion_receipts_no_delete
+BEFORE DELETE ON release_validation_promotion_receipts
+BEGIN
+  SELECT RAISE(
+    ABORT,
+    'release_validation_promotion_receipts is append-only'
+  );
+END;
 
 CREATE TABLE IF NOT EXISTS release_commits (
   tag TEXT PRIMARY KEY,
@@ -348,12 +3769,17 @@ CREATE TABLE IF NOT EXISTS release_commits (
 
 CREATE TABLE IF NOT EXISTS issue_closure_events (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   event_id TEXT PRIMARY KEY,
   closed_at TEXT,
+  connection_ordinal INTEGER NOT NULL DEFAULT 0,
+  actor_node_id TEXT,
   actor_login TEXT,
+  actor_type TEXT,
   state_reason TEXT,
   closer_type TEXT,
   closer_number INTEGER,
+  closer_node_id TEXT,
   closer_oid TEXT,
   raw_json TEXT NOT NULL,
   fetched_at TEXT NOT NULL
@@ -361,30 +3787,61 @@ CREATE TABLE IF NOT EXISTS issue_closure_events (
 
 CREATE TABLE IF NOT EXISTS issue_reopen_events (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   event_id TEXT PRIMARY KEY,
   reopened_at TEXT,
+  connection_ordinal INTEGER NOT NULL DEFAULT 0,
+  actor_node_id TEXT,
   actor_login TEXT,
+  actor_type TEXT,
   raw_json TEXT NOT NULL,
   fetched_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS issue_state_event_snapshots (
+  issue_number INTEGER PRIMARY KEY,
+  repository_node_id TEXT,
+  issue_node_id TEXT,
+  issue_node_type TEXT,
+  schema_version INTEGER NOT NULL,
+  issue_state TEXT NOT NULL,
+  issue_updated_at TEXT NOT NULL,
+  total_count INTEGER NOT NULL,
+  fetched_count INTEGER NOT NULL,
+  events_digest TEXT NOT NULL,
+  authority_digest TEXT,
+  events_json TEXT NOT NULL,
+  sweep_count INTEGER NOT NULL DEFAULT 0,
+  stabilized INTEGER NOT NULL DEFAULT 0,
+  stabilization_json TEXT,
+  stabilization_identity_digest TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  fetched_at TEXT NOT NULL,
+  verified_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS issue_pr_links (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   pr_repository_owner TEXT NOT NULL,
   pr_repository_name TEXT NOT NULL,
   pr_repository_name_with_owner TEXT NOT NULL,
   pr_number INTEGER NOT NULL,
+  pr_node_id TEXT,
   source TEXT NOT NULL,
+  source_node_id TEXT,
   will_close_target INTEGER,
   referenced_at TEXT,
   source_comment_database_id INTEGER,
   source_comment_url TEXT,
+  raw_json TEXT,
   fetched_at TEXT NOT NULL,
   PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
 );
 
 CREATE TABLE IF NOT EXISTS issue_commit_references (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   event_id TEXT PRIMARY KEY,
   commit_oid TEXT NOT NULL,
   commit_message_headline TEXT,
@@ -394,6 +3851,7 @@ CREATE TABLE IF NOT EXISTS issue_commit_references (
   is_cross_repository INTEGER NOT NULL DEFAULT 0,
   is_direct_reference INTEGER NOT NULL DEFAULT 0,
   referenced_at TEXT,
+  actor_node_id TEXT,
   actor_login TEXT,
   raw_json TEXT NOT NULL,
   fetched_at TEXT NOT NULL
@@ -401,16 +3859,434 @@ CREATE TABLE IF NOT EXISTS issue_commit_references (
 
 CREATE TABLE IF NOT EXISTS issue_label_events (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   event_id TEXT PRIMARY KEY,
   action TEXT NOT NULL,
   label_name TEXT NOT NULL,
+  actor_node_id TEXT,
   actor_login TEXT,
+  actor_type TEXT,
   created_at TEXT NOT NULL,
+  raw_json TEXT,
   fetched_at TEXT NOT NULL
 );
+CREATE TRIGGER IF NOT EXISTS issue_label_events_no_update
+BEFORE UPDATE ON issue_label_events
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_events is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_label_events_no_delete
+BEFORE DELETE ON issue_label_events
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_events is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS repository_collaborator_permission_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  repository TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  exhaustive INTEGER NOT NULL CHECK(exhaustive = 1),
+  complete INTEGER NOT NULL CHECK(complete = 1),
+  total_count INTEGER NOT NULL CHECK(total_count >= 0),
+  row_count INTEGER NOT NULL CHECK(row_count = total_count),
+  page_count INTEGER NOT NULL CHECK(page_count > 0),
+  pages_fetched INTEGER NOT NULL CHECK(pages_fetched > 0),
+  sweep_count INTEGER NOT NULL CHECK(sweep_count > 0),
+  content_digest TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_permission_snapshots_repository_time
+  ON repository_collaborator_permission_snapshots(repository, observed_at, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_snapshots_no_update
+BEFORE UPDATE ON repository_collaborator_permission_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_snapshots_no_delete
+BEFORE DELETE ON repository_collaborator_permission_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS repository_collaborator_permission_rows (
+  snapshot_id TEXT NOT NULL,
+  actor_login TEXT NOT NULL,
+  actor_type TEXT NOT NULL CHECK(actor_type = 'User'),
+  permission TEXT NOT NULL CHECK(permission IN ('admin', 'maintain', 'write', 'triage', 'read', 'none')),
+  evidence_id TEXT NOT NULL UNIQUE,
+  source_identity TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(snapshot_id, actor_login),
+  FOREIGN KEY(snapshot_id)
+    REFERENCES repository_collaborator_permission_snapshots(snapshot_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_permission_rows_actor
+  ON repository_collaborator_permission_rows(actor_login, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_rows_no_update
+BEFORE UPDATE ON repository_collaborator_permission_rows
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_rows_no_delete
+BEFORE DELETE ON repository_collaborator_permission_rows
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS approved_maintainer_roster_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 1),
+  repository TEXT NOT NULL,
+  approval_id TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  content_digest TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  UNIQUE(repository, approval_id)
+);
+CREATE INDEX IF NOT EXISTS idx_approved_roster_snapshots_repository_time
+  ON approved_maintainer_roster_snapshots(repository, approved_at, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS approved_maintainer_roster_snapshots_no_update
+BEFORE UPDATE ON approved_maintainer_roster_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'approved_maintainer_roster_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS approved_maintainer_roster_snapshots_no_delete
+BEFORE DELETE ON approved_maintainer_roster_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'approved_maintainer_roster_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS approved_maintainer_roster_entries (
+  snapshot_id TEXT NOT NULL,
+  evidence_id TEXT NOT NULL UNIQUE,
+  source_identity TEXT NOT NULL UNIQUE,
+  actor_login TEXT NOT NULL,
+  actor_type TEXT NOT NULL CHECK(actor_type = 'User'),
+  role TEXT NOT NULL CHECK(role IN ('maintain', 'admin')),
+  effective_from TEXT NOT NULL,
+  effective_until TEXT,
+  PRIMARY KEY(snapshot_id, evidence_id),
+  FOREIGN KEY(snapshot_id)
+    REFERENCES approved_maintainer_roster_snapshots(snapshot_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_approved_roster_entries_actor_interval
+  ON approved_maintainer_roster_entries(actor_login, effective_from, effective_until, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS approved_maintainer_roster_entries_no_update
+BEFORE UPDATE ON approved_maintainer_roster_entries
+BEGIN
+  SELECT RAISE(ABORT, 'approved_maintainer_roster_entries is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS approved_maintainer_roster_entries_no_delete
+BEFORE DELETE ON approved_maintainer_roster_entries
+BEGIN
+  SELECT RAISE(ABORT, 'approved_maintainer_roster_entries is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS issue_label_evidence_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  repository TEXT NOT NULL,
+  repository_node_id TEXT NOT NULL,
+  issue_number INTEGER NOT NULL,
+  issue_node_id TEXT NOT NULL,
+  captured_at TEXT NOT NULL,
+  issue_updated_at TEXT NOT NULL,
+  total_count INTEGER NOT NULL CHECK(total_count >= 0),
+  fetched_count INTEGER NOT NULL CHECK(fetched_count = total_count),
+  page_count INTEGER NOT NULL CHECK(page_count > 0),
+  sweep_count INTEGER NOT NULL CHECK(sweep_count >= 2),
+  stabilized INTEGER NOT NULL CHECK(stabilized = 1),
+  rows_content_hash TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  FOREIGN KEY(issue_number) REFERENCES issues(number) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_issue_label_evidence_snapshots_issue_time
+  ON issue_label_evidence_snapshots(issue_number, captured_at, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS issue_label_evidence_snapshots_no_update
+BEFORE UPDATE ON issue_label_evidence_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_evidence_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_label_evidence_snapshots_no_delete
+BEFORE DELETE ON issue_label_evidence_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_evidence_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS issue_label_evidence_rows (
+  snapshot_id TEXT NOT NULL,
+  connection_ordinal INTEGER NOT NULL CHECK(connection_ordinal >= 0),
+  event_node_id TEXT NOT NULL,
+  action TEXT NOT NULL CHECK(action IN ('labeled', 'unlabeled')),
+  label_name TEXT NOT NULL,
+  label_node_id TEXT,
+  actor_node_id TEXT,
+  actor_login TEXT,
+  actor_type TEXT,
+  created_at TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(snapshot_id, connection_ordinal),
+  UNIQUE(snapshot_id, event_node_id),
+  FOREIGN KEY(snapshot_id)
+    REFERENCES issue_label_evidence_snapshots(snapshot_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_issue_label_evidence_rows_event
+  ON issue_label_evidence_rows(event_node_id, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS issue_label_evidence_rows_no_update
+BEFORE UPDATE ON issue_label_evidence_rows
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_evidence_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_label_evidence_rows_no_delete
+BEFORE DELETE ON issue_label_evidence_rows
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_evidence_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS repository_collaborator_permission_snapshots_v2 (
+  snapshot_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  repository TEXT NOT NULL,
+  repository_node_id TEXT NOT NULL,
+  observed_at TEXT NOT NULL,
+  exhaustive INTEGER NOT NULL CHECK(exhaustive = 1),
+  complete INTEGER NOT NULL CHECK(complete = 1),
+  total_count INTEGER NOT NULL CHECK(total_count >= 0),
+  row_count INTEGER NOT NULL CHECK(row_count = total_count),
+  page_count INTEGER NOT NULL CHECK(page_count > 0),
+  pages_fetched INTEGER NOT NULL CHECK(pages_fetched > 0),
+  sweep_count INTEGER NOT NULL CHECK(sweep_count >= 2),
+  rows_content_hash TEXT NOT NULL,
+  raw_json TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_permission_snapshots_v2_repository_time
+  ON repository_collaborator_permission_snapshots_v2(
+    repository_node_id, observed_at, snapshot_id
+  );
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_snapshots_v2_no_update
+BEFORE UPDATE ON repository_collaborator_permission_snapshots_v2
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_snapshots_v2 is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_snapshots_v2_no_delete
+BEFORE DELETE ON repository_collaborator_permission_snapshots_v2
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_snapshots_v2 is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS repository_collaborator_permission_rows_v2 (
+  snapshot_id TEXT NOT NULL,
+  source_ordinal INTEGER NOT NULL CHECK(source_ordinal >= 0),
+  actor_node_id TEXT NOT NULL,
+  actor_login TEXT NOT NULL,
+  actor_type TEXT NOT NULL CHECK(actor_type = 'User'),
+  permission TEXT NOT NULL
+    CHECK(permission IN ('admin', 'maintain', 'write', 'triage', 'read', 'none')),
+  raw_json TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(snapshot_id, source_ordinal),
+  UNIQUE(snapshot_id, actor_node_id),
+  FOREIGN KEY(snapshot_id)
+    REFERENCES repository_collaborator_permission_snapshots_v2(snapshot_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_collaborator_permission_rows_v2_actor
+  ON repository_collaborator_permission_rows_v2(actor_node_id, snapshot_id);
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_rows_v2_no_update
+BEFORE UPDATE ON repository_collaborator_permission_rows_v2
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_rows_v2 is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS repository_collaborator_permission_rows_v2_no_delete
+BEFORE DELETE ON repository_collaborator_permission_rows_v2
+BEGIN
+  SELECT RAISE(ABORT, 'repository_collaborator_permission_rows_v2 is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS signed_maintainer_roster_snapshots (
+  snapshot_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  purpose TEXT NOT NULL CHECK(purpose = 'label_authority_approved_roster'),
+  repository TEXT NOT NULL,
+  repository_node_id TEXT NOT NULL,
+  approval_id TEXT NOT NULL,
+  approved_at TEXT NOT NULL,
+  sequence INTEGER NOT NULL CHECK(sequence > 0),
+  prior_digest TEXT,
+  signer_key_id TEXT NOT NULL,
+  keyring_digest TEXT NOT NULL,
+  signature_algorithm TEXT NOT NULL CHECK(signature_algorithm = 'hmac-sha256'),
+  signature TEXT NOT NULL,
+  signature_verified_at TEXT NOT NULL,
+  signed_payload_json TEXT NOT NULL,
+  row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  rows_content_hash TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  UNIQUE(repository_node_id, approval_id),
+  UNIQUE(repository_node_id, sequence),
+  CHECK(
+    (sequence = 1 AND prior_digest IS NULL)
+    OR (sequence > 1 AND prior_digest IS NOT NULL)
+  )
+);
+CREATE INDEX IF NOT EXISTS idx_signed_roster_snapshots_repository_time
+  ON signed_maintainer_roster_snapshots(
+    repository_node_id, approved_at, snapshot_id
+  );
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_snapshots_no_update
+BEFORE UPDATE ON signed_maintainer_roster_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_snapshots is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_snapshots_no_delete
+BEFORE DELETE ON signed_maintainer_roster_snapshots
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_snapshots is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS signed_maintainer_roster_entries (
+  snapshot_id TEXT NOT NULL,
+  entry_ordinal INTEGER NOT NULL CHECK(entry_ordinal >= 0),
+  evidence_id TEXT NOT NULL UNIQUE,
+  actor_node_id TEXT NOT NULL,
+  actor_login TEXT NOT NULL,
+  actor_type TEXT NOT NULL CHECK(actor_type = 'User'),
+  actor_association TEXT,
+  role TEXT NOT NULL CHECK(role IN ('maintain', 'admin')),
+  effective_from TEXT NOT NULL,
+  effective_until TEXT,
+  raw_json TEXT NOT NULL,
+  source_identity TEXT NOT NULL UNIQUE,
+  content_hash TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(snapshot_id, entry_ordinal),
+  UNIQUE(snapshot_id, actor_node_id, effective_from),
+  FOREIGN KEY(snapshot_id)
+    REFERENCES signed_maintainer_roster_snapshots(snapshot_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_signed_roster_entries_actor_interval
+  ON signed_maintainer_roster_entries(
+    actor_node_id, effective_from, effective_until, snapshot_id
+  );
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_entries_no_update
+BEFORE UPDATE ON signed_maintainer_roster_entries
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_entries is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_entries_no_delete
+BEFORE DELETE ON signed_maintainer_roster_entries
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_entries is append-only');
+END;
+
+${CLOSURE_CLAIM_LEDGER_SCHEMA_SQL}
+
+CREATE TABLE IF NOT EXISTS score_authority_resolution_runs (
+  authority_run_id TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  policy_version INTEGER NOT NULL CHECK(policy_version > 0),
+  source_identity_schema_version INTEGER NOT NULL CHECK(source_identity_schema_version > 0),
+  source_identity_digest TEXT NOT NULL,
+  recorded_at TEXT NOT NULL,
+  row_count INTEGER NOT NULL CHECK(row_count >= 0),
+  rows_content_hash TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE
+);
+CREATE INDEX IF NOT EXISTS idx_score_authority_resolution_runs_recorded
+  ON score_authority_resolution_runs(recorded_at, authority_run_id);
+CREATE TRIGGER IF NOT EXISTS score_authority_resolution_runs_no_update
+BEFORE UPDATE ON score_authority_resolution_runs
+BEGIN
+  SELECT RAISE(ABORT, 'score_authority_resolution_runs is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS score_authority_resolution_runs_no_delete
+BEFORE DELETE ON score_authority_resolution_runs
+BEGIN
+  SELECT RAISE(ABORT, 'score_authority_resolution_runs is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS score_authority_resolution_rows (
+  authority_run_id TEXT NOT NULL,
+  row_ordinal INTEGER NOT NULL CHECK(row_ordinal >= 0),
+  release_tag TEXT,
+  issue_number INTEGER NOT NULL,
+  subject_kind TEXT NOT NULL,
+  subject_identity TEXT NOT NULL,
+  candidate_id TEXT,
+  authority TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  authorized_for_scoring INTEGER NOT NULL CHECK(authorized_for_scoring IN (0, 1)),
+  evidence_digest TEXT NOT NULL,
+  resolution_json TEXT NOT NULL,
+  content_hash TEXT NOT NULL UNIQUE,
+  PRIMARY KEY(authority_run_id, row_ordinal),
+  UNIQUE(authority_run_id, subject_kind, subject_identity),
+  FOREIGN KEY(authority_run_id)
+    REFERENCES score_authority_resolution_runs(authority_run_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(issue_number) REFERENCES issues(number) ON DELETE RESTRICT,
+  FOREIGN KEY(candidate_id) REFERENCES closure_claim_candidates(candidate_id) ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_score_authority_resolution_rows_issue
+  ON score_authority_resolution_rows(issue_number, authority_run_id);
+CREATE TRIGGER IF NOT EXISTS score_authority_resolution_rows_no_update
+BEFORE UPDATE ON score_authority_resolution_rows
+BEGIN
+  SELECT RAISE(ABORT, 'score_authority_resolution_rows is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS score_authority_resolution_rows_no_delete
+BEFORE DELETE ON score_authority_resolution_rows
+BEGIN
+  SELECT RAISE(ABORT, 'score_authority_resolution_rows is append-only');
+END;
+
+CREATE TABLE IF NOT EXISTS release_score_audit_history_v2_seals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  schema_version INTEGER NOT NULL CHECK(schema_version = 2),
+  history_run_id TEXT NOT NULL UNIQUE,
+  authority_run_id TEXT NOT NULL UNIQUE,
+  sealed_at TEXT NOT NULL,
+  history_row_count INTEGER NOT NULL CHECK(history_row_count >= 0),
+  history_rows_content_hash TEXT NOT NULL,
+  authority_row_count INTEGER NOT NULL CHECK(authority_row_count >= 0),
+  authority_rows_content_hash TEXT NOT NULL,
+  previous_content_hash TEXT,
+  content_hash TEXT NOT NULL UNIQUE,
+  FOREIGN KEY(history_run_id)
+    REFERENCES release_score_audit_history_runs(run_id)
+    ON DELETE RESTRICT,
+  FOREIGN KEY(authority_run_id)
+    REFERENCES score_authority_resolution_runs(authority_run_id)
+    ON DELETE RESTRICT
+);
+CREATE INDEX IF NOT EXISTS idx_release_score_audit_history_v2_seals_recorded
+  ON release_score_audit_history_v2_seals(sealed_at, id);
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_v2_seals_no_update
+BEFORE UPDATE ON release_score_audit_history_v2_seals
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history_v2_seals is append-only');
+END;
+CREATE TRIGGER IF NOT EXISTS release_score_audit_history_v2_seals_no_delete
+BEFORE DELETE ON release_score_audit_history_v2_seals
+BEGIN
+  SELECT RAISE(ABORT, 'release_score_audit_history_v2_seals is append-only');
+END;
 
 CREATE TABLE IF NOT EXISTS issue_label_snapshots (
   issue_number INTEGER NOT NULL,
+  issue_node_id TEXT,
   snapshot_at TEXT NOT NULL,
   labels_json TEXT NOT NULL,
   fetched_at TEXT NOT NULL,
@@ -427,11 +4303,23 @@ CREATE TABLE IF NOT EXISTS issue_closure_proofs (
   PRIMARY KEY (release_tag, issue_number)
 );
 
+CREATE TABLE IF NOT EXISTS release_closure_dependency_snapshots (
+  release_tag TEXT PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  analyzer_version INTEGER NOT NULL,
+  issue_numbers_json TEXT NOT NULL,
+  dependency_digest TEXT NOT NULL,
+  dependency_row_count INTEGER NOT NULL,
+  captured_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS pull_request_fixes (
   pr_repository_owner TEXT NOT NULL,
   pr_repository_name TEXT NOT NULL,
   pr_repository_name_with_owner TEXT NOT NULL,
   pr_number INTEGER NOT NULL,
+  node_id TEXT,
+  repository_node_id TEXT,
   title TEXT,
   url TEXT,
   state TEXT,
@@ -439,7 +4327,9 @@ CREATE TABLE IF NOT EXISTS pull_request_fixes (
   merged_at TEXT,
   merge_commit_oid TEXT,
   base_ref_name TEXT,
+  raw_json TEXT,
   fetched_at TEXT NOT NULL,
+  checked_at TEXT,
   PRIMARY KEY (pr_repository_name_with_owner, pr_number)
 );
 
@@ -471,11 +4361,15 @@ CREATE TABLE IF NOT EXISTS ingestion_evidence_failures (
   pr_number INTEGER,
   message TEXT NOT NULL,
   context_json TEXT,
-  scoring_blocking INTEGER NOT NULL DEFAULT 1
+  scoring_blocking INTEGER NOT NULL DEFAULT 1,
+  superseded_at TEXT,
+  superseded_by_run_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_issue_closure_events_issue ON issue_closure_events(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_reopen_events_issue_time ON issue_reopen_events(issue_number, reopened_at);
+CREATE INDEX IF NOT EXISTS idx_issue_state_event_snapshots_verified
+  ON issue_state_event_snapshots(verified_at);
 CREATE INDEX IF NOT EXISTS idx_issue_pr_links_issue ON issue_pr_links(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_commit_references_issue ON issue_commit_references(issue_number);
 CREATE INDEX IF NOT EXISTS idx_issue_label_events_issue_time ON issue_label_events(issue_number, created_at);
@@ -488,10 +4382,17 @@ CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_run ON ingestion_evid
 CREATE INDEX IF NOT EXISTS idx_ingestion_evidence_failures_release ON ingestion_evidence_failures(release_tag, occurred_at);
 `);
 
-// Idempotent migrations for existing DBs. ALTER TABLE ADD COLUMN errors if the
-// column already exists, so we swallow the error rather than guard it.
+// Column existence is checked explicitly so real SQLite failures are never
+// mistaken for duplicate-column errors and silently ignored.
+const migrationTableColumns = (table: string) =>
+  db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; pk: number }>;
 for (const sql of [
+  `ALTER TABLE issues ADD COLUMN node_id TEXT`,
   `ALTER TABLE issues ADD COLUMN is_bot INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issues ADD COLUMN body TEXT`,
+  `ALTER TABLE issues ADD COLUMN raw_json TEXT`,
+  `ALTER TABLE issues ADD COLUMN author_node_id TEXT`,
+  `ALTER TABLE issues ADD COLUMN author_type TEXT`,
   `ALTER TABLE issues ADD COLUMN author_association TEXT`,
   `ALTER TABLE issues ADD COLUMN unique_human_commenters INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issues ADD COLUMN maintainer_commenters INTEGER NOT NULL DEFAULT 0`,
@@ -509,6 +4410,27 @@ for (const sql of [
   `ALTER TABLE release_commits ADD COLUMN check_contexts_json TEXT NOT NULL DEFAULT '[]'`,
   `ALTER TABLE classifications ADD COLUMN workaround_status TEXT NOT NULL DEFAULT 'unknown'`,
   `ALTER TABLE classifications ADD COLUMN prompt_version INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE classifications ADD COLUMN classified_comments_digest TEXT`,
+  `ALTER TABLE classifications ADD COLUMN source_identity_json TEXT`,
+  `ALTER TABLE classifications ADD COLUMN source_identity_digest TEXT`,
+  `ALTER TABLE classifications ADD COLUMN classification_origin TEXT NOT NULL DEFAULT 'legacy_or_manual'`,
+  `ALTER TABLE classifications ADD COLUMN raw_model_output TEXT`,
+  `ALTER TABLE classifications ADD COLUMN provenance_json TEXT`,
+  `ALTER TABLE classifications ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN schema_version INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN repository_node_id TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN issue_author_node_id TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN issue_author_login TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN issue_author_type TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN authority_digest TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN stabilization_json TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN stabilization_identity_digest TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN verified_at TEXT`,
+  `ALTER TABLE issue_comment_snapshots ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE issues ADD COLUMN revision INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE ingestion_evidence_failures ADD COLUMN superseded_at TEXT`,
+  `ALTER TABLE ingestion_evidence_failures ADD COLUMN superseded_by_run_id TEXT`,
   `ALTER TABLE releases ADD COLUMN state TEXT`,
   `ALTER TABLE releases ADD COLUMN closed_serious_fixed INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE releases ADD COLUMN fix_bonus REAL NOT NULL DEFAULT 0`,
@@ -543,72 +4465,492 @@ for (const sql of [
   `ALTER TABLE releases ADD COLUMN release_derived_fetched_at TEXT`,
   `ALTER TABLE releases ADD COLUMN release_artifact_checked_at TEXT`,
   `ALTER TABLE releases ADD COLUMN broken_surfaces TEXT`,
+  `ALTER TABLE releases ADD COLUMN node_id TEXT`,
+  `ALTER TABLE releases ADD COLUMN catalog_tag_commit_oid TEXT`,
+  `ALTER TABLE releases ADD COLUMN created_at TEXT`,
+  `ALTER TABLE releases ADD COLUMN updated_at TEXT`,
+  `ALTER TABLE releases ADD COLUMN catalog_rank INTEGER`,
+  `ALTER TABLE releases ADD COLUMN catalog_digest TEXT`,
+  `ALTER TABLE releases ADD COLUMN catalog_active INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE issue_commit_references ADD COLUMN commit_message_headline TEXT`,
+  `ALTER TABLE issue_commit_references ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_commit_references ADD COLUMN actor_node_id TEXT`,
+  `ALTER TABLE issue_closure_events ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_closure_events ADD COLUMN actor_node_id TEXT`,
+  `ALTER TABLE issue_closure_events ADD COLUMN actor_type TEXT`,
+  `ALTER TABLE issue_closure_events ADD COLUMN closer_node_id TEXT`,
+  `ALTER TABLE issue_closure_events ADD COLUMN connection_ordinal INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issue_reopen_events ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_reopen_events ADD COLUMN actor_node_id TEXT`,
+  `ALTER TABLE issue_reopen_events ADD COLUMN actor_type TEXT`,
+  `ALTER TABLE issue_reopen_events ADD COLUMN connection_ordinal INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN repository_node_id TEXT`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN issue_node_type TEXT`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN authority_digest TEXT`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN sweep_count INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN stabilized INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN stabilization_json TEXT`,
+  `ALTER TABLE issue_state_event_snapshots ADD COLUMN stabilization_identity_digest TEXT`,
   `ALTER TABLE release_score_audits ADD COLUMN source_identity_json TEXT`,
+  `ALTER TABLE release_score_audits ADD COLUMN authority_run_id TEXT REFERENCES score_authority_resolution_runs(authority_run_id) ON DELETE RESTRICT`,
+  `ALTER TABLE release_score_audit_history ADD COLUMN authority_run_id TEXT REFERENCES score_authority_resolution_runs(authority_run_id) ON DELETE RESTRICT`,
+  `ALTER TABLE release_validation_opportunity_enrollments ADD COLUMN cohort_inception_at TEXT`,
+  `ALTER TABLE release_validation_opportunity_enrollments ADD COLUMN enrollment_kind TEXT`,
+  `ALTER TABLE release_validation_opportunity_enrollments ADD COLUMN release_tag_commit_oid TEXT`,
   `ALTER TABLE issue_pr_links ADD COLUMN source_comment_database_id INTEGER`,
   `ALTER TABLE issue_pr_links ADD COLUMN source_comment_url TEXT`,
+  `ALTER TABLE issue_pr_links ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_pr_links ADD COLUMN pr_node_id TEXT`,
+  `ALTER TABLE issue_pr_links ADD COLUMN source_node_id TEXT`,
+  `ALTER TABLE issue_pr_links ADD COLUMN raw_json TEXT`,
+  `ALTER TABLE issue_label_events ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE issue_label_events ADD COLUMN actor_node_id TEXT`,
+  `ALTER TABLE issue_label_events ADD COLUMN actor_type TEXT`,
+  `ALTER TABLE issue_label_events ADD COLUMN raw_json TEXT`,
+  `ALTER TABLE issue_label_snapshots ADD COLUMN issue_node_id TEXT`,
+  `ALTER TABLE pull_request_fixes ADD COLUMN node_id TEXT`,
+  `ALTER TABLE pull_request_fixes ADD COLUMN repository_node_id TEXT`,
+  `ALTER TABLE pull_request_fixes ADD COLUMN raw_json TEXT`,
+  `ALTER TABLE signed_maintainer_roster_snapshots ADD COLUMN purpose TEXT`,
+  `ALTER TABLE signed_maintainer_roster_snapshots ADD COLUMN sequence INTEGER`,
+  `ALTER TABLE signed_maintainer_roster_snapshots ADD COLUMN prior_digest TEXT`,
+  `ALTER TABLE signed_maintainer_roster_snapshots ADD COLUMN keyring_digest TEXT`,
+  `ALTER TABLE signed_maintainer_roster_snapshots ADD COLUMN signature_verified_at TEXT`,
+  `ALTER TABLE signed_maintainer_roster_entries ADD COLUMN actor_association TEXT`,
 ]) {
-  try { db.exec(sql); } catch { /* column already exists */ }
+  const match = sql.match(/^ALTER TABLE ([A-Za-z0-9_]+) ADD COLUMN ([A-Za-z0-9_]+)/);
+  if (!match) throw new Error(`Unsupported column migration statement: ${sql}`);
+  const [, table, column] = match;
+  if (!migrationTableColumns(table).some((existing) => existing.name === column)) db.exec(sql);
 }
+db.exec(`
+CREATE INDEX IF NOT EXISTS releases_active_catalog_rank
+  ON releases(catalog_active, catalog_rank);
+CREATE INDEX IF NOT EXISTS releases_active_stable_publication
+  ON releases(catalog_active, prerelease, published_at);
+CREATE INDEX IF NOT EXISTS idx_issues_created_at
+  ON issues(created_at);
+CREATE INDEX IF NOT EXISTS idx_issues_closed_at
+  ON issues(closed_at);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_node_id_unique
+  ON issues(node_id)
+  WHERE node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_comment_snapshots_issue_node_id_unique
+  ON issue_comment_snapshots(issue_node_id)
+  WHERE issue_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_state_event_snapshots_issue_node_id_unique
+  ON issue_state_event_snapshots(issue_node_id)
+  WHERE issue_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pull_request_fixes_node_id_unique
+  ON pull_request_fixes(node_id)
+  WHERE node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_pr_links_pr_node_source_unique
+  ON issue_pr_links(issue_number, pr_node_id, source)
+  WHERE pr_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_pr_links_source_node_source_unique
+  ON issue_pr_links(issue_number, source_node_id, source)
+  WHERE source_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_label_snapshots_node_time_unique
+  ON issue_label_snapshots(issue_node_id, snapshot_at)
+  WHERE issue_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_signed_roster_repository_sequence_unique
+  ON signed_maintainer_roster_snapshots(repository_node_id, sequence)
+  WHERE sequence IS NOT NULL;
 
-try {
-  const issueCrawlFinishedAt = (() => {
-    const row = db.prepare(`SELECT value FROM meta WHERE key='issue_crawl_last_run'`).get() as { value?: string } | undefined;
-    if (!row?.value) return null;
-    try {
-      const parsed = JSON.parse(row.value);
-      return typeof parsed.finishedAt === 'string' ? parsed.finishedAt : null;
-    } catch {
-      return null;
-    }
-  })();
-  db.prepare(`
-    UPDATE issues
-    SET fetched_at=COALESCE(?, updated_at)
-    WHERE fetched_at IS NULL
-  `).run(issueCrawlFinishedAt);
-  db.exec(`
-    UPDATE releases
-    SET
-      release_metadata_fetched_at=COALESCE(
-        release_metadata_fetched_at,
-        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
-        scored_at,
-        published_at
-      ),
-      release_derived_fetched_at=COALESCE(
-        release_derived_fetched_at,
-        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
-        scored_at,
-        published_at
-      ),
-      release_artifact_checked_at=COALESCE(
-        release_artifact_checked_at,
-        (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
-        scored_at,
-        published_at
-      )
-    WHERE release_metadata_fetched_at IS NULL
-       OR release_derived_fetched_at IS NULL
-       OR release_artifact_checked_at IS NULL
-  `);
-} catch {
-  // Best-effort backfill for DBs that predate freshness columns/tables.
-}
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_snapshots_v2_insert_guard
+BEFORE INSERT ON signed_maintainer_roster_snapshots
+WHEN
+  NEW.schema_version IS NOT 2
+  OR NEW.purpose IS NOT 'label_authority_approved_roster'
+  OR NEW.repository IS NULL
+  OR NEW.repository_node_id IS NULL
+  OR NEW.approval_id IS NULL
+  OR NEW.approved_at IS NULL
+  OR NEW.sequence IS NULL
+  OR NEW.sequence <= 0
+  OR (NEW.sequence = 1 AND NEW.prior_digest IS NOT NULL)
+  OR (
+    NEW.sequence > 1
+    AND (
+      NEW.prior_digest IS NULL
+      OR length(NEW.prior_digest) != 64
+      OR NEW.prior_digest GLOB '*[^0-9a-f]*'
+    )
+  )
+  OR NEW.signer_key_id IS NULL
+  OR NEW.keyring_digest IS NULL
+  OR length(NEW.keyring_digest) != 64
+  OR NEW.keyring_digest GLOB '*[^0-9a-f]*'
+  OR NEW.signature_algorithm IS NOT 'hmac-sha256'
+  OR NEW.signature IS NULL
+  OR length(NEW.signature) != 64
+  OR NEW.signature GLOB '*[^0-9a-f]*'
+  OR NEW.signature_verified_at IS NULL
+  OR NEW.signed_payload_json IS NULL
+  OR NEW.row_count IS NULL
+  OR NEW.row_count < 0
+  OR NEW.rows_content_hash IS NULL
+  OR length(NEW.rows_content_hash) != 64
+  OR NEW.rows_content_hash GLOB '*[^0-9a-f]*'
+  OR NEW.source_identity IS NULL
+  OR NEW.content_hash IS NULL
+  OR length(NEW.content_hash) != 64
+  OR NEW.content_hash GLOB '*[^0-9a-f]*'
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_snapshots requires complete signed v2 evidence');
+END;
 
-try {
-  const tableColumns = (table: string) =>
-    db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string; notnull: number; pk: number }>;
+CREATE TRIGGER IF NOT EXISTS signed_maintainer_roster_entries_v2_insert_guard
+BEFORE INSERT ON signed_maintainer_roster_entries
+WHEN
+  NEW.snapshot_id IS NULL
+  OR NEW.entry_ordinal IS NULL
+  OR NEW.entry_ordinal < 0
+  OR NEW.evidence_id IS NULL
+  OR NEW.actor_node_id IS NULL
+  OR NEW.actor_login IS NULL
+  OR NEW.actor_type IS NOT 'User'
+  OR NEW.role NOT IN ('maintain', 'admin')
+  OR NEW.effective_from IS NULL
+  OR NEW.raw_json IS NULL
+  OR NEW.source_identity IS NULL
+  OR NEW.content_hash IS NULL
+  OR length(NEW.content_hash) != 64
+  OR NEW.content_hash GLOB '*[^0-9a-f]*'
+BEGIN
+  SELECT RAISE(ABORT, 'signed_maintainer_roster_entries requires complete signed v2 evidence');
+END;
+
+CREATE TRIGGER IF NOT EXISTS issues_node_id_immutable
+BEFORE UPDATE OF node_id ON issues
+WHEN OLD.node_id IS NOT NULL AND NEW.node_id IS NOT OLD.node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issues.node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issues_author_identity_immutable
+BEFORE UPDATE OF author_node_id, author_type ON issues
+WHEN
+  (OLD.author_node_id IS NOT NULL AND NEW.author_node_id IS NOT OLD.author_node_id)
+  OR (OLD.author_type IS NOT NULL AND NEW.author_type IS NOT OLD.author_type)
+BEGIN
+  SELECT RAISE(ABORT, 'issues author identity is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_comment_snapshots_issue_node_id_immutable
+BEFORE UPDATE OF issue_node_id ON issue_comment_snapshots
+WHEN OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_comment_snapshots.issue_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_comment_snapshots_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON issue_comment_snapshots
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_comment_snapshots.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_comment_snapshots_author_identity_immutable
+BEFORE UPDATE OF issue_author_node_id, issue_author_type ON issue_comment_snapshots
+WHEN
+  (OLD.issue_author_node_id IS NOT NULL
+    AND NEW.issue_author_node_id IS NOT OLD.issue_author_node_id)
+  OR (OLD.issue_author_type IS NOT NULL
+    AND NEW.issue_author_type IS NOT OLD.issue_author_type)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_comment_snapshots author identity is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON issue_state_event_snapshots
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_issue_node_id_immutable
+BEFORE UPDATE OF issue_node_id ON issue_state_event_snapshots
+WHEN OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.issue_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_issue_node_type_immutable
+BEFORE UPDATE OF issue_node_type ON issue_state_event_snapshots
+WHEN OLD.issue_node_type IS NOT NULL AND NEW.issue_node_type IS NOT OLD.issue_node_type
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.issue_node_type is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS pull_request_fixes_node_id_immutable
+BEFORE UPDATE OF node_id ON pull_request_fixes
+WHEN OLD.node_id IS NOT NULL AND NEW.node_id IS NOT OLD.node_id
+BEGIN
+  SELECT RAISE(ABORT, 'pull_request_fixes.node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS pull_request_fixes_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON pull_request_fixes
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'pull_request_fixes.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_label_snapshots_issue_node_id_immutable
+BEFORE UPDATE OF issue_node_id ON issue_label_snapshots
+WHEN OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_label_snapshots.issue_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_closure_events_identity_immutable
+BEFORE UPDATE OF issue_node_id, actor_node_id, actor_type, closer_node_id
+ON issue_closure_events
+WHEN
+  (OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id)
+  OR (OLD.actor_node_id IS NOT NULL AND NEW.actor_node_id IS NOT OLD.actor_node_id)
+  OR (OLD.actor_type IS NOT NULL AND NEW.actor_type IS NOT OLD.actor_type)
+  OR (OLD.closer_node_id IS NOT NULL AND NEW.closer_node_id IS NOT OLD.closer_node_id)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_closure_events identity is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_reopen_events_identity_immutable
+BEFORE UPDATE OF issue_node_id, actor_node_id, actor_type ON issue_reopen_events
+WHEN
+  (OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id)
+  OR (OLD.actor_node_id IS NOT NULL AND NEW.actor_node_id IS NOT OLD.actor_node_id)
+  OR (OLD.actor_type IS NOT NULL AND NEW.actor_type IS NOT OLD.actor_type)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_reopen_events identity is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_pr_links_identity_immutable
+BEFORE UPDATE OF issue_node_id, pr_node_id, source_node_id ON issue_pr_links
+WHEN
+  (OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id)
+  OR (OLD.pr_node_id IS NOT NULL AND NEW.pr_node_id IS NOT OLD.pr_node_id)
+  OR (OLD.source_node_id IS NOT NULL AND NEW.source_node_id IS NOT OLD.source_node_id)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_pr_links identity is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_commit_references_identity_immutable
+BEFORE UPDATE OF issue_node_id, actor_node_id ON issue_commit_references
+WHEN
+  (OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id)
+  OR (OLD.actor_node_id IS NOT NULL AND NEW.actor_node_id IS NOT OLD.actor_node_id)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_commit_references identity is immutable once recorded');
+END;
+`);
+const issueCrawlFinishedAt = (() => {
+  const row = db.prepare(`SELECT value FROM meta WHERE key='issue_crawl_last_run'`).get() as { value?: string } | undefined;
+  if (!row?.value) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.value);
+  } catch {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const finishedAt = (parsed as Record<string, unknown>).finishedAt;
+  return typeof finishedAt === 'string' ? finishedAt : null;
+})();
+db.prepare(`
+  UPDATE issues
+  SET fetched_at=COALESCE(?, updated_at)
+  WHERE fetched_at IS NULL
+`).run(issueCrawlFinishedAt);
+db.exec(`
+  UPDATE releases
+  SET
+    release_metadata_fetched_at=COALESCE(
+      release_metadata_fetched_at,
+      (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+      scored_at,
+      published_at
+    ),
+    release_derived_fetched_at=COALESCE(
+      release_derived_fetched_at,
+      (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+      scored_at,
+      published_at
+    ),
+    release_artifact_checked_at=COALESCE(
+      release_artifact_checked_at,
+      (SELECT MAX(fetched_at) FROM release_commits WHERE release_commits.tag=releases.tag),
+      scored_at,
+      published_at
+    )
+  WHERE release_metadata_fetched_at IS NULL
+     OR release_derived_fetched_at IS NULL
+     OR release_artifact_checked_at IS NULL
+`);
+
+runInWriteTransaction(() => {
+  const tableColumns = migrationTableColumns;
+  const quoteIdentifier = (value: string) => `"${value.replaceAll('"', '""')}"`;
+  const indexKeyColumns = (indexName: string) =>
+    (db.prepare(`PRAGMA index_xinfo(${quoteIdentifier(indexName)})`).all() as Array<{
+      name?: string | null;
+      key?: number;
+      seqno?: number;
+    }>)
+      .filter((column) => Number(column.key) === 1)
+      .sort((left, right) => Number(left.seqno) - Number(right.seqno))
+      .map((column) => column.name ?? null);
   const hasCompositePrKey = (table: string) => {
     const cols = tableColumns(table);
     const repoCol = cols.find((col) => col.name === 'pr_repository_name_with_owner');
     return !!repoCol && repoCol.pk > 0;
   };
 
+  const closureSourceColumns = new Set(
+    tableColumns('closure_claim_source_snapshots').map((column) => column.name),
+  );
+  const closureCandidateColumns = new Set(
+    tableColumns('closure_claim_candidates').map((column) => column.name),
+  );
+  const closureReceiptColumns = new Set(
+    tableColumns('closure_claim_extraction_receipts').map((column) => column.name),
+  );
+  const closureReceiptMemberColumns = new Set(
+    tableColumns('closure_claim_extraction_receipt_members')
+      .map((column) => column.name),
+  );
+  const hasClosureClaimLedgerSchema = [
+    'source_identity',
+    'schema_version',
+    'source_revision_identity',
+    'repository',
+    'repository_node_id',
+    'issue_number',
+    'issue_node_id',
+    'source_kind',
+    'source_node_id',
+    'source_database_id',
+    'source_url',
+    'actor_node_id',
+    'actor_login',
+    'actor_type',
+    'created_at',
+    'updated_at',
+    'text_format',
+    'text_digest',
+    'canonical_source_json',
+    'content_hash',
+    'captured_at',
+  ].every((column) => closureSourceColumns.has(column)) &&
+    [
+      'candidate_id',
+      'schema_version',
+      'source_identity',
+      'issue_number',
+      'issue_node_id',
+      'candidate_kind',
+      'canonical_claim_json',
+      'excerpt',
+      'span_start',
+      'span_end',
+      'canonical_candidate_json',
+      'content_hash',
+      'captured_at',
+    ].every((column) => closureCandidateColumns.has(column)) &&
+    [
+      'receipt_id',
+      'schema_version',
+      'extraction_schema_version',
+      'repository',
+      'repository_node_id',
+      'issue_number',
+      'issue_node_id',
+      'issue_revision',
+      'issue_updated_at',
+      'issue_body_digest',
+      'issue_author_node_id',
+      'issue_author_type',
+      'comment_snapshot_revision',
+      'comment_authority_digest',
+      'comment_stabilization_identity_digest',
+      'state_snapshot_revision',
+      'state_authority_digest',
+      'state_stabilization_identity_digest',
+      'extraction_digest',
+      'candidate_set_digest',
+      'candidate_count',
+      'canonical_receipt_json',
+      'content_hash',
+      'captured_at',
+    ].every((column) => closureReceiptColumns.has(column)) &&
+    [
+      'receipt_id',
+      'member_ordinal',
+      'candidate_id',
+      'candidate_content_hash',
+      'source_identity',
+      'content_hash',
+    ].every((column) => closureReceiptMemberColumns.has(column));
+  if (!hasClosureClaimLedgerSchema) {
+    const legacyCandidateCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count FROM closure_claim_candidates
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    const sourceSnapshotCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count FROM closure_claim_source_snapshots
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    const referencedCandidateCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM score_authority_resolution_rows
+        WHERE candidate_id IS NOT NULL
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    const extractionReceiptCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count FROM closure_claim_extraction_receipts
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    const extractionReceiptMemberCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM closure_claim_extraction_receipt_members
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    if (
+      legacyCandidateCount > 0 ||
+      sourceSnapshotCount > 0 ||
+      referencedCandidateCount > 0 ||
+      extractionReceiptCount > 0 ||
+      extractionReceiptMemberCount > 0
+    ) {
+      throw new Error(
+        'Cannot replace incompatible closure-claim placeholder storage with ' +
+          `persisted rows present (candidates=${legacyCandidateCount}, ` +
+          `sources=${sourceSnapshotCount}, authorityReferences=` +
+          `${referencedCandidateCount}, receipts=${extractionReceiptCount}, ` +
+          `receiptMembers=${extractionReceiptMemberCount}); rebuild a fresh ` +
+          'quality database',
+      );
+    }
+    db.exec(`
+      DROP TABLE closure_claim_extraction_receipt_members;
+      DROP TABLE closure_claim_extraction_receipts;
+      DROP TABLE closure_claim_candidates;
+      DROP TABLE closure_claim_source_snapshots;
+    `);
+    db.exec(CLOSURE_CLAIM_LEDGER_SCHEMA_SQL);
+  }
+
+  if (!tableColumns('issues').some((col) => col.name === 'checked_at')) {
+    db.exec(`ALTER TABLE issues ADD COLUMN checked_at TEXT`);
+    db.exec(`UPDATE issues SET checked_at=fetched_at WHERE checked_at IS NULL AND fetched_at IS NOT NULL`);
+  }
   if (!tableColumns('issue_comment_snapshots').some((col) => col.name === 'fetched_comment_count')) {
     db.exec(`ALTER TABLE issue_comment_snapshots ADD COLUMN fetched_comment_count INTEGER NOT NULL DEFAULT 0`);
     db.exec(`UPDATE issue_comment_snapshots SET fetched_comment_count=comment_count WHERE fetched_comment_count=0`);
   }
+  if (!tableColumns('issue_comment_snapshots').some((col) => col.name === 'issue_updated_at')) {
+    db.exec(`ALTER TABLE issue_comment_snapshots ADD COLUMN issue_updated_at TEXT`);
+  }
+  if (!tableColumns('issue_comment_snapshots').some((col) => col.name === 'comments_json')) {
+    db.exec(`ALTER TABLE issue_comment_snapshots ADD COLUMN comments_json TEXT`);
+  }
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_issue_comment_snapshots_verified ON issue_comment_snapshots(verified_at)`);
 
   if (!hasCompositePrKey('pull_request_fixes')) {
     const rows = db.prepare(`SELECT * FROM pull_request_fixes`).all() as Array<any>;
@@ -619,6 +4961,8 @@ try {
       pr_repository_name TEXT NOT NULL,
       pr_repository_name_with_owner TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
+      node_id TEXT,
+      repository_node_id TEXT,
       title TEXT,
       url TEXT,
       state TEXT,
@@ -626,17 +4970,20 @@ try {
       merged_at TEXT,
       merge_commit_oid TEXT,
       base_ref_name TEXT,
+      raw_json TEXT,
       fetched_at TEXT NOT NULL,
       PRIMARY KEY (pr_repository_name_with_owner, pr_number)
     )`);
     const insert = db.prepare(`
       INSERT OR REPLACE INTO pull_request_fixes_next (
         pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-        pr_number, title, url, state, merged, merged_at, merge_commit_oid, base_ref_name, fetched_at
+        pr_number, node_id, repository_node_id, title, url, state, merged,
+        merged_at, merge_commit_oid, base_ref_name, raw_json, fetched_at
       )
       VALUES (
         :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-        :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
+        :pr_number, :node_id, :repository_node_id, :title, :url, :state, :merged,
+        :merged_at, :merge_commit_oid, :base_ref_name, :raw_json, :fetched_at
       )
     `);
     for (const row of rows) {
@@ -644,6 +4991,8 @@ try {
       insert.run({
         ...repo,
         pr_number: row.pr_number,
+        node_id: row.node_id ?? null,
+        repository_node_id: row.repository_node_id ?? null,
         title: row.title ?? null,
         url: row.url ?? null,
         state: row.state ?? null,
@@ -651,11 +5000,15 @@ try {
         merged_at: row.merged_at ?? null,
         merge_commit_oid: row.merge_commit_oid ?? null,
         base_ref_name: row.base_ref_name ?? null,
+        raw_json: row.raw_json ?? null,
         fetched_at: row.fetched_at ?? new Date().toISOString(),
       });
     }
     db.exec(`DROP TABLE pull_request_fixes`);
     db.exec(`ALTER TABLE pull_request_fixes_next RENAME TO pull_request_fixes`);
+  }
+  if (!tableColumns('pull_request_fixes').some((col) => col.name === 'checked_at')) {
+    db.exec(`ALTER TABLE pull_request_fixes ADD COLUMN checked_at TEXT`);
   }
 
   if (!hasCompositePrKey('issue_pr_links')) {
@@ -674,26 +5027,34 @@ try {
     db.exec(`
     CREATE TABLE issue_pr_links_next (
       issue_number INTEGER NOT NULL,
+      issue_node_id TEXT,
       pr_repository_owner TEXT NOT NULL,
       pr_repository_name TEXT NOT NULL,
       pr_repository_name_with_owner TEXT NOT NULL,
       pr_number INTEGER NOT NULL,
+      pr_node_id TEXT,
       source TEXT NOT NULL,
+      source_node_id TEXT,
       will_close_target INTEGER,
       referenced_at TEXT,
       source_comment_database_id INTEGER,
       source_comment_url TEXT,
+      raw_json TEXT,
       fetched_at TEXT NOT NULL,
       PRIMARY KEY (issue_number, pr_repository_name_with_owner, pr_number, source)
     )`);
     const insert = db.prepare(`
       INSERT OR REPLACE INTO issue_pr_links_next (
-        issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-        pr_number, source, will_close_target, referenced_at, source_comment_database_id, source_comment_url, fetched_at
+        issue_number, issue_node_id, pr_repository_owner, pr_repository_name,
+        pr_repository_name_with_owner, pr_number, pr_node_id, source, source_node_id,
+        will_close_target, referenced_at, source_comment_database_id,
+        source_comment_url, raw_json, fetched_at
       )
       VALUES (
-        :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-        :pr_number, :source, :will_close_target, :referenced_at, :source_comment_database_id, :source_comment_url, :fetched_at
+        :issue_number, :issue_node_id, :pr_repository_owner, :pr_repository_name,
+        :pr_repository_name_with_owner, :pr_number, :pr_node_id, :source, :source_node_id,
+        :will_close_target, :referenced_at, :source_comment_database_id,
+        :source_comment_url, :raw_json, :fetched_at
       )
     `);
     for (const row of rows) {
@@ -706,12 +5067,16 @@ try {
       insert.run({
         ...repo,
         issue_number: row.issue_number,
+        issue_node_id: row.issue_node_id ?? null,
         pr_number: row.pr_number,
+        pr_node_id: row.pr_node_id ?? null,
         source: row.source,
+        source_node_id: row.source_node_id ?? null,
         will_close_target: row.will_close_target ?? null,
         referenced_at: row.referenced_at ?? null,
         source_comment_database_id: row.source_comment_database_id ?? null,
         source_comment_url: row.source_comment_url ?? null,
+        raw_json: row.raw_json ?? null,
         fetched_at: row.fetched_at ?? new Date().toISOString(),
       });
     }
@@ -849,15 +5214,652 @@ try {
     db.exec(`ALTER TABLE advisories_next RENAME TO advisories`);
     db.exec(`CREATE INDEX IF NOT EXISTS idx_advisories_ghsa ON advisories(ghsa_id)`);
   }
-} catch {
-  // The main CREATE TABLE block handles first-run setup; this only repairs old local schemas.
+
+  const forecastIdentityColumnsWithoutRevision = [
+    'opportunity_code',
+    'latest_release_tag',
+    'score_model_version',
+    'prompt_version',
+  ];
+  const forecastIdentityColumnsWithRevision = [
+    ...forecastIdentityColumnsWithoutRevision,
+    'code_revision',
+  ];
+  const legacyForecastIdentityColumns = ['opportunity_code', 'latest_release_tag'];
+  const hasSameIndexColumns = (
+    actual: Array<string | null>,
+    expected: string[],
+  ) => actual.length === expected.length &&
+    expected.every((column) => actual.includes(column));
+  const forecastIndexes = db.prepare(`
+    PRAGMA index_list(release_validation_forecasts)
+  `).all() as Array<{
+    name: string;
+    unique?: number;
+    partial?: number;
+  }>;
+  const uniqueForecastIndexes = forecastIndexes.filter((index) =>
+    Number(index.unique) === 1);
+  const forecastIndexSql = (name: string): string => String(db.prepare(`
+    SELECT sql FROM sqlite_schema WHERE type='index' AND name=?
+  `).get(name)?.sql ?? '');
+  const hasSeriesWithoutRevision = uniqueForecastIndexes.some((index) =>
+    Number(index.partial) === 1 &&
+    JSON.stringify(indexKeyColumns(index.name)) ===
+      JSON.stringify(forecastIdentityColumnsWithoutRevision) &&
+    /WHERE\s+code_revision\s+IS\s+NULL\s*$/i.test(forecastIndexSql(index.name).trim()));
+  const hasSeriesWithRevision = uniqueForecastIndexes.some((index) =>
+    Number(index.partial) === 1 &&
+    JSON.stringify(indexKeyColumns(index.name)) ===
+      JSON.stringify(forecastIdentityColumnsWithRevision) &&
+    /WHERE\s+code_revision\s+IS\s+NOT\s+NULL\s*$/i.test(forecastIndexSql(index.name).trim()));
+  const incompatibleForecastIdentityIndexNames = new Set(
+    uniqueForecastIndexes
+      .filter((index) => {
+        const columns = indexKeyColumns(index.name);
+        return Number(index.partial) === 0 && (
+          hasSameIndexColumns(columns, legacyForecastIdentityColumns) ||
+          JSON.stringify(columns) ===
+            JSON.stringify(forecastIdentityColumnsWithoutRevision)
+        );
+      })
+      .map((index) => index.name),
+  );
+  if (!hasSeriesWithoutRevision || !hasSeriesWithRevision ||
+    incompatibleForecastIdentityIndexNames.size > 0) {
+    const duplicateForecastSeries = db.prepare(`
+      SELECT
+        opportunity_code,
+        latest_release_tag,
+        score_model_version,
+        prompt_version,
+        code_revision,
+        COUNT(*) AS count
+      FROM release_validation_forecasts
+      GROUP BY
+        opportunity_code,
+        latest_release_tag,
+        score_model_version,
+        prompt_version,
+        code_revision
+      HAVING COUNT(*) > 1
+      LIMIT 1
+    `).get() as {
+      opportunity_code?: string;
+      latest_release_tag?: string;
+      score_model_version?: string;
+      prompt_version?: number;
+      code_revision?: string | null;
+      count?: number;
+    } | undefined;
+    if (duplicateForecastSeries) {
+      throw new Error(
+        `Cannot enforce one validation forecast per release opportunity and scoring series: ` +
+        `${duplicateForecastSeries.opportunity_code}/${duplicateForecastSeries.latest_release_tag}/` +
+        `${duplicateForecastSeries.score_model_version}/prompt-${duplicateForecastSeries.prompt_version}/` +
+        `revision-${duplicateForecastSeries.code_revision ?? 'unspecified'} ` +
+        `has ${duplicateForecastSeries.count} rows`,
+      );
+    }
+    const forecastSchemaObjects = db.prepare(`
+      SELECT type, name, sql
+      FROM sqlite_schema
+      WHERE tbl_name='release_validation_forecasts'
+        AND type IN ('index', 'trigger')
+        AND sql IS NOT NULL
+      ORDER BY type, name
+    `).all() as Array<{
+      type: 'index' | 'trigger';
+      name: string;
+      sql: string;
+    }>;
+    db.exec(`DROP TABLE IF EXISTS release_validation_forecasts_next`);
+    db.exec(`
+      CREATE TABLE release_validation_forecasts_next (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        decision_id TEXT NOT NULL UNIQUE,
+        opportunity_code TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        latest_release_tag TEXT NOT NULL,
+        latest_release_published_at TEXT NOT NULL,
+        selected_tag TEXT,
+        audit_history_run_id TEXT NOT NULL,
+        score_model_version TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        policy_code TEXT NOT NULL,
+        candidate_scores_json TEXT NOT NULL,
+        decision_json TEXT NOT NULL,
+        source_identity_json TEXT NOT NULL,
+        code_revision TEXT,
+        previous_content_hash TEXT,
+        content_hash TEXT NOT NULL UNIQUE
+      )
+    `);
+    db.exec(`
+      INSERT INTO release_validation_forecasts_next (
+        id, decision_id, opportunity_code, recorded_at, latest_release_tag,
+        latest_release_published_at, selected_tag, audit_history_run_id,
+        score_model_version, prompt_version, policy_code, candidate_scores_json,
+        decision_json, source_identity_json, code_revision, previous_content_hash,
+        content_hash
+      )
+      SELECT
+        id, decision_id, opportunity_code, recorded_at, latest_release_tag,
+        latest_release_published_at, selected_tag, audit_history_run_id,
+        score_model_version, prompt_version, policy_code, candidate_scores_json,
+        decision_json, source_identity_json, code_revision, previous_content_hash,
+        content_hash
+      FROM release_validation_forecasts
+      ORDER BY id
+    `);
+    db.exec(`DROP TABLE release_validation_forecasts`);
+    db.exec(`ALTER TABLE release_validation_forecasts_next RENAME TO release_validation_forecasts`);
+    for (const schemaObject of forecastSchemaObjects) {
+      if (schemaObject.type === 'index' &&
+        (
+          incompatibleForecastIdentityIndexNames.has(schemaObject.name) ||
+          schemaObject.name === 'idx_release_validation_forecasts_series_without_revision' ||
+          schemaObject.name === 'idx_release_validation_forecasts_series_with_revision'
+        )) {
+        continue;
+      }
+      db.exec(schemaObject.sql);
+    }
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_release_validation_forecasts_recorded
+      ON release_validation_forecasts(recorded_at);
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_release_validation_forecasts_series_without_revision
+      ON release_validation_forecasts(
+        opportunity_code, latest_release_tag, score_model_version, prompt_version
+      )
+      WHERE code_revision IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_release_validation_forecasts_series_with_revision
+      ON release_validation_forecasts(
+        opportunity_code, latest_release_tag, score_model_version, prompt_version, code_revision
+      )
+      WHERE code_revision IS NOT NULL;
+    CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_no_update
+    BEFORE UPDATE ON release_validation_forecasts
+    BEGIN
+      SELECT RAISE(ABORT, 'release_validation_forecasts is append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS release_validation_forecasts_no_delete
+    BEFORE DELETE ON release_validation_forecasts
+    BEGIN
+      SELECT RAISE(ABORT, 'release_validation_forecasts is append-only');
+    END;
+  `);
+
+  const historyColumns = tableColumns('release_score_audit_history');
+  const historyForeignKeys = db.prepare(`
+    PRAGMA foreign_key_list(release_score_audit_history)
+  `).all() as Array<{
+    table?: string;
+    from?: string;
+    to?: string;
+    on_delete?: string;
+  }>;
+  const historySourceIdentity = historyColumns.find((column) => column.name === 'source_identity_json');
+  const historyHasAuthorityRunId = historyColumns.some(
+    (column) => column.name === 'authority_run_id',
+  );
+  const historyAuthorityForeignKey = historyForeignKeys.find((foreignKey) =>
+    foreignKey.table === 'score_authority_resolution_runs' &&
+    foreignKey.from === 'authority_run_id' &&
+    foreignKey.to === 'authority_run_id' &&
+    foreignKey.on_delete?.toUpperCase() === 'RESTRICT');
+  const historyHasUnexpectedForeignKeys = historyForeignKeys.some((foreignKey) =>
+    foreignKey !== historyAuthorityForeignKey);
+  const historyNeedsMigration =
+    historyHasUnexpectedForeignKeys ||
+    !historyAuthorityForeignKey ||
+    historySourceIdentity?.notnull !== 1;
+  if (historyNeedsMigration) {
+    db.exec(`DROP TABLE IF EXISTS release_score_audit_history_next`);
+    db.exec(`
+      CREATE TABLE release_score_audit_history_next (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id TEXT NOT NULL,
+        recorded_at TEXT NOT NULL,
+        release_tag TEXT NOT NULL,
+        scored_at TEXT NOT NULL,
+        score_model_version TEXT NOT NULL,
+        prompt_version INTEGER NOT NULL,
+        final_score REAL,
+        status TEXT NOT NULL,
+        band TEXT NOT NULL,
+        recommended INTEGER NOT NULL DEFAULT 0,
+        input_json TEXT NOT NULL,
+        components_json TEXT,
+        issue_evidence_json TEXT NOT NULL,
+        gate_evidence_json TEXT NOT NULL,
+        source_identity_json TEXT NOT NULL,
+        authority_run_id TEXT,
+        UNIQUE(run_id, release_tag),
+        FOREIGN KEY(authority_run_id)
+          REFERENCES score_authority_resolution_runs(authority_run_id)
+          ON DELETE RESTRICT
+      )
+    `);
+    db.exec(`
+      INSERT INTO release_score_audit_history_next (
+        id, run_id, recorded_at, release_tag, scored_at, score_model_version, prompt_version,
+        final_score, status, band, recommended, input_json, components_json,
+        issue_evidence_json, gate_evidence_json, source_identity_json, authority_run_id
+      )
+      SELECT
+        id, run_id, recorded_at, release_tag, scored_at, score_model_version, prompt_version,
+        final_score, status, band, recommended, input_json, components_json,
+        issue_evidence_json, gate_evidence_json,
+        COALESCE(
+          source_identity_json,
+          '{"schemaVersion":0,"digest":null,"migration":"legacy-current-audit"}'
+        ),
+        ${historyHasAuthorityRunId ? 'authority_run_id' : 'NULL'}
+      FROM release_score_audit_history
+    `);
+    db.exec(`DROP TABLE release_score_audit_history`);
+    db.exec(`ALTER TABLE release_score_audit_history_next RENAME TO release_score_audit_history`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_release_score_audit_history_tag_time
+      ON release_score_audit_history(release_tag, recorded_at);
+    CREATE TRIGGER IF NOT EXISTS release_score_audit_history_no_update
+    BEFORE UPDATE ON release_score_audit_history
+    BEGIN
+      SELECT RAISE(ABORT, 'release_score_audit_history is append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS release_score_audit_history_no_delete
+    BEFORE DELETE ON release_score_audit_history
+    BEGIN
+      SELECT RAISE(ABORT, 'release_score_audit_history is append-only');
+    END;
+  `);
+  const legacyBaselineSeal = db.prepare(`
+    SELECT *
+    FROM release_score_audit_history_runs
+    WHERE run_id='migration:current-audit-baseline:v1'
+  `).get() as Record<string, unknown> | undefined;
+  const existingHistoryRowCount = Number(
+    (db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM release_score_audit_history
+    `).get() as { count?: number } | undefined)?.count ?? 0,
+  );
+  if (!legacyBaselineSeal && existingHistoryRowCount === 0) {
+    const currentAuditBaselineRecordedAt = db.prepare(`
+      SELECT MAX(scored_at) AS recorded_at
+      FROM release_score_audits
+    `).get() as { recorded_at?: string | null } | undefined;
+    if (currentAuditBaselineRecordedAt?.recorded_at) {
+      db.prepare(`
+        INSERT OR IGNORE INTO release_score_audit_history (
+        run_id, recorded_at, release_tag, scored_at, score_model_version, prompt_version,
+        final_score, status, band, recommended, input_json, components_json,
+        issue_evidence_json, gate_evidence_json, source_identity_json, authority_run_id
+        )
+        SELECT
+        'migration:current-audit-baseline:v1',
+        ?,
+        release_tag,
+        scored_at,
+        score_model_version,
+        prompt_version,
+        final_score,
+        status,
+        band,
+        recommended,
+        input_json,
+        components_json,
+        issue_evidence_json,
+        gate_evidence_json,
+        COALESCE(
+          source_identity_json,
+          '{"schemaVersion":0,"digest":null,"migration":"legacy-current-audit"}'
+        ),
+        authority_run_id
+        FROM release_score_audits
+      `).run(currentAuditBaselineRecordedAt.recorded_at);
+    }
+  }
+  const legacyBaselineRecordedAtCount = db.prepare(`
+    SELECT COUNT(DISTINCT recorded_at) AS count
+    FROM release_score_audit_history
+    WHERE run_id='migration:current-audit-baseline:v1'
+  `).get() as { count?: number } | undefined;
+  if (!legacyBaselineSeal && Number(legacyBaselineRecordedAtCount?.count ?? 0) > 1) {
+    db.exec(`DROP TRIGGER IF EXISTS release_score_audit_history_no_update`);
+    db.exec(`
+      UPDATE release_score_audit_history
+      SET recorded_at=(
+        SELECT MAX(recorded_at)
+        FROM release_score_audit_history
+        WHERE run_id='migration:current-audit-baseline:v1'
+      )
+      WHERE run_id='migration:current-audit-baseline:v1'
+    `);
+    db.exec(`
+      CREATE TRIGGER release_score_audit_history_no_update
+      BEFORE UPDATE ON release_score_audit_history
+      BEGIN
+        SELECT RAISE(ABORT, 'release_score_audit_history is append-only');
+      END
+    `);
+  }
+  const historyRunRows = db.prepare(`
+    SELECT run_id, MIN(id) AS first_id, MIN(recorded_at) AS recorded_at
+    FROM release_score_audit_history
+    GROUP BY run_id
+    ORDER BY first_id
+  `).all() as Array<{ run_id: string; recorded_at: string }>;
+  const historyRowsForRun = db.prepare(`
+    SELECT *
+    FROM release_score_audit_history
+    WHERE run_id=?
+    ORDER BY release_tag
+  `);
+  const existingHistoryRunSeal = db.prepare(`
+    SELECT *
+    FROM release_score_audit_history_runs
+    WHERE run_id=?
+  `);
+  const insertHistoryRunSeal = db.prepare(`
+    INSERT INTO release_score_audit_history_runs (
+      run_id, recorded_at, row_count, rows_content_hash,
+      previous_content_hash, content_hash
+    )
+    VALUES (?, ?, ?, ?, ?, ?)
+  `);
+  let previousContentHash: string | null = null;
+  for (const run of historyRunRows) {
+    const rows = historyRowsForRun.all(run.run_id) as Array<Record<string, unknown>>;
+    const recordedAts = new Set(rows.map((row) => String(row.recorded_at ?? '')));
+    if (recordedAts.size !== 1 || !recordedAts.has(run.recorded_at)) {
+      throw new Error(`Cannot seal legacy score history run ${JSON.stringify(run.run_id)} with mixed recorded_at values`);
+    }
+    const rowsContentHash = releaseScoreAuditHistoryRowsContentHash(rows);
+    const contentHash = releaseScoreAuditHistoryRunContentHash({
+      runId: run.run_id,
+      recordedAt: run.recorded_at,
+      rowCount: rows.length,
+      rowsContentHash,
+      previousContentHash,
+    });
+    const existing = existingHistoryRunSeal.get(run.run_id) as {
+      recorded_at?: string;
+      row_count?: number;
+      rows_content_hash?: string;
+      previous_content_hash?: string | null;
+      content_hash?: string;
+    } | undefined;
+    if (existing) {
+      if (
+        existing.recorded_at !== run.recorded_at ||
+        Number(existing.row_count) !== rows.length ||
+        existing.rows_content_hash !== rowsContentHash ||
+        (existing.previous_content_hash ?? null) !== previousContentHash ||
+        existing.content_hash !== contentHash
+      ) {
+        throw new Error(
+          `Existing release score audit history run ${JSON.stringify(run.run_id)} ` +
+          `seal conflicts with stored rows`,
+        );
+      }
+      previousContentHash = existing.content_hash;
+      continue;
+    }
+    insertHistoryRunSeal.run(
+      run.run_id,
+      run.recorded_at,
+      rows.length,
+      rowsContentHash,
+      previousContentHash,
+      contentHash,
+    );
+    previousContentHash = contentHash;
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_release_score_audit_history_runs_recorded
+      ON release_score_audit_history_runs(recorded_at, id);
+    CREATE TRIGGER IF NOT EXISTS release_score_audit_history_runs_no_update
+    BEFORE UPDATE ON release_score_audit_history_runs
+    BEGIN
+      SELECT RAISE(ABORT, 'release_score_audit_history_runs is append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS release_score_audit_history_runs_no_delete
+    BEFORE DELETE ON release_score_audit_history_runs
+    BEGIN
+      SELECT RAISE(ABORT, 'release_score_audit_history_runs is append-only');
+    END;
+  `);
+
+  const advisorySnapshotRowForeignKeys =
+    db.prepare(`PRAGMA foreign_key_list(advisory_snapshot_rows)`).all() as Array<{
+      table?: string;
+      from?: string;
+      to?: string;
+    }>;
+  const advisorySnapshotRowsHaveForeignKey = advisorySnapshotRowForeignKeys.some((foreignKey) =>
+    foreignKey.table === 'advisory_snapshot_history' &&
+    foreignKey.from === 'snapshot_id' &&
+    foreignKey.to === 'id');
+  if (!advisorySnapshotRowsHaveForeignKey) {
+    db.exec(`DROP TABLE IF EXISTS advisory_snapshot_rows_next`);
+    db.exec(`
+      CREATE TABLE advisory_snapshot_rows_next (
+        snapshot_id INTEGER NOT NULL,
+        advisory_key TEXT NOT NULL,
+        ghsa_id TEXT NOT NULL,
+        cve_id TEXT,
+        summary TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        html_url TEXT NOT NULL,
+        published_at TEXT,
+        package_ecosystem TEXT,
+        package_name TEXT,
+        vulnerable_version_range TEXT,
+        patched_versions TEXT,
+        PRIMARY KEY(snapshot_id, advisory_key),
+        FOREIGN KEY(snapshot_id) REFERENCES advisory_snapshot_history(id) ON DELETE RESTRICT
+      )
+    `);
+    db.exec(`
+      INSERT INTO advisory_snapshot_rows_next (
+        snapshot_id, advisory_key, ghsa_id, cve_id, summary, severity, html_url,
+        published_at, package_ecosystem, package_name, vulnerable_version_range,
+        patched_versions
+      )
+      SELECT
+        snapshot_id, advisory_key, ghsa_id, cve_id, summary, severity, html_url,
+        published_at, package_ecosystem, package_name, vulnerable_version_range,
+        patched_versions
+      FROM advisory_snapshot_rows
+    `);
+    db.exec(`DROP TABLE advisory_snapshot_rows`);
+    db.exec(`ALTER TABLE advisory_snapshot_rows_next RENAME TO advisory_snapshot_rows`);
+  }
+  db.exec(`
+    CREATE INDEX IF NOT EXISTS idx_advisory_snapshot_rows_published
+      ON advisory_snapshot_rows(published_at, ghsa_id);
+    CREATE TRIGGER IF NOT EXISTS advisory_snapshot_rows_no_update
+    BEFORE UPDATE ON advisory_snapshot_rows
+    BEGIN
+      SELECT RAISE(ABORT, 'advisory_snapshot_rows is append-only');
+    END;
+    CREATE TRIGGER IF NOT EXISTS advisory_snapshot_rows_no_delete
+    BEFORE DELETE ON advisory_snapshot_rows
+    BEGIN
+      SELECT RAISE(ABORT, 'advisory_snapshot_rows is append-only');
+    END;
+  `);
+
+  const duplicateMaturedOutcome = db.prepare(`
+    SELECT decision_id, horizon_code, COUNT(*) AS count
+    FROM release_validation_outcome_observations
+    WHERE status='matured'
+    GROUP BY decision_id, horizon_code
+    HAVING COUNT(*) > 1
+    ORDER BY decision_id, horizon_code
+    LIMIT 1
+  `).get() as { decision_id?: string; horizon_code?: string; count?: number } | undefined;
+  if (duplicateMaturedOutcome) {
+    throw new Error(
+      `Cannot enforce one matured validation outcome per decision/horizon: ` +
+      `${duplicateMaturedOutcome.decision_id}/${duplicateMaturedOutcome.horizon_code} has ` +
+      `${duplicateMaturedOutcome.count} rows`,
+    );
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_release_validation_outcomes_one_matured
+      ON release_validation_outcome_observations(decision_id, horizon_code)
+      WHERE status='matured'
+  `);
+});
+
+db.exec(`
+CREATE INDEX IF NOT EXISTS idx_issue_pr_links_pr
+  ON issue_pr_links(pr_repository_name_with_owner, pr_number);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issues_node_id_unique
+  ON issues(node_id)
+  WHERE node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_comment_snapshots_issue_node_id_unique
+  ON issue_comment_snapshots(issue_node_id)
+  WHERE issue_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_state_event_snapshots_issue_node_id_unique
+  ON issue_state_event_snapshots(issue_node_id)
+  WHERE issue_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_pull_request_fixes_node_id_unique
+  ON pull_request_fixes(node_id)
+  WHERE node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_pr_links_pr_node_source_unique
+  ON issue_pr_links(issue_number, pr_node_id, source)
+  WHERE pr_node_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_issue_pr_links_source_node_source_unique
+  ON issue_pr_links(issue_number, source_node_id, source)
+  WHERE source_node_id IS NOT NULL;
+
+CREATE TRIGGER IF NOT EXISTS issues_node_id_immutable
+BEFORE UPDATE OF node_id ON issues
+WHEN OLD.node_id IS NOT NULL AND NEW.node_id IS NOT OLD.node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issues.node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_comment_snapshots_issue_node_id_immutable
+BEFORE UPDATE OF issue_node_id ON issue_comment_snapshots
+WHEN OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_comment_snapshots.issue_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_comment_snapshots_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON issue_comment_snapshots
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_comment_snapshots.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON issue_state_event_snapshots
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_issue_node_id_immutable
+BEFORE UPDATE OF issue_node_id ON issue_state_event_snapshots
+WHEN OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.issue_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_state_event_snapshots_issue_node_type_immutable
+BEFORE UPDATE OF issue_node_type ON issue_state_event_snapshots
+WHEN OLD.issue_node_type IS NOT NULL AND NEW.issue_node_type IS NOT OLD.issue_node_type
+BEGIN
+  SELECT RAISE(ABORT, 'issue_state_event_snapshots.issue_node_type is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS pull_request_fixes_node_id_immutable
+BEFORE UPDATE OF node_id ON pull_request_fixes
+WHEN OLD.node_id IS NOT NULL AND NEW.node_id IS NOT OLD.node_id
+BEGIN
+  SELECT RAISE(ABORT, 'pull_request_fixes.node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS pull_request_fixes_repository_node_id_immutable
+BEFORE UPDATE OF repository_node_id ON pull_request_fixes
+WHEN OLD.repository_node_id IS NOT NULL
+  AND NEW.repository_node_id IS NOT OLD.repository_node_id
+BEGIN
+  SELECT RAISE(ABORT, 'pull_request_fixes.repository_node_id is immutable once recorded');
+END;
+CREATE TRIGGER IF NOT EXISTS issue_pr_links_identity_immutable
+BEFORE UPDATE OF issue_node_id, pr_node_id, source_node_id ON issue_pr_links
+WHEN
+  (OLD.issue_node_id IS NOT NULL AND NEW.issue_node_id IS NOT OLD.issue_node_id)
+  OR (OLD.pr_node_id IS NOT NULL AND NEW.pr_node_id IS NOT OLD.pr_node_id)
+  OR (OLD.source_node_id IS NOT NULL AND NEW.source_node_id IS NOT OLD.source_node_id)
+BEGIN
+  SELECT RAISE(ABORT, 'issue_pr_links identity is immutable once recorded');
+END;
+`);
+
+const scoreApiSourceEpochExcludedTables = new Set([
+  'comparison_releases',
+  'comparison_snapshots',
+  'score_api_source_epoch',
+]);
+const scoreApiSourceEpochTables = db.prepare(`
+  SELECT name
+  FROM sqlite_schema
+  WHERE type='table'
+    AND name NOT LIKE 'sqlite_%'
+  ORDER BY name
+`).all() as Array<{ name: string }>;
+for (const { name } of scoreApiSourceEpochTables) {
+  if (scoreApiSourceEpochExcludedTables.has(name)) continue;
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+    throw new Error(
+      `Unsupported table identifier while installing score API epoch triggers: ${name}`,
+    );
+  }
+  for (const event of ['INSERT', 'UPDATE', 'DELETE'] as const) {
+    const triggerName =
+      `score_api_source_epoch_${event.toLowerCase()}_${name}`;
+    db.exec(`
+      CREATE TRIGGER IF NOT EXISTS ${triggerName}
+      AFTER ${event} ON ${name}
+      BEGIN
+        SELECT RAISE(
+          ABORT,
+          'score_api_source_epoch singleton is missing'
+        )
+        WHERE NOT EXISTS (
+          SELECT 1 FROM score_api_source_epoch WHERE id=1
+        );
+        UPDATE score_api_source_epoch
+        SET revision=revision + 1
+        WHERE id=1;
+      END;
+    `);
+  }
+}
+});
 }
 
-try {
-  db.exec(`CREATE INDEX IF NOT EXISTS idx_issue_pr_links_pr ON issue_pr_links(pr_repository_name_with_owner, pr_number)`);
-} catch {
-  // If a very old schema could not be repaired, later verification will surface the real failure.
-}
+const scoreApiSourceRevisionStmt = db.prepare(`
+  SELECT revision
+  FROM score_api_source_epoch
+  WHERE id=1
+`);
+
+export function scoreApiSourceRevision(): number {
+  const row = scoreApiSourceRevisionStmt.get() as
+    { revision?: number } | undefined;
+  const revision = Number(row?.revision);
+  if (!Number.isSafeInteger(revision) || revision < 0) {
+    throw new Error(
+      'score_api_source_epoch must contain one non-negative safe-integer revision',
+    );
+  }
+  return revision;
 }
 
 // Bot detection. Cheap, deterministic, no extra LLM tokens.
@@ -869,7 +5871,8 @@ try {
 // labels and treated `clawsweeper:needs-live-repro` as evidence of bot authorship, which
 // dampened 91% of real bug reports and made every release look stable-by-mistake.
 // Marked issues are NOT excluded from scoring — they're down-weighted in score.ts.
-const BOT_AUTHOR_RE = /\[bot\]$|^(github-actions|dependabot|renovate(-bot)?|mergify|stale)$/i;
+const BOT_AUTHOR_RE =
+  /\[bot\]$|^(github-actions|dependabot|renovate(-bot)?|mergify|stale|clawsweeper|barnacle|openclaw-barnacle)$/i;
 
 export function detectBot(author: string | null, _labelsJson: string): boolean {
   if (author && BOT_AUTHOR_RE.test(author)) return true;
@@ -879,10 +5882,17 @@ export function detectBot(author: string | null, _labelsJson: string): boolean {
 // ---------- releases ----------
 export interface ReleaseRow {
   tag: string;
+  node_id: string | null;
+  catalog_tag_commit_oid: string | null;
   name: string | null;
   published_at: string | null;
+  created_at: string | null;
+  updated_at: string | null;
   html_url: string;
   prerelease: number;
+  catalog_rank: number | null;
+  catalog_digest: string | null;
+  catalog_active: number;
   final_score: number | null;
   risk_index: number | null;
   negative_issues: number | null;
@@ -936,30 +5946,802 @@ export interface ReleaseRow {
 }
 
 const upsertReleaseStmt = db.prepare(`
-INSERT INTO releases (tag, name, published_at, html_url, prerelease, body, release_metadata_fetched_at)
-VALUES (:tag, :name, :published_at, :html_url, :prerelease, :body, :release_metadata_fetched_at)
+INSERT INTO releases (
+  tag, node_id, catalog_tag_commit_oid, name, published_at, created_at, updated_at, html_url, prerelease,
+  body, catalog_rank, catalog_digest, catalog_active, release_metadata_fetched_at
+)
+VALUES (
+  :tag, :node_id, :catalog_tag_commit_oid, :name, :published_at, :created_at, :updated_at, :html_url, :prerelease,
+  :body, NULL, NULL, 0, :release_metadata_fetched_at
+)
 ON CONFLICT(tag) DO UPDATE SET
+  node_id=COALESCE(releases.node_id, excluded.node_id),
+  catalog_tag_commit_oid=COALESCE(excluded.catalog_tag_commit_oid, releases.catalog_tag_commit_oid),
   name=excluded.name,
   published_at=excluded.published_at,
+  created_at=COALESCE(releases.created_at, excluded.created_at),
+  updated_at=COALESCE(releases.updated_at, excluded.updated_at),
   html_url=excluded.html_url,
   prerelease=excluded.prerelease,
   body=excluded.body,
+  catalog_rank=NULL,
+  catalog_digest=NULL,
+  catalog_active=0,
   release_metadata_fetched_at=excluded.release_metadata_fetched_at
 `);
 
 export function upsertRelease(r: {
   tag: string;
+  node_id?: string | null;
+  catalog_tag_commit_oid?: string | null;
   name: string | null;
   published_at: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
   html_url: string;
   prerelease: boolean;
   body: string | null;
 }): void {
   upsertReleaseStmt.run({
     ...r,
+    node_id: r.node_id ?? `legacy:${r.tag}`,
+    catalog_tag_commit_oid: r.catalog_tag_commit_oid ?? null,
+    created_at: r.created_at ?? r.published_at,
+    updated_at: r.updated_at ?? r.published_at,
     prerelease: r.prerelease ? 1 : 0,
     release_metadata_fetched_at: new Date().toISOString(),
   });
+}
+
+export interface ActiveReleaseCatalogInput {
+  node_id: string;
+  catalog_tag_commit_oid: string;
+  tag: string;
+  name: string | null;
+  published_at: string;
+  created_at: string;
+  updated_at: string;
+  html_url: string;
+  prerelease: boolean;
+  body: string | null;
+}
+
+export interface ActiveReleaseCatalogIdentity {
+  schemaVersion: 1;
+  digest: string;
+  releaseCount: number;
+  stableCount: number;
+  prereleaseCount: number;
+  tags: string[];
+}
+
+export interface ActiveReleaseCatalogSnapshot extends ActiveReleaseCatalogIdentity {
+  latestStable: {
+    nodeId: string;
+    tag: string;
+    tagCommitOid: string;
+    publishedAt: string;
+  } | null;
+}
+
+export type ActiveReleaseCatalogCapture =
+  | {
+      source: 'github_graphql';
+      operationRunId: string;
+      authorization: GithubReleaseCatalogPublicationAuthorization;
+    }
+  | {
+      source: 'test_fixture';
+    };
+
+const deactivateReleaseCatalogStmt = db.prepare(`
+UPDATE releases
+SET catalog_active=0
+WHERE catalog_active!=0
+`);
+
+const upsertActiveReleaseCatalogStmt = db.prepare(`
+INSERT INTO releases (
+  tag, node_id, catalog_tag_commit_oid, name, published_at, created_at, updated_at, html_url, prerelease, body,
+  catalog_rank, catalog_digest, catalog_active, release_metadata_fetched_at
+)
+VALUES (
+  :tag, :node_id, :catalog_tag_commit_oid, :name, :published_at, :created_at, :updated_at, :html_url, :prerelease, :body,
+  :catalog_rank, :catalog_digest, 1, :release_metadata_fetched_at
+)
+ON CONFLICT(tag) DO UPDATE SET
+  node_id=excluded.node_id,
+  catalog_tag_commit_oid=excluded.catalog_tag_commit_oid,
+  name=excluded.name,
+  published_at=excluded.published_at,
+  created_at=excluded.created_at,
+  updated_at=excluded.updated_at,
+  html_url=excluded.html_url,
+  prerelease=excluded.prerelease,
+  body=excluded.body,
+  catalog_rank=excluded.catalog_rank,
+  catalog_digest=excluded.catalog_digest,
+  catalog_active=1,
+  release_metadata_fetched_at=excluded.release_metadata_fetched_at
+`);
+
+const activeReleaseCatalogStmt = db.prepare(`
+SELECT *
+FROM releases
+WHERE catalog_active=1
+ORDER BY catalog_rank IS NULL, catalog_rank, published_at DESC, tag
+`);
+
+const hasReleaseCatalogCaptureReceipts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_catalog_capture_receipts'
+`).get() != null;
+const listReleaseCatalogCaptureReceiptsStmt =
+  hasReleaseCatalogCaptureReceipts
+    ? db.prepare(`
+        SELECT *
+        FROM release_catalog_capture_receipts
+        ORDER BY id
+      `)
+    : null;
+const latestReleaseCatalogCaptureReceiptStmt =
+  hasReleaseCatalogCaptureReceipts
+    ? db.prepare(`
+        SELECT *
+        FROM release_catalog_capture_receipts
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+    : null;
+const releaseCatalogCaptureReceiptByIdStmt =
+  hasReleaseCatalogCaptureReceipts
+    ? db.prepare(`
+        SELECT *
+        FROM release_catalog_capture_receipts
+        WHERE receipt_id=?
+      `)
+    : null;
+const insertReleaseCatalogCaptureReceiptStmt =
+  !dbReadOnly && hasReleaseCatalogCaptureReceipts
+    ? db.prepare(`
+        INSERT INTO release_catalog_capture_receipts (
+          receipt_id,
+          operation_run_id,
+          source_kind,
+          repository,
+          observed_at,
+          active_catalog_digest,
+          active_release_count,
+          payload_json,
+          previous_content_hash,
+          content_hash
+        )
+        VALUES (
+          :receipt_id,
+          :operation_run_id,
+          :source_kind,
+          :repository,
+          :observed_at,
+          :active_catalog_digest,
+          :active_release_count,
+          :payload_json,
+          :previous_content_hash,
+          :content_hash
+        )
+      `)
+    : null;
+const releaseCatalogOperationAttemptsStmt =
+  db.prepare(`
+    SELECT 1 AS present
+    FROM sqlite_master
+    WHERE type='table' AND name='refresh_operation_attempts'
+  `).get() != null
+    ? db.prepare(`
+        SELECT
+          run_id,
+          operation,
+          started_at,
+          effective_config_json,
+          content_hash
+        FROM refresh_operation_attempts
+        ORDER BY started_at, run_id
+      `)
+    : null;
+const releaseCatalogOperationAttemptByRunStmt =
+  releaseCatalogOperationAttemptsStmt
+    ? db.prepare(`
+        SELECT
+          run_id,
+          operation,
+          started_at,
+          effective_config_json,
+          content_hash
+        FROM refresh_operation_attempts
+        WHERE run_id=?
+      `)
+    : null;
+const releaseCatalogTerminalReceiptsStmt =
+  db.prepare(`
+    SELECT 1 AS present
+    FROM sqlite_master
+    WHERE type='table' AND name='refresh_capture_receipts'
+  `).get() != null
+    ? db.prepare(`
+        SELECT run_id, status, finished_at, payload_json
+        FROM refresh_capture_receipts
+        ORDER BY id
+      `)
+    : null;
+const releaseCatalogTerminalReceiptByRunStmt =
+  releaseCatalogTerminalReceiptsStmt
+    ? db.prepare(`
+        SELECT run_id, status, finished_at, payload_json
+        FROM refresh_capture_receipts
+        WHERE run_id=?
+      `)
+    : null;
+
+function listActiveReleaseCatalogRowsRaw(): ReleaseRow[] {
+  return activeReleaseCatalogStmt.all() as unknown as ReleaseRow[];
+}
+
+export function listActiveReleaseCatalogDb(): ReleaseRow[] {
+  return withAuthorizedReleaseCatalogRead(
+    listActiveReleaseCatalogRowsRaw,
+  );
+}
+
+function normalizeActiveReleaseCatalog(
+  releases: ActiveReleaseCatalogInput[],
+): Array<Omit<ActiveReleaseCatalogInput, 'prerelease'> & {
+  catalog_rank: number;
+  prerelease: number;
+}> {
+  const tags = new Set<string>();
+  const nodeIds = new Set<string>();
+  return releases.map((release, catalogRank) => {
+    if (!release.tag.trim()) throw new Error('Active release catalog contains an empty tag');
+    if (!release.node_id.trim()) {
+      throw new Error(`Active release catalog release ${release.tag} is missing node_id`);
+    }
+    if (!/^[0-9a-f]{40,64}$/i.test(release.catalog_tag_commit_oid)) {
+      throw new Error(
+        `Active release catalog release ${release.tag} has invalid catalog tag commit OID`,
+      );
+    }
+    if (tags.has(release.tag)) {
+      throw new Error(`Active release catalog contains duplicate tag ${release.tag}`);
+    }
+    if (nodeIds.has(release.node_id)) {
+      throw new Error(`Active release catalog contains duplicate node_id ${release.node_id}`);
+    }
+    for (const [field, value] of [
+      ['published_at', release.published_at],
+      ['created_at', release.created_at],
+      ['updated_at', release.updated_at],
+    ] as const) {
+      if (!value || !Number.isFinite(Date.parse(value))) {
+        throw new Error(`Active release catalog ${release.tag} has invalid ${field} ${String(value)}`);
+      }
+    }
+    tags.add(release.tag);
+    nodeIds.add(release.node_id);
+    return {
+      ...release,
+      catalog_tag_commit_oid: release.catalog_tag_commit_oid.toLowerCase(),
+      catalog_rank: catalogRank,
+      prerelease: release.prerelease ? 1 : 0,
+    };
+  });
+}
+
+export function projectActiveReleaseCatalog(
+  releases: ActiveReleaseCatalogInput[],
+): ActiveReleaseCatalogSnapshot {
+  return projectReleaseCatalogActiveRows(
+    releases.map((release, catalogRank) => ({
+      ...release,
+      catalog_rank: catalogRank,
+    })),
+  );
+}
+
+function currentActiveReleaseCatalogRaw(): ActiveReleaseCatalogSnapshot {
+  const rows = listActiveReleaseCatalogRowsRaw();
+  const projected = projectReleaseCatalogActiveRows(rows.map((release) => ({
+    catalog_rank: release.catalog_rank,
+    node_id: release.node_id ?? '',
+    catalog_tag_commit_oid: release.catalog_tag_commit_oid ?? '',
+    tag: release.tag,
+    name: release.name,
+    published_at: release.published_at ?? '',
+    created_at: release.created_at ?? '',
+    updated_at: release.updated_at ?? '',
+    html_url: release.html_url,
+    prerelease: release.prerelease === 1,
+    body: release.body,
+  })));
+  const storedDigests = new Set(rows.map((release) => release.catalog_digest));
+  if (
+    rows.some((release, index) => release.catalog_rank !== index) ||
+    storedDigests.size !== 1 ||
+    storedDigests.has(null) ||
+    !storedDigests.has(projected.digest)
+  ) {
+    throw new Error('Active release catalog rows do not match their stored digest and rank');
+  }
+  return projected;
+}
+
+export function currentActiveReleaseCatalog(): ActiveReleaseCatalogSnapshot {
+  return withAuthorizedReleaseCatalogRead(
+    currentActiveReleaseCatalogRaw,
+  );
+}
+
+function catalogReceiptProjection(
+  catalog: ActiveReleaseCatalogSnapshot,
+): ReleaseCatalogCaptureActiveCatalog {
+  return {
+    digest: catalog.digest,
+    releaseCount: catalog.releaseCount,
+    stableCount: catalog.stableCount,
+    prereleaseCount: catalog.prereleaseCount,
+    tags: [...catalog.tags],
+    latestStable: catalog.latestStable
+      ? { ...catalog.latestStable }
+      : null,
+  };
+}
+
+function testFixtureCatalogWriteAuthorityAllowed(): boolean {
+  return (
+    !dbReadOnly &&
+    bootstrapPolicy.context === 'test' &&
+    bootstrapPolicy.mode === 'fresh'
+  );
+}
+
+function testFixtureCatalogReadAuthorityAllowed(): boolean {
+  if (
+    (
+      !guardedPrivateTestCatalogAuthorityAllowed() &&
+      !guardedTestApiReadWorkerCatalogAuthorityAllowed()
+    ) ||
+    !databaseFilePath
+  ) {
+    return false;
+  }
+  return !configuredApplicationDatabasePaths()
+    .some((protectedPath) =>
+      pathsReferToSameFile(databaseFilePath, protectedPath));
+}
+
+function guardedPrivateTestCatalogAuthorityAllowed(): boolean {
+  return (
+    bootstrapPolicy.context === 'test' &&
+    (bootstrapPolicy.mode === 'fresh' || bootstrapPolicy.mode === 'existing') &&
+    databaseFilePath != null
+  );
+}
+
+function guardedTestApiReadWorkerCatalogAuthorityAllowed(): boolean {
+  if (
+    !trustedApiReadWorker ||
+    !dbReadOnly ||
+    bootstrapPolicy.context !== 'api-read-worker' ||
+    bootstrapPolicy.mode !== 'existing' ||
+    process.env.NODE_ENV !== 'test' ||
+    (
+      process.env.RADAR_DB_BOOTSTRAP_MODE !== 'fresh' &&
+      process.env.RADAR_DB_BOOTSTRAP_MODE !== 'existing'
+    ) ||
+    !databaseFilePath
+  ) {
+    return false;
+  }
+  const runId = process.env.RADAR_TEST_RUN_ID;
+  const assignedRunId = process.env.RADAR_TEST_WORKER_DB_ASSIGNED;
+  const workerDatabasePath = process.env.RADAR_TEST_WORKER_DB_PATH;
+  const tempRootValue = process.env.RADAR_TEST_TEMP_ROOT;
+  const dotenvPathValue = process.env.DOTENV_CONFIG_PATH;
+  if (
+    !runId ||
+    runId.trim() !== runId ||
+    assignedRunId !== runId ||
+    !workerDatabasePath ||
+    !tempRootValue ||
+    !dotenvPathValue
+  ) {
+    return false;
+  }
+  const tempRoot = resolve(tempRootValue);
+  const dotenvPath = resolve(dotenvPathValue);
+  const assignedWorkerDatabasePath =
+    databaseFilesystemPath(workerDatabasePath);
+  if (!assignedWorkerDatabasePath) return false;
+  const assignedWorkerRoot = dirname(assignedWorkerDatabasePath);
+  const currentDatabaseIsAssigned =
+    pathsReferToSameFile(databaseFilePath, assignedWorkerDatabasePath);
+  if (
+    (
+      !currentDatabaseIsAssigned &&
+      !pathIsWithin(databaseFilePath, assignedWorkerRoot)
+    ) ||
+    !databaseFilePathWithinRoot(workerDatabasePath, tempRoot) ||
+    !databaseFilePathWithinRoot(databasePath, tempRoot) ||
+    !pathIsWithin(dotenvPath, tempRoot)
+  ) {
+    return false;
+  }
+  try {
+    assertPrivateOwnedDirectory(tempRoot, 'Test runner temporary root');
+    assertPrivateOwnedDirectory(
+      assignedWorkerRoot,
+      'Test runner assigned worker root',
+    );
+    assertPrivateOwnedDirectory(
+      dirname(databaseFilePath),
+      'Test API read worker database parent',
+    );
+    assertSecureExistingSqliteFamily(databaseFilePath);
+    assertSecureOwnedFile(dotenvPath, 'Test runner empty dotenv', true);
+    return readFileSync(dotenvPath).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+type PendingReleaseCatalogReadAuthority = {
+  operationRunId: string;
+};
+
+const pendingReleaseCatalogReadAuthority =
+  new AsyncLocalStorage<PendingReleaseCatalogReadAuthority>();
+
+export function runWithPendingReleaseCatalogReadAuthority<T>(
+  operationRunId: string,
+  fn: () => T,
+): T {
+  if (
+    !operationRunId ||
+    operationRunId.trim() !== operationRunId
+  ) {
+    throw new Error(
+      'Pending release catalog read authority requires a canonical operation run ID',
+    );
+  }
+  if (!releaseCatalogOperationAttemptByRunStmt?.get(operationRunId)) {
+    throw new Error(
+      `Pending release catalog read authority references unknown refresh operation ` +
+      `${JSON.stringify(operationRunId)}`,
+    );
+  }
+  return pendingReleaseCatalogReadAuthority.run(
+    { operationRunId },
+    fn,
+  );
+}
+
+export function releaseCatalogCaptureReceiptLedgerIntegrity(
+  activeCatalog: ActiveReleaseCatalogSnapshot,
+): ReleaseCatalogCaptureLedgerVerification {
+  const receipts = listReleaseCatalogCaptureReceiptsStmt
+    ? listReleaseCatalogCaptureReceiptsStmt.all() as unknown as
+      ReleaseCatalogCaptureReceiptStorageRow[]
+    : [];
+  const attempts = releaseCatalogOperationAttemptsStmt
+    ? releaseCatalogOperationAttemptsStmt.all() as unknown as
+      ReleaseCatalogCaptureOperationAttemptRow[]
+    : [];
+  const terminalReceipts = releaseCatalogTerminalReceiptsStmt
+    ? releaseCatalogTerminalReceiptsStmt.all() as unknown as
+      ReleaseCatalogCaptureTerminalReceiptRow[]
+    : [];
+  const verification = verifyReleaseCatalogCaptureReceiptLedger({
+    receipts,
+    attempts,
+    terminalReceipts,
+    expectedRepository: `${config.github.owner}/${config.github.repo}`,
+    activeCatalog: catalogReceiptProjection(activeCatalog),
+    allowTestFixture: testFixtureCatalogReadAuthorityAllowed(),
+    pendingOperationRunId:
+      pendingReleaseCatalogReadAuthority.getStore()?.operationRunId ?? null,
+  });
+  const operationProblems = refreshOperationLedgerVerification().problems
+    .map((problem) => `refresh operation ledger: ${problem}`);
+  if (operationProblems.length === 0) return verification;
+  const ledgerProblems = [
+    ...new Set([
+      ...verification.ledgerProblems,
+      ...operationProblems,
+    ]),
+  ];
+  return {
+    ...verification,
+    ledgerProblems,
+    problems: [
+      ...new Set([
+        ...ledgerProblems,
+        ...verification.currentProblems,
+      ]),
+    ],
+  };
+}
+
+function authorizedActiveReleaseCatalogInCurrentTransaction():
+  ActiveReleaseCatalogSnapshot {
+  const activeCatalog = currentActiveReleaseCatalogRaw();
+  const verification =
+    releaseCatalogCaptureReceiptLedgerIntegrity(activeCatalog);
+  if (verification.problems.length > 0) {
+    throw new Error(
+      `Active release catalog is not authorized by an immutable GitHub capture ` +
+      `receipt: ${verification.problems.join('; ')}`,
+    );
+  }
+  return activeCatalog;
+}
+
+function withAuthorizedReleaseCatalogRead<T>(read: () => T): T {
+  return runInReadTransaction(() => {
+    authorizedActiveReleaseCatalogInCurrentTransaction();
+    return read();
+  });
+}
+
+export function currentAuthorizedReleaseCatalog():
+  ActiveReleaseCatalogSnapshot {
+  return withAuthorizedReleaseCatalogRead(
+    currentActiveReleaseCatalogRaw,
+  );
+}
+
+export function assertCatalogAttestationMatchesCurrent(
+  attestation: ReleaseCatalogAttestation,
+): ActiveReleaseCatalogSnapshot {
+  const problems = releaseCatalogAttestationProblems(attestation);
+  if (problems.length > 0) {
+    throw new Error(`Release catalog attestation is invalid: ${problems.join('; ')}`);
+  }
+  const current = currentActiveReleaseCatalog();
+  if (
+    current.digest !== attestation.localActiveCatalog.digest ||
+    current.releaseCount !== attestation.localActiveCatalog.releaseCount
+  ) {
+    throw new Error(
+      `Active release catalog changed after final attestation: ` +
+      `${current.digest}/${current.releaseCount} != ` +
+      `${attestation.localActiveCatalog.digest}/` +
+      `${attestation.localActiveCatalog.releaseCount}`,
+    );
+  }
+  if (
+    !current.latestStable ||
+    current.latestStable.nodeId !== attestation.latestStable.nodeId ||
+    current.latestStable.tag !== attestation.latestStable.tag ||
+    current.latestStable.tagCommitOid !== attestation.latestStable.tagCommitOid ||
+    current.latestStable.publishedAt !== attestation.latestStable.publishedAt
+  ) {
+    throw new Error('Latest stable release changed after final catalog attestation');
+  }
+  return current;
+}
+
+function releaseCatalogCapturePayload(
+  releases: ActiveReleaseCatalogInput[],
+  catalog: ActiveReleaseCatalogSnapshot,
+  capture: ActiveReleaseCatalogCapture | undefined,
+): ReleaseCatalogCaptureReceiptPayload {
+  const repository = `${config.github.owner}/${config.github.repo}`;
+  const fixtureCapture =
+    capture?.source === 'test_fixture' ||
+    (capture == null && testFixtureCatalogWriteAuthorityAllowed());
+  if (fixtureCapture) {
+    if (!testFixtureCatalogWriteAuthorityAllowed()) {
+      throw new Error(
+        'test_fixture release catalog captures are allowed only in fresh private test databases',
+      );
+    }
+    return {
+      schemaVersion: RELEASE_CATALOG_CAPTURE_RECEIPT_SCHEMA_VERSION,
+      source: 'test_fixture',
+      repository,
+      observedAt: new Date().toISOString(),
+      operationRunId: null,
+      operation: null,
+      operationAttemptContentHash: null,
+      remoteCatalog: null,
+      activeCatalog: catalogReceiptProjection(catalog),
+    };
+  }
+  if (!capture || capture.source !== 'github_graphql') {
+    throw new Error(
+      'Active release catalog replacement requires exact GitHub GraphQL publication authorization',
+    );
+  }
+  const operationRunId = capture.operationRunId.trim();
+  if (!operationRunId || operationRunId !== capture.operationRunId) {
+    throw new Error('Release catalog capture operationRunId must be canonical');
+  }
+  const evidence = githubReleaseCatalogPublicationEvidence(
+    capture.authorization,
+  );
+  const inputDigest = githubReleaseCatalogActiveReleaseDigest(releases);
+  if (
+    evidence.repository !== repository ||
+    evidence.operationRunId !== operationRunId ||
+    evidence.activeReleaseDigest !== inputDigest ||
+    evidence.activeReleaseCount !== releases.length
+  ) {
+    throw new Error(
+      'GitHub release catalog publication authorization does not match the configured repository and exact active rows',
+    );
+  }
+  const attempt = releaseCatalogOperationAttemptByRunStmt?.get(
+    operationRunId,
+  ) as unknown as ReleaseCatalogCaptureOperationAttemptRow | undefined;
+  if (!attempt) {
+    throw new Error(
+      `Release catalog capture references unknown refresh operation ${JSON.stringify(operationRunId)}`,
+    );
+  }
+  if (
+    evidence.operation !== attempt.operation ||
+    evidence.operationAttemptContentHash !== attempt.content_hash
+  ) {
+    throw new Error(
+      'GitHub release catalog publication authorization is not bound to the exact refresh operation attempt',
+    );
+  }
+  if (releaseCatalogTerminalReceiptByRunStmt?.get(operationRunId)) {
+    throw new Error(
+      `Release catalog capture cannot be appended after terminal receipt for ${JSON.stringify(operationRunId)}`,
+    );
+  }
+  if (Date.parse(evidence.observedAt) < Date.parse(attempt.started_at)) {
+    throw new Error(
+      'GitHub release catalog capture predates its refresh operation attempt',
+    );
+  }
+  const sweepPageCounts = evidence.remoteCatalog.sweepPageCounts;
+  return {
+    schemaVersion: RELEASE_CATALOG_CAPTURE_RECEIPT_SCHEMA_VERSION,
+    source: 'github_graphql',
+    repository,
+    observedAt: evidence.observedAt,
+    operationRunId,
+    operation: attempt.operation,
+    operationAttemptContentHash: attempt.content_hash,
+    remoteCatalog: {
+      repositoryNodeId: evidence.remoteCatalog.repositoryNodeId,
+      repositoryNameWithOwner:
+        evidence.remoteCatalog.repositoryNameWithOwner,
+      digest: evidence.remoteCatalog.digest,
+      totalCount: evidence.remoteCatalog.totalCount,
+      nodeCount: evidence.remoteCatalog.nodeCount,
+      publishedCount: evidence.remoteCatalog.publishedCount,
+      draftCount: evidence.remoteCatalog.draftCount,
+      pageCount: evidence.remoteCatalog.pageCount,
+      pagesFetched: evidence.remoteCatalog.pagesFetched,
+      sweepCount: evidence.remoteCatalog.sweepCount,
+      sweepPageCounts: [...sweepPageCounts],
+      exhausted: true,
+      stabilized: true,
+      sourceOrder: 'CREATED_AT_DESC',
+    },
+    activeCatalog: catalogReceiptProjection(catalog),
+  };
+}
+
+function appendReleaseCatalogCaptureReceipt(
+  payload: ReleaseCatalogCaptureReceiptPayload,
+): ReleaseCatalogCaptureReceiptStorageRow {
+  if (
+    !insertReleaseCatalogCaptureReceiptStmt ||
+    !latestReleaseCatalogCaptureReceiptStmt ||
+    !releaseCatalogCaptureReceiptByIdStmt
+  ) {
+    throw new Error(
+      'Release catalog capture receipt storage is unavailable or read-only',
+    );
+  }
+  const payloadProblems =
+    releaseCatalogCaptureReceiptPayloadProblems(payload);
+  if (payloadProblems.length > 0) {
+    throw new Error(
+      `Release catalog capture receipt payload is invalid: ` +
+      payloadProblems.join('; '),
+    );
+  }
+  const previous = latestReleaseCatalogCaptureReceiptStmt.get() as unknown as
+    ReleaseCatalogCaptureReceiptStorageRow | undefined;
+  const previousContentHash = previous?.content_hash ?? null;
+  const contentHash = releaseCatalogCaptureReceiptContentHash({
+    payload,
+    previousContentHash,
+  });
+  const receiptId = releaseCatalogCaptureReceiptId(contentHash);
+  insertReleaseCatalogCaptureReceiptStmt.run({
+    receipt_id: receiptId,
+    operation_run_id: payload.operationRunId,
+    source_kind: payload.source,
+    repository: payload.repository,
+    observed_at: payload.observedAt,
+    active_catalog_digest: payload.activeCatalog.digest,
+    active_release_count: payload.activeCatalog.releaseCount,
+    payload_json: canonicalOperationJson(payload),
+    previous_content_hash: previousContentHash,
+    content_hash: contentHash,
+  });
+  const row = releaseCatalogCaptureReceiptByIdStmt.get(
+    receiptId,
+  ) as unknown as ReleaseCatalogCaptureReceiptStorageRow | undefined;
+  if (!row) {
+    throw new Error(
+      `Release catalog capture receipt ${receiptId} was not persisted`,
+    );
+  }
+  return row;
+}
+
+export function replaceActiveReleaseCatalog(
+  releases: ActiveReleaseCatalogInput[],
+  options: {
+    capture?: ActiveReleaseCatalogCapture;
+    assertCanWrite?: (stage: string) => void;
+  } = {},
+): ActiveReleaseCatalogIdentity {
+  const normalized = normalizeActiveReleaseCatalog(releases);
+  const identity = projectActiveReleaseCatalog(releases);
+  const payload = releaseCatalogCapturePayload(
+    releases,
+    identity,
+    options.capture,
+  );
+  const releaseMetadataFetchedAt = new Date().toISOString();
+  options.assertCanWrite?.('active release catalog persistence');
+  runInWriteTransaction(() => {
+    options.assertCanWrite?.('active release catalog transaction');
+    deactivateReleaseCatalogStmt.run();
+    for (const release of normalized) {
+      upsertActiveReleaseCatalogStmt.run({
+        ...release,
+        catalog_digest: identity.digest,
+        release_metadata_fetched_at: releaseMetadataFetchedAt,
+      });
+    }
+    const persistedCatalog = currentActiveReleaseCatalogRaw();
+    if (
+      canonicalOperationJson(catalogReceiptProjection(persistedCatalog)) !==
+      canonicalOperationJson(payload.activeCatalog)
+    ) {
+      throw new Error(
+        'Persisted active release catalog differs from its capture receipt payload',
+      );
+    }
+    const receipt = appendReleaseCatalogCaptureReceipt(payload);
+    const verification =
+      releaseCatalogCaptureReceiptLedgerIntegrity(persistedCatalog);
+    if (verification.ledgerProblems.length > 0) {
+      throw new Error(
+        `Release catalog capture receipt ledger verification failed: ` +
+        verification.ledgerProblems.join('; '),
+      );
+    }
+    if (
+      verification.latestReceiptId !== receipt.receipt_id ||
+      canonicalOperationJson(verification.latestPayload) !==
+        canonicalOperationJson(payload)
+    ) {
+      throw new Error(
+        'Release catalog capture receipt did not become the exact ledger tip',
+      );
+    }
+    options.assertCanWrite?.('active release catalog commit');
+  });
+  return identity;
 }
 
 const updateReleaseDerivedStatsStmt = db.prepare(`
@@ -1074,6 +6856,46 @@ export function updateReleaseScore(args: {
   updateScoreStmt.run({ ...args, scored_at: args.scored_at ?? new Date().toISOString() });
 }
 
+const clearReleaseScoresOutsideTagsStmt = db.prepare(`
+UPDATE releases
+SET final_score=NULL,
+    negative_issues=NULL,
+    positive_issues=NULL,
+    scored_at=NULL,
+    state=NULL,
+    closed_serious_fixed=0,
+    opened_serious_during_reign=0,
+    recommended=0,
+    score_reason=NULL,
+    broken_surfaces=NULL
+WHERE tag NOT IN (SELECT value FROM json_each(?))
+  AND (
+    final_score IS NOT NULL
+    OR scored_at IS NOT NULL
+    OR state IS NOT NULL
+    OR recommended != 0
+    OR score_reason IS NOT NULL
+  )
+`);
+const deleteReleaseScoreAuditsOutsideTagsStmt = dbReadOnly ? null : db.prepare(`
+DELETE FROM release_score_audits
+WHERE release_tag NOT IN (SELECT value FROM json_each(?))
+`);
+
+export function clearReleaseScoresOutsideTags(tags: string[]): { releaseRows: number; auditRows: number } {
+  if (!deleteReleaseScoreAuditsOutsideTagsStmt) {
+    throw new Error('Release score pruning is unavailable while the database is read-only');
+  }
+  if (!tags.length) throw new Error('Refusing to clear scored releases without a non-empty retained tag set');
+  const retained = JSON.stringify([...new Set(tags)]);
+  const releaseResult = clearReleaseScoresOutsideTagsStmt.run(retained);
+  const auditResult = deleteReleaseScoreAuditsOutsideTagsStmt.run(retained);
+  return {
+    releaseRows: Number(releaseResult.changes ?? 0),
+    auditRows: Number(auditResult.changes ?? 0),
+  };
+}
+
 export interface ReleaseScoreAuditInput {
   release_tag: string;
   scored_at: string;
@@ -1088,18 +6910,25 @@ export interface ReleaseScoreAuditInput {
   issue_evidence_json: string;
   gate_evidence_json: string;
   source_identity_json?: string | null;
+  authority_run_id?: string | null;
 }
 
-const upsertReleaseScoreAuditStmt = db.prepare(`
+const hasScoreAuditAuthorityRunLink = tableHasColumns(
+  'release_score_audits',
+  ['authority_run_id'],
+);
+const upsertReleaseScoreAuditStmt =
+  !dbReadOnly && hasScoreAuditAuthorityRunLink
+  ? db.prepare(`
 INSERT INTO release_score_audits (
   release_tag, scored_at, score_model_version, prompt_version, final_score,
   status, band, recommended, input_json, components_json, issue_evidence_json,
-  gate_evidence_json, source_identity_json
+  gate_evidence_json, source_identity_json, authority_run_id
 )
 VALUES (
   :release_tag, :scored_at, :score_model_version, :prompt_version, :final_score,
   :status, :band, :recommended, :input_json, :components_json, :issue_evidence_json,
-  :gate_evidence_json, :source_identity_json
+  :gate_evidence_json, :source_identity_json, :authority_run_id
 )
 ON CONFLICT(release_tag) DO UPDATE SET
   scored_at=excluded.scored_at,
@@ -1113,14 +6942,3969 @@ ON CONFLICT(release_tag) DO UPDATE SET
   components_json=excluded.components_json,
   issue_evidence_json=excluded.issue_evidence_json,
   gate_evidence_json=excluded.gate_evidence_json,
-  source_identity_json=excluded.source_identity_json
-`);
+  source_identity_json=excluded.source_identity_json,
+  authority_run_id=excluded.authority_run_id
+`)
+  : null;
 
 export function upsertReleaseScoreAudit(input: ReleaseScoreAuditInput): void {
+  if (!upsertReleaseScoreAuditStmt) {
+    throw new Error('Release score audit storage is unavailable or read-only');
+  }
   upsertReleaseScoreAuditStmt.run({
     ...input,
     source_identity_json: input.source_identity_json ?? null,
+    authority_run_id: input.authority_run_id ?? null,
   } as unknown as Record<string, string | number | null>);
+}
+
+const insertReleaseScoreAuditHistoryStmt = dbReadOnly ? null : db.prepare(`
+INSERT INTO release_score_audit_history (
+  run_id, recorded_at, release_tag, scored_at, score_model_version, prompt_version,
+  final_score, status, band, recommended, input_json, components_json,
+  issue_evidence_json, gate_evidence_json, source_identity_json, authority_run_id
+)
+VALUES (
+  :run_id, :recorded_at, :release_tag, :scored_at, :score_model_version, :prompt_version,
+  :final_score, :status, :band, :recommended, :input_json, :components_json,
+  :issue_evidence_json, :gate_evidence_json, :source_identity_json, :authority_run_id
+)
+`);
+const releaseScoreAuditHistoryByRunStmt = dbReadOnly ? null : db.prepare(`
+  SELECT
+    release_tag, scored_at, score_model_version, prompt_version, final_score,
+    status, band, recommended, input_json, components_json, issue_evidence_json,
+    gate_evidence_json, source_identity_json, authority_run_id
+  FROM release_score_audit_history
+  WHERE run_id=? AND release_tag=?
+`);
+const hasReleaseScoreAuditHistoryRuns = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_score_audit_history_runs'
+`).get() != null;
+const hasReleaseScoreAuditHistory = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_score_audit_history'
+`).get() != null;
+const releaseScoreAuditHistoryRunSealStmt =
+  hasReleaseScoreAuditHistoryRuns && hasReleaseScoreAuditHistory
+  ? db.prepare(`
+      SELECT *
+      FROM release_score_audit_history_runs
+      WHERE run_id=?
+    `)
+  : null;
+const releaseScoreAuditHistoryRowsForRunStmt =
+  hasReleaseScoreAuditHistoryRuns && hasReleaseScoreAuditHistory
+  ? db.prepare(`
+      SELECT *
+      FROM release_score_audit_history
+      WHERE run_id=?
+      ORDER BY release_tag
+    `)
+  : null;
+const latestReleaseScoreAuditHistoryRunSealStmt = hasReleaseScoreAuditHistoryRuns
+  ? db.prepare(`
+      SELECT *
+      FROM release_score_audit_history_runs
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const listReleaseScoreAuditHistoryRunSealsStmt = hasReleaseScoreAuditHistoryRuns
+  ? db.prepare(`
+      SELECT *
+      FROM release_score_audit_history_runs
+      ORDER BY id
+    `)
+  : null;
+const previousReleaseScoreAuditHistoryRunSealStmt = hasReleaseScoreAuditHistoryRuns
+  ? db.prepare(`
+      SELECT *
+      FROM release_score_audit_history_runs
+      WHERE id < ?
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const insertReleaseScoreAuditHistoryRunSealStmt = !dbReadOnly && hasReleaseScoreAuditHistoryRuns
+  ? db.prepare(`
+  INSERT INTO release_score_audit_history_runs (
+    run_id, recorded_at, row_count, rows_content_hash,
+    previous_content_hash, content_hash
+  )
+  VALUES (
+    :run_id, :recorded_at, :row_count, :rows_content_hash,
+    :previous_content_hash, :content_hash
+  )
+    `)
+  : null;
+
+export function insertReleaseScoreAuditHistory(
+  runId: string,
+  recordedAt: string,
+  input: ReleaseScoreAuditInput,
+): boolean {
+  if (!insertReleaseScoreAuditHistoryStmt || !releaseScoreAuditHistoryByRunStmt) {
+    throw new Error('Cannot insert release score audit history while the database is read-only');
+  }
+  if (!runId.trim() || !Number.isFinite(Date.parse(recordedAt))) {
+    throw new Error('Release score audit history requires a non-empty run ID and valid recorded timestamp');
+  }
+  if (!input.source_identity_json) {
+    throw new Error('Release score audit history requires source identity provenance');
+  }
+  const sourceIdentity = parseJsonObject(input.source_identity_json);
+  if (typeof sourceIdentity.digest !== 'string' || !sourceIdentity.digest) {
+    throw new Error('Release score audit history source identity is missing its digest');
+  }
+  const existing = releaseScoreAuditHistoryByRunStmt.get(
+    runId,
+    input.release_tag,
+  ) as unknown as ReleaseScoreAuditInput | undefined;
+  if (existing) {
+    const expectedContent = releaseScoreAuditHistoryContent({
+      ...input,
+      source_identity_json: input.source_identity_json,
+    });
+    if (releaseScoreAuditHistoryContent(existing) === expectedContent) return false;
+    throw new Error(
+      `Release score audit history conflict for run ${JSON.stringify(runId)} and release ${JSON.stringify(input.release_tag)}`,
+    );
+  }
+  if (releaseScoreAuditHistoryRunSealStmt?.get(runId)) {
+    throw new Error(`Release score audit history run ${JSON.stringify(runId)} is already sealed`);
+  }
+  insertReleaseScoreAuditHistoryStmt.run({
+    ...input,
+    run_id: runId,
+    recorded_at: recordedAt,
+    source_identity_json: input.source_identity_json,
+    authority_run_id: input.authority_run_id ?? null,
+  } as unknown as Record<string, string | number | null>);
+  return true;
+}
+
+export interface ReleaseScoreAuditHistoryRunSeal {
+  id: number;
+  run_id: string;
+  recorded_at: string;
+  row_count: number;
+  rows_content_hash: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+export function sealReleaseScoreAuditHistoryRun(
+  runId: string,
+  recordedAt: string,
+): { inserted: boolean; row: ReleaseScoreAuditHistoryRunSeal } {
+  if (!insertReleaseScoreAuditHistoryRunSealStmt ||
+    !releaseScoreAuditHistoryRunSealStmt ||
+    !releaseScoreAuditHistoryRowsForRunStmt ||
+    !latestReleaseScoreAuditHistoryRunSealStmt) {
+    throw new Error('Cannot seal release score audit history while the database is read-only');
+  }
+  if (!runId.trim() || !Number.isFinite(Date.parse(recordedAt))) {
+    throw new Error('Release score audit history seal requires a non-empty run ID and valid recorded timestamp');
+  }
+  return runInWriteTransaction(() => {
+    const rows = releaseScoreAuditHistoryRowsForRunStmt.all(runId) as Array<Record<string, unknown>>;
+    if (rows.length === 0) {
+      throw new Error(`Cannot seal empty release score audit history run ${JSON.stringify(runId)}`);
+    }
+    const recordedAts = new Set(rows.map((row) => String(row.recorded_at ?? '')));
+    if (recordedAts.size !== 1 || !recordedAts.has(recordedAt)) {
+      throw new Error(`Release score audit history run ${JSON.stringify(runId)} has inconsistent recorded_at values`);
+    }
+    const rowsContentHash = releaseScoreAuditHistoryRowsContentHash(rows);
+    const existing = releaseScoreAuditHistoryRunSealStmt.get(
+      runId,
+    ) as unknown as ReleaseScoreAuditHistoryRunSeal | undefined;
+    if (existing) {
+      if (
+        existing.recorded_at === recordedAt &&
+        existing.row_count === rows.length &&
+        existing.rows_content_hash === rowsContentHash
+      ) {
+        return { inserted: false, row: existing };
+      }
+      throw new Error(`Release score audit history run ${JSON.stringify(runId)} seal conflicts with stored rows`);
+    }
+    const previous = latestReleaseScoreAuditHistoryRunSealStmt.get() as {
+      content_hash?: string;
+    } | undefined;
+    const previousContentHash = previous?.content_hash ?? null;
+    const contentHash = releaseScoreAuditHistoryRunContentHash({
+      runId,
+      recordedAt,
+      rowCount: rows.length,
+      rowsContentHash,
+      previousContentHash,
+    });
+    insertReleaseScoreAuditHistoryRunSealStmt.run({
+      run_id: runId,
+      recorded_at: recordedAt,
+      row_count: rows.length,
+      rows_content_hash: rowsContentHash,
+      previous_content_hash: previousContentHash,
+      content_hash: contentHash,
+    });
+    return {
+      inserted: true,
+      row: releaseScoreAuditHistoryRunSealStmt.get(runId) as unknown as ReleaseScoreAuditHistoryRunSeal,
+    };
+  });
+}
+
+export function getReleaseScoreAuditHistoryRunSeal(
+  runId: string,
+): ReleaseScoreAuditHistoryRunSeal | null {
+  return releaseScoreAuditHistoryRunSealStmt
+    ? releaseScoreAuditHistoryRunSealStmt.get(runId) as unknown as ReleaseScoreAuditHistoryRunSeal ?? null
+    : null;
+}
+
+export function listReleaseScoreAuditHistoryForRun(
+  runId: string,
+): Array<ReleaseScoreAuditRow & { run_id: string; recorded_at: string }> {
+  return releaseScoreAuditHistoryRowsForRunStmt
+    ? releaseScoreAuditHistoryRowsForRunStmt.all(runId) as unknown as Array<
+      ReleaseScoreAuditRow & { run_id: string; recorded_at: string }
+    >
+    : [];
+}
+
+interface StoredClosureClaimSourceSnapshotRow {
+  source_identity: string;
+  schema_version: number;
+  source_revision_identity: string;
+  repository: string;
+  repository_node_id: string;
+  issue_number: number;
+  issue_node_id: string;
+  source_kind: string;
+  source_node_id: string;
+  source_database_id: number | null;
+  source_url: string | null;
+  actor_node_id: string;
+  actor_login: string | null;
+  actor_type: string;
+  created_at: string;
+  updated_at: string;
+  text_format: string;
+  text_digest: string;
+  canonical_source_json: string;
+  content_hash: string;
+  captured_at: string;
+}
+
+interface StoredClosureClaimCandidateRow {
+  candidate_id: string;
+  schema_version: number;
+  source_identity: string;
+  issue_number: number;
+  issue_node_id: string;
+  candidate_kind: string;
+  canonical_claim_json: string;
+  excerpt: string | null;
+  span_start: number | null;
+  span_end: number | null;
+  canonical_candidate_json: string;
+  content_hash: string;
+  captured_at: string;
+}
+
+interface StoredClosureClaimExtractionReceiptRow {
+  receipt_id: string;
+  schema_version: number;
+  extraction_schema_version: number;
+  repository: string;
+  repository_node_id: string;
+  issue_number: number;
+  issue_node_id: string;
+  issue_revision: number;
+  issue_updated_at: string;
+  issue_body_digest: string;
+  issue_author_node_id: string;
+  issue_author_type: string;
+  comment_snapshot_revision: number;
+  comment_authority_digest: string;
+  comment_stabilization_identity_digest: string;
+  state_snapshot_revision: number;
+  state_authority_digest: string;
+  state_stabilization_identity_digest: string;
+  extraction_digest: string;
+  candidate_set_digest: string;
+  candidate_count: number;
+  canonical_receipt_json: string;
+  content_hash: string;
+  captured_at: string;
+}
+
+interface StoredClosureClaimExtractionReceiptMemberRow {
+  receipt_id: string;
+  member_ordinal: number;
+  candidate_id: string;
+  candidate_content_hash: string;
+  source_identity: string;
+  content_hash: string;
+}
+
+export interface ClosureClaimCandidatePersistenceResult {
+  insertedSourceCount: number;
+  replayedSourceCount: number;
+  insertedCandidateCount: number;
+  replayedCandidateCount: number;
+  candidateIds: string[];
+}
+
+export interface ClosureClaimExtractionPersistenceResult {
+  candidatePersistence: ClosureClaimCandidatePersistenceResult;
+  insertedReceiptCount: number;
+  replayedReceiptCount: number;
+  receipt: ClosureClaimExtractionReceipt;
+}
+
+const closureClaimStorageTableCount = Number(
+  (db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sqlite_master
+    WHERE type='table'
+      AND name IN (
+        'closure_claim_source_snapshots',
+        'closure_claim_candidates'
+      )
+  `).get() as { count?: number } | undefined)?.count ?? 0,
+);
+const closureClaimSourceByIdentityStmt = closureClaimStorageTableCount === 2
+  ? db.prepare(`
+      SELECT *
+      FROM closure_claim_source_snapshots
+      WHERE source_identity=?
+    `)
+  : null;
+const closureClaimSourceByRevisionStmt = closureClaimStorageTableCount === 2
+  ? db.prepare(`
+      SELECT *
+      FROM closure_claim_source_snapshots
+      WHERE source_revision_identity=?
+    `)
+  : null;
+const closureClaimCandidateByIdStmt = closureClaimStorageTableCount === 2
+  ? db.prepare(`
+      SELECT *
+      FROM closure_claim_candidates
+      WHERE candidate_id=?
+    `)
+  : null;
+const closureClaimCandidatesForIssueStmt = closureClaimStorageTableCount === 2
+  ? db.prepare(`
+      SELECT *
+      FROM closure_claim_candidates
+      WHERE issue_number=?
+      ORDER BY candidate_id
+    `)
+  : null;
+const insertClosureClaimSourceStmt =
+  !dbReadOnly && closureClaimStorageTableCount === 2
+    ? db.prepare(`
+        INSERT INTO closure_claim_source_snapshots (
+          source_identity, schema_version, source_revision_identity,
+          repository, repository_node_id, issue_number, issue_node_id,
+          source_kind, source_node_id, source_database_id, source_url,
+          actor_node_id, actor_login, actor_type, created_at, updated_at,
+          text_format, text_digest, canonical_source_json, content_hash,
+          captured_at
+        ) VALUES (
+          :source_identity, :schema_version, :source_revision_identity,
+          :repository, :repository_node_id, :issue_number, :issue_node_id,
+          :source_kind, :source_node_id, :source_database_id, :source_url,
+          :actor_node_id, :actor_login, :actor_type, :created_at, :updated_at,
+          :text_format, :text_digest, :canonical_source_json, :content_hash,
+          :captured_at
+        )
+      `)
+    : null;
+const insertClosureClaimCandidateStmt =
+  !dbReadOnly && closureClaimStorageTableCount === 2
+    ? db.prepare(`
+        INSERT INTO closure_claim_candidates (
+          candidate_id, schema_version, source_identity, issue_number,
+          issue_node_id, candidate_kind, canonical_claim_json, excerpt,
+          span_start, span_end, canonical_candidate_json, content_hash,
+          captured_at
+        ) VALUES (
+          :candidate_id, :schema_version, :source_identity, :issue_number,
+          :issue_node_id, :candidate_kind, :canonical_claim_json, :excerpt,
+          :span_start, :span_end, :canonical_candidate_json, :content_hash,
+          :captured_at
+        )
+      `)
+    : null;
+const closureClaimReceiptStorageTableCount = Number(
+  (db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM sqlite_master
+    WHERE type='table'
+      AND name IN (
+        'closure_claim_extraction_receipts',
+        'closure_claim_extraction_receipt_members'
+      )
+  `).get() as { count?: number } | undefined)?.count ?? 0,
+);
+const closureClaimExtractionReceiptByIdStmt =
+  closureClaimReceiptStorageTableCount === 2
+    ? db.prepare(`
+        SELECT *
+        FROM closure_claim_extraction_receipts
+        WHERE receipt_id=?
+      `)
+    : null;
+const closureClaimExtractionReceiptMembersStmt =
+  closureClaimReceiptStorageTableCount === 2
+    ? db.prepare(`
+        SELECT *
+        FROM closure_claim_extraction_receipt_members
+        WHERE receipt_id=?
+        ORDER BY member_ordinal
+      `)
+    : null;
+const currentClosureClaimExtractionReceiptStmt =
+  closureClaimReceiptStorageTableCount === 2
+    ? db.prepare(`
+        SELECT *
+        FROM closure_claim_extraction_receipts
+        WHERE issue_number=:issue_number
+          AND repository=:repository
+          AND repository_node_id=:repository_node_id
+          AND issue_node_id=:issue_node_id
+          AND issue_revision=:issue_revision
+          AND issue_updated_at=:issue_updated_at
+          AND issue_body_digest=:issue_body_digest
+          AND issue_author_node_id=:issue_author_node_id
+          AND issue_author_type=:issue_author_type
+          AND comment_snapshot_revision=:comment_snapshot_revision
+          AND comment_authority_digest=:comment_authority_digest
+          AND comment_stabilization_identity_digest=
+            :comment_stabilization_identity_digest
+          AND state_snapshot_revision=:state_snapshot_revision
+          AND state_authority_digest=:state_authority_digest
+          AND state_stabilization_identity_digest=
+            :state_stabilization_identity_digest
+        ORDER BY captured_at DESC, rowid DESC
+        LIMIT 1
+      `)
+    : null;
+const insertClosureClaimExtractionReceiptStmt =
+  !dbReadOnly && closureClaimReceiptStorageTableCount === 2
+    ? db.prepare(`
+        INSERT INTO closure_claim_extraction_receipts (
+          receipt_id, schema_version, extraction_schema_version,
+          repository, repository_node_id, issue_number, issue_node_id,
+          issue_revision, issue_updated_at, issue_body_digest,
+          issue_author_node_id, issue_author_type,
+          comment_snapshot_revision, comment_authority_digest,
+          comment_stabilization_identity_digest, state_snapshot_revision,
+          state_authority_digest, state_stabilization_identity_digest,
+          extraction_digest, candidate_set_digest, candidate_count,
+          canonical_receipt_json, content_hash, captured_at
+        ) VALUES (
+          :receipt_id, :schema_version, :extraction_schema_version,
+          :repository, :repository_node_id, :issue_number, :issue_node_id,
+          :issue_revision, :issue_updated_at, :issue_body_digest,
+          :issue_author_node_id, :issue_author_type,
+          :comment_snapshot_revision, :comment_authority_digest,
+          :comment_stabilization_identity_digest, :state_snapshot_revision,
+          :state_authority_digest, :state_stabilization_identity_digest,
+          :extraction_digest, :candidate_set_digest, :candidate_count,
+          :canonical_receipt_json, :content_hash, :captured_at
+        )
+      `)
+    : null;
+const insertClosureClaimExtractionReceiptMemberStmt =
+  !dbReadOnly && closureClaimReceiptStorageTableCount === 2
+    ? db.prepare(`
+        INSERT INTO closure_claim_extraction_receipt_members (
+          receipt_id, member_ordinal, candidate_id, candidate_content_hash,
+          source_identity, content_hash
+        ) VALUES (
+          :receipt_id, :member_ordinal, :candidate_id,
+          :candidate_content_hash, :source_identity, :content_hash
+        )
+      `)
+    : null;
+const hasClosureClaimExtractionEvidenceBinding =
+  tableHasColumns('issues', [
+    'node_id',
+    'revision',
+    'author_node_id',
+    'author_type',
+  ]) &&
+  tableHasColumns('issue_comment_snapshots', [
+    'repository_node_id',
+    'issue_node_id',
+    'schema_version',
+    'revision',
+    'authority_digest',
+    'stabilization_identity_digest',
+  ]) &&
+  tableHasColumns('issue_state_event_snapshots', [
+    'repository_node_id',
+    'issue_node_id',
+    'issue_node_type',
+    'revision',
+    'authority_digest',
+    'stabilization_identity_digest',
+  ]);
+const closureClaimExtractionEvidenceBindingStmt =
+  hasClosureClaimExtractionEvidenceBinding ? db.prepare(`
+  SELECT
+    issue.number AS issue_number,
+    issue.node_id AS issue_node_id,
+    issue.revision AS issue_revision,
+    issue.updated_at AS issue_updated_at,
+    issue.body AS issue_body,
+    issue.author_node_id AS issue_author_node_id,
+    issue.author_type AS issue_author_type,
+    comments.repository_node_id AS comment_repository_node_id,
+    comments.issue_node_id AS comment_issue_node_id,
+    comments.schema_version AS comment_schema_version,
+    comments.revision AS comment_snapshot_revision,
+    comments.issue_updated_at AS comment_issue_updated_at,
+    comments.authority_digest AS comment_authority_digest,
+    comments.stabilization_identity_digest
+      AS comment_stabilization_identity_digest,
+    states.repository_node_id AS state_repository_node_id,
+    states.issue_node_id AS state_issue_node_id,
+    states.issue_node_type AS state_issue_node_type,
+    states.revision AS state_snapshot_revision,
+    states.issue_updated_at AS state_issue_updated_at,
+    states.authority_digest AS state_authority_digest,
+    states.stabilization_identity_digest
+      AS state_stabilization_identity_digest
+  FROM issues issue
+  LEFT JOIN issue_comment_snapshots comments
+    ON comments.issue_number=issue.number
+  LEFT JOIN issue_state_event_snapshots states
+    ON states.issue_number=issue.number
+  WHERE issue.number=?
+`) : null;
+
+export function insertClosureClaimCandidates(
+  candidates: readonly ClosureClaimCandidate[],
+  capturedAt = new Date().toISOString(),
+): ClosureClaimCandidatePersistenceResult {
+  if (
+    !insertClosureClaimSourceStmt ||
+    !insertClosureClaimCandidateStmt ||
+    !closureClaimSourceByIdentityStmt ||
+    !closureClaimSourceByRevisionStmt ||
+    !closureClaimCandidateByIdStmt
+  ) {
+    throw new Error('Closure claim candidate storage is unavailable or read-only');
+  }
+  const canonicalCapturedAt = canonicalTimestampIdentity(
+    capturedAt,
+    'Closure claim capturedAt',
+  );
+  const sources = new Map<string, ClosureClaimSourceSnapshotLedgerEntry>();
+  const candidateEntries = new Map<string, ClosureClaimCandidateLedgerEntry>();
+  for (const candidate of candidates) {
+    assertImmutableClosureClaimCandidate(candidate);
+    const source = buildClosureClaimSourceSnapshotLedgerEntry(candidate);
+    const existingSource = sources.get(source.sourceIdentity);
+    if (
+      existingSource &&
+      (
+        existingSource.sourceRevisionIdentity !== source.sourceRevisionIdentity ||
+        existingSource.canonicalSourceJson !== source.canonicalSourceJson ||
+        existingSource.contentHash !== source.contentHash
+      )
+    ) {
+      throw new Error(
+        `Closure claim source ${source.sourceIdentity} conflicts within the input batch`,
+      );
+    }
+    sources.set(source.sourceIdentity, source);
+
+    const entry = buildClosureClaimCandidateLedgerEntry(candidate);
+    const existingCandidate = candidateEntries.get(entry.candidateId);
+    if (
+      existingCandidate &&
+      (
+        existingCandidate.canonicalCandidateJson !== entry.canonicalCandidateJson ||
+        existingCandidate.contentHash !== entry.contentHash
+      )
+    ) {
+      throw new Error(
+        `Closure claim candidate ${entry.candidateId} conflicts within the input batch`,
+      );
+    }
+    candidateEntries.set(entry.candidateId, entry);
+  }
+
+  return runInWriteTransaction(() => {
+    let insertedSourceCount = 0;
+    let replayedSourceCount = 0;
+    let insertedCandidateCount = 0;
+    let replayedCandidateCount = 0;
+
+    for (const source of [...sources.values()].sort((left, right) =>
+      compareBinaryIdentity(left.sourceIdentity, right.sourceIdentity))) {
+      const issue = getIssue(source.issue.number);
+      if (!issue || issue.node_id !== source.issue.nodeId) {
+        throw new Error(
+          `Closure claim source ${source.sourceIdentity} does not match ` +
+            `persisted issue #${source.issue.number} identity`,
+        );
+      }
+      const byIdentity = closureClaimSourceByIdentityStmt.get(
+        source.sourceIdentity,
+      ) as StoredClosureClaimSourceSnapshotRow | undefined;
+      const byRevision = closureClaimSourceByRevisionStmt.get(
+        source.sourceRevisionIdentity,
+      ) as StoredClosureClaimSourceSnapshotRow | undefined;
+      if (byIdentity) {
+        if (!storedClosureClaimSourceMatches(byIdentity, source)) {
+          throw new Error(
+            `Closure claim source ${source.sourceIdentity} conflicts with stored evidence`,
+          );
+        }
+        if (
+          byRevision &&
+          byRevision.source_identity !== source.sourceIdentity
+        ) {
+          throw new Error(
+            `Closure claim source revision ${source.sourceRevisionIdentity} ` +
+              'maps to conflicting source identities',
+          );
+        }
+        replayedSourceCount++;
+        continue;
+      }
+      if (byRevision) {
+        throw new Error(
+          `Closure claim source revision ${source.sourceRevisionIdentity} ` +
+            `conflicts with stored source ${byRevision.source_identity}`,
+        );
+      }
+      insertClosureClaimSourceStmt.run({
+        source_identity: source.sourceIdentity,
+        schema_version: source.schemaVersion,
+        source_revision_identity: source.sourceRevisionIdentity,
+        repository: source.repository.nameWithOwner,
+        repository_node_id: source.repository.nodeId,
+        issue_number: source.issue.number,
+        issue_node_id: source.issue.nodeId,
+        source_kind: source.source.kind,
+        source_node_id: source.source.nodeId,
+        source_database_id: source.source.databaseId,
+        source_url: source.source.url,
+        actor_node_id: source.source.actor.nodeId,
+        actor_login: source.source.actor.login,
+        actor_type: source.source.actor.type,
+        created_at: source.source.createdAt,
+        updated_at: source.source.updatedAt,
+        text_format: source.source.textFormat,
+        text_digest: source.source.textDigest,
+        canonical_source_json: source.canonicalSourceJson,
+        content_hash: source.contentHash,
+        captured_at: canonicalCapturedAt,
+      });
+      insertedSourceCount++;
+    }
+
+    const orderedCandidates = [...candidateEntries.values()].sort((left, right) =>
+      compareBinaryIdentity(left.candidateId, right.candidateId));
+    for (const candidate of orderedCandidates) {
+      const existing = closureClaimCandidateByIdStmt.get(
+        candidate.candidateId,
+      ) as StoredClosureClaimCandidateRow | undefined;
+      if (existing) {
+        if (!storedClosureClaimCandidateMatches(existing, candidate)) {
+          throw new Error(
+            `Closure claim candidate ${candidate.candidateId} conflicts with stored evidence`,
+          );
+        }
+        replayedCandidateCount++;
+        continue;
+      }
+      insertClosureClaimCandidateStmt.run({
+        candidate_id: candidate.candidateId,
+        schema_version: candidate.schemaVersion,
+        source_identity: candidate.sourceIdentity,
+        issue_number: candidate.issue.number,
+        issue_node_id: candidate.issue.nodeId,
+        candidate_kind: candidate.claimKind,
+        canonical_claim_json: candidate.canonicalClaimJson,
+        excerpt: candidate.excerpt,
+        span_start: candidate.span?.start ?? null,
+        span_end: candidate.span?.end ?? null,
+        canonical_candidate_json: candidate.canonicalCandidateJson,
+        content_hash: candidate.contentHash,
+        captured_at: canonicalCapturedAt,
+      });
+      insertedCandidateCount++;
+    }
+
+    return {
+      insertedSourceCount,
+      replayedSourceCount,
+      insertedCandidateCount,
+      replayedCandidateCount,
+      candidateIds: orderedCandidates.map((candidate) => candidate.candidateId),
+    };
+  });
+}
+
+interface ClosureClaimExtractionEvidenceBindingRow {
+  issue_number: number;
+  issue_node_id: string | null;
+  issue_revision: number | null;
+  issue_updated_at: string;
+  issue_body: string | null;
+  issue_author_node_id: string | null;
+  issue_author_type: string | null;
+  comment_repository_node_id: string | null;
+  comment_issue_node_id: string | null;
+  comment_schema_version: number | null;
+  comment_snapshot_revision: number | null;
+  comment_issue_updated_at: string | null;
+  comment_authority_digest: string | null;
+  comment_stabilization_identity_digest: string | null;
+  state_repository_node_id: string | null;
+  state_issue_node_id: string | null;
+  state_issue_node_type: string | null;
+  state_snapshot_revision: number | null;
+  state_issue_updated_at: string | null;
+  state_authority_digest: string | null;
+  state_stabilization_identity_digest: string | null;
+}
+
+function currentClosureClaimExtractionEvidenceBinding(
+  issueNumber: number,
+): ClosureClaimExtractionEvidenceBinding {
+  if (!closureClaimExtractionEvidenceBindingStmt) {
+    throw new Error(
+      'Closure claim extraction evidence binding is unavailable in this database schema',
+    );
+  }
+  const row = closureClaimExtractionEvidenceBindingStmt.get(
+    issueNumber,
+  ) as ClosureClaimExtractionEvidenceBindingRow | undefined;
+  if (!row) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} is missing`,
+    );
+  }
+  const issueNodeId = requiredCanonicalStoredIdentity(
+    row.issue_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} node ID`,
+  );
+  const issueRevision = Number(row.issue_revision);
+  if (!Number.isSafeInteger(issueRevision) || issueRevision <= 0) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} revision is invalid`,
+    );
+  }
+  const issueUpdatedAt = canonicalTimestampIdentity(
+    row.issue_updated_at,
+    `Closure claim extraction receipt issue #${issueNumber} updated_at`,
+  );
+  const issueAuthorNodeId = requiredCanonicalStoredIdentity(
+    row.issue_author_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} author node ID`,
+  );
+  const issueAuthorType = requiredCanonicalStoredIdentity(
+    row.issue_author_type,
+    `Closure claim extraction receipt issue #${issueNumber} author type`,
+  );
+
+  completeIssueComments(issueNumber);
+  if (
+    row.comment_schema_version !==
+      AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION
+  ) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} requires an ` +
+        'authoritative comment snapshot',
+    );
+  }
+  const commentRepositoryNodeId = requiredCanonicalStoredIdentity(
+    row.comment_repository_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} comment repository node ID`,
+  );
+  const commentIssueNodeId = requiredCanonicalStoredIdentity(
+    row.comment_issue_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} comment issue node ID`,
+  );
+  const commentRevision = Number(row.comment_snapshot_revision);
+  if (!Number.isSafeInteger(commentRevision) || commentRevision <= 0) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} comment ` +
+        'snapshot revision is invalid',
+    );
+  }
+  const commentAuthorityDigest = requiredSha256Digest(
+    row.comment_authority_digest,
+    `Closure claim extraction receipt issue #${issueNumber} comment authority digest`,
+  );
+  const commentStabilizationIdentityDigest = requiredSha256Digest(
+    row.comment_stabilization_identity_digest,
+    `Closure claim extraction receipt issue #${issueNumber} comment stabilization identity`,
+  );
+
+  const stateValidation = validateIssueStateEventSnapshot(issueNumber);
+  if (!stateValidation.reusable || !stateValidation.snapshot) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} requires an ` +
+        'authoritative reusable state-event snapshot',
+    );
+  }
+  const stateRevision = Number(row.state_snapshot_revision);
+  if (!Number.isSafeInteger(stateRevision) || stateRevision <= 0) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} state ` +
+        'snapshot revision is invalid',
+    );
+  }
+  const stateRepositoryNodeId = requiredCanonicalStoredIdentity(
+    row.state_repository_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} state repository node ID`,
+  );
+  const stateIssueNodeId = requiredCanonicalStoredIdentity(
+    row.state_issue_node_id,
+    `Closure claim extraction receipt issue #${issueNumber} state issue node ID`,
+  );
+  const stateAuthorityDigest = requiredSha256Digest(
+    row.state_authority_digest,
+    `Closure claim extraction receipt issue #${issueNumber} state authority digest`,
+  );
+  const stateStabilizationIdentityDigest = requiredSha256Digest(
+    row.state_stabilization_identity_digest,
+    `Closure claim extraction receipt issue #${issueNumber} state stabilization identity`,
+  );
+  if (
+    commentRepositoryNodeId !== stateRepositoryNodeId ||
+    commentIssueNodeId !== issueNodeId ||
+    stateIssueNodeId !== issueNodeId ||
+    row.state_issue_node_type !== 'Issue' ||
+    row.comment_issue_updated_at == null ||
+    row.state_issue_updated_at == null ||
+    canonicalTimestampIdentity(
+      row.comment_issue_updated_at,
+      `Closure claim extraction receipt issue #${issueNumber} comment updated_at`,
+    ) !== issueUpdatedAt ||
+    canonicalTimestampIdentity(
+      row.state_issue_updated_at,
+      `Closure claim extraction receipt issue #${issueNumber} state updated_at`,
+    ) !== issueUpdatedAt
+  ) {
+    throw new Error(
+      `Closure claim extraction receipt issue #${issueNumber} evidence ` +
+        'identity or revision is not current',
+    );
+  }
+
+  return {
+    repository: {
+      nodeId: commentRepositoryNodeId,
+      nameWithOwner: defaultPrRepositoryNameWithOwner,
+    },
+    issue: {
+      nodeId: issueNodeId,
+      number: issueNumber,
+      revision: issueRevision,
+      updatedAt: issueUpdatedAt,
+      bodyDigest: closureClaimIssueBodyDigest(row.issue_body),
+      authorNodeId: issueAuthorNodeId,
+      authorType: issueAuthorType,
+    },
+    commentSnapshot: {
+      revision: commentRevision,
+      authorityDigest: commentAuthorityDigest,
+      stabilizationIdentityDigest: commentStabilizationIdentityDigest,
+    },
+    stateSnapshot: {
+      revision: stateRevision,
+      authorityDigest: stateAuthorityDigest,
+      stabilizationIdentityDigest: stateStabilizationIdentityDigest,
+    },
+  };
+}
+
+export function persistClosureClaimExtraction(input: {
+  issueNumber: number;
+  extraction: ClosureClaimExtractionResult;
+  capturedAt?: string;
+}): ClosureClaimExtractionPersistenceResult {
+  if (
+    !insertClosureClaimExtractionReceiptStmt ||
+    !insertClosureClaimExtractionReceiptMemberStmt ||
+    !closureClaimExtractionReceiptByIdStmt ||
+    !closureClaimExtractionReceiptMembersStmt
+  ) {
+    throw new Error(
+      'Closure claim extraction receipt storage is unavailable or read-only',
+    );
+  }
+  const capturedAt = canonicalTimestampIdentity(
+    input.capturedAt ?? new Date().toISOString(),
+    'Closure claim extraction receipt capturedAt',
+  );
+  return runInWriteTransaction(() => {
+    const binding = currentClosureClaimExtractionEvidenceBinding(input.issueNumber);
+    const receipt = buildClosureClaimExtractionReceipt(
+      binding,
+      input.extraction,
+    );
+    const candidatePersistence = insertClosureClaimCandidates(
+      input.extraction.candidates,
+      capturedAt,
+    );
+    const receiptCandidateIds = receipt.members.map((member) => member.candidateId);
+    if (
+      canonicalOperationJson(candidatePersistence.candidateIds) !==
+        canonicalOperationJson(receiptCandidateIds)
+    ) {
+      throw new Error(
+        `Closure claim extraction receipt ${receipt.receiptId} candidate ` +
+          'membership does not match candidate persistence',
+      );
+    }
+
+    const existing = closureClaimExtractionReceiptByIdStmt.get(
+      receipt.receiptId,
+    ) as StoredClosureClaimExtractionReceiptRow | undefined;
+    if (existing) {
+      const stored = verifiedClosureClaimExtractionReceiptRow(existing);
+      if (
+        stored.canonicalReceiptJson !== receipt.canonicalReceiptJson ||
+        stored.contentHash !== receipt.contentHash
+      ) {
+        throw new Error(
+          `Closure claim extraction receipt ${receipt.receiptId} conflicts ` +
+            'with stored evidence',
+        );
+      }
+      return {
+        candidatePersistence,
+        insertedReceiptCount: 0,
+        replayedReceiptCount: 1,
+        receipt: stored,
+      };
+    }
+
+    insertClosureClaimExtractionReceiptStmt.run({
+      receipt_id: receipt.receiptId,
+      schema_version: receipt.schemaVersion,
+      extraction_schema_version: receipt.extractionSchemaVersion,
+      repository: receipt.repository.nameWithOwner,
+      repository_node_id: receipt.repository.nodeId,
+      issue_number: receipt.issue.number,
+      issue_node_id: receipt.issue.nodeId,
+      issue_revision: receipt.issue.revision,
+      issue_updated_at: receipt.issue.updatedAt,
+      issue_body_digest: receipt.issue.bodyDigest,
+      issue_author_node_id: receipt.issue.authorNodeId,
+      issue_author_type: receipt.issue.authorType,
+      comment_snapshot_revision: receipt.commentSnapshot.revision,
+      comment_authority_digest: receipt.commentSnapshot.authorityDigest,
+      comment_stabilization_identity_digest:
+        receipt.commentSnapshot.stabilizationIdentityDigest,
+      state_snapshot_revision: receipt.stateSnapshot.revision,
+      state_authority_digest: receipt.stateSnapshot.authorityDigest,
+      state_stabilization_identity_digest:
+        receipt.stateSnapshot.stabilizationIdentityDigest,
+      extraction_digest: receipt.extractionDigest,
+      candidate_set_digest: receipt.candidateSetDigest,
+      candidate_count: receipt.candidateCount,
+      canonical_receipt_json: receipt.canonicalReceiptJson,
+      content_hash: receipt.contentHash,
+      captured_at: capturedAt,
+    });
+    for (const member of receipt.members) {
+      insertClosureClaimExtractionReceiptMemberStmt.run({
+        receipt_id: receipt.receiptId,
+        member_ordinal: member.ordinal,
+        candidate_id: member.candidateId,
+        candidate_content_hash: member.candidateContentHash,
+        source_identity: member.sourceIdentity,
+        content_hash: closureClaimExtractionReceiptMemberContentHash(
+          receipt.receiptId,
+          member,
+        ),
+      });
+    }
+    const storedRow = closureClaimExtractionReceiptByIdStmt.get(
+      receipt.receiptId,
+    ) as StoredClosureClaimExtractionReceiptRow | undefined;
+    if (!storedRow) {
+      throw new Error(
+        `Closure claim extraction receipt ${receipt.receiptId} was not readable ` +
+          'after insertion',
+      );
+    }
+    const stored = verifiedClosureClaimExtractionReceiptRow(storedRow);
+    if (
+      stored.canonicalReceiptJson !== receipt.canonicalReceiptJson ||
+      stored.contentHash !== receipt.contentHash
+    ) {
+      throw new Error(
+        `Closure claim extraction receipt ${receipt.receiptId} failed ` +
+          'post-insert verification',
+      );
+    }
+    return {
+      candidatePersistence,
+      insertedReceiptCount: 1,
+      replayedReceiptCount: 0,
+      receipt: stored,
+    };
+  });
+}
+
+export function getClosureClaimExtractionReceipt(
+  receiptId: string,
+): ClosureClaimExtractionReceipt | null {
+  if (!closureClaimExtractionReceiptByIdStmt) return null;
+  const row = closureClaimExtractionReceiptByIdStmt.get(
+    receiptId,
+  ) as StoredClosureClaimExtractionReceiptRow | undefined;
+  return row ? verifiedClosureClaimExtractionReceiptRow(row) : null;
+}
+
+export function getCurrentClosureClaimExtractionReceipt(
+  issueNumber: number,
+): ClosureClaimExtractionReceipt | null {
+  if (!currentClosureClaimExtractionReceiptStmt) return null;
+  const binding = currentClosureClaimExtractionEvidenceBinding(issueNumber);
+  const row = currentClosureClaimExtractionReceiptStmt.get({
+    issue_number: binding.issue.number,
+    repository: binding.repository.nameWithOwner,
+    repository_node_id: binding.repository.nodeId,
+    issue_node_id: binding.issue.nodeId,
+    issue_revision: binding.issue.revision,
+    issue_updated_at: binding.issue.updatedAt,
+    issue_body_digest: binding.issue.bodyDigest,
+    issue_author_node_id: binding.issue.authorNodeId,
+    issue_author_type: binding.issue.authorType,
+    comment_snapshot_revision: binding.commentSnapshot.revision,
+    comment_authority_digest: binding.commentSnapshot.authorityDigest,
+    comment_stabilization_identity_digest:
+      binding.commentSnapshot.stabilizationIdentityDigest,
+    state_snapshot_revision: binding.stateSnapshot.revision,
+    state_authority_digest: binding.stateSnapshot.authorityDigest,
+    state_stabilization_identity_digest:
+      binding.stateSnapshot.stabilizationIdentityDigest,
+  }) as StoredClosureClaimExtractionReceiptRow | undefined;
+  return row ? verifiedClosureClaimExtractionReceiptRow(row) : null;
+}
+
+function verifiedClosureClaimExtractionReceiptRow(
+  row: StoredClosureClaimExtractionReceiptRow,
+): ClosureClaimExtractionReceipt {
+  let receiptPayload: Omit<
+    ClosureClaimExtractionReceipt,
+    'canonicalReceiptJson' | 'contentHash'
+  >;
+  try {
+    receiptPayload = JSON.parse(
+      row.canonical_receipt_json,
+    ) as Omit<
+      ClosureClaimExtractionReceipt,
+      'canonicalReceiptJson' | 'contentHash'
+    >;
+  } catch (error) {
+    throw new Error(
+      `Closure claim extraction receipt ${row.receipt_id} has invalid ` +
+        `canonical JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  const receipt: ClosureClaimExtractionReceipt = {
+    ...receiptPayload,
+    canonicalReceiptJson: row.canonical_receipt_json,
+    contentHash: row.content_hash,
+  };
+  assertClosureClaimExtractionReceipt(receipt);
+  if (!storedClosureClaimExtractionReceiptMatches(row, receipt)) {
+    throw new Error(
+      `Closure claim extraction receipt ${row.receipt_id} failed immutable verification`,
+    );
+  }
+  const memberRows = closureClaimExtractionReceiptMembersStmt?.all(
+    row.receipt_id,
+  ) as StoredClosureClaimExtractionReceiptMemberRow[] | undefined;
+  if (!memberRows || memberRows.length !== receipt.candidateCount) {
+    throw new Error(
+      `Closure claim extraction receipt ${row.receipt_id} membership is incomplete`,
+    );
+  }
+  for (const [index, member] of receipt.members.entries()) {
+    const memberRow = memberRows[index];
+    if (
+      canonicalOperationJson({
+        receiptId: memberRow.receipt_id,
+        ordinal: memberRow.member_ordinal,
+        candidateId: memberRow.candidate_id,
+        candidateContentHash: memberRow.candidate_content_hash,
+        sourceIdentity: memberRow.source_identity,
+        contentHash: memberRow.content_hash,
+      }) !== canonicalOperationJson({
+        receiptId: receipt.receiptId,
+        ordinal: member.ordinal,
+        candidateId: member.candidateId,
+        candidateContentHash: member.candidateContentHash,
+        sourceIdentity: member.sourceIdentity,
+        contentHash: closureClaimExtractionReceiptMemberContentHash(
+          receipt.receiptId,
+          member,
+        ),
+      })
+    ) {
+      throw new Error(
+        `Closure claim extraction receipt ${row.receipt_id} member ${index} ` +
+          'failed immutable verification',
+      );
+    }
+    const candidate = getClosureClaimCandidate(member.candidateId);
+    if (!candidate) {
+      throw new Error(
+        `Closure claim extraction receipt ${row.receipt_id} member ${index} ` +
+          'references a missing candidate',
+      );
+    }
+    const candidateEntry = buildClosureClaimCandidateLedgerEntry(candidate);
+    if (
+      candidateEntry.contentHash !== member.candidateContentHash ||
+      candidateEntry.sourceIdentity !== member.sourceIdentity ||
+      candidate.issue.number !== receipt.issue.number ||
+      candidate.issue.nodeId !== receipt.issue.nodeId
+    ) {
+      throw new Error(
+        `Closure claim extraction receipt ${row.receipt_id} member ${index} ` +
+          'does not match immutable candidate evidence',
+      );
+    }
+  }
+  return receipt;
+}
+
+function storedClosureClaimExtractionReceiptMatches(
+  row: StoredClosureClaimExtractionReceiptRow,
+  receipt: ClosureClaimExtractionReceipt,
+): boolean {
+  return canonicalOperationJson({
+    receiptId: row.receipt_id,
+    schemaVersion: row.schema_version,
+    extractionSchemaVersion: row.extraction_schema_version,
+    repository: row.repository,
+    repositoryNodeId: row.repository_node_id,
+    issueNumber: row.issue_number,
+    issueNodeId: row.issue_node_id,
+    issueRevision: row.issue_revision,
+    issueUpdatedAt: row.issue_updated_at,
+    issueBodyDigest: row.issue_body_digest,
+    issueAuthorNodeId: row.issue_author_node_id,
+    issueAuthorType: row.issue_author_type,
+    commentSnapshotRevision: row.comment_snapshot_revision,
+    commentAuthorityDigest: row.comment_authority_digest,
+    commentStabilizationIdentityDigest:
+      row.comment_stabilization_identity_digest,
+    stateSnapshotRevision: row.state_snapshot_revision,
+    stateAuthorityDigest: row.state_authority_digest,
+    stateStabilizationIdentityDigest:
+      row.state_stabilization_identity_digest,
+    extractionDigest: row.extraction_digest,
+    candidateSetDigest: row.candidate_set_digest,
+    candidateCount: row.candidate_count,
+    canonicalReceiptJson: row.canonical_receipt_json,
+    contentHash: row.content_hash,
+  }) === canonicalOperationJson({
+    receiptId: receipt.receiptId,
+    schemaVersion: receipt.schemaVersion,
+    extractionSchemaVersion: receipt.extractionSchemaVersion,
+    repository: receipt.repository.nameWithOwner,
+    repositoryNodeId: receipt.repository.nodeId,
+    issueNumber: receipt.issue.number,
+    issueNodeId: receipt.issue.nodeId,
+    issueRevision: receipt.issue.revision,
+    issueUpdatedAt: receipt.issue.updatedAt,
+    issueBodyDigest: receipt.issue.bodyDigest,
+    issueAuthorNodeId: receipt.issue.authorNodeId,
+    issueAuthorType: receipt.issue.authorType,
+    commentSnapshotRevision: receipt.commentSnapshot.revision,
+    commentAuthorityDigest: receipt.commentSnapshot.authorityDigest,
+    commentStabilizationIdentityDigest:
+      receipt.commentSnapshot.stabilizationIdentityDigest,
+    stateSnapshotRevision: receipt.stateSnapshot.revision,
+    stateAuthorityDigest: receipt.stateSnapshot.authorityDigest,
+    stateStabilizationIdentityDigest:
+      receipt.stateSnapshot.stabilizationIdentityDigest,
+    extractionDigest: receipt.extractionDigest,
+    candidateSetDigest: receipt.candidateSetDigest,
+    candidateCount: receipt.candidateCount,
+    canonicalReceiptJson: receipt.canonicalReceiptJson,
+    contentHash: receipt.contentHash,
+  });
+}
+
+export function getClosureClaimCandidate(
+  candidateId: string,
+): ClosureClaimCandidate | null {
+  if (!closureClaimCandidateByIdStmt) return null;
+  const row = closureClaimCandidateByIdStmt.get(
+    candidateId,
+  ) as StoredClosureClaimCandidateRow | undefined;
+  return row ? verifiedClosureClaimCandidateRow(row) : null;
+}
+
+export function listClosureClaimCandidatesForIssue(
+  issueNumber: number,
+): ClosureClaimCandidate[] {
+  if (!closureClaimCandidatesForIssueStmt) return [];
+  return (closureClaimCandidatesForIssueStmt.all(
+    issueNumber,
+  ) as unknown as StoredClosureClaimCandidateRow[])
+    .map(verifiedClosureClaimCandidateRow);
+}
+
+function verifiedClosureClaimCandidateRow(
+  row: StoredClosureClaimCandidateRow,
+): ClosureClaimCandidate {
+  let candidate: ClosureClaimCandidate;
+  try {
+    candidate = JSON.parse(row.canonical_candidate_json) as ClosureClaimCandidate;
+  } catch (error) {
+    throw new Error(
+      `Closure claim candidate ${row.candidate_id} has invalid canonical JSON: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  assertImmutableClosureClaimCandidate(candidate);
+  const candidateEntry = buildClosureClaimCandidateLedgerEntry(candidate);
+  if (!storedClosureClaimCandidateMatches(row, candidateEntry)) {
+    throw new Error(
+      `Closure claim candidate ${row.candidate_id} failed immutable verification`,
+    );
+  }
+  const sourceRow = closureClaimSourceByIdentityStmt?.get(
+    candidateEntry.sourceIdentity,
+  ) as StoredClosureClaimSourceSnapshotRow | undefined;
+  const sourceEntry = buildClosureClaimSourceSnapshotLedgerEntry(candidate);
+  if (!sourceRow || !storedClosureClaimSourceMatches(sourceRow, sourceEntry)) {
+    throw new Error(
+      `Closure claim candidate ${row.candidate_id} source failed immutable verification`,
+    );
+  }
+  return candidate;
+}
+
+function storedClosureClaimSourceMatches(
+  row: StoredClosureClaimSourceSnapshotRow,
+  entry: ClosureClaimSourceSnapshotLedgerEntry,
+): boolean {
+  return canonicalOperationJson({
+    sourceIdentity: row.source_identity,
+    schemaVersion: row.schema_version,
+    sourceRevisionIdentity: row.source_revision_identity,
+    repository: row.repository,
+    repositoryNodeId: row.repository_node_id,
+    issueNumber: row.issue_number,
+    issueNodeId: row.issue_node_id,
+    sourceKind: row.source_kind,
+    sourceNodeId: row.source_node_id,
+    sourceDatabaseId: row.source_database_id,
+    sourceUrl: row.source_url,
+    actorNodeId: row.actor_node_id,
+    actorLogin: row.actor_login,
+    actorType: row.actor_type,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    textFormat: row.text_format,
+    textDigest: row.text_digest,
+    canonicalSourceJson: row.canonical_source_json,
+    contentHash: row.content_hash,
+  }) === canonicalOperationJson({
+    sourceIdentity: entry.sourceIdentity,
+    schemaVersion: entry.schemaVersion,
+    sourceRevisionIdentity: entry.sourceRevisionIdentity,
+    repository: entry.repository.nameWithOwner,
+    repositoryNodeId: entry.repository.nodeId,
+    issueNumber: entry.issue.number,
+    issueNodeId: entry.issue.nodeId,
+    sourceKind: entry.source.kind,
+    sourceNodeId: entry.source.nodeId,
+    sourceDatabaseId: entry.source.databaseId,
+    sourceUrl: entry.source.url,
+    actorNodeId: entry.source.actor.nodeId,
+    actorLogin: entry.source.actor.login,
+    actorType: entry.source.actor.type,
+    createdAt: entry.source.createdAt,
+    updatedAt: entry.source.updatedAt,
+    textFormat: entry.source.textFormat,
+    textDigest: entry.source.textDigest,
+    canonicalSourceJson: entry.canonicalSourceJson,
+    contentHash: entry.contentHash,
+  });
+}
+
+function storedClosureClaimCandidateMatches(
+  row: StoredClosureClaimCandidateRow,
+  entry: ClosureClaimCandidateLedgerEntry,
+): boolean {
+  return canonicalOperationJson({
+    candidateId: row.candidate_id,
+    schemaVersion: row.schema_version,
+    sourceIdentity: row.source_identity,
+    issueNumber: row.issue_number,
+    issueNodeId: row.issue_node_id,
+    candidateKind: row.candidate_kind,
+    canonicalClaimJson: row.canonical_claim_json,
+    excerpt: row.excerpt,
+    spanStart: row.span_start,
+    spanEnd: row.span_end,
+    canonicalCandidateJson: row.canonical_candidate_json,
+    contentHash: row.content_hash,
+  }) === canonicalOperationJson({
+    candidateId: entry.candidateId,
+    schemaVersion: entry.schemaVersion,
+    sourceIdentity: entry.sourceIdentity,
+    issueNumber: entry.issue.number,
+    issueNodeId: entry.issue.nodeId,
+    candidateKind: entry.claimKind,
+    canonicalClaimJson: entry.canonicalClaimJson,
+    excerpt: entry.excerpt,
+    spanStart: entry.span?.start ?? null,
+    spanEnd: entry.span?.end ?? null,
+    canonicalCandidateJson: entry.canonicalCandidateJson,
+    contentHash: entry.contentHash,
+  });
+}
+
+const hasScoreAuthorityResolutionStorage = db.prepare(`
+  SELECT COUNT(*) AS count
+  FROM sqlite_master
+  WHERE type='table'
+    AND name IN (
+      'score_authority_resolution_runs',
+      'score_authority_resolution_rows',
+      'release_score_audit_history_v2_seals'
+    )
+`).get() as { count?: number } | undefined;
+const scoreAuthorityResolutionRunStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT rowid AS storage_ordinal, *
+        FROM score_authority_resolution_runs
+        WHERE authority_run_id=?
+      `)
+    : null;
+const scoreAuthorityResolutionRowsStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT *
+        FROM score_authority_resolution_rows
+        WHERE authority_run_id=?
+        ORDER BY row_ordinal
+      `)
+    : null;
+const listScoreAuthorityResolutionRunHeadersStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT rowid AS storage_ordinal, *
+        FROM score_authority_resolution_runs
+        ORDER BY rowid
+      `)
+    : null;
+const latestScoreAuthorityResolutionRunHeaderStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT rowid AS storage_ordinal, *
+        FROM score_authority_resolution_runs
+        ORDER BY rowid DESC
+        LIMIT 1
+      `)
+    : null;
+const insertScoreAuthorityResolutionRunStmt =
+  !dbReadOnly && Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        INSERT INTO score_authority_resolution_runs (
+          authority_run_id, schema_version, policy_version,
+          source_identity_schema_version, source_identity_digest, recorded_at,
+          row_count, rows_content_hash, previous_content_hash, content_hash
+        ) VALUES (
+          :authority_run_id, :schema_version, :policy_version,
+          :source_identity_schema_version, :source_identity_digest, :recorded_at,
+          :row_count, :rows_content_hash, :previous_content_hash, :content_hash
+        )
+      `)
+    : null;
+const insertScoreAuthorityResolutionRowStmt =
+  !dbReadOnly && Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        INSERT INTO score_authority_resolution_rows (
+          authority_run_id, row_ordinal, release_tag, issue_number, subject_kind,
+          subject_identity, candidate_id, authority, reason,
+          authorized_for_scoring, evidence_digest, resolution_json, content_hash
+        ) VALUES (
+          :authority_run_id, :row_ordinal, :release_tag, :issue_number, :subject_kind,
+          :subject_identity, :candidate_id, :authority, :reason,
+          :authorized_for_scoring, :evidence_digest, :resolution_json, :content_hash
+        )
+      `)
+    : null;
+const releaseScoreAuditHistoryV2SealByHistoryRunStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT *
+        FROM release_score_audit_history_v2_seals
+        WHERE history_run_id=?
+      `)
+    : null;
+const releaseScoreAuditHistoryV2SealByAuthorityRunStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT *
+        FROM release_score_audit_history_v2_seals
+        WHERE authority_run_id=?
+      `)
+    : null;
+const listReleaseScoreAuditHistoryV2SealsStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT *
+        FROM release_score_audit_history_v2_seals
+        ORDER BY id
+      `)
+    : null;
+const latestReleaseScoreAuditHistoryV2SealStmt =
+  Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        SELECT *
+        FROM release_score_audit_history_v2_seals
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+    : null;
+const insertReleaseScoreAuditHistoryV2SealStmt =
+  !dbReadOnly && Number(hasScoreAuthorityResolutionStorage?.count ?? 0) === 3
+    ? db.prepare(`
+        INSERT INTO release_score_audit_history_v2_seals (
+          schema_version, history_run_id, authority_run_id, sealed_at,
+          history_row_count, history_rows_content_hash, authority_row_count,
+          authority_rows_content_hash, previous_content_hash, content_hash
+        ) VALUES (
+          :schema_version, :history_run_id, :authority_run_id, :sealed_at,
+          :history_row_count, :history_rows_content_hash, :authority_row_count,
+          :authority_rows_content_hash, :previous_content_hash, :content_hash
+        )
+      `)
+    : null;
+
+type StoredScoreAuthorityResolutionRunHeader = {
+  storage_ordinal: number;
+  authority_run_id: string;
+  schema_version: number;
+  policy_version: number;
+  source_identity_schema_version: number;
+  source_identity_digest: string;
+  recorded_at: string;
+  row_count: number;
+  rows_content_hash: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+};
+
+type StoredScoreAuthorityResolutionRow = {
+  authority_run_id: string;
+  row_ordinal: number;
+  release_tag: string | null;
+  issue_number: number;
+  subject_kind: ScoreAuthorityResolutionRow['subjectKind'];
+  subject_identity: string;
+  candidate_id: string | null;
+  authority: ScoreAuthorityResolutionRow['authority'];
+  reason: ScoreAuthorityResolutionRow['reason'];
+  authorized_for_scoring: number;
+  evidence_digest: string;
+  resolution_json: string;
+  content_hash: string;
+};
+
+export interface ReleaseScoreAuditHistoryV2SealRow
+  extends ReleaseScoreAuditHistoryV2Seal {
+  readonly id: number;
+}
+
+function scoreAuthorityResolutionRunFromHeader(
+  header: StoredScoreAuthorityResolutionRunHeader | undefined,
+): ScoreAuthorityResolutionRun | null {
+  if (!header || !scoreAuthorityResolutionRowsStmt) return null;
+  const rows = scoreAuthorityResolutionRowsStmt.all(
+    header.authority_run_id,
+  ) as StoredScoreAuthorityResolutionRow[];
+  return {
+    authorityRunId: header.authority_run_id,
+    schemaVersion:
+      header.schema_version as ScoreAuthorityResolutionRun['schemaVersion'],
+    policyVersion:
+      header.policy_version as ScoreAuthorityResolutionRun['policyVersion'],
+    sourceIdentitySchemaVersion: header.source_identity_schema_version,
+    sourceIdentityDigest: header.source_identity_digest,
+    recordedAt: header.recorded_at,
+    rowCount: header.row_count,
+    rowsContentHash: header.rows_content_hash,
+    previousContentHash: header.previous_content_hash,
+    contentHash: header.content_hash,
+    rows: rows.map((row) => ({
+      authorityRunId: row.authority_run_id,
+      rowOrdinal: row.row_ordinal,
+      releaseTag: row.release_tag,
+      issueNumber: row.issue_number,
+      subjectKind: row.subject_kind,
+      subjectIdentity: row.subject_identity,
+      candidateId: row.candidate_id,
+      authority: row.authority,
+      reason: row.reason,
+      authorizedForScoring: row.authorized_for_scoring === 1,
+      evidenceDigest: row.evidence_digest,
+      resolutionJson: row.resolution_json,
+      contentHash: row.content_hash,
+    })),
+  };
+}
+
+function releaseScoreAuditHistoryV2SealFromStored(
+  row: Record<string, unknown> | undefined,
+): ReleaseScoreAuditHistoryV2SealRow | null {
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    schemaVersion:
+      Number(row.schema_version) as ReleaseScoreAuditHistoryV2Seal['schemaVersion'],
+    historyRunId: String(row.history_run_id),
+    authorityRunId: String(row.authority_run_id),
+    sealedAt: String(row.sealed_at),
+    historyRowCount: Number(row.history_row_count),
+    historyRowsContentHash: String(row.history_rows_content_hash),
+    authorityRowCount: Number(row.authority_row_count),
+    authorityRowsContentHash: String(row.authority_rows_content_hash),
+    previousContentHash:
+      row.previous_content_hash == null ? null : String(row.previous_content_hash),
+    contentHash: String(row.content_hash),
+  };
+}
+
+export function getScoreAuthorityResolutionRun(
+  authorityRunId: string,
+): ScoreAuthorityResolutionRun | null {
+  return scoreAuthorityResolutionRunStmt
+    ? scoreAuthorityResolutionRunFromHeader(
+        scoreAuthorityResolutionRunStmt.get(
+          authorityRunId,
+        ) as StoredScoreAuthorityResolutionRunHeader | undefined,
+      )
+    : null;
+}
+
+export function listScoreAuthorityResolutionRuns():
+  ScoreAuthorityResolutionRun[] {
+  if (!listScoreAuthorityResolutionRunHeadersStmt) return [];
+  return (
+    listScoreAuthorityResolutionRunHeadersStmt.all() as
+      StoredScoreAuthorityResolutionRunHeader[]
+  ).map((header) => scoreAuthorityResolutionRunFromHeader(header))
+    .filter((run): run is ScoreAuthorityResolutionRun => run != null);
+}
+
+export function insertScoreAuthorityResolutionRun(
+  run: ScoreAuthorityResolutionRun,
+  options: { sourceIdentityOptions?: ScoreSourceIdentityOptions } = {},
+): { inserted: boolean; row: ScoreAuthorityResolutionRun } {
+  if (
+    !insertScoreAuthorityResolutionRunStmt ||
+    !insertScoreAuthorityResolutionRowStmt ||
+    !latestScoreAuthorityResolutionRunHeaderStmt
+  ) {
+    throw new Error(
+      'Score authority resolution storage is unavailable or read-only',
+    );
+  }
+  const problems = scoreAuthorityResolutionRunProblems(run);
+  if (problems.length > 0) {
+    throw new Error(
+      `Invalid score authority resolution run: ${problems.join('; ')}`,
+    );
+  }
+  const existing = getScoreAuthorityResolutionRun(run.authorityRunId);
+  if (existing) {
+    const existingProblems = scoreAuthorityResolutionRunProblems(existing);
+    if (existingProblems.length > 0) {
+      throw new Error(
+        `Stored score authority resolution run ${run.authorityRunId} is invalid: ` +
+          existingProblems.join('; '),
+      );
+    }
+    if (
+      canonicalScoreAuthorityResolutionRunJson(existing) !==
+        canonicalScoreAuthorityResolutionRunJson(run)
+    ) {
+      throw new Error(
+        `Score authority resolution run ${run.authorityRunId} conflicts with ` +
+          'immutable persisted authority',
+      );
+    }
+    return { inserted: false, row: existing };
+  }
+  const sourceIdentity = scoreSourceIdentity(options.sourceIdentityOptions);
+  if (
+    run.sourceIdentitySchemaVersion !== sourceIdentity.schemaVersion ||
+    run.sourceIdentityDigest !== sourceIdentity.digest
+  ) {
+    throw new Error(
+      `Score authority resolution run source identity does not match current score input: ` +
+        `expected schema ${sourceIdentity.schemaVersion} digest ${sourceIdentity.digest}, ` +
+        `got schema ${run.sourceIdentitySchemaVersion} digest ${run.sourceIdentityDigest}`,
+    );
+  }
+  return runInWriteTransaction(() => {
+    const latest = latestScoreAuthorityResolutionRunHeaderStmt.get() as
+      StoredScoreAuthorityResolutionRunHeader | undefined;
+    const expectedPreviousContentHash = latest?.content_hash ?? null;
+    if (run.previousContentHash !== expectedPreviousContentHash) {
+      throw new Error(
+        `Score authority resolution run ${run.authorityRunId} previous content hash ` +
+          `does not match current authority chain tip`,
+      );
+    }
+    insertScoreAuthorityResolutionRunStmt.run({
+      authority_run_id: run.authorityRunId,
+      schema_version: run.schemaVersion,
+      policy_version: run.policyVersion,
+      source_identity_schema_version: run.sourceIdentitySchemaVersion,
+      source_identity_digest: run.sourceIdentityDigest,
+      recorded_at: run.recordedAt,
+      row_count: run.rowCount,
+      rows_content_hash: run.rowsContentHash,
+      previous_content_hash: run.previousContentHash,
+      content_hash: run.contentHash,
+    });
+    for (const row of run.rows) {
+      insertScoreAuthorityResolutionRowStmt.run({
+        authority_run_id: row.authorityRunId,
+        row_ordinal: row.rowOrdinal,
+        release_tag: row.releaseTag,
+        issue_number: row.issueNumber,
+        subject_kind: row.subjectKind,
+        subject_identity: row.subjectIdentity,
+        candidate_id: row.candidateId,
+        authority: row.authority,
+        reason: row.reason,
+        authorized_for_scoring: row.authorizedForScoring ? 1 : 0,
+        evidence_digest: row.evidenceDigest,
+        resolution_json: row.resolutionJson,
+        content_hash: row.contentHash,
+      });
+    }
+    const stored = getScoreAuthorityResolutionRun(run.authorityRunId);
+    if (
+      !stored ||
+      canonicalScoreAuthorityResolutionRunJson(stored) !==
+        canonicalScoreAuthorityResolutionRunJson(run)
+    ) {
+      throw new Error(
+        `Score authority resolution run ${run.authorityRunId} failed ` +
+          'post-insert verification',
+      );
+    }
+    return { inserted: true, row: stored };
+  });
+}
+
+export function scoreAuthorityResolutionRunChainProblems(): string[] {
+  const problems: string[] = [];
+  let previousContentHash: string | null = null;
+  for (const run of listScoreAuthorityResolutionRuns()) {
+    problems.push(...scoreAuthorityResolutionRunProblems(run).map((problem) =>
+      `${run.authorityRunId}: ${problem}`));
+    if (run.previousContentHash !== previousContentHash) {
+      problems.push(
+        `${run.authorityRunId}: previous content hash does not match authority chain`,
+      );
+    }
+    previousContentHash = run.contentHash;
+  }
+  return problems;
+}
+
+export function getReleaseScoreAuditHistoryV2Seal(
+  historyRunId: string,
+): ReleaseScoreAuditHistoryV2SealRow | null {
+  return releaseScoreAuditHistoryV2SealByHistoryRunStmt
+    ? releaseScoreAuditHistoryV2SealFromStored(
+        releaseScoreAuditHistoryV2SealByHistoryRunStmt.get(
+          historyRunId,
+        ) as Record<string, unknown> | undefined,
+      )
+    : null;
+}
+
+export function listReleaseScoreAuditHistoryV2Seals():
+  ReleaseScoreAuditHistoryV2SealRow[] {
+  if (!listReleaseScoreAuditHistoryV2SealsStmt) return [];
+  return (
+    listReleaseScoreAuditHistoryV2SealsStmt.all() as Record<string, unknown>[]
+  ).map((row) => releaseScoreAuditHistoryV2SealFromStored(row))
+    .filter((seal): seal is ReleaseScoreAuditHistoryV2SealRow => seal != null);
+}
+
+function scoreAuthorityHistoryLinkProblems(input: {
+  historySeal: ReleaseScoreAuditHistoryRunSeal;
+  historyRows: Array<ReleaseScoreAuditRow & {
+    run_id: string;
+    recorded_at: string;
+  }>;
+  authorityRun: ScoreAuthorityResolutionRun;
+  sealedAt: string;
+}): string[] {
+  const problems: string[] = [];
+  const historyRowsContentHash = releaseScoreAuditHistoryRowsContentHash(
+    input.historyRows as unknown as Array<Record<string, unknown>>,
+  );
+  if (
+    input.historySeal.row_count !== input.historyRows.length ||
+    input.historySeal.rows_content_hash !== historyRowsContentHash
+  ) {
+    problems.push('history run seal does not match immutable history rows');
+  }
+  if (input.historySeal.recorded_at !== input.sealedAt) {
+    problems.push('history run recorded_at does not match v2 sealedAt');
+  }
+  if (input.authorityRun.recordedAt !== input.sealedAt) {
+    problems.push('authority run recordedAt does not match v2 sealedAt');
+  }
+  for (const historyRow of input.historyRows) {
+    if (historyRow.authority_run_id !== input.authorityRun.authorityRunId) {
+      problems.push(
+        `history release ${historyRow.release_tag} does not reference authority run ` +
+          input.authorityRun.authorityRunId,
+      );
+    }
+    let sourceIdentity: Record<string, unknown>;
+    try {
+      sourceIdentity = parseJsonObject(historyRow.source_identity_json ?? '');
+    } catch {
+      problems.push(
+        `history release ${historyRow.release_tag} has invalid source identity JSON`,
+      );
+      continue;
+    }
+    if (
+      sourceIdentity.schemaVersion !==
+        input.authorityRun.sourceIdentitySchemaVersion ||
+      sourceIdentity.digest !== input.authorityRun.sourceIdentityDigest
+    ) {
+      problems.push(
+        `history release ${historyRow.release_tag} source identity does not match ` +
+          `authority run ${input.authorityRun.authorityRunId}`,
+      );
+    }
+  }
+  return problems;
+}
+
+export function sealReleaseScoreAuditHistoryV2(input: {
+  historyRunId: string;
+  authorityRunId: string;
+  sealedAt: string;
+}): { inserted: boolean; row: ReleaseScoreAuditHistoryV2SealRow } {
+  if (
+    !insertReleaseScoreAuditHistoryV2SealStmt ||
+    !releaseScoreAuditHistoryV2SealByAuthorityRunStmt ||
+    !latestReleaseScoreAuditHistoryV2SealStmt
+  ) {
+    throw new Error(
+      'Release score audit history v2 seal storage is unavailable or read-only',
+    );
+  }
+  const sealedAtMs = Date.parse(input.sealedAt);
+  if (!Number.isFinite(sealedAtMs)) {
+    throw new Error('Release score audit history v2 seal requires a valid sealedAt');
+  }
+  const sealedAt = new Date(sealedAtMs).toISOString();
+  return runInWriteTransaction(() => {
+    const historySeal = getReleaseScoreAuditHistoryRunSeal(input.historyRunId);
+    if (!historySeal) {
+      throw new Error(
+        `Release score audit history run ${input.historyRunId} is not sealed`,
+      );
+    }
+    const historyRows = listReleaseScoreAuditHistoryForRun(input.historyRunId);
+    if (historyRows.length === 0) {
+      throw new Error(
+        `Release score audit history run ${input.historyRunId} is empty`,
+      );
+    }
+    const authorityRun = getScoreAuthorityResolutionRun(input.authorityRunId);
+    if (!authorityRun) {
+      throw new Error(
+        `Score authority resolution run ${input.authorityRunId} is missing`,
+      );
+    }
+    const authorityProblems = scoreAuthorityResolutionRunProblems(authorityRun);
+    const linkProblems = scoreAuthorityHistoryLinkProblems({
+      historySeal,
+      historyRows,
+      authorityRun,
+      sealedAt,
+    });
+    if (authorityProblems.length > 0 || linkProblems.length > 0) {
+      throw new Error(
+        `Cannot seal release score audit history v2: ` +
+          [...authorityProblems, ...linkProblems].join('; '),
+      );
+    }
+    const existingByHistory = getReleaseScoreAuditHistoryV2Seal(
+      input.historyRunId,
+    );
+    const existingByAuthority = releaseScoreAuditHistoryV2SealFromStored(
+      releaseScoreAuditHistoryV2SealByAuthorityRunStmt.get(
+        input.authorityRunId,
+      ) as Record<string, unknown> | undefined,
+    );
+    const previous = releaseScoreAuditHistoryV2SealFromStored(
+      latestReleaseScoreAuditHistoryV2SealStmt.get() as
+        Record<string, unknown> | undefined,
+    );
+    const previousContentHash = existingByHistory
+      ? existingByHistory.previousContentHash
+      : existingByAuthority
+        ? existingByAuthority.previousContentHash
+        : previous?.contentHash ?? null;
+    const seal = buildReleaseScoreAuditHistoryV2Seal({
+      historyRunId: input.historyRunId,
+      authorityRunId: input.authorityRunId,
+      sealedAt,
+      historyRowCount: historySeal.row_count,
+      historyRowsContentHash: historySeal.rows_content_hash,
+      authorityRowCount: authorityRun.rowCount,
+      authorityRowsContentHash: authorityRun.rowsContentHash,
+      previousContentHash,
+    });
+    for (const existing of [existingByHistory, existingByAuthority]) {
+      if (!existing) continue;
+      const { id: _id, ...storedSeal } = existing;
+      if (
+        canonicalReleaseScoreAuditHistoryV2SealJson(storedSeal) !==
+          canonicalReleaseScoreAuditHistoryV2SealJson(seal)
+      ) {
+        throw new Error(
+          `Release score audit history v2 seal conflicts with immutable ` +
+            `history or authority run linkage`,
+        );
+      }
+      return { inserted: false, row: existing };
+    }
+    insertReleaseScoreAuditHistoryV2SealStmt.run({
+      schema_version: seal.schemaVersion,
+      history_run_id: seal.historyRunId,
+      authority_run_id: seal.authorityRunId,
+      sealed_at: seal.sealedAt,
+      history_row_count: seal.historyRowCount,
+      history_rows_content_hash: seal.historyRowsContentHash,
+      authority_row_count: seal.authorityRowCount,
+      authority_rows_content_hash: seal.authorityRowsContentHash,
+      previous_content_hash: seal.previousContentHash,
+      content_hash: seal.contentHash,
+    });
+    const stored = getReleaseScoreAuditHistoryV2Seal(input.historyRunId);
+    if (!stored) {
+      throw new Error(
+        `Release score audit history v2 seal for ${input.historyRunId} ` +
+          'failed post-insert verification',
+      );
+    }
+    const { id: _id, ...storedSeal } = stored;
+    if (
+      canonicalReleaseScoreAuditHistoryV2SealJson(storedSeal) !==
+        canonicalReleaseScoreAuditHistoryV2SealJson(seal)
+    ) {
+      throw new Error(
+        `Release score audit history v2 seal for ${input.historyRunId} ` +
+          'does not match canonical content',
+      );
+    }
+    return { inserted: true, row: stored };
+  });
+}
+
+export function releaseScoreAuditHistoryV2SealChainProblems(): string[] {
+  const problems: string[] = [];
+  let previousContentHash: string | null = null;
+  for (const seal of listReleaseScoreAuditHistoryV2Seals()) {
+    const { id: _id, ...canonicalSeal } = seal;
+    problems.push(...releaseScoreAuditHistoryV2SealProblems(canonicalSeal)
+      .map((problem) => `${seal.historyRunId}: ${problem}`));
+    if (seal.previousContentHash !== previousContentHash) {
+      problems.push(
+        `${seal.historyRunId}: previous content hash does not match v2 seal chain`,
+      );
+    }
+    const historySeal = getReleaseScoreAuditHistoryRunSeal(seal.historyRunId);
+    const authorityRun = getScoreAuthorityResolutionRun(seal.authorityRunId);
+    const historyRows = listReleaseScoreAuditHistoryForRun(seal.historyRunId);
+    if (!historySeal) {
+      problems.push(`${seal.historyRunId}: linked history run seal is missing`);
+    }
+    if (!authorityRun) {
+      problems.push(`${seal.historyRunId}: linked authority run is missing`);
+    }
+    if (historySeal && authorityRun) {
+      problems.push(...scoreAuthorityHistoryLinkProblems({
+        historySeal,
+        historyRows,
+        authorityRun,
+        sealedAt: seal.sealedAt,
+      }).map((problem) => `${seal.historyRunId}: ${problem}`));
+      if (
+        seal.historyRowCount !== historySeal.row_count ||
+        seal.historyRowsContentHash !== historySeal.rows_content_hash ||
+        seal.authorityRowCount !== authorityRun.rowCount ||
+        seal.authorityRowsContentHash !== authorityRun.rowsContentHash
+      ) {
+        problems.push(
+          `${seal.historyRunId}: v2 seal projections do not match linked runs`,
+        );
+      }
+    }
+    previousContentHash = seal.contentHash;
+  }
+  return problems;
+}
+
+function releaseScoreAuditHistoryContent(input: ReleaseScoreAuditInput): string {
+  return semanticContent([
+    input.release_tag,
+    input.scored_at,
+    input.score_model_version,
+    input.prompt_version,
+    input.final_score,
+    input.status,
+    input.band,
+    input.recommended,
+    input.input_json,
+    input.components_json ?? null,
+    input.issue_evidence_json,
+    input.gate_evidence_json,
+    input.source_identity_json ?? null,
+    input.authority_run_id ?? null,
+  ]);
+}
+
+export interface ReleaseValidationOpportunityEnrollmentInsertResult {
+  insertedCount: number;
+  equivalentCount: number;
+  rows: ReleaseValidationOpportunityEnrollmentRow[];
+}
+
+const hasReleaseValidationOpportunityEnrollments = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_validation_opportunity_enrollments'
+`).get() != null;
+const validationOpportunityEnrollmentForIdentityStmt =
+  hasReleaseValidationOpportunityEnrollments
+    ? db.prepare(`
+        SELECT *
+        FROM release_validation_opportunity_enrollments
+        WHERE release_tag=?
+          AND opportunity_code=?
+          AND score_model_version=?
+          AND prompt_version=?
+          AND code_revision=?
+      `)
+    : null;
+const latestValidationOpportunityEnrollmentStmt =
+  hasReleaseValidationOpportunityEnrollments
+    ? db.prepare(`
+        SELECT *
+        FROM release_validation_opportunity_enrollments
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+    : null;
+const insertValidationOpportunityEnrollmentStmt =
+  !dbReadOnly && hasReleaseValidationOpportunityEnrollments
+    ? db.prepare(`
+        INSERT INTO release_validation_opportunity_enrollments (
+          opportunity_id, enrolled_at, cohort_inception_at, enrollment_kind,
+          release_node_id, release_tag, release_tag_commit_oid,
+          release_published_at, opportunity_code, opens_at,
+          closes_at_exclusive, score_model_version, prompt_version,
+          code_revision, enrollment_run_id, operation_attempt_content_hash,
+          catalog_digest, catalog_release_count, previous_content_hash,
+          content_hash
+        )
+        VALUES (
+          :opportunity_id, :enrolled_at, :cohort_inception_at, :enrollment_kind,
+          :release_node_id, :release_tag, :release_tag_commit_oid,
+          :release_published_at, :opportunity_code, :opens_at,
+          :closes_at_exclusive, :score_model_version, :prompt_version,
+          :code_revision, :enrollment_run_id, :operation_attempt_content_hash,
+          :catalog_digest, :catalog_release_count, :previous_content_hash,
+          :content_hash
+        )
+      `)
+    : null;
+const listValidationOpportunityEnrollmentsStmt =
+  hasReleaseValidationOpportunityEnrollments
+    ? db.prepare(`
+        SELECT *
+        FROM release_validation_opportunity_enrollments
+        ORDER BY id
+      `)
+    : null;
+
+export function insertReleaseValidationOpportunityEnrollments(input: {
+  enrollments: ReleaseValidationOpportunityEnrollmentInput[];
+  lease_name: string;
+  lease_holder_id: string;
+}): ReleaseValidationOpportunityEnrollmentInsertResult {
+  if (
+    !validationOpportunityEnrollmentForIdentityStmt ||
+    !latestValidationOpportunityEnrollmentStmt ||
+    !insertValidationOpportunityEnrollmentStmt ||
+    !listValidationOpportunityEnrollmentsStmt
+  ) {
+    throw new Error(
+      'Release validation opportunity enrollment storage is unavailable or read-only',
+    );
+  }
+  if (input.enrollments.length === 0) {
+    return { insertedCount: 0, equivalentCount: 0, rows: [] };
+  }
+  const runIds = new Set(input.enrollments.map((row) => row.enrollment_run_id));
+  if (runIds.size !== 1) {
+    throw new Error('A validation opportunity enrollment batch must use one refresh run');
+  }
+  const runId = [...runIds][0];
+
+  return runInWriteTransaction(() => {
+    const attempt = refreshOperationAttemptByRunStmt?.get(
+      runId,
+    ) as unknown as RefreshOperationAttemptRow | undefined;
+    if (!attempt) {
+      throw new Error(
+        `Validation opportunity enrollment references unknown refresh run ` +
+        `${JSON.stringify(runId)}`,
+      );
+    }
+    assertActiveRefreshLeaseFence({
+      leaseName: input.lease_name,
+      leaseHolderId: input.lease_holder_id,
+      observedAt: new Date().toISOString(),
+      attempt,
+      context: `enroll validation opportunities for ${JSON.stringify(runId)}`,
+    });
+    const activeCatalog = currentActiveReleaseCatalog();
+    let insertedCount = 0;
+    let equivalentCount = 0;
+    const rows: ReleaseValidationOpportunityEnrollmentRow[] = [];
+
+    for (const candidate of input.enrollments) {
+      const normalized = normalizeValidationOpportunityEnrollmentInput(candidate);
+      if (
+        normalized.operation_attempt_content_hash !== attempt.content_hash ||
+        normalized.code_revision !== attempt.code_revision
+      ) {
+        throw new Error(
+          `Validation opportunity enrollment does not match refresh attempt ` +
+          `${JSON.stringify(runId)}`,
+        );
+      }
+      if (
+        normalized.catalog_digest !== activeCatalog.digest ||
+        normalized.catalog_release_count !== activeCatalog.releaseCount
+      ) {
+        throw new Error(
+          'Validation opportunity enrollment catalog evidence is not current',
+        );
+      }
+      const release = getRelease(normalized.release_tag);
+      if (
+        !release ||
+        release.catalog_active !== 1 ||
+        release.node_id !== normalized.release_node_id ||
+        release.catalog_tag_commit_oid !== normalized.release_tag_commit_oid ||
+        release.published_at !== normalized.release_published_at ||
+        release.catalog_digest !== normalized.catalog_digest
+      ) {
+        throw new Error(
+          `Validation opportunity enrollment release ${normalized.release_tag} ` +
+          `is not the exact active catalog row`,
+        );
+      }
+      const existing = validationOpportunityEnrollmentForIdentityStmt.get(
+        normalized.release_tag,
+        normalized.opportunity_code,
+        normalized.score_model_version,
+        normalized.prompt_version,
+        normalized.code_revision,
+      ) as unknown as ReleaseValidationOpportunityEnrollmentRow | undefined;
+      if (existing) {
+        if (!validationOpportunityEnrollmentEquivalent(existing, normalized)) {
+          throw new Error(
+            `Validation opportunity enrollment conflict for ` +
+            `${normalized.release_tag}/${normalized.opportunity_code}/` +
+            `${normalized.score_model_version}/prompt-${normalized.prompt_version}/` +
+            `revision-${normalized.code_revision}`,
+          );
+        }
+        equivalentCount++;
+        rows.push(existing);
+        continue;
+      }
+      const previous = latestValidationOpportunityEnrollmentStmt.get() as
+        unknown as ReleaseValidationOpportunityEnrollmentRow | undefined;
+      const opportunityId = releaseValidationOpportunityId(normalized);
+      const rowInput = {
+        ...normalized,
+        opportunity_id: opportunityId,
+        previous_content_hash: previous?.content_hash ?? null,
+        content_hash: '',
+      };
+      rowInput.content_hash =
+        releaseValidationOpportunityEnrollmentContentHash(rowInput);
+      insertValidationOpportunityEnrollmentStmt.run(rowInput);
+      const inserted = validationOpportunityEnrollmentForIdentityStmt.get(
+        normalized.release_tag,
+        normalized.opportunity_code,
+        normalized.score_model_version,
+        normalized.prompt_version,
+        normalized.code_revision,
+      ) as unknown as ReleaseValidationOpportunityEnrollmentRow | undefined;
+      if (!inserted) {
+        throw new Error(
+          `Validation opportunity enrollment ${opportunityId} was not persisted`,
+        );
+      }
+      insertedCount++;
+      rows.push(inserted);
+    }
+    return { insertedCount, equivalentCount, rows };
+  });
+}
+
+export function listReleaseValidationOpportunityEnrollments():
+ReleaseValidationOpportunityEnrollmentRow[] {
+  return listValidationOpportunityEnrollmentsStmt
+    ? listValidationOpportunityEnrollmentsStmt.all() as unknown as
+      ReleaseValidationOpportunityEnrollmentRow[]
+    : [];
+}
+
+function normalizeValidationOpportunityEnrollmentInput(
+  input: ReleaseValidationOpportunityEnrollmentInput,
+): ReleaseValidationOpportunityEnrollmentInput {
+  const codeRevision = normalizeCodeRevision(input.code_revision);
+  if (!codeRevision) {
+    throw new Error('Validation opportunity enrollment requires a code revision');
+  }
+  const planned = planReleaseValidationOpportunityEnrollments({
+    enrolledAt: input.enrolled_at,
+    cohortInceptionAt: input.cohort_inception_at,
+    release: {
+      nodeId: input.release_node_id,
+      tag: input.release_tag,
+      tagCommitOid: input.release_tag_commit_oid,
+      publishedAt: input.release_published_at,
+    },
+    cohort: {
+      modelVersion: input.score_model_version,
+      promptVersion: input.prompt_version,
+      codeRevision,
+    },
+    evidence: {
+      enrollmentRunId: input.enrollment_run_id,
+      operationAttemptContentHash: input.operation_attempt_content_hash,
+      catalogDigest: input.catalog_digest,
+      catalogReleaseCount: input.catalog_release_count,
+    },
+  }).find((row) => row.opportunity_code === input.opportunity_code);
+  if (!planned ||
+    canonicalOperationJson(planned) !== canonicalOperationJson({
+      ...input,
+      code_revision: codeRevision,
+    })) {
+    throw new Error(
+      `Validation opportunity enrollment ${input.release_tag}/` +
+      `${input.opportunity_code} is not a canonical prospective slot`,
+    );
+  }
+  return planned;
+}
+
+function validationOpportunityEnrollmentEquivalent(
+  existing: ReleaseValidationOpportunityEnrollmentRow,
+  candidate: ReleaseValidationOpportunityEnrollmentInput,
+): boolean {
+  return canonicalOperationJson({
+    release_node_id: existing.release_node_id,
+    release_tag: existing.release_tag,
+    release_tag_commit_oid: existing.release_tag_commit_oid,
+    release_published_at: existing.release_published_at,
+    opportunity_code: existing.opportunity_code,
+    opens_at: existing.opens_at,
+    closes_at_exclusive: existing.closes_at_exclusive,
+    score_model_version: existing.score_model_version,
+    prompt_version: existing.prompt_version,
+    code_revision: existing.code_revision,
+    cohort_inception_at: existing.cohort_inception_at,
+    enrollment_kind: existing.enrollment_kind,
+  }) === canonicalOperationJson({
+    release_node_id: candidate.release_node_id,
+    release_tag: candidate.release_tag,
+    release_tag_commit_oid: candidate.release_tag_commit_oid,
+    release_published_at: candidate.release_published_at,
+    opportunity_code: candidate.opportunity_code,
+    opens_at: candidate.opens_at,
+    closes_at_exclusive: candidate.closes_at_exclusive,
+    score_model_version: candidate.score_model_version,
+    prompt_version: candidate.prompt_version,
+    code_revision: candidate.code_revision,
+    cohort_inception_at: candidate.cohort_inception_at,
+    enrollment_kind: candidate.enrollment_kind,
+  });
+}
+
+
+export interface ReleaseValidationForecastInput {
+  opportunity_code: string;
+  recorded_at: string;
+  latest_release_tag: string;
+  latest_release_published_at: string;
+  selected_tag: string | null;
+  audit_history_run_id: string;
+  score_model_version: string;
+  prompt_version: number;
+  policy_code: string;
+  candidate_scores_json: string;
+  decision_json: string;
+  source_identity_json: string;
+  code_revision: string;
+}
+
+export interface ReleaseValidationForecastRow
+  extends Omit<ReleaseValidationForecastInput, 'code_revision'> {
+  id: number;
+  decision_id: string;
+  code_revision: string | null;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+export interface ReleaseValidationForecastInsertResult {
+  status: 'inserted' | 'equivalent';
+  inserted: boolean;
+  equivalent: boolean;
+  row: ReleaseValidationForecastRow;
+}
+
+export class ReleaseValidationForecastConflictError extends Error {
+  readonly code = 'RELEASE_VALIDATION_FORECAST_CONFLICT';
+
+  constructor(slot: string, fields: string[]) {
+    super(
+      `Validation forecast capture slot conflict for ${slot}; ` +
+      `differing fields: ${fields.join(', ')}`,
+    );
+    this.name = 'ReleaseValidationForecastConflictError';
+  }
+}
+
+export interface ReleaseValidationOutcomeObservationInput {
+  decision_id: string;
+  horizon_code: string;
+  observed_at: string;
+  status: string;
+  outcome_json: string;
+  source_identity_json: string;
+}
+
+export interface ReleaseValidationOutcomeObservationRow extends ReleaseValidationOutcomeObservationInput {
+  id: number;
+  observation_id: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+export type ReleaseValidationObservationBatchReceiptRow =
+  ValidationObservationBatchReceiptRow;
+
+export interface ReleaseValidationObservationBatchCommitInput {
+  outcomes: ReleaseValidationOutcomeObservationRow[];
+  receipt: ReleaseValidationObservationBatchReceiptRow;
+}
+
+export interface ReleaseValidationObservationBatchCommitOptions {
+  failAfterOutcomeInsertCount?: number;
+}
+
+export class ReleaseValidationObservationBatchConflictError extends Error {
+  readonly code = 'RELEASE_VALIDATION_OBSERVATION_BATCH_CONFLICT';
+
+  constructor(batchId: string, reason: string) {
+    super(
+      `Validation observation batch conflict for ${JSON.stringify(batchId)}: ${reason}`,
+    );
+    this.name = 'ReleaseValidationObservationBatchConflictError';
+  }
+}
+
+const hasReleaseValidationForecasts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_validation_forecasts'
+`).get() != null;
+const hasReleaseValidationOutcomes = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_validation_outcome_observations'
+`).get() != null;
+const hasReleaseValidationObservationBatches = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_validation_observation_batches'
+`).get() != null;
+
+const validationForecastForOpportunityStmt = hasReleaseValidationForecasts
+  ? db.prepare(`
+      SELECT *
+      FROM release_validation_forecasts
+      WHERE opportunity_code=?
+        AND latest_release_tag=?
+        AND score_model_version=?
+        AND prompt_version=?
+        AND (
+          (code_revision IS NULL AND ? IS NULL)
+          OR code_revision=?
+        )
+    `)
+  : null;
+const latestValidationForecastHashStmt = hasReleaseValidationForecasts
+  ? db.prepare(`SELECT content_hash FROM release_validation_forecasts ORDER BY id DESC LIMIT 1`)
+  : null;
+const insertValidationForecastStmt = !dbReadOnly && hasReleaseValidationForecasts
+  ? db.prepare(`
+      INSERT INTO release_validation_forecasts (
+        decision_id, opportunity_code, recorded_at, latest_release_tag,
+        latest_release_published_at, selected_tag, audit_history_run_id,
+        score_model_version, prompt_version, policy_code, candidate_scores_json,
+        decision_json, source_identity_json, code_revision, previous_content_hash, content_hash
+      )
+      VALUES (
+        :decision_id, :opportunity_code, :recorded_at, :latest_release_tag,
+        :latest_release_published_at, :selected_tag, :audit_history_run_id,
+        :score_model_version, :prompt_version, :policy_code, :candidate_scores_json,
+        :decision_json, :source_identity_json, :code_revision, :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const listValidationForecastsStmt = hasReleaseValidationForecasts
+  ? db.prepare(`SELECT * FROM release_validation_forecasts ORDER BY recorded_at, id`)
+  : null;
+const validationAuditHistoryRunCountStmt = hasReleaseValidationForecasts &&
+  db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='release_score_audit_history'`).get()
+  ? db.prepare(`SELECT COUNT(*) AS count FROM release_score_audit_history WHERE run_id=?`)
+  : null;
+const validationAuditHistoryRunRowsStmt = hasReleaseValidationForecasts &&
+  db.prepare(`SELECT name FROM sqlite_master WHERE type='table' AND name='release_score_audit_history'`).get()
+  ? db.prepare(`SELECT * FROM release_score_audit_history WHERE run_id=? ORDER BY release_tag`)
+  : null;
+const validationAuditHistoryRunSealStmt = hasReleaseValidationForecasts &&
+  hasReleaseScoreAuditHistoryRuns
+  ? db.prepare(`SELECT * FROM release_score_audit_history_runs WHERE run_id=?`)
+  : null;
+
+const validationOutcomeByIdStmt = hasReleaseValidationOutcomes
+  ? db.prepare(`SELECT * FROM release_validation_outcome_observations WHERE observation_id=?`)
+  : null;
+const validationForecastByDecisionStmt = hasReleaseValidationForecasts
+  ? db.prepare(`
+      SELECT decision_id, content_hash
+      FROM release_validation_forecasts
+      WHERE decision_id=?
+    `)
+  : null;
+const insertStagedValidationOutcomeStmt = !dbReadOnly && hasReleaseValidationOutcomes
+  ? db.prepare(`
+      INSERT INTO release_validation_outcome_observations (
+        id, observation_id, decision_id, horizon_code, observed_at, status,
+        outcome_json, source_identity_json, previous_content_hash, content_hash
+      )
+      VALUES (
+        :id, :observation_id, :decision_id, :horizon_code, :observed_at, :status,
+        :outcome_json, :source_identity_json, :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const listValidationOutcomesStmt = hasReleaseValidationOutcomes
+  ? db.prepare(`SELECT * FROM release_validation_outcome_observations ORDER BY observed_at, id`)
+  : null;
+const validationObservationBatchByIdStmt = hasReleaseValidationObservationBatches
+  ? db.prepare(`SELECT * FROM release_validation_observation_batches WHERE batch_id=?`)
+  : null;
+const insertValidationObservationBatchStmt =
+  !dbReadOnly && hasReleaseValidationObservationBatches
+    ? db.prepare(`
+        INSERT INTO release_validation_observation_batches (
+          id, batch_id, observed_at, code_revision, source_identity_digest,
+          forecast_count, intended_count, inserted_count, already_existing_count,
+          pending_count, excluded_count, indeterminate_count, results_json,
+          outcome_chain_previous_hash, outcome_chain_content_hash,
+          previous_content_hash, content_hash
+        )
+        VALUES (
+          :id, :batch_id, :observed_at, :code_revision, :source_identity_digest,
+          :forecast_count, :intended_count, :inserted_count, :already_existing_count,
+          :pending_count, :excluded_count, :indeterminate_count, :results_json,
+          :outcome_chain_previous_hash, :outcome_chain_content_hash,
+          :previous_content_hash, :content_hash
+        )
+      `)
+    : null;
+const listValidationObservationBatchesStmt = hasReleaseValidationObservationBatches
+  ? db.prepare(`SELECT * FROM release_validation_observation_batches ORDER BY id`)
+  : null;
+const validationForecastCountStmt = hasReleaseValidationForecasts
+  ? db.prepare(`SELECT COUNT(*) AS count FROM release_validation_forecasts`)
+  : null;
+
+export function getReleaseValidationForecastForSlot(input: {
+  opportunity_code: string;
+  latest_release_tag: string;
+  score_model_version: string;
+  prompt_version: number;
+  code_revision: string;
+}): ReleaseValidationForecastRow | null {
+  if (!validationForecastForOpportunityStmt) return null;
+  const codeRevision = normalizeCodeRevision(input.code_revision);
+  if (!codeRevision) {
+    throw new Error('Validation forecast slot lookup requires a deterministic code revision');
+  }
+  return validationForecastForOpportunityStmt.get(
+    input.opportunity_code,
+    input.latest_release_tag,
+    input.score_model_version,
+    input.prompt_version,
+    codeRevision,
+    codeRevision,
+  ) as ReleaseValidationForecastRow | undefined ?? null;
+}
+
+export function insertReleaseValidationForecast(
+  input: ReleaseValidationForecastInput,
+): ReleaseValidationForecastInsertResult {
+  if (!insertValidationForecastStmt || !validationForecastForOpportunityStmt ||
+    !latestValidationForecastHashStmt || !validationAuditHistoryRunCountStmt ||
+    !validationAuditHistoryRunRowsStmt || !validationAuditHistoryRunSealStmt) {
+    throw new Error('Release validation forecast storage is unavailable or read-only');
+  }
+  const normalizedInput = normalizeReleaseValidationForecastInput(input);
+  validateValidationLedgerInput(normalizedInput);
+  const decisionPayload = parseJsonObject(normalizedInput.decision_json);
+  const decisionSchemaVersion = Number(decisionPayload.schemaVersion);
+  if (decisionSchemaVersion !== 4) {
+    throw new Error('New release validation forecasts require decision schemaVersion 4');
+  }
+  const existing = validationForecastForOpportunityStmt.get(
+    normalizedInput.opportunity_code,
+    normalizedInput.latest_release_tag,
+    normalizedInput.score_model_version,
+    normalizedInput.prompt_version,
+    normalizedInput.code_revision,
+    normalizedInput.code_revision,
+  ) as ReleaseValidationForecastRow | undefined;
+  if (existing) {
+    return equivalentReleaseValidationForecastResult(existing, normalizedInput);
+  }
+  const timing = releaseValidationForecastTiming({
+    opportunity_code: normalizedInput.opportunity_code,
+    recorded_at: normalizedInput.recorded_at,
+    latest_release_published_at: normalizedInput.latest_release_published_at,
+  });
+  if (!timing.valid) {
+    throw new Error(
+      `Validation forecast opportunity is outside its bounded age window: ` +
+      `${normalizedInput.opportunity_code} age=${timing.ageHours ?? 'invalid'} ` +
+      `reason=${timing.reason}`,
+    );
+  }
+
+  return runInWriteTransaction(() => {
+    const raced = validationForecastForOpportunityStmt.get(
+      normalizedInput.opportunity_code,
+      normalizedInput.latest_release_tag,
+      normalizedInput.score_model_version,
+      normalizedInput.prompt_version,
+      normalizedInput.code_revision,
+      normalizedInput.code_revision,
+    ) as ReleaseValidationForecastRow | undefined;
+    if (raced) {
+      return equivalentReleaseValidationForecastResult(raced, normalizedInput);
+    }
+    const historyCount = validationAuditHistoryRunCountStmt.get(
+      normalizedInput.audit_history_run_id,
+    ) as { count?: number } | undefined;
+    if (Number(historyCount?.count ?? 0) === 0) {
+      throw new Error(
+        `Validation forecast audit history run ` +
+        `${JSON.stringify(normalizedInput.audit_history_run_id)} does not exist`,
+      );
+    }
+    const historyRows = validationAuditHistoryRunRowsStmt.all(
+      normalizedInput.audit_history_run_id,
+    ) as Array<Record<string, unknown>>;
+    const historyRunSeal = validationAuditHistoryRunSealStmt.get(
+      normalizedInput.audit_history_run_id,
+    ) as ReleaseScoreAuditHistoryRunSeal | undefined;
+    if (!historyRunSeal) {
+      throw new Error(
+        `Validation forecast audit history run ` +
+        `${JSON.stringify(normalizedInput.audit_history_run_id)} is not sealed`,
+      );
+    }
+    const rowsContentHash = releaseScoreAuditHistoryRowsContentHash(historyRows);
+    if (
+      historyRunSeal.row_count !== historyRows.length ||
+      historyRunSeal.rows_content_hash !== rowsContentHash
+    ) {
+      throw new Error(
+        `Validation forecast audit history run ` +
+        `${JSON.stringify(normalizedInput.audit_history_run_id)} seal mismatch`,
+      );
+    }
+    const authorityRunIds = new Set(
+      historyRows.map((row) =>
+        typeof row.authority_run_id === 'string'
+          ? row.authority_run_id
+          : null),
+    );
+    if (
+      authorityRunIds.size !== 1 ||
+      typeof [...authorityRunIds][0] !== 'string'
+    ) {
+      throw new Error(
+        `Validation forecast audit history run ` +
+        `${JSON.stringify(normalizedInput.audit_history_run_id)} does not ` +
+        'reference exactly one authority run',
+      );
+    }
+    const authorityRunId = [...authorityRunIds][0] as string;
+    const authorityRun = getScoreAuthorityResolutionRun(authorityRunId);
+    if (!authorityRun) {
+      throw new Error(
+        `Validation forecast authority run ${JSON.stringify(authorityRunId)} ` +
+        'does not exist',
+      );
+    }
+    const historyV2Seal = getReleaseScoreAuditHistoryV2Seal(
+      normalizedInput.audit_history_run_id,
+    );
+    if (!historyV2Seal) {
+      throw new Error(
+        `Validation forecast audit history run ` +
+        `${JSON.stringify(normalizedInput.audit_history_run_id)} does not ` +
+        'have a history v2 seal',
+      );
+    }
+    const commitProblems = releaseValidationScoreCommitTimingProblems(
+      decisionPayload.scoreCommit,
+      {
+        recordedAt: normalizedInput.recorded_at,
+        historyRunId: normalizedInput.audit_history_run_id,
+        historyRunContentHash: historyRunSeal.content_hash,
+        historyRecordedAt: historyRunSeal.recorded_at,
+        authorityRunId,
+        authorityRunContentHash: authorityRun.contentHash,
+        historyV2SealContentHash: historyV2Seal.contentHash,
+      },
+    );
+    const catalogProblems = releaseCatalogAttestationProblems(
+      decisionPayload.catalogAttestation,
+    );
+    if (commitProblems.length > 0 || catalogProblems.length > 0) {
+      throw new Error(
+        `Validation forecast schema v4 provenance is invalid: ` +
+        [...commitProblems, ...catalogProblems].join('; '),
+      );
+    }
+    assertCatalogAttestationMatchesCurrent(
+      decisionPayload.catalogAttestation as ReleaseCatalogAttestation,
+    );
+    const provenanceFailures = validateReleaseValidationForecastProvenance(
+      [{
+        ...normalizedInput,
+        id: 0,
+        decision_id: 'pending-validation',
+        previous_content_hash: null,
+        content_hash: 'pending-validation',
+      }],
+      historyRows as any,
+      [historyRunSeal],
+      [authorityRun],
+      [historyV2Seal],
+    );
+    if (provenanceFailures.length > 0) {
+      throw new Error(`Validation forecast provenance mismatch: ${provenanceFailures.join('; ')}`);
+    }
+    const previous = latestValidationForecastHashStmt.get() as { content_hash?: string } | undefined;
+    const previousContentHash = previous?.content_hash ?? null;
+    const recordContent = semanticContent([
+      normalizedInput.opportunity_code,
+      normalizedInput.recorded_at,
+      normalizedInput.latest_release_tag,
+      normalizedInput.latest_release_published_at,
+      normalizedInput.selected_tag,
+      normalizedInput.audit_history_run_id,
+      normalizedInput.score_model_version,
+      normalizedInput.prompt_version,
+      normalizedInput.policy_code,
+      normalizedInput.candidate_scores_json,
+      normalizedInput.decision_json,
+      normalizedInput.source_identity_json,
+      normalizedInput.code_revision,
+    ]);
+    const contentHash = createHash('sha256')
+      .update(`release-validation-forecast-v1\0${previousContentHash ?? ''}\0${recordContent}`)
+      .digest('hex');
+    const decisionId = createHash('sha256')
+      .update(
+        `release-validation-decision-v1\0${normalizedInput.opportunity_code}\0` +
+        `${normalizedInput.latest_release_tag}\0${normalizedInput.recorded_at}\0` +
+        `${contentHash}`,
+      )
+      .digest('hex');
+    insertValidationForecastStmt.run({
+      ...normalizedInput,
+      decision_id: decisionId,
+      previous_content_hash: previousContentHash,
+      content_hash: contentHash,
+    } as unknown as Record<string, string | number | null>);
+    const row = validationForecastForOpportunityStmt.get(
+      normalizedInput.opportunity_code,
+      normalizedInput.latest_release_tag,
+      normalizedInput.score_model_version,
+      normalizedInput.prompt_version,
+      normalizedInput.code_revision,
+      normalizedInput.code_revision,
+    ) as unknown as ReleaseValidationForecastRow;
+    return {
+      status: 'inserted',
+      inserted: true,
+      equivalent: false,
+      row,
+    };
+  });
+}
+
+function normalizeReleaseValidationForecastInput(
+  input: ReleaseValidationForecastInput,
+): ReleaseValidationForecastInput {
+  const codeRevision = normalizeCodeRevision(input.code_revision);
+  if (!codeRevision) {
+    throw new Error(
+      'New release validation forecasts require a nonblank deterministic code revision',
+    );
+  }
+  return {
+    ...input,
+    code_revision: codeRevision,
+  };
+}
+
+function equivalentReleaseValidationForecastResult(
+  existing: ReleaseValidationForecastRow,
+  input: ReleaseValidationForecastInput,
+): ReleaseValidationForecastInsertResult {
+  const differingFields = releaseValidationForecastPayloadDifferences(existing, input);
+  if (differingFields.length > 0) {
+    throw new ReleaseValidationForecastConflictError(
+      releaseValidationForecastSlot(input),
+      differingFields,
+    );
+  }
+  return {
+    status: 'equivalent',
+    inserted: false,
+    equivalent: true,
+    row: existing,
+  };
+}
+
+function releaseValidationForecastPayloadDifferences(
+  existing: ReleaseValidationForecastRow,
+  input: ReleaseValidationForecastInput,
+): string[] {
+  const fields: Array<[
+    keyof ReleaseValidationForecastInput,
+    unknown,
+    unknown,
+  ]> = [
+    ['opportunity_code', existing.opportunity_code, input.opportunity_code],
+    ['recorded_at', existing.recorded_at, input.recorded_at],
+    ['latest_release_tag', existing.latest_release_tag, input.latest_release_tag],
+    [
+      'latest_release_published_at',
+      existing.latest_release_published_at,
+      input.latest_release_published_at,
+    ],
+    ['selected_tag', existing.selected_tag, input.selected_tag],
+    ['audit_history_run_id', existing.audit_history_run_id, input.audit_history_run_id],
+    ['score_model_version', existing.score_model_version, input.score_model_version],
+    ['prompt_version', existing.prompt_version, input.prompt_version],
+    ['policy_code', existing.policy_code, input.policy_code],
+    [
+      'candidate_scores_json',
+      canonicalJson(existing.candidate_scores_json, 'stored candidate scores'),
+      canonicalJson(input.candidate_scores_json, 'candidate scores'),
+    ],
+    [
+      'decision_json',
+      canonicalJson(existing.decision_json, 'stored decision'),
+      canonicalJson(input.decision_json, 'decision'),
+    ],
+    [
+      'source_identity_json',
+      canonicalJson(existing.source_identity_json, 'stored source identity'),
+      canonicalJson(input.source_identity_json, 'source identity'),
+    ],
+    [
+      'code_revision',
+      normalizeCodeRevision(existing.code_revision),
+      normalizeCodeRevision(input.code_revision),
+    ],
+  ];
+  return fields
+    .filter(([, current, next]) => current !== next)
+    .map(([field]) => field);
+}
+
+function releaseValidationForecastSlot(
+  input: Pick<
+    ReleaseValidationForecastInput,
+    | 'opportunity_code'
+    | 'latest_release_tag'
+    | 'score_model_version'
+    | 'prompt_version'
+    | 'code_revision'
+  >,
+): string {
+  return `${input.latest_release_tag}/${input.opportunity_code}/` +
+    `${input.score_model_version}/prompt-${input.prompt_version}/` +
+    `revision-${input.code_revision}`;
+}
+
+function canonicalJson(value: string, label: string): string {
+  try {
+    return JSON.stringify(canonicalJsonValue(JSON.parse(value)));
+  } catch {
+    throw new Error(`Validation forecast ${label} must contain valid JSON`);
+  }
+}
+
+function canonicalJsonValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalJsonValue);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, item]) => [key, canonicalJsonValue(item)]),
+    );
+  }
+  return value;
+}
+
+export function listReleaseValidationForecasts(): ReleaseValidationForecastRow[] {
+  return listValidationForecastsStmt
+    ? listValidationForecastsStmt.all() as unknown as ReleaseValidationForecastRow[]
+    : [];
+}
+
+export function insertReleaseValidationOutcomeObservation(
+  _input: ReleaseValidationOutcomeObservationInput,
+): {
+  inserted: boolean;
+  row: ReleaseValidationOutcomeObservationRow;
+} {
+  throw new Error(
+    'Direct release validation outcome writes are disabled; ' +
+    'use commitReleaseValidationObservationBatch',
+  );
+}
+
+export function listReleaseValidationOutcomeObservations(): ReleaseValidationOutcomeObservationRow[] {
+  return listValidationOutcomesStmt
+    ? listValidationOutcomesStmt.all() as unknown as ReleaseValidationOutcomeObservationRow[]
+    : [];
+}
+
+export function getReleaseValidationObservationBatch(
+  batchId: string,
+): ReleaseValidationObservationBatchReceiptRow | null {
+  return validationObservationBatchByIdStmt?.get(
+    batchId,
+  ) as unknown as ReleaseValidationObservationBatchReceiptRow ?? null;
+}
+
+export function listReleaseValidationObservationBatches():
+  ReleaseValidationObservationBatchReceiptRow[] {
+  return listValidationObservationBatchesStmt
+    ? listValidationObservationBatchesStmt.all() as unknown as
+      ReleaseValidationObservationBatchReceiptRow[]
+    : [];
+}
+
+export function commitReleaseValidationObservationBatch(
+  input: ReleaseValidationObservationBatchCommitInput,
+  options: ReleaseValidationObservationBatchCommitOptions = {},
+): {
+  inserted: boolean;
+  equivalent: boolean;
+  row: ReleaseValidationObservationBatchReceiptRow;
+} {
+  if (
+    !validationObservationBatchByIdStmt ||
+    !insertValidationObservationBatchStmt ||
+    !insertStagedValidationOutcomeStmt ||
+    !listValidationForecastsStmt ||
+    !listValidationObservationBatchesStmt ||
+    !listValidationOutcomesStmt ||
+    !validationForecastByDecisionStmt ||
+    !validationForecastCountStmt
+  ) {
+    throw new Error(
+      'Release validation observation batch storage is unavailable or read-only',
+    );
+  }
+  const failAfterOutcomeInsertCount = options.failAfterOutcomeInsertCount;
+  if (
+    failAfterOutcomeInsertCount != null &&
+    (!Number.isInteger(failAfterOutcomeInsertCount) || failAfterOutcomeInsertCount <= 0)
+  ) {
+    throw new Error('Validation observation batch failure injection count must be positive');
+  }
+
+  return runInWriteTransaction(() => {
+    const currentOutcomes = listValidationOutcomesStmt.all() as unknown as
+      ReleaseValidationOutcomeObservationRow[];
+    const currentBatches = listValidationObservationBatchesStmt.all() as unknown as
+      ReleaseValidationObservationBatchReceiptRow[];
+    const currentIntegrity = verifyReleaseValidationObservationBatchLedger({
+      outcomes: currentOutcomes,
+      batches: currentBatches,
+    });
+    if (currentIntegrity.failedCount > 0) {
+      throw new Error(
+        `Refusing to append validation observation batch because its immutable ledger is corrupt: ` +
+        currentIntegrity.problems.join('; '),
+      );
+    }
+
+    const existing = validationObservationBatchByIdStmt.get(
+      input.receipt.batch_id,
+    ) as unknown as ReleaseValidationObservationBatchReceiptRow | undefined;
+    if (existing) {
+      if (
+        !releaseValidationObservationBatchRowsEqual(existing, input.receipt) ||
+        input.outcomes.length !== existing.intended_count ||
+        input.outcomes.some((candidate) => {
+          const persisted = validationOutcomeByIdStmt?.get(
+            candidate.observation_id,
+          ) as unknown as ReleaseValidationOutcomeObservationRow | undefined;
+          return !persisted || !releaseValidationOutcomeRowsEqual(persisted, candidate);
+        })
+      ) {
+        throw new ReleaseValidationObservationBatchConflictError(
+          input.receipt.batch_id,
+          'the persisted receipt or inserted outcome set differs',
+        );
+      }
+      return { inserted: false, equivalent: true, row: existing };
+    }
+
+    const currentSourceIdentity = scoreSourceIdentityForDb(db);
+    if (currentSourceIdentity.digest !== input.receipt.source_identity_digest) {
+      throw new ReleaseValidationObservationBatchConflictError(
+        input.receipt.batch_id,
+        'score source identity changed after staging',
+      );
+    }
+    const forecastCount = Number(
+      (validationForecastCountStmt.get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    if (forecastCount !== input.receipt.forecast_count) {
+      throw new ReleaseValidationObservationBatchConflictError(
+        input.receipt.batch_id,
+        'forecast count changed after staging',
+      );
+    }
+    let receiptReport: Record<string, unknown>;
+    try {
+      receiptReport = releaseValidationObservationBatchReport(input.receipt);
+    } catch {
+      throw new ReleaseValidationObservationBatchConflictError(
+        input.receipt.batch_id,
+        'receipt payload is invalid',
+      );
+    }
+    let currentForecastInputs:
+      ReturnType<typeof releaseValidationObservationBatchForecastInputs> | undefined;
+    if (receiptReport.schemaVersion === 2) {
+      currentForecastInputs = releaseValidationObservationBatchForecastInputs(
+        listValidationForecastsStmt.all() as unknown as ReleaseValidationForecastRow[],
+      );
+      if (
+        !Array.isArray(receiptReport.forecastInputs) ||
+        canonicalReleaseValidationBatchJson(receiptReport.forecastInputs) !==
+          canonicalReleaseValidationBatchJson(currentForecastInputs)
+      ) {
+        throw new ReleaseValidationObservationBatchConflictError(
+          input.receipt.batch_id,
+          'forecast decision IDs or content hashes changed after staging',
+        );
+      }
+    }
+    for (const outcome of input.outcomes) {
+      const outcomeSourceIdentity = parseJsonObject(outcome.source_identity_json);
+      if (
+        String(outcomeSourceIdentity.digest ?? '').trim().toLowerCase() !==
+          input.receipt.source_identity_digest
+      ) {
+        throw new ReleaseValidationObservationBatchConflictError(
+          input.receipt.batch_id,
+          `outcome ${JSON.stringify(outcome.observation_id)} source identity ` +
+          'does not match the receipt',
+        );
+      }
+      if (!validationForecastByDecisionStmt.get(outcome.decision_id)) {
+        throw new Error(
+          `Validation outcome decision ${JSON.stringify(outcome.decision_id)} does not exist`,
+        );
+      }
+    }
+
+    const expectedOutcomes = stageReleaseValidationOutcomeRows(
+      currentOutcomes,
+      input.outcomes.map((row) => ({
+        decision_id: row.decision_id,
+        horizon_code: row.horizon_code,
+        observed_at: row.observed_at,
+        status: row.status,
+        outcome_json: row.outcome_json,
+        source_identity_json: row.source_identity_json,
+      })),
+    ) as ReleaseValidationOutcomeObservationRow[];
+    if (
+      expectedOutcomes.length !== input.outcomes.length ||
+      expectedOutcomes.some((row, index) =>
+        !releaseValidationOutcomeRowsEqual(row, input.outcomes[index]))
+    ) {
+      throw new ReleaseValidationObservationBatchConflictError(
+        input.receipt.batch_id,
+        'outcome ledger tip changed after staging',
+      );
+    }
+
+    let results: unknown;
+    try {
+      results = JSON.parse(input.receipt.results_json);
+    } catch {
+      throw new Error('Validation observation batch results JSON is invalid');
+    }
+    if (!Array.isArray(results)) {
+      throw new Error('Validation observation batch results JSON must be an array');
+    }
+    const expectedReceipt = stageReleaseValidationObservationBatchReceipt(
+      currentBatches,
+      currentOutcomes,
+      expectedOutcomes,
+      {
+        batchId: input.receipt.batch_id,
+        observedAt: input.receipt.observed_at,
+        codeRevision: input.receipt.code_revision,
+        sourceIdentityDigest: input.receipt.source_identity_digest,
+        forecastCount: input.receipt.forecast_count,
+        ...(currentForecastInputs
+          ? { forecastInputs: currentForecastInputs }
+          : {}),
+        results: results as ReleaseValidationObservationBatchResult[],
+      },
+    );
+    if (!releaseValidationObservationBatchRowsEqual(expectedReceipt, input.receipt)) {
+      throw new ReleaseValidationObservationBatchConflictError(
+        input.receipt.batch_id,
+        'receipt content or chain tips changed after staging',
+      );
+    }
+
+    for (const [index, outcome] of expectedOutcomes.entries()) {
+      insertStagedValidationOutcomeStmt.run(
+        outcome as unknown as Record<string, string | number | null>,
+      );
+      if (failAfterOutcomeInsertCount === index + 1) {
+        throw new Error(
+          `Injected validation observation batch failure after ${index + 1} outcome insert(s)`,
+        );
+      }
+    }
+    insertValidationObservationBatchStmt.run(
+      expectedReceipt as unknown as Record<string, string | number | null>,
+    );
+
+    const persistedOutcomes = listValidationOutcomesStmt.all() as unknown as
+      ReleaseValidationOutcomeObservationRow[];
+    const persistedBatches = listValidationObservationBatchesStmt.all() as unknown as
+      ReleaseValidationObservationBatchReceiptRow[];
+    const persistedIntegrity = verifyReleaseValidationObservationBatchLedger({
+      outcomes: persistedOutcomes,
+      batches: persistedBatches,
+    });
+    if (persistedIntegrity.failedCount > 0) {
+      throw new Error(
+        `Validation observation batch failed post-insert verification: ` +
+        persistedIntegrity.problems.join('; '),
+      );
+    }
+    const persisted = validationObservationBatchByIdStmt.get(
+      expectedReceipt.batch_id,
+    ) as unknown as ReleaseValidationObservationBatchReceiptRow | undefined;
+    if (!persisted) {
+      throw new Error(
+        `Validation observation batch ${JSON.stringify(expectedReceipt.batch_id)} was not persisted`,
+      );
+    }
+    return { inserted: true, equivalent: false, row: persisted };
+  });
+}
+
+type ReleaseValidationProofRecord =
+  | ReleaseValidationProofEpoch
+  | ReleaseValidationProofEpochRetirement
+  | ReleaseValidationPolicy
+  | ReleaseValidationCohort
+  | ReleaseValidationCatalogObservation
+  | ReleaseValidationCatalogMember
+  | ReleaseValidationCatalogReconciliation
+  | ReleaseValidationCatalogReconciliationRow
+  | ReleaseValidationObligation
+  | ReleaseValidationSplitAssignment
+  | ReleaseValidationForecastV2
+  | ReleaseValidationOutcomeV2
+  | ReleaseValidationProofObservationBatch
+  | ReleaseValidationEvaluationReceipt
+  | ReleaseValidationPromotionReceipt;
+
+type ReleaseValidationProofBundleKey = keyof ReleaseValidationProofBundle;
+type ReleaseValidationProofProjection =
+  Record<string, string | number | null>;
+type MutableReleaseValidationProofBundle = {
+  -readonly [Key in keyof ReleaseValidationProofBundle]:
+    ReleaseValidationProofBundle[Key] extends readonly (infer Row)[]
+      ? Row[]
+      : never;
+};
+
+interface ReleaseValidationProofStorageSpec {
+  key: ReleaseValidationProofBundleKey;
+  table: string;
+  idColumn: string;
+  columns: readonly string[];
+  orderBy: string;
+  recordId(record: ReleaseValidationProofRecord): string;
+  project(record: ReleaseValidationProofRecord): ReleaseValidationProofProjection;
+}
+
+const releaseValidationProofStorageSpecs:
+  readonly ReleaseValidationProofStorageSpec[] = [
+    {
+      key: 'epochs',
+      table: 'release_validation_proof_epochs',
+      idColumn: 'proof_epoch_id',
+      columns: [
+        'proof_epoch_id',
+        'schema_version',
+        'repository',
+        'recorded_at',
+        'starts_at',
+        'content_hash',
+      ],
+      orderBy: 'repository, starts_at, proof_epoch_id',
+      recordId: (record) =>
+        (record as ReleaseValidationProofEpoch).proofEpochId,
+      project: (record) => {
+        const row = record as ReleaseValidationProofEpoch;
+        return {
+          proof_epoch_id: row.proofEpochId,
+          schema_version: row.schemaVersion,
+          repository: row.repository,
+          recorded_at: row.recordedAt,
+          starts_at: row.startsAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'retirements',
+      table: 'release_validation_proof_epoch_retirements',
+      idColumn: 'retirement_id',
+      columns: [
+        'retirement_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'recorded_at',
+        'retired_at',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, retirement_id',
+      recordId: (record) =>
+        (record as ReleaseValidationProofEpochRetirement).retirementId,
+      project: (record) => {
+        const row = record as ReleaseValidationProofEpochRetirement;
+        return {
+          retirement_id: row.retirementId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          recorded_at: row.recordedAt,
+          retired_at: row.retiredAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'policies',
+      table: 'release_validation_policies',
+      idColumn: 'policy_id',
+      columns: [
+        'policy_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'policy_code',
+        'policy_version',
+        'recorded_at',
+        'effective_at',
+        'retired_at',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, policy_id',
+      recordId: (record) => (record as ReleaseValidationPolicy).policyId,
+      project: (record) => {
+        const row = record as ReleaseValidationPolicy;
+        return {
+          policy_id: row.policyId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          policy_code: row.policyCode,
+          policy_version: row.policyVersion,
+          recorded_at: row.recordedAt,
+          effective_at: row.effectiveAt,
+          retired_at: row.retiredAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'cohorts',
+      table: 'release_validation_cohorts',
+      idColumn: 'cohort_id',
+      columns: [
+        'cohort_id',
+        'schema_version',
+        'proof_epoch_id',
+        'policy_id',
+        'epoch_sequence',
+        'model_version',
+        'prompt_version',
+        'code_revision',
+        'recorded_at',
+        'starts_at',
+        'retired_at',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, cohort_id',
+      recordId: (record) => (record as ReleaseValidationCohort).cohortId,
+      project: (record) => {
+        const row = record as ReleaseValidationCohort;
+        return {
+          cohort_id: row.cohortId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          policy_id: row.policyId,
+          epoch_sequence: row.epochSequence,
+          model_version: row.modelVersion,
+          prompt_version: row.promptVersion,
+          code_revision: row.codeRevision,
+          recorded_at: row.recordedAt,
+          starts_at: row.startsAt,
+          retired_at: row.retiredAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'catalogObservations',
+      table: 'release_validation_catalog_observations',
+      idColumn: 'observation_id',
+      columns: [
+        'observation_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'source',
+        'observed_at',
+        'member_count',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, observation_id',
+      recordId: (record) =>
+        (record as ReleaseValidationCatalogObservation).observationId,
+      project: (record) => {
+        const row = record as ReleaseValidationCatalogObservation;
+        return {
+          observation_id: row.observationId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          source: row.source,
+          observed_at: row.observedAt,
+          member_count: row.memberCount,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'catalogMembers',
+      table: 'release_validation_catalog_members',
+      idColumn: 'member_id',
+      columns: [
+        'member_id',
+        'schema_version',
+        'observation_id',
+        'ordinal',
+        'release_id',
+        'content_hash',
+      ],
+      orderBy: 'observation_id, ordinal, member_id',
+      recordId: (record) =>
+        (record as ReleaseValidationCatalogMember).memberId,
+      project: (record) => {
+        const row = record as ReleaseValidationCatalogMember;
+        return {
+          member_id: row.memberId,
+          schema_version: row.schemaVersion,
+          observation_id: row.observationId,
+          ordinal: row.ordinal,
+          release_id: row.release.releaseId,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'catalogReconciliations',
+      table: 'release_validation_catalog_reconciliations',
+      idColumn: 'reconciliation_id',
+      columns: [
+        'reconciliation_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'previous_observation_id',
+        'current_observation_id',
+        'reconciled_at',
+        'row_count',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, reconciliation_id',
+      recordId: (record) =>
+        (record as ReleaseValidationCatalogReconciliation).reconciliationId,
+      project: (record) => {
+        const row = record as ReleaseValidationCatalogReconciliation;
+        return {
+          reconciliation_id: row.reconciliationId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          previous_observation_id: row.previousObservationId,
+          current_observation_id: row.currentObservationId,
+          reconciled_at: row.reconciledAt,
+          row_count: row.rowCount,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'catalogReconciliationRows',
+      table: 'release_validation_catalog_reconciliation_rows',
+      idColumn: 'reconciliation_row_id',
+      columns: [
+        'reconciliation_row_id',
+        'schema_version',
+        'reconciliation_id',
+        'ordinal',
+        'release_id',
+        'status',
+        'content_hash',
+      ],
+      orderBy: 'reconciliation_id, ordinal, reconciliation_row_id',
+      recordId: (record) =>
+        (record as ReleaseValidationCatalogReconciliationRow)
+          .reconciliationRowId,
+      project: (record) => {
+        const row = record as ReleaseValidationCatalogReconciliationRow;
+        return {
+          reconciliation_row_id: row.reconciliationRowId,
+          schema_version: row.schemaVersion,
+          reconciliation_id: row.reconciliationId,
+          ordinal: row.ordinal,
+          release_id: row.releaseId,
+          status: row.status,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'obligations',
+      table: 'release_validation_obligations',
+      idColumn: 'obligation_id',
+      columns: [
+        'obligation_id',
+        'schema_version',
+        'proof_epoch_id',
+        'cohort_id',
+        'cohort_sequence',
+        'cell_id',
+        'release_id',
+        'catalog_observation_id',
+        'reconciliation_id',
+        'recorded_at',
+        'opens_at',
+        'closes_at_exclusive',
+        'outcome_due_at',
+        'content_hash',
+      ],
+      orderBy: 'cohort_id, cohort_sequence, obligation_id',
+      recordId: (record) =>
+        (record as ReleaseValidationObligation).obligationId,
+      project: (record) => {
+        const row = record as ReleaseValidationObligation;
+        return {
+          obligation_id: row.obligationId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          cohort_id: row.cohortId,
+          cohort_sequence: row.cohortSequence,
+          cell_id: row.cellId,
+          release_id: row.release.releaseId,
+          catalog_observation_id: row.catalogObservationId,
+          reconciliation_id: row.reconciliationId,
+          recorded_at: row.recordedAt,
+          opens_at: row.opensAt,
+          closes_at_exclusive: row.closesAtExclusive,
+          outcome_due_at: row.outcomeDueAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'splitAssignments',
+      table: 'release_validation_split_assignments',
+      idColumn: 'assignment_id',
+      columns: [
+        'assignment_id',
+        'schema_version',
+        'proof_epoch_id',
+        'cohort_id',
+        'cohort_sequence',
+        'obligation_id',
+        'assigned_at',
+        'arm',
+        'content_hash',
+      ],
+      orderBy: 'cohort_id, cohort_sequence, assignment_id',
+      recordId: (record) =>
+        (record as ReleaseValidationSplitAssignment).assignmentId,
+      project: (record) => {
+        const row = record as ReleaseValidationSplitAssignment;
+        return {
+          assignment_id: row.assignmentId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          cohort_id: row.cohortId,
+          cohort_sequence: row.cohortSequence,
+          obligation_id: row.obligationId,
+          assigned_at: row.assignedAt,
+          arm: row.arm,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'forecasts',
+      table: 'release_validation_forecasts_v2',
+      idColumn: 'forecast_id',
+      columns: [
+        'forecast_id',
+        'schema_version',
+        'proof_epoch_id',
+        'cohort_id',
+        'cohort_sequence',
+        'obligation_id',
+        'split_assignment_id',
+        'policy_id',
+        'recorded_at',
+        'selected_release_id',
+        'content_hash',
+      ],
+      orderBy: 'cohort_id, cohort_sequence, forecast_id',
+      recordId: (record) =>
+        (record as ReleaseValidationForecastV2).forecastId,
+      project: (record) => {
+        const row = record as ReleaseValidationForecastV2;
+        return {
+          forecast_id: row.forecastId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          cohort_id: row.cohortId,
+          cohort_sequence: row.cohortSequence,
+          obligation_id: row.obligationId,
+          split_assignment_id: row.splitAssignmentId,
+          policy_id: row.policyId,
+          recorded_at: row.recordedAt,
+          selected_release_id: row.selectedReleaseId,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'outcomes',
+      table: 'release_validation_outcomes_v2',
+      idColumn: 'outcome_id',
+      columns: [
+        'outcome_id',
+        'schema_version',
+        'proof_epoch_id',
+        'cohort_id',
+        'cohort_sequence',
+        'forecast_id',
+        'obligation_id',
+        'cell_id',
+        'release_id',
+        'observed_at',
+        'status',
+        'content_hash',
+      ],
+      orderBy: 'cohort_id, cohort_sequence, outcome_id',
+      recordId: (record) =>
+        (record as ReleaseValidationOutcomeV2).outcomeId,
+      project: (record) => {
+        const row = record as ReleaseValidationOutcomeV2;
+        return {
+          outcome_id: row.outcomeId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          cohort_id: row.cohortId,
+          cohort_sequence: row.cohortSequence,
+          forecast_id: row.forecastId,
+          obligation_id: row.obligationId,
+          cell_id: row.cellId,
+          release_id: row.releaseId,
+          observed_at: row.observedAt,
+          status: row.status,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'observationBatches',
+      table: 'release_validation_proof_observation_batches',
+      idColumn: 'batch_id',
+      columns: [
+        'batch_id',
+        'schema_version',
+        'proof_epoch_id',
+        'cohort_id',
+        'cohort_sequence',
+        'observed_at',
+        'source_identity_hash',
+        'content_hash',
+      ],
+      orderBy: 'cohort_id, cohort_sequence, batch_id',
+      recordId: (record) =>
+        (record as ReleaseValidationProofObservationBatch).batchId,
+      project: (record) => {
+        const row = record as ReleaseValidationProofObservationBatch;
+        return {
+          batch_id: row.batchId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          cohort_id: row.cohortId,
+          cohort_sequence: row.cohortSequence,
+          observed_at: row.observedAt,
+          source_identity_hash: row.sourceIdentityHash,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'evaluationReceipts',
+      table: 'release_validation_evaluation_receipts',
+      idColumn: 'evaluation_id',
+      columns: [
+        'evaluation_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'evaluated_at',
+        'status',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, evaluation_id',
+      recordId: (record) =>
+        (record as ReleaseValidationEvaluationReceipt).evaluationId,
+      project: (record) => {
+        const row = record as ReleaseValidationEvaluationReceipt;
+        return {
+          evaluation_id: row.evaluationId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          evaluated_at: row.evaluatedAt,
+          status: row.status,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+    {
+      key: 'promotionReceipts',
+      table: 'release_validation_promotion_receipts',
+      idColumn: 'promotion_id',
+      columns: [
+        'promotion_id',
+        'schema_version',
+        'proof_epoch_id',
+        'epoch_sequence',
+        'evaluation_id',
+        'environment',
+        'promoted_at',
+        'content_hash',
+      ],
+      orderBy: 'proof_epoch_id, epoch_sequence, promotion_id',
+      recordId: (record) =>
+        (record as ReleaseValidationPromotionReceipt).promotionId,
+      project: (record) => {
+        const row = record as ReleaseValidationPromotionReceipt;
+        return {
+          promotion_id: row.promotionId,
+          schema_version: row.schemaVersion,
+          proof_epoch_id: row.proofEpochId,
+          epoch_sequence: row.epochSequence,
+          evaluation_id: row.evaluationId,
+          environment: row.environment,
+          promoted_at: row.promotedAt,
+          content_hash: row.contentHash,
+        };
+      },
+    },
+  ];
+
+const releaseValidationProofExistingTables = new Set(
+  (db.prepare(`
+    SELECT name
+    FROM sqlite_master
+    WHERE type='table' AND name LIKE 'release_validation_%'
+  `).all() as Array<{ name: string }>).map((row) => row.name),
+);
+const releaseValidationProofExistingTableCount =
+  releaseValidationProofStorageSpecs.filter((spec) =>
+    releaseValidationProofExistingTables.has(spec.table)).length;
+if (
+  releaseValidationProofExistingTableCount !== 0 &&
+  releaseValidationProofExistingTableCount !==
+    releaseValidationProofStorageSpecs.length
+) {
+  throw new Error(
+    `Release validation proof storage is partially migrated: ` +
+    `${releaseValidationProofExistingTableCount}/` +
+    `${releaseValidationProofStorageSpecs.length} tables exist`,
+  );
+}
+const hasReleaseValidationProofStorage =
+  releaseValidationProofExistingTableCount ===
+    releaseValidationProofStorageSpecs.length;
+const releaseValidationProofListStatements = new Map<string, StatementSync>();
+const releaseValidationProofByIdStatements = new Map<string, StatementSync>();
+const releaseValidationProofInsertStatements = new Map<string, StatementSync>();
+if (hasReleaseValidationProofStorage) {
+  for (const spec of releaseValidationProofStorageSpecs) {
+    releaseValidationProofListStatements.set(
+      spec.table,
+      db.prepare(`SELECT * FROM ${spec.table} ORDER BY ${spec.orderBy}`),
+    );
+    releaseValidationProofByIdStatements.set(
+      spec.table,
+      db.prepare(
+        `SELECT * FROM ${spec.table} WHERE ${spec.idColumn}=?`,
+      ),
+    );
+    if (!dbReadOnly) {
+      const columns = [...spec.columns, 'record_json'];
+      releaseValidationProofInsertStatements.set(
+        spec.table,
+        db.prepare(`
+          INSERT INTO ${spec.table} (${columns.join(', ')})
+          VALUES (${columns.map((column) => `:${column}`).join(', ')})
+        `),
+      );
+    }
+  }
+}
+
+export type ReleaseValidationProofAppendInput = {
+  readonly [Key in keyof ReleaseValidationProofBundle]?:
+    ReleaseValidationProofBundle[Key];
+};
+
+export type ReleaseValidationProofAppendCounts = {
+  -readonly [Key in keyof ReleaseValidationProofBundle]: number;
+};
+
+export interface ReleaseValidationProofAppendResult {
+  readonly insertedCount: number;
+  readonly equivalentCount: number;
+  readonly insertedByType: ReleaseValidationProofAppendCounts;
+  readonly equivalentByType: ReleaseValidationProofAppendCounts;
+  readonly bundle: ReleaseValidationProofBundle;
+  readonly verification: ReleaseValidationProofVerification;
+}
+
+export class ReleaseValidationProofConflictError extends Error {
+  readonly code = 'RELEASE_VALIDATION_PROOF_CONFLICT';
+
+  constructor(table: string, recordId: string, reason: string) {
+    super(
+      `Release validation proof conflict in ${table} for ` +
+      `${JSON.stringify(recordId)}: ${reason}`,
+    );
+    this.name = 'ReleaseValidationProofConflictError';
+  }
+}
+
+export function releaseValidationProofStorageAvailable(): boolean {
+  return hasReleaseValidationProofStorage;
+}
+
+export function readReleaseValidationProofBundle():
+  ReleaseValidationProofBundle {
+  return runInReadTransaction(readReleaseValidationProofBundleInTransaction);
+}
+
+export function verifyStoredReleaseValidationProofBundle():
+  ReleaseValidationProofVerification {
+  return verifyReleaseValidationProofBundle(
+    readReleaseValidationProofBundle(),
+  );
+}
+
+export function appendReleaseValidationProof(
+  input: ReleaseValidationProofAppendInput,
+): ReleaseValidationProofAppendResult {
+  if (
+    !hasReleaseValidationProofStorage ||
+    releaseValidationProofInsertStatements.size !==
+      releaseValidationProofStorageSpecs.length
+  ) {
+    throw new Error(
+      'Release validation proof storage is unavailable or read-only',
+    );
+  }
+
+  return runInWriteTransaction(() => {
+    const before = readReleaseValidationProofBundleInTransaction();
+    assertValidReleaseValidationProofBundle(before);
+    const candidate = mutableReleaseValidationProofBundle(before);
+    const insertedByType = emptyReleaseValidationProofCounts();
+    const equivalentByType = emptyReleaseValidationProofCounts();
+    const newRowsByType = new Map<
+      ReleaseValidationProofBundleKey,
+      ReleaseValidationProofRecord[]
+    >();
+
+    for (const spec of releaseValidationProofStorageSpecs) {
+      const supplied = (
+        input[spec.key] ?? []
+      ) as readonly ReleaseValidationProofRecord[];
+      const suppliedIds = new Set<string>();
+      const existingById = new Map(
+        (
+          before[spec.key] as readonly ReleaseValidationProofRecord[]
+        ).map((record) => [spec.recordId(record), record]),
+      );
+      const newRows: ReleaseValidationProofRecord[] = [];
+      for (const record of supplied) {
+        const recordId = spec.recordId(record);
+        if (suppliedIds.has(recordId)) {
+          throw new ReleaseValidationProofConflictError(
+            spec.table,
+            recordId,
+            'the append input repeats the same immutable record ID',
+          );
+        }
+        suppliedIds.add(recordId);
+        const existing = existingById.get(recordId);
+        if (existing) {
+          if (
+            canonicalReleaseValidationProofJson(existing) !==
+              canonicalReleaseValidationProofJson(record)
+          ) {
+            throw new ReleaseValidationProofConflictError(
+              spec.table,
+              recordId,
+              'the stored immutable record differs',
+            );
+          }
+          equivalentByType[spec.key]++;
+          continue;
+        }
+        newRows.push(record);
+        insertedByType[spec.key]++;
+      }
+      newRowsByType.set(spec.key, newRows);
+      (
+        candidate[spec.key] as ReleaseValidationProofRecord[]
+      ).push(...newRows);
+    }
+
+    const candidateBundle =
+      candidate as unknown as ReleaseValidationProofBundle;
+    assertValidReleaseValidationProofBundle(candidateBundle);
+
+    for (const spec of releaseValidationProofStorageSpecs) {
+      const insert = releaseValidationProofInsertStatements.get(spec.table);
+      if (!insert) {
+        throw new Error(
+          `Release validation proof insert statement is missing for ${spec.table}`,
+        );
+      }
+      for (const record of newRowsByType.get(spec.key) ?? []) {
+        const recordJson = canonicalReleaseValidationProofJson(record);
+        insert.run({
+          ...spec.project(record),
+          record_json: recordJson,
+        });
+      }
+    }
+
+    const after = readReleaseValidationProofBundleInTransaction();
+    const verification = verifyReleaseValidationProofBundle(after);
+    if (!verification.valid) {
+      throw new Error(
+        `Release validation proof failed post-insert verification: ` +
+        verification.problems.join('; '),
+      );
+    }
+    for (const spec of releaseValidationProofStorageSpecs) {
+      const afterById = new Map(
+        (
+          after[spec.key] as readonly ReleaseValidationProofRecord[]
+        ).map((record) => [spec.recordId(record), record]),
+      );
+      const supplied = (
+        input[spec.key] ?? []
+      ) as readonly ReleaseValidationProofRecord[];
+      for (const record of supplied) {
+        const persisted = afterById.get(spec.recordId(record));
+        if (
+          !persisted ||
+          canonicalReleaseValidationProofJson(persisted) !==
+            canonicalReleaseValidationProofJson(record)
+        ) {
+          throw new Error(
+            `Release validation proof ${spec.recordId(record)} failed ` +
+            `post-insert equality verification in ${spec.table}`,
+          );
+        }
+      }
+    }
+
+    return {
+      insertedCount: sumReleaseValidationProofCounts(insertedByType),
+      equivalentCount: sumReleaseValidationProofCounts(equivalentByType),
+      insertedByType,
+      equivalentByType,
+      bundle: after,
+      verification,
+    };
+  });
+}
+
+function readReleaseValidationProofBundleInTransaction():
+  ReleaseValidationProofBundle {
+  const bundle = mutableReleaseValidationProofBundle();
+  if (!hasReleaseValidationProofStorage) {
+    return bundle as unknown as ReleaseValidationProofBundle;
+  }
+  for (const spec of releaseValidationProofStorageSpecs) {
+    const statement = releaseValidationProofListStatements.get(spec.table);
+    if (!statement) {
+      throw new Error(
+        `Release validation proof list statement is missing for ${spec.table}`,
+      );
+    }
+    const records = statement.all().map((stored) =>
+      parseStoredReleaseValidationProofRecord(
+        spec,
+        stored as Record<string, unknown>,
+      ));
+    (
+      bundle[spec.key] as ReleaseValidationProofRecord[]
+    ).push(...records);
+  }
+  return bundle as unknown as ReleaseValidationProofBundle;
+}
+
+function parseStoredReleaseValidationProofRecord(
+  spec: ReleaseValidationProofStorageSpec,
+  stored: Record<string, unknown>,
+): ReleaseValidationProofRecord {
+  const recordJson = stored.record_json;
+  if (typeof recordJson !== 'string') {
+    throw new Error(
+      `Release validation proof row in ${spec.table} has no record_json`,
+    );
+  }
+  let record: ReleaseValidationProofRecord;
+  try {
+    record = JSON.parse(recordJson) as ReleaseValidationProofRecord;
+  } catch (error) {
+    throw new Error(
+      `Release validation proof row in ${spec.table} has invalid record_json`,
+      { cause: error },
+    );
+  }
+  const canonical = canonicalReleaseValidationProofJson(record);
+  if (recordJson !== canonical) {
+    throw new Error(
+      `Release validation proof row ${spec.recordId(record)} in ` +
+      `${spec.table} is not canonical JSON`,
+    );
+  }
+  const projected = spec.project(record);
+  for (const [column, expected] of Object.entries(projected)) {
+    if (stored[column] !== expected) {
+      throw new Error(
+        `Release validation proof row ${spec.recordId(record)} in ` +
+        `${spec.table} has a divergent ${column} projection`,
+      );
+    }
+  }
+  return record;
+}
+
+function mutableReleaseValidationProofBundle(
+  source?: ReleaseValidationProofBundle,
+): MutableReleaseValidationProofBundle {
+  return {
+    epochs: [...(source?.epochs ?? [])],
+    retirements: [...(source?.retirements ?? [])],
+    policies: [...(source?.policies ?? [])],
+    cohorts: [...(source?.cohorts ?? [])],
+    catalogObservations: [...(source?.catalogObservations ?? [])],
+    catalogMembers: [...(source?.catalogMembers ?? [])],
+    catalogReconciliations: [...(source?.catalogReconciliations ?? [])],
+    catalogReconciliationRows: [
+      ...(source?.catalogReconciliationRows ?? []),
+    ],
+    obligations: [...(source?.obligations ?? [])],
+    splitAssignments: [...(source?.splitAssignments ?? [])],
+    forecasts: [...(source?.forecasts ?? [])],
+    outcomes: [...(source?.outcomes ?? [])],
+    observationBatches: [...(source?.observationBatches ?? [])],
+    evaluationReceipts: [...(source?.evaluationReceipts ?? [])],
+    promotionReceipts: [...(source?.promotionReceipts ?? [])],
+  };
+}
+
+function emptyReleaseValidationProofCounts():
+  ReleaseValidationProofAppendCounts {
+  return {
+    epochs: 0,
+    retirements: 0,
+    policies: 0,
+    cohorts: 0,
+    catalogObservations: 0,
+    catalogMembers: 0,
+    catalogReconciliations: 0,
+    catalogReconciliationRows: 0,
+    obligations: 0,
+    splitAssignments: 0,
+    forecasts: 0,
+    outcomes: 0,
+    observationBatches: 0,
+    evaluationReceipts: 0,
+    promotionReceipts: 0,
+  };
+}
+
+function sumReleaseValidationProofCounts(
+  counts: ReleaseValidationProofAppendCounts,
+): number {
+  return Object.values(counts).reduce((sum, count) => sum + count, 0);
+}
+
+function validateValidationLedgerInput(input: object): void {
+  const values = input as Record<string, unknown>;
+  for (const key of ['recorded_at', 'observed_at']) {
+    if (key in values && !Number.isFinite(Date.parse(String(values[key] ?? '')))) {
+      throw new Error(`Validation ledger ${key} must be a valid timestamp`);
+    }
+  }
+  for (const key of [
+    'opportunity_code',
+    'latest_release_tag',
+    'audit_history_run_id',
+    'score_model_version',
+    'policy_code',
+    'code_revision',
+    'decision_id',
+    'horizon_code',
+    'status',
+  ]) {
+    if (key in values && !String(values[key] ?? '').trim()) {
+      throw new Error(`Validation ledger ${key} must be non-empty`);
+    }
+  }
+  for (const key of ['candidate_scores_json', 'decision_json', 'outcome_json', 'source_identity_json']) {
+    if (!(key in values)) continue;
+    try {
+      JSON.parse(String(values[key]));
+    } catch {
+      throw new Error(`Validation ledger ${key} must contain valid JSON`);
+    }
+  }
+  if ('source_identity_json' in values) {
+    const sourceIdentity = parseJsonObject(String(values.source_identity_json));
+    if (typeof sourceIdentity.digest !== 'string' || !sourceIdentity.digest) {
+      throw new Error('Validation ledger source identity is missing its digest');
+    }
+  }
 }
 
 export interface ReleaseScoreAuditRow extends ReleaseScoreAuditInput {}
@@ -1130,39 +10914,1379 @@ export function getReleaseScoreAudit(tag: string): ReleaseScoreAuditRow | undefi
   return getReleaseScoreAuditStmt.get(tag) as ReleaseScoreAuditRow | undefined;
 }
 
-const releaseScoreAuditFreshnessStmt = db.prepare(`
-SELECT
-  release_tag,
-  scored_at,
-  score_model_version,
-  prompt_version,
-  final_score,
-  status,
-  band,
-  recommended,
-  input_json,
-  components_json,
-  issue_evidence_json,
-  gate_evidence_json,
-  source_identity_json
-FROM release_score_audits
-ORDER BY release_tag
-`);
-export function releaseScoreAuditFreshness(): { count: number; max_scored_at: string | null; digest: string } {
-  const rows = releaseScoreAuditFreshnessStmt.all() as Array<Record<string, unknown>>;
-  const hash = createHash('sha256');
-  let maxScoredAt: string | null = null;
-  for (const row of rows) {
-    const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
-    if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
-    hash.update(JSON.stringify(row));
-    hash.update('\n');
+export interface SealedReleaseScoreAuditPublication {
+  valid: boolean;
+  digest: string | null;
+  problems: string[];
+  audit: ReleaseScoreAuditRow | null;
+  historyRow: (ReleaseScoreAuditRow & {
+    run_id: string;
+    recorded_at: string;
+  }) | null;
+  runSeal: ReleaseScoreAuditHistoryRunSeal | null;
+  authorityRun: ScoreAuthorityResolutionRun | null;
+  historyV2Seal: ReleaseScoreAuditHistoryV2SealRow | null;
+}
+
+export function getSealedReleaseScoreAuditPublication(
+  tag: string,
+): SealedReleaseScoreAuditPublication {
+  const problems: string[] = [];
+  const audit = getReleaseScoreAudit(tag) ?? null;
+  if (!audit) problems.push(`${tag}: current release score audit is missing`);
+
+  let meta: Record<string, unknown> | null = null;
+  const rawMeta = getMeta('score_persistence_last_run');
+  try {
+    const parsed = rawMeta ? JSON.parse(rawMeta) : null;
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      meta = parsed as Record<string, unknown>;
+    }
+  } catch {
+    // Reported as malformed below.
+  }
+  if (meta?.schemaVersion !== 2) {
+    problems.push('score_persistence_last_run must use schemaVersion 2');
+  }
+  const runId = typeof meta?.historyRunId === 'string' && meta.historyRunId
+    ? meta.historyRunId
+    : null;
+  const recordedRunHash = typeof meta?.historyRunContentHash === 'string'
+    ? meta.historyRunContentHash
+    : null;
+  const authorityRunId = typeof meta?.authorityRunId === 'string' &&
+      meta.authorityRunId
+    ? meta.authorityRunId
+    : null;
+  const recordedAuthorityRunHash =
+    typeof meta?.authorityRunContentHash === 'string'
+      ? meta.authorityRunContentHash
+      : null;
+  const recordedHistoryV2SealHash =
+    typeof meta?.historyV2SealContentHash === 'string'
+      ? meta.historyV2SealContentHash
+      : null;
+  if (!runId) problems.push('score_persistence_last_run historyRunId is missing');
+  if (!recordedRunHash) {
+    problems.push('score_persistence_last_run historyRunContentHash is missing');
+  }
+  if (!authorityRunId) {
+    problems.push('score_persistence_last_run authorityRunId is missing');
+  }
+  if (!recordedAuthorityRunHash) {
+    problems.push('score_persistence_last_run authorityRunContentHash is missing');
+  }
+  if (!recordedHistoryV2SealHash) {
+    problems.push('score_persistence_last_run historyV2SealContentHash is missing');
+  }
+
+  const runSeal = runId && releaseScoreAuditHistoryRunSealStmt
+    ? releaseScoreAuditHistoryRunSealStmt.get(
+        runId,
+      ) as unknown as ReleaseScoreAuditHistoryRunSeal | undefined ?? null
+    : null;
+  const latestRunSeal = latestReleaseScoreAuditHistoryRunSealStmt
+    ? latestReleaseScoreAuditHistoryRunSealStmt.get() as unknown as
+      ReleaseScoreAuditHistoryRunSeal | undefined ?? null
+    : null;
+  if (runId && !runSeal) {
+    problems.push(`score persistence history run ${JSON.stringify(runId)} is not sealed`);
+  }
+  if (
+    runId &&
+    (
+      !latestRunSeal ||
+      (
+        latestRunSeal.run_id === runId
+          ? latestRunSeal.content_hash !== recordedRunHash
+          : restoredReleaseScorePublicationProblems(meta, runSeal, latestRunSeal).length > 0
+      )
+    )
+  ) {
+    const restoredProblems = restoredReleaseScorePublicationProblems(
+      meta,
+      runSeal,
+      latestRunSeal,
+    );
+    problems.push(
+      ...(restoredProblems.length > 0
+        ? restoredProblems
+        : ['score persistence history run is not the current sealed history tip']),
+    );
+  }
+
+  const historyRows = runId && releaseScoreAuditHistoryRowsForRunStmt
+    ? releaseScoreAuditHistoryRowsForRunStmt.all(runId) as unknown as Array<
+      ReleaseScoreAuditRow & { run_id: string; recorded_at: string }
+    >
+    : [];
+  const historyRow = historyRows.find((row) => row.release_tag === tag) ?? null;
+  if (runId && !historyRow) {
+    problems.push(`score persistence history run ${JSON.stringify(runId)} is missing ${tag}`);
+  }
+  const authorityRun = authorityRunId
+    ? getScoreAuthorityResolutionRun(authorityRunId)
+    : null;
+  const historyV2Seal = runId
+    ? getReleaseScoreAuditHistoryV2Seal(runId)
+    : null;
+  if (!authorityRun) {
+    problems.push(
+      `score persistence authority run ${JSON.stringify(authorityRunId)} is missing`,
+    );
+  } else {
+    const authorityProblems = scoreAuthorityResolutionRunProblems(authorityRun);
+    if (authorityProblems.length > 0) {
+      problems.push(
+        ...authorityProblems.map((problem) =>
+          `score persistence authority run ${JSON.stringify(authorityRunId)}: ${problem}`),
+      );
+    }
+    if (authorityRun.contentHash !== recordedAuthorityRunHash) {
+      problems.push('score persistence authority run hash does not match metadata');
+    }
+  }
+  if (!historyV2Seal) {
+    problems.push(
+      `score persistence history run ${JSON.stringify(runId)} has no v2 seal`,
+    );
+  } else {
+    const { id: _id, ...canonicalSeal } = historyV2Seal;
+    const sealProblems = releaseScoreAuditHistoryV2SealProblems(canonicalSeal);
+    if (sealProblems.length > 0) {
+      problems.push(
+        ...sealProblems.map((problem) =>
+          `score persistence history v2 seal ${JSON.stringify(runId)}: ${problem}`),
+      );
+    }
+    if (
+      historyV2Seal.authorityRunId !== authorityRunId ||
+      historyV2Seal.contentHash !== recordedHistoryV2SealHash
+    ) {
+      problems.push('score persistence history v2 seal does not match metadata');
+    }
+  }
+  const authorityChainProblems = scoreAuthorityResolutionRunChainProblems();
+  const historyV2ChainProblems = releaseScoreAuditHistoryV2SealChainProblems();
+  problems.push(
+    ...authorityChainProblems.map((problem) =>
+      `score persistence authority chain: ${problem}`),
+    ...historyV2ChainProblems.map((problem) =>
+      `score persistence history v2 chain: ${problem}`),
+  );
+
+  if (runSeal) {
+    const previousRunSeal = previousReleaseScoreAuditHistoryRunSealStmt
+      ? previousReleaseScoreAuditHistoryRunSealStmt.get(
+          runSeal.id,
+        ) as unknown as ReleaseScoreAuditHistoryRunSeal | undefined ?? null
+      : null;
+    const rowsContentHash = releaseScoreAuditHistoryRowsContentHash(
+      historyRows as unknown as Array<Record<string, unknown>>,
+    );
+    const expectedContentHash = releaseScoreAuditHistoryRunContentHash({
+      runId: runSeal.run_id,
+      recordedAt: runSeal.recorded_at,
+      rowCount: Number(runSeal.row_count),
+      rowsContentHash: runSeal.rows_content_hash,
+      previousContentHash: runSeal.previous_content_hash ?? null,
+    });
+    const recordedAts = new Set(historyRows.map((row) => row.recorded_at));
+    if (
+      historyRows.length === 0 ||
+      Number(runSeal.row_count) !== historyRows.length ||
+      runSeal.rows_content_hash !== rowsContentHash ||
+      runSeal.content_hash !== expectedContentHash ||
+      runSeal.content_hash !== recordedRunHash ||
+      (runSeal.previous_content_hash ?? null) !==
+        (previousRunSeal?.content_hash ?? null) ||
+      recordedAts.size !== 1 ||
+      !recordedAts.has(runSeal.recorded_at)
+    ) {
+      problems.push(`score persistence history run ${JSON.stringify(runSeal.run_id)} seal is invalid`);
+    }
+  }
+
+  let sourceIdentity: Record<string, unknown> | null = null;
+  if (historyRow) {
+    try {
+      sourceIdentity = parseJsonObject(historyRow.source_identity_json ?? '');
+      const sourceIdentityProblems = scoreSourceIdentityManifestProblems(sourceIdentity);
+      if (sourceIdentityProblems.length > 0) {
+        problems.push(
+          `${tag}: sealed history source identity is invalid: ${sourceIdentityProblems.join(', ')}`,
+        );
+      }
+    } catch {
+      problems.push(`${tag}: sealed history source identity is not a JSON object`);
+    }
+  }
+  if (audit && historyRow && releaseScoreAuditHistoryContent(audit) !== releaseScoreAuditHistoryContent(historyRow)) {
+    problems.push(`${tag}: current release score audit does not match the sealed history row`);
+  }
+  if (
+    historyRow &&
+    (
+      historyRow.authority_run_id !== authorityRunId ||
+      audit?.authority_run_id !== authorityRunId
+    )
+  ) {
+    problems.push(`${tag}: current and historical score audits do not reference the authority run`);
+  }
+  if (runSeal && historyV2Seal && authorityRun) {
+    problems.push(...scoreAuthorityHistoryLinkProblems({
+      historySeal: runSeal,
+      historyRows,
+      authorityRun,
+      sealedAt: historyV2Seal.sealedAt,
+    }).map((problem) => `${tag}: ${problem}`));
+  }
+  if (sourceIdentity && meta) {
+    if (meta.sourceIdentitySchemaVersion !== sourceIdentity.schemaVersion) {
+      problems.push(`${tag}: score persistence source identity schema does not match sealed history`);
+    }
+    if (meta.sourceIdentityDigest !== sourceIdentity.digest) {
+      problems.push(`${tag}: score persistence source identity digest does not match sealed history`);
+    }
+    if (meta.sourceIdentityRowCount !== sourceIdentity.rowCount) {
+      problems.push(`${tag}: score persistence source identity row count does not match sealed history`);
+    }
+    if (meta.sourceIdentitySourceCount !== sourceIdentity.sourceCount) {
+      problems.push(`${tag}: score persistence source identity source count does not match sealed history`);
+    }
+  }
+  if (meta?.source === 'refresh') {
+    if (meta.operationReceiptRequired !== true) {
+      problems.push('current refresh score cannot disable operation receipt authorization');
+    }
+    problems.push(...refreshScorePublicationReceiptProblems(
+      meta,
+      runId,
+      recordedRunHash,
+      historyRows,
+    ));
+  } else if (meta?.operationReceiptRequired === true) {
+    problems.push('non-refresh score persistence cannot require a refresh receipt');
+  }
+
+  const valid = problems.length === 0 &&
+    audit != null &&
+    historyRow != null &&
+    runSeal != null &&
+    authorityRun != null &&
+    historyV2Seal != null;
+  const digest = valid
+    ? createHash('sha256')
+      .update(
+        `sealed-release-score-audit-v2\0${JSON.stringify([
+          runSeal.run_id,
+          runSeal.content_hash,
+          runSeal.rows_content_hash,
+          authorityRun.contentHash,
+          historyV2Seal.contentHash,
+          releaseScoreAuditHistoryContent(historyRow),
+        ])}`,
+      )
+      .digest('hex')
+    : null;
+  return {
+    valid,
+    digest,
+    problems,
+    audit,
+    historyRow,
+    runSeal,
+    authorityRun,
+    historyV2Seal,
+  };
+}
+
+function restoredReleaseScorePublicationProblems(
+  meta: Record<string, unknown> | null,
+  runSeal: ReleaseScoreAuditHistoryRunSeal | null,
+  latestRunSeal: ReleaseScoreAuditHistoryRunSeal | null,
+): string[] {
+  if (!meta || !runSeal || !latestRunSeal || runSeal.id >= latestRunSeal.id) {
+    return ['score persistence history run is not the current sealed history tip'];
+  }
+  const recovery = parseJsonRecord(meta.publicationRecovery);
+  const restoredHistoryV2Seal = getReleaseScoreAuditHistoryV2Seal(
+    runSeal.run_id,
+  );
+  const displacedHistoryV2Seal = getReleaseScoreAuditHistoryV2Seal(
+    latestRunSeal.run_id,
+  );
+  const restoredAuthorityRun = restoredHistoryV2Seal
+    ? getScoreAuthorityResolutionRun(restoredHistoryV2Seal.authorityRunId)
+    : null;
+  const displacedAuthorityRun = displacedHistoryV2Seal
+    ? getScoreAuthorityResolutionRun(displacedHistoryV2Seal.authorityRunId)
+    : null;
+  if (
+    recovery?.schemaVersion !== 3 ||
+    recovery.restoredOperationRunId !== meta.operationRunId ||
+    recovery.restoredHistoryRunId !== runSeal.run_id ||
+    recovery.restoredHistoryRunContentHash !== runSeal.content_hash ||
+    !restoredAuthorityRun ||
+    !restoredHistoryV2Seal ||
+    recovery.restoredAuthorityRunId !==
+      restoredAuthorityRun.authorityRunId ||
+    recovery.restoredAuthorityRunContentHash !==
+      restoredAuthorityRun.contentHash ||
+    recovery.restoredHistoryV2SealContentHash !==
+      restoredHistoryV2Seal.contentHash ||
+    recovery.displacedHistoryRunId !== latestRunSeal.run_id ||
+    recovery.displacedHistoryRunContentHash !== latestRunSeal.content_hash ||
+    !displacedAuthorityRun ||
+    !displacedHistoryV2Seal ||
+    recovery.displacedAuthorityRunId !==
+      displacedAuthorityRun.authorityRunId ||
+    recovery.displacedAuthorityRunContentHash !==
+      displacedAuthorityRun.contentHash ||
+    recovery.displacedHistoryV2SealContentHash !==
+      displacedHistoryV2Seal.contentHash ||
+    typeof recovery.displacedOperationRunId !== 'string' ||
+    !recovery.displacedOperationRunId
+  ) {
+    return [
+      'score persistence prior history and authority restoration metadata is invalid',
+    ];
+  }
+  const recoverySuffix = displacedRefreshPublicationBindingsAfter(runSeal);
+  if (recoverySuffix.problems.length > 0) {
+    return recoverySuffix.problems.map(
+      (problem) => `score persistence recovery suffix is invalid: ${problem}`,
+    );
+  }
+  const recordedBindings = Array.isArray(recovery.displacedPublications)
+    ? recovery.displacedPublications
+    : null;
+  const expectedDigest = displacedRefreshPublicationBindingsDigest(
+    recoverySuffix.bindings,
+  );
+  if (
+    recoverySuffix.bindings.length === 0 ||
+    recoverySuffix.bindings.at(-1)?.historyRunId !== latestRunSeal.run_id ||
+    recoverySuffix.bindings.at(-1)?.historyRunContentHash !==
+      latestRunSeal.content_hash ||
+    recovery.displacedPublicationCount !== recoverySuffix.bindings.length ||
+    recovery.displacedPublicationDigest !== expectedDigest ||
+    !recordedBindings ||
+    canonicalOperationJson(recordedBindings) !==
+      canonicalOperationJson(recoverySuffix.bindings)
+  ) {
+    return [
+      'score persistence displaced publication suffix does not match recovery metadata',
+    ];
+  }
+  const seals = listReleaseScoreAuditHistoryRunSealsStmt
+    ? listReleaseScoreAuditHistoryRunSealsStmt.all() as unknown as
+      ReleaseScoreAuditHistoryRunSeal[]
+    : [];
+  return releaseScoreAuditHistoryChainProblems(seals);
+}
+
+function releaseScoreAuditHistoryChainProblems(
+  seals: ReleaseScoreAuditHistoryRunSeal[],
+): string[] {
+  const problems: string[] = [];
+  let previousContentHash: string | null = null;
+  for (const seal of seals) {
+    const rows = releaseScoreAuditHistoryRowsForRunStmt
+      ? releaseScoreAuditHistoryRowsForRunStmt.all(
+          seal.run_id,
+        ) as Array<Record<string, unknown>>
+      : [];
+    const rowsContentHash = releaseScoreAuditHistoryRowsContentHash(rows);
+    const expectedContentHash = releaseScoreAuditHistoryRunContentHash({
+      runId: seal.run_id,
+      recordedAt: seal.recorded_at,
+      rowCount: Number(seal.row_count),
+      rowsContentHash: seal.rows_content_hash,
+      previousContentHash: seal.previous_content_hash ?? null,
+    });
+    if (
+      rows.length === 0 ||
+      Number(seal.row_count) !== rows.length ||
+      seal.rows_content_hash !== rowsContentHash ||
+      (seal.previous_content_hash ?? null) !== previousContentHash ||
+      seal.content_hash !== expectedContentHash
+    ) {
+      problems.push(
+        `score persistence history chain is invalid at ${JSON.stringify(seal.run_id)}`,
+      );
+      break;
+    }
+    previousContentHash = seal.content_hash;
+  }
+  return problems;
+}
+
+function refreshScorePublicationReceiptProblems(
+  meta: Record<string, unknown>,
+  historyRunId: string | null,
+  historyRunContentHash: string | null,
+  currentHistoryRows: Array<ReleaseScoreAuditRow & {
+    run_id: string;
+    recorded_at: string;
+  }>,
+): string[] {
+  const problems: string[] = [];
+  const operationRunId = typeof meta.operationRunId === 'string' && meta.operationRunId
+    ? meta.operationRunId
+    : null;
+  if (!operationRunId) {
+    return ['score persistence refresh operationRunId is missing'];
+  }
+  const attempts = db.prepare(`
+    SELECT * FROM refresh_operation_attempts ORDER BY started_at, run_id
+  `).all() as unknown as OperationAttemptLedgerRow[];
+  const stageEvents = db.prepare(`
+    SELECT * FROM refresh_operation_stage_events ORDER BY run_id, sequence
+  `).all() as unknown as OperationStageEventLedgerRow[];
+  const receipts = db.prepare(`
+    SELECT * FROM refresh_capture_receipts ORDER BY id
+  `).all() as unknown as OperationCaptureReceiptLedgerRow[];
+  const ledger = verifyOperationReceiptLedger({
+    attempts,
+    stageEvents,
+    receipts,
+    leases: listRefreshLeases(),
+    artifactReceipts: listReleaseArtifactVerificationReceipts(),
+    artifactObservations: listReleaseArtifactVerificationObservations(),
+    artifactMembershipPolicy: 'strict',
+    observedAt: new Date().toISOString(),
+  });
+  problems.push(...ledger.problems.map((problem) => `refresh receipt ledger: ${problem}`));
+  const attempt = attempts.find((row) => row.run_id === operationRunId);
+  const receipt = receipts.find((row) => row.run_id === operationRunId);
+  if (!attempt) {
+    problems.push(`score persistence refresh ${JSON.stringify(operationRunId)} has no operation attempt`);
+  }
+  if (!receipt) {
+    problems.push(`score persistence refresh ${JSON.stringify(operationRunId)} has no terminal receipt`);
+    return problems;
+  }
+  if (receipt.status !== 'success') {
+    problems.push(
+      `score persistence refresh ${JSON.stringify(operationRunId)} terminal receipt is ${String(receipt.status)}`,
+    );
+    return problems;
+  }
+  const payload = parseJsonRecord(receipt.payload_json);
+  if (!payload) {
+    problems.push('score persistence success receipt payload is malformed');
+    return problems;
+  }
+  if (
+    payload.schemaVersion !== 1 &&
+    payload.schemaVersion !== 2 &&
+    payload.schemaVersion !== 3
+  ) {
+    problems.push('score persistence success receipt payload schema is unsupported');
+  }
+  if (Number(meta.sourceIdentitySchemaVersion ?? 0) >= 17) {
+    if (payload.schemaVersion !== 2 && payload.schemaVersion !== 3) {
+      problems.push(
+        'schema-17 score persistence requires a release artifact publication receipt',
+      );
+    } else {
+      try {
+        validatedReleaseArtifactPublicationForReceipt(
+          receipt as RefreshCaptureReceiptRow,
+        );
+      } catch (error) {
+        problems.push(
+          `score persistence release artifact publication is invalid: ` +
+          `${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+  const codeRevision = normalizeCodeRevision(
+    typeof meta.codeRevision === 'string' ? meta.codeRevision : null,
+  );
+  if (
+    !codeRevision ||
+    attempt?.code_revision !== codeRevision ||
+    payload.codeRevision !== codeRevision
+  ) {
+    problems.push('score persistence success receipt code revision does not match its attempt and score');
+  }
+  if (
+    attempt &&
+    (
+      payload.operation !== attempt.operation ||
+      payload.trigger !== attempt.trigger
+    )
+  ) {
+    problems.push('score persistence success receipt operation/trigger does not match its attempt');
+  }
+  const scoreHistory = payload?.scoreHistory;
+  const history = scoreHistory && typeof scoreHistory === 'object' && !Array.isArray(scoreHistory)
+    ? scoreHistory as Record<string, unknown>
+    : null;
+  if (
+    !history ||
+    history.runId !== historyRunId ||
+    history.contentHash !== historyRunContentHash ||
+    history.persistedAt !== (currentHistoryRows[0]?.recorded_at ?? null) ||
+    history.persistedAt !== meta.persistedAt
+  ) {
+    problems.push('score persistence success receipt does not link the current sealed history run');
+  }
+  const scoreAuthority = parseJsonRecord(payload.scoreAuthority);
+  const authorityRunId =
+    typeof meta.authorityRunId === 'string' ? meta.authorityRunId : null;
+  const authorityRun = authorityRunId
+    ? getScoreAuthorityResolutionRun(authorityRunId)
+    : null;
+  const historyV2Seal = historyRunId
+    ? getReleaseScoreAuditHistoryV2Seal(historyRunId)
+    : null;
+  if (
+    !scoreAuthority ||
+    scoreAuthority.runId !== authorityRunId ||
+    scoreAuthority.contentHash !== meta.authorityRunContentHash ||
+    scoreAuthority.historyV2SealContentHash !== meta.historyV2SealContentHash ||
+    authorityRun?.contentHash !== meta.authorityRunContentHash ||
+    historyV2Seal?.authorityRunId !== authorityRunId ||
+    historyV2Seal?.contentHash !== meta.historyV2SealContentHash
+  ) {
+    problems.push(
+      'score persistence success receipt does not link the current authority run and history v2 seal',
+    );
+  }
+  const scoreCommit = parseJsonRecord(payload.scoreCommit);
+  const metaScoreCommit = parseJsonRecord(meta.commitTiming);
+  const historyRecordedAt = currentHistoryRows[0]?.recorded_at ?? null;
+  const commitProblems = releaseValidationScoreCommitTimingProblems(scoreCommit, {
+    recordedAt: typeof scoreCommit?.commitNotAfter === 'string'
+      ? scoreCommit.commitNotAfter
+      : '',
+    historyRunId: historyRunId ?? '',
+    historyRunContentHash,
+    historyRecordedAt,
+    authorityRunId,
+    authorityRunContentHash:
+      typeof meta.authorityRunContentHash === 'string'
+        ? meta.authorityRunContentHash
+        : null,
+    historyV2SealContentHash:
+      typeof meta.historyV2SealContentHash === 'string'
+        ? meta.historyV2SealContentHash
+        : null,
+  });
+  if (
+    commitProblems.length > 0 ||
+    !metaScoreCommit ||
+    canonicalOperationJson(metaScoreCommit) !== canonicalOperationJson(scoreCommit)
+  ) {
+    problems.push(
+      `score persistence success receipt commit timing is invalid: ` +
+      (commitProblems.join('; ') || 'metadata mismatch'),
+    );
+  }
+  const historyTags = currentHistoryRows.map((row) => row.release_tag).sort();
+  const releaseTags = stringArray(payload.releaseTags).sort();
+  if (canonicalOperationJson(releaseTags) !== canonicalOperationJson(historyTags)) {
+    problems.push('score persistence success receipt release tags do not match score history');
+  }
+  const receiptScoreMetadata = parseJsonRecord(payload.scoreMetadata);
+  if (receiptScoreMetadata) {
+    const currentComparableMetadata = { ...meta };
+    delete currentComparableMetadata.publicationRecovery;
+    if (
+      canonicalOperationJson(receiptScoreMetadata) !==
+      canonicalOperationJson(currentComparableMetadata)
+    ) {
+      problems.push('score persistence success receipt metadata snapshot does not match current score metadata');
+    }
+  }
+  const receiptScoreRows = Array.isArray(payload.scoreRows)
+    ? payload.scoreRows.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  if (receiptScoreRows.length > 0) {
+    const currentRows = historyTags.map((tag) => {
+      const release = getRelease(tag);
+      return release
+        ? {
+          tag,
+          finalScore: release.final_score,
+          negativeIssues: release.negative_issues,
+          positiveIssues: release.positive_issues,
+          state: release.state,
+          recommended: release.recommended === 1,
+          scoreReason: release.score_reason,
+          brokenSurfaces: release.broken_surfaces,
+          closedSeriousFixed: release.closed_serious_fixed,
+          openedSeriousDuringReign: release.opened_serious_during_reign,
+          scoredAt: release.scored_at,
+        }
+        : null;
+    });
+    const sortedReceiptRows = receiptScoreRows
+      .slice()
+      .sort((left, right) => String(left.tag).localeCompare(String(right.tag)));
+    if (
+      currentRows.some((row) => row == null) ||
+      canonicalOperationJson(sortedReceiptRows) !== canonicalOperationJson(currentRows)
+    ) {
+      problems.push('score persistence success receipt score rows do not match current releases');
+    }
+  }
+  const recommendedTags = currentHistoryRows
+    .filter((row) => row.recommended === 1)
+    .map((row) => row.release_tag)
+    .sort();
+  const recommendation = parseJsonRecord(payload.recommendation);
+  const selectedTag = recommendation?.selectedTag ?? null;
+  if (
+    recommendedTags.length > 1 ||
+    selectedTag !== (recommendedTags[0] ?? null)
+  ) {
+    problems.push('score persistence success receipt recommendation does not match score history');
+  }
+  const decisionRows = Array.isArray(recommendation?.decisions)
+    ? recommendation.decisions.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  const expectedDecisions = currentHistoryRows
+    .map((row) => ({
+      releaseTag: row.release_tag,
+      decision: parseJsonRecord(parseJsonRecord(row.components_json)?.recommendationDecision),
+    }))
+    .sort((left, right) => left.releaseTag.localeCompare(right.releaseTag));
+  const actualDecisions = decisionRows
+    .map((row) => ({
+      releaseTag: String(row.releaseTag ?? ''),
+      decision: parseJsonRecord(row.decision),
+    }))
+    .sort((left, right) => left.releaseTag.localeCompare(right.releaseTag));
+  if (canonicalOperationJson(actualDecisions) !== canonicalOperationJson(expectedDecisions)) {
+    problems.push('score persistence success receipt recommendation decisions do not match score history');
+  }
+
+  const issueCrawl = parseJsonRecord(payload.issueCrawl);
+  const receiptIssueMetadata = parseJsonRecord(issueCrawl?.metadata);
+  const currentIssueMetadata = parseJsonRecord(getMeta('issue_crawl_last_run'));
+  const currentIssueDigest = currentIssueMetadata
+    ? createHash('sha256').update(canonicalOperationJson(currentIssueMetadata)).digest('hex')
+    : null;
+  if (
+    issueCrawl?.metaKey !== 'issue_crawl_last_run' ||
+    !receiptIssueMetadata ||
+    !currentIssueMetadata ||
+    canonicalOperationJson(receiptIssueMetadata) !== canonicalOperationJson(currentIssueMetadata) ||
+    issueCrawl.metadataDigest !== currentIssueDigest ||
+    meta.issueCrawlMetadataDigest !== currentIssueDigest
+  ) {
+    problems.push('score persistence success receipt issue crawl digest is not authoritative');
+  }
+
+  const releaseCatalog = parseJsonRecord(payload.releaseCatalog);
+  const receiptAttestation = parseJsonRecord(releaseCatalog?.attestation);
+  const scoreAttestation = parseJsonRecord(meta.catalogAttestation);
+  const catalogProblems = releaseCatalogAttestationProblems(receiptAttestation);
+  if (
+    !receiptAttestation ||
+    !scoreAttestation ||
+    catalogProblems.length > 0 ||
+    canonicalOperationJson(receiptAttestation) !== canonicalOperationJson(scoreAttestation)
+  ) {
+    problems.push(
+      `score persistence success receipt release catalog attestation is invalid: ` +
+      (catalogProblems.join('; ') || 'metadata mismatch'),
+    );
+  } else {
+    try {
+      assertCatalogAttestationMatchesCurrent(
+        receiptAttestation as unknown as ReleaseCatalogAttestation,
+      );
+    } catch (error) {
+      problems.push(
+        `score persistence success receipt release catalog is not authoritative: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  const advisoryCatalog = parseJsonRecord(payload.advisoryCatalog);
+  const receiptAdvisoryMetadata = parseJsonRecord(advisoryCatalog?.metadata);
+  let currentAdvisorySnapshot: PersistedCompoundAdvisorySnapshot | null = null;
+  let currentAdvisorySnapshotError: string | null = null;
+  try {
+    currentAdvisorySnapshot = currentCompoundAdvisorySnapshot();
+  } catch (error) {
+    currentAdvisorySnapshotError =
+      error instanceof Error ? error.message : String(error);
+  }
+  const currentAdvisoryMetadata = currentAdvisorySnapshot?.metadata ?? null;
+  const currentAdvisoryDigest = currentAdvisoryMetadata
+    ? compoundAdvisorySnapshotMetadataDigest(currentAdvisoryMetadata)
+    : null;
+  const advisoryBindingProblems = currentAdvisoryMetadata
+    ? compoundAdvisoryReceiptBindingProblems(
+        advisoryCatalog,
+        currentAdvisoryMetadata,
+      )
+    : ['current advisory snapshot metadata is missing'];
+  if (
+    !receiptAdvisoryMetadata ||
+    !currentAdvisoryMetadata ||
+    advisoryBindingProblems.length > 0 ||
+    advisoryCatalog?.metadataDigest !== currentAdvisoryDigest ||
+    currentAdvisorySnapshotError != null
+  ) {
+    problems.push(
+      `score persistence success receipt advisory v2 ledger is not authoritative: ` +
+      (
+        currentAdvisorySnapshotError ??
+        advisoryBindingProblems.join('; ') ??
+        'receipt metadata or ledger projection mismatch'
+      ),
+    );
+  }
+
+  const forecast = payload?.forecast;
+  const forecastRecord = forecast && typeof forecast === 'object' && !Array.isArray(forecast)
+    ? forecast as Record<string, unknown>
+    : null;
+  problems.push(...refreshForecastReceiptProblems({
+    meta,
+    receipt: forecastRecord,
+    scoreCommit,
+    releaseCatalog: receiptAttestation,
+    codeRevision,
+    historyRunId,
+    currentHistoryRows,
+  }));
+  return problems;
+}
+
+function refreshForecastReceiptProblems(input: {
+  meta: Record<string, unknown>;
+  receipt: Record<string, unknown> | null;
+  scoreCommit: Record<string, unknown> | null;
+  releaseCatalog: Record<string, unknown> | null;
+  codeRevision: string | null;
+  historyRunId: string | null;
+  currentHistoryRows: Array<ReleaseScoreAuditRow & {
+    run_id: string;
+    recorded_at: string;
+  }>;
+}): string[] {
+  const problems: string[] = [];
+  if (!input.receipt || !input.scoreCommit || !input.releaseCatalog || !input.codeRevision) {
+    return ['score persistence success receipt forecast authorization is incomplete'];
+  }
+  const latestStable = parseJsonRecord(input.releaseCatalog.latestStable);
+  const recordedAt = typeof input.scoreCommit.commitNotAfter === 'string'
+    ? input.scoreCommit.commitNotAfter
+    : '';
+  const latestPublishedAt = typeof latestStable?.publishedAt === 'string'
+    ? latestStable.publishedAt
+    : '';
+  const latestTag = typeof latestStable?.tag === 'string' ? latestStable.tag : '';
+  const enrollmentRows = listReleaseValidationOpportunityEnrollments().filter(
+    (row) =>
+      row.release_tag === latestTag &&
+      row.release_published_at === latestPublishedAt &&
+      row.score_model_version === input.meta.scoreModelVersion &&
+      row.prompt_version === input.meta.promptVersion &&
+      row.code_revision === input.codeRevision,
+  );
+  const expectedOpportunityCodes = Object.keys(RELEASE_VALIDATION_OPPORTUNITIES)
+    .filter((opportunityCode) => enrollmentRows.some((row) =>
+      row.opportunity_code === opportunityCode &&
+      Date.parse(row.enrolled_at) <= Date.parse(recordedAt) &&
+      Date.parse(recordedAt) >= Date.parse(row.opens_at) &&
+      Date.parse(recordedAt) < Date.parse(row.closes_at_exclusive)));
+  const captures = Array.isArray(input.receipt.captures)
+    ? input.receipt.captures.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  const captureCodes = captures.map((capture) => String(capture.opportunityCode ?? ''));
+  if (
+    canonicalOperationJson(captureCodes) !==
+    canonicalOperationJson(expectedOpportunityCodes)
+  ) {
+    problems.push('score persistence success receipt forecast capture set is not exact');
+  }
+  const decisionIds = stringArray(input.receipt.decisionIds);
+  const newDecisionIds = stringArray(input.receipt.newDecisionIds);
+  const existingDecisionIds = stringArray(input.receipt.existingDecisionIds);
+  const captureDecisionIds = captures.map((capture) => String(capture.decisionId ?? ''));
+  if (canonicalOperationJson(decisionIds) !== canonicalOperationJson(captureDecisionIds)) {
+    problems.push('score persistence success receipt forecast decision IDs do not match captures');
+  }
+  const plannedSlots = Array.isArray(parseJsonRecord(input.meta.forecastPlan)?.slots)
+    ? (parseJsonRecord(input.meta.forecastPlan)!.slots as unknown[])
+      .map(parseJsonRecord)
+      .filter((row): row is Record<string, unknown> => row != null)
+    : [];
+  const forecastPlan = parseJsonRecord(input.meta.forecastPlan);
+  const preflightAt = typeof forecastPlan?.preflightAt === 'string'
+    ? forecastPlan.preflightAt
+    : '';
+  const preflightAtMs = Date.parse(preflightAt);
+  const expectedPlannedCodes = Number.isFinite(preflightAtMs)
+    ? Object.keys(RELEASE_VALIDATION_OPPORTUNITIES)
+      .filter((opportunityCode) => enrollmentRows.some((row) =>
+        row.opportunity_code === opportunityCode &&
+        Date.parse(row.enrolled_at) <= preflightAtMs &&
+        preflightAtMs < Date.parse(row.closes_at_exclusive)))
+    : [];
+  if (
+    forecastPlan?.schemaVersion !== 1 ||
+    !Number.isFinite(preflightAtMs) ||
+    preflightAt !== input.scoreCommit.commitNotBefore ||
+    forecastPlan.latestReleaseTag !== latestTag ||
+    forecastPlan.latestReleasePublishedAt !== latestPublishedAt ||
+    forecastPlan.selectedTag !== (input.meta.recommendedTag ?? null) ||
+    forecastPlan.scoreModelVersion !== input.meta.scoreModelVersion ||
+    forecastPlan.promptVersion !== input.meta.promptVersion ||
+    forecastPlan.policyCode !== input.meta.recommendationPolicyCode ||
+    forecastPlan.codeRevision !== input.codeRevision ||
+    canonicalOperationJson(plannedSlots.map((slot) => slot.opportunityCode)) !==
+      canonicalOperationJson(expectedPlannedCodes)
+  ) {
+    problems.push('score persistence forecast preflight plan is invalid');
+  }
+  for (const capture of captures) {
+    const opportunityCode = String(capture.opportunityCode ?? '');
+    const decisionId = String(capture.decisionId ?? '');
+    const status = String(capture.status ?? '');
+    const planned = plannedSlots.find((slot) => slot.opportunityCode === opportunityCode);
+    const enrollment = enrollmentRows.find((row) =>
+      row.opportunity_code === opportunityCode);
+    const row = db.prepare(`
+      SELECT *
+      FROM release_validation_forecasts
+      WHERE decision_id=?
+    `).get(decisionId) as unknown as ReleaseValidationForecastRow | undefined;
+    if (
+      !row ||
+      row.opportunity_code !== opportunityCode ||
+      row.latest_release_tag !== latestTag ||
+      row.latest_release_published_at !== latestPublishedAt ||
+      row.score_model_version !== input.meta.scoreModelVersion ||
+      row.prompt_version !== input.meta.promptVersion ||
+      row.code_revision !== input.codeRevision ||
+      !enrollment ||
+      Date.parse(enrollment.enrolled_at) > Date.parse(row.recorded_at) ||
+      capture.opportunityId !== enrollment.opportunity_id ||
+      capture.enrollmentContentHash !== enrollment.content_hash ||
+      releaseValidationDecisionSchemaVersionForRow(row) !== 4
+    ) {
+      problems.push(`score persistence success receipt forecast ${decisionId} has the wrong slot`);
+      continue;
+    }
+    if (status === 'inserted') {
+      if (row.audit_history_run_id !== input.historyRunId || planned?.existingDecisionId != null) {
+        problems.push(`score persistence success receipt forecast ${decisionId} was not newly history-bound`);
+      }
+    } else if (status === 'already_captured') {
+      if (
+        planned?.existingDecisionId !== decisionId ||
+        planned?.existingContentHash !== row.content_hash ||
+        !forecastSemanticallyMatchesHistory(row, input.currentHistoryRows)
+      ) {
+        problems.push(`score persistence success receipt forecast ${decisionId} is not an equivalent prior capture`);
+      }
+    } else {
+      problems.push(`score persistence success receipt forecast ${decisionId} has invalid capture status`);
+    }
+  }
+  const expectedNew = captures
+    .filter((capture) => capture.status === 'inserted')
+    .map((capture) => String(capture.decisionId ?? ''));
+  const expectedExisting = captures
+    .filter((capture) => capture.status === 'already_captured')
+    .map((capture) => String(capture.decisionId ?? ''));
+  if (
+    canonicalOperationJson(newDecisionIds) !== canonicalOperationJson(expectedNew) ||
+    canonicalOperationJson(existingDecisionIds) !== canonicalOperationJson(expectedExisting)
+  ) {
+    problems.push('score persistence success receipt forecast new/existing decision sets are invalid');
+  }
+  const expectedOutcome = captures.length === 0
+    ? 'not_eligible'
+    : expectedNew.length > 0
+      ? 'eligible_and_captured'
+      : 'already_captured';
+  if (input.receipt.eligibilityOutcome !== expectedOutcome) {
+    problems.push('score persistence success receipt forecast eligibility outcome is invalid');
+  }
+  problems.push(...refreshCanonicalForecastReceiptProblems({
+    receipt: input.receipt,
+    legacyCaptures: captures,
+    historyRunId: input.historyRunId,
+    historyContentHash:
+      typeof input.scoreCommit.historyRunContentHash === 'string'
+        ? input.scoreCommit.historyRunContentHash
+        : null,
+    authorityRunId:
+      typeof input.scoreCommit.authorityRunId === 'string'
+        ? input.scoreCommit.authorityRunId
+        : null,
+    authorityContentHash:
+      typeof input.scoreCommit.authorityRunContentHash === 'string'
+        ? input.scoreCommit.authorityRunContentHash
+        : null,
+    historyV2SealContentHash:
+      typeof input.scoreCommit.historyV2SealContentHash === 'string'
+        ? input.scoreCommit.historyV2SealContentHash
+        : null,
+  }));
+  return problems;
+}
+
+function refreshCanonicalForecastReceiptProblems(input: {
+  receipt: Record<string, unknown>;
+  legacyCaptures: Record<string, unknown>[];
+  historyRunId: string | null;
+  historyContentHash: string | null;
+  authorityRunId: string | null;
+  authorityContentHash: string | null;
+  historyV2SealContentHash: string | null;
+}): string[] {
+  const problems: string[] = [];
+  const bundle = readReleaseValidationProofBundleInTransaction();
+  const verification = verifyReleaseValidationProofBundle(bundle);
+  if (!verification.valid) {
+    return [
+      `score persistence canonical forecast proof is invalid: ` +
+      verification.problems.join('; '),
+    ];
+  }
+  const legacyDecisionIds = input.legacyCaptures.map((capture) =>
+    String(capture.decisionId ?? ''));
+  const expectedRows = bundle.forecasts.filter((forecast) => {
+    const link = canonicalForecastReceiptLink(forecast);
+    return link != null && legacyDecisionIds.includes(link.decisionId);
+  });
+  const forecastIds = stringArray(input.receipt.canonicalForecastIds);
+  const contentHashes = stringArray(input.receipt.canonicalForecastContentHashes);
+  const captures = Array.isArray(input.receipt.canonicalCaptures)
+    ? input.receipt.canonicalCaptures.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  if (
+    canonicalOperationJson(forecastIds) !==
+      canonicalOperationJson(captures.map((capture) =>
+        String(capture.forecastId ?? ''))) ||
+    canonicalOperationJson(contentHashes) !==
+      canonicalOperationJson(captures.map((capture) =>
+        String(capture.contentHash ?? '')))
+  ) {
+    problems.push(
+      'score persistence canonical forecast IDs or hashes do not match captures',
+    );
+  }
+  if (
+    !sameStringSet(
+      forecastIds,
+      expectedRows.map((forecast) => forecast.forecastId),
+    )
+  ) {
+    problems.push(
+      'score persistence canonical forecast capture set is not exact',
+    );
+  }
+  const expectedNewIds = captures
+    .filter((capture) => capture.status === 'inserted')
+    .map((capture) => String(capture.forecastId ?? ''));
+  const expectedExistingIds = captures
+    .filter((capture) => capture.status === 'already_captured')
+    .map((capture) => String(capture.forecastId ?? ''));
+  if (
+    canonicalOperationJson(stringArray(input.receipt.newCanonicalForecastIds)) !==
+      canonicalOperationJson(expectedNewIds) ||
+    canonicalOperationJson(
+      stringArray(input.receipt.existingCanonicalForecastIds),
+    ) !== canonicalOperationJson(expectedExistingIds)
+  ) {
+    problems.push(
+      'score persistence canonical forecast new/existing sets are invalid',
+    );
+  }
+
+  const forecastsById = new Map(
+    bundle.forecasts.map((forecast) => [forecast.forecastId, forecast]),
+  );
+  const obligationsById = new Map(
+    bundle.obligations.map((obligation) => [
+      obligation.obligationId,
+      obligation,
+    ]),
+  );
+  const assignmentsById = new Map(
+    bundle.splitAssignments.map((assignment) => [
+      assignment.assignmentId,
+      assignment,
+    ]),
+  );
+  const cohortsById = new Map(
+    bundle.cohorts.map((cohort) => [cohort.cohortId, cohort]),
+  );
+  for (const capture of captures) {
+    const forecastId = String(capture.forecastId ?? '');
+    const forecast = forecastsById.get(forecastId);
+    const obligation = forecast
+      ? obligationsById.get(forecast.obligationId)
+      : null;
+    const assignment = forecast
+      ? assignmentsById.get(forecast.splitAssignmentId)
+      : null;
+    const cohort = forecast ? cohortsById.get(forecast.cohortId) : null;
+    if (
+      !forecast ||
+      forecast.contentHash !== capture.contentHash ||
+      forecast.obligationId !== capture.obligationId ||
+      forecast.splitAssignmentId !== capture.splitAssignmentId ||
+      forecast.cohortId !== capture.cohortId ||
+      !obligation ||
+      obligation.opportunityCode !== capture.opportunityCode ||
+      obligation.horizonCode !== capture.horizonCode ||
+      !assignment ||
+      assignment.obligationId !== forecast.obligationId ||
+      !cohort ||
+      cohort.policyId !== forecast.policyId ||
+      cohort.policyContentHash !== forecast.policyContentHash
+    ) {
+      problems.push(
+        `score persistence canonical forecast ${forecastId} has the wrong proof slot`,
+      );
+      continue;
+    }
+    const link = canonicalForecastReceiptLink(forecast);
+    const legacyDecisionId = String(capture.legacyDecisionId ?? '');
+    const legacyContentHash = String(capture.legacyContentHash ?? '');
+    const legacyForecast = db.prepare(`
+      SELECT *
+      FROM release_validation_forecasts
+      WHERE decision_id=?
+    `).get(legacyDecisionId) as unknown as
+      ReleaseValidationForecastRow | undefined;
+    if (
+      !link ||
+      link.decisionId !== legacyDecisionId ||
+      link.contentHash !== legacyContentHash ||
+      !legacyForecast ||
+      legacyForecast.content_hash !== legacyContentHash ||
+      !legacyDecisionIds.includes(legacyDecisionId)
+    ) {
+      problems.push(
+        `score persistence canonical forecast ${forecastId} has the wrong legacy link`,
+      );
+      continue;
+    }
+    const publication = link.capturePublication;
+    const initialHistoryRunId =
+      typeof publication?.historyRunId === 'string'
+        ? publication.historyRunId
+        : null;
+    const initialHistoryContentHash =
+      typeof publication?.historyRunContentHash === 'string'
+        ? publication.historyRunContentHash
+        : null;
+    const initialAuthorityRunId =
+      typeof publication?.authorityRunId === 'string'
+        ? publication.authorityRunId
+        : null;
+    const initialAuthorityContentHash =
+      typeof publication?.authorityRunContentHash === 'string'
+        ? publication.authorityRunContentHash
+        : null;
+    const initialHistoryV2SealContentHash =
+      typeof publication?.historyV2SealContentHash === 'string'
+        ? publication.historyV2SealContentHash
+        : null;
+    const initialHistory = initialHistoryRunId
+      ? getReleaseScoreAuditHistoryRunSeal(initialHistoryRunId)
+      : null;
+    const initialAuthority = initialAuthorityRunId
+      ? getScoreAuthorityResolutionRun(initialAuthorityRunId)
+      : null;
+    const initialHistoryV2Seal = initialHistoryRunId
+      ? getReleaseScoreAuditHistoryV2Seal(initialHistoryRunId)
+      : null;
+    if (
+      !initialHistory ||
+      initialHistory.content_hash !== initialHistoryContentHash ||
+      !initialAuthority ||
+      initialAuthority.contentHash !== initialAuthorityContentHash ||
+      !initialHistoryV2Seal ||
+      initialHistoryV2Seal.authorityRunId !== initialAuthorityRunId ||
+      initialHistoryV2Seal.contentHash !== initialHistoryV2SealContentHash
+    ) {
+      problems.push(
+        `score persistence canonical forecast ${forecastId} has invalid initial seals`,
+      );
+      continue;
+    }
+    const expectedStatus =
+      initialHistoryRunId === input.historyRunId
+        ? 'inserted'
+        : 'already_captured';
+    if (capture.status !== expectedStatus) {
+      problems.push(
+        `score persistence canonical forecast ${forecastId} has invalid capture status`,
+      );
+    }
+    if (
+      capture.status === 'inserted' &&
+      (
+        initialHistoryContentHash !== input.historyContentHash ||
+        initialAuthorityRunId !== input.authorityRunId ||
+        initialAuthorityContentHash !== input.authorityContentHash ||
+        initialHistoryV2SealContentHash !== input.historyV2SealContentHash
+      )
+    ) {
+      problems.push(
+        `score persistence canonical forecast ${forecastId} is not newly publication-bound`,
+      );
+    }
+  }
+  return problems;
+}
+
+function canonicalForecastReceiptLink(forecast: ReleaseValidationForecastV2): {
+  decisionId: string;
+  contentHash: string;
+  capturePublication: Record<string, unknown> | null;
+} | null {
+  const payload = parseJsonRecord(forecast.forecast);
+  const legacy = parseJsonRecord(payload?.legacyForecast);
+  const decisionId = typeof legacy?.decisionId === 'string'
+    ? legacy.decisionId
+    : null;
+  const contentHash = typeof legacy?.contentHash === 'string'
+    ? legacy.contentHash
+    : null;
+  if (!decisionId || !contentHash || !/^[0-9a-f]{64}$/.test(contentHash)) {
+    return null;
   }
   return {
-    count: rows.length,
-    max_scored_at: maxScoredAt,
-    digest: hash.digest('hex'),
+    decisionId,
+    contentHash,
+    capturePublication: parseJsonRecord(payload?.canonicalCapturePublication),
   };
+}
+
+function forecastSemanticallyMatchesHistory(
+  forecast: ReleaseValidationForecastRow,
+  historyRows: Array<ReleaseScoreAuditRow & {
+    run_id: string;
+    recorded_at: string;
+  }>,
+): boolean {
+  const forecastHistory = listReleaseScoreAuditHistoryForRun(
+    forecast.audit_history_run_id,
+  );
+  const forecastSeal = getReleaseScoreAuditHistoryRunSeal(
+    forecast.audit_history_run_id,
+  );
+  const forecastAuthorityRunIds = new Set(
+    forecastHistory.map((row) => row.authority_run_id),
+  );
+  const forecastAuthorityRunId =
+    forecastAuthorityRunIds.size === 1 &&
+      typeof [...forecastAuthorityRunIds][0] === 'string'
+      ? [...forecastAuthorityRunIds][0] as string
+      : null;
+  const forecastAuthorityRun = forecastAuthorityRunId
+    ? getScoreAuthorityResolutionRun(forecastAuthorityRunId)
+    : null;
+  const forecastHistoryV2Seal = getReleaseScoreAuditHistoryV2Seal(
+    forecast.audit_history_run_id,
+  );
+  if (
+    !forecastSeal ||
+    !forecastAuthorityRun ||
+    !forecastHistoryV2Seal ||
+    releaseValidationForecastContentHash(forecast) !== forecast.content_hash ||
+    releaseValidationDecisionId(forecast, forecast.content_hash) !== forecast.decision_id ||
+    validateReleaseValidationForecastProvenance(
+      [forecast],
+      forecastHistory as any,
+      [forecastSeal],
+      [forecastAuthorityRun],
+      [forecastHistoryV2Seal],
+    ).length > 0
+  ) {
+    return false;
+  }
+  const candidates = parseJsonArrayRecords(forecast.candidate_scores_json);
+  const candidateAudits = candidates
+    .map((candidate) => parseJsonRecord(candidate.auditSnapshot ?? candidate.audit_snapshot))
+    .filter((row): row is Record<string, unknown> => row != null)
+    .map(releaseScoreAuditSemanticForForecast)
+    .sort((left, right) =>
+      String(left.release_tag).localeCompare(String(right.release_tag)));
+  const currentAudits = historyRows
+    .map((row) => releaseScoreAuditSemanticForForecast(
+      row as unknown as Record<string, unknown>,
+    ))
+    .sort((left, right) =>
+      String(left.release_tag).localeCompare(String(right.release_tag)));
+  const currentAuthorityRunIds = new Set(
+    historyRows.map((row) => row.authority_run_id),
+  );
+  const currentAuthorityRunId =
+    currentAuthorityRunIds.size === 1 &&
+      typeof [...currentAuthorityRunIds][0] === 'string'
+      ? [...currentAuthorityRunIds][0] as string
+      : null;
+  const currentAuthorityRun = currentAuthorityRunId
+    ? getScoreAuthorityResolutionRun(currentAuthorityRunId)
+    : null;
+  return candidateAudits.length === currentAudits.length &&
+    currentAuthorityRun != null &&
+    canonicalOperationJson(candidateAudits) === canonicalOperationJson(currentAudits) &&
+    canonicalOperationJson(
+      scoreAuthorityRunSemanticForForecast(forecastAuthorityRun),
+    ) === canonicalOperationJson(
+      scoreAuthorityRunSemanticForForecast(currentAuthorityRun),
+    );
+}
+
+function releaseScoreAuditSemanticForForecast(
+  row: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    release_tag: row.release_tag,
+    score_model_version: row.score_model_version,
+    prompt_version: row.prompt_version,
+    final_score: row.final_score,
+    status: row.status,
+    band: row.band,
+    recommended: row.recommended,
+    input_json: row.input_json,
+    components_json: row.components_json ?? null,
+    issue_evidence_json: row.issue_evidence_json,
+    gate_evidence_json: row.gate_evidence_json,
+    source_identity_json: row.source_identity_json,
+  };
+}
+
+function scoreAuthorityRunSemanticForForecast(
+  run: ScoreAuthorityResolutionRun,
+): Record<string, unknown> {
+  return {
+    schemaVersion: run.schemaVersion,
+    policyVersion: run.policyVersion,
+    sourceIdentitySchemaVersion: run.sourceIdentitySchemaVersion,
+    sourceIdentityDigest: run.sourceIdentityDigest,
+    rows: run.rows
+      .map((row) => ({
+        releaseTag: row.releaseTag,
+        issueNumber: row.issueNumber,
+        subjectKind: row.subjectKind,
+        subjectIdentity: row.subjectIdentity,
+        candidateId: row.candidateId,
+        authority: row.authority,
+        reason: row.reason,
+        authorizedForScoring: row.authorizedForScoring,
+        evidenceDigest: row.evidenceDigest,
+        resolutionJson: row.resolutionJson,
+      }))
+      .sort((left, right) =>
+        left.subjectKind.localeCompare(right.subjectKind) ||
+        left.subjectIdentity.localeCompare(right.subjectIdentity)),
+  };
+}
+
+function parseJsonRecord(value: unknown): Record<string, unknown> | null {
+  if (typeof value === 'string') {
+    try {
+      return parseJsonRecord(JSON.parse(value));
+    } catch {
+      return null;
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function parseJsonArrayRecords(value: string): Record<string, unknown>[] {
+  try {
+    const parsed = JSON.parse(value);
+    return Array.isArray(parsed)
+      ? parsed.map(parseJsonRecord).filter(
+          (row): row is Record<string, unknown> => row != null,
+        )
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === 'string' && item.length > 0)
+    : [];
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  return left.length === right.length &&
+    new Set(left).size === left.length &&
+    new Set(right).size === right.length &&
+    left.every((value) => right.includes(value));
+}
+
+function releaseValidationDecisionSchemaVersionForRow(
+  row: Pick<ReleaseValidationForecastRow, 'decision_json'>,
+): number | null {
+  const version = Number(parseJsonRecord(row.decision_json)?.schemaVersion);
+  return Number.isInteger(version) ? version : null;
+}
+
+const releaseScoreAuditFreshnessStmt = db.prepare(`
+SELECT
+  audit.release_tag,
+  audit.scored_at,
+  audit.score_model_version,
+  audit.prompt_version,
+  audit.final_score,
+  audit.status,
+  audit.band,
+  audit.recommended,
+  audit.input_json,
+  audit.components_json,
+  audit.issue_evidence_json,
+  audit.gate_evidence_json,
+  audit.source_identity_json
+FROM release_score_audits audit
+JOIN releases release
+  ON release.tag=audit.release_tag
+ AND release.catalog_active=1
+ORDER BY audit.release_tag
+`);
+export function releaseScoreAuditFreshness(): { count: number; max_scored_at: string | null; digest: string } {
+  return withAuthorizedReleaseCatalogRead(() => {
+    const rows = releaseScoreAuditFreshnessStmt.all() as Array<Record<string, unknown>>;
+    const hash = createHash('sha256');
+    let maxScoredAt: string | null = null;
+    for (const row of rows) {
+      const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
+      if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
+      hash.update(JSON.stringify(row));
+      hash.update('\n');
+    }
+    return {
+      count: rows.length,
+      max_scored_at: maxScoredAt,
+      digest: hash.digest('hex'),
+    };
+  });
 }
 
 const publicReleaseRowsFreshnessStmt = db.prepare(`
@@ -1181,25 +12305,72 @@ SELECT
   closed_serious_fixed,
   opened_serious_during_reign
 FROM releases
-ORDER BY published_at DESC
+WHERE catalog_active=1
+  AND prerelease=0
+ORDER BY catalog_rank IS NULL, catalog_rank, published_at DESC
 LIMIT ?
 `);
 export function publicReleaseRowsFreshness(limit: number): { count: number; max_scored_at: string | null; digest: string } {
-  const rows = publicReleaseRowsFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown>>;
-  const hash = createHash('sha256');
-  let maxScoredAt: string | null = null;
-  for (const row of rows) {
-    const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
-    if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
-    hash.update(JSON.stringify(row));
-    hash.update('\n');
-  }
-  return {
-    count: rows.length,
-    max_scored_at: maxScoredAt,
-    digest: hash.digest('hex'),
-  };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const rows = publicReleaseRowsFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown>>;
+    const hash = createHash('sha256');
+    let maxScoredAt: string | null = null;
+    for (const row of rows) {
+      const scoredAt = typeof row.scored_at === 'string' ? row.scored_at : null;
+      if (scoredAt && (!maxScoredAt || scoredAt > maxScoredAt)) maxScoredAt = scoredAt;
+      hash.update(JSON.stringify(row));
+      hash.update('\n');
+    }
+    return {
+      count: rows.length,
+      max_scored_at: maxScoredAt,
+      digest: hash.digest('hex'),
+    };
+  });
 }
+
+// GitHub state events are connection-ordered. Timestamps are not unique, so a
+// close/reopen pair at the same instant must use connection_ordinal to decide
+// which event came first.
+const issueOpenIntervalsSql = `
+issue_open_intervals AS (
+  SELECT
+    i.number AS issue_number,
+    i.created_at AS open_at,
+    COALESCE(
+      (SELECT c.closed_at
+       FROM issue_closure_events c
+       WHERE c.issue_number=i.number
+         AND unixepoch(c.closed_at) >= unixepoch(i.created_at)
+       ORDER BY unixepoch(c.closed_at), c.connection_ordinal, c.event_id
+       LIMIT 1),
+      i.closed_at
+    ) AS close_at
+  FROM issues i
+  UNION ALL
+  SELECT
+    r.issue_number,
+    r.reopened_at AS open_at,
+    COALESCE(
+      (SELECT c.closed_at
+       FROM issue_closure_events c
+       WHERE c.issue_number=r.issue_number
+         AND (
+           unixepoch(c.closed_at) > unixepoch(r.reopened_at)
+           OR (
+             unixepoch(c.closed_at) = unixepoch(r.reopened_at)
+             AND c.connection_ordinal > r.connection_ordinal
+           )
+         )
+       ORDER BY unixepoch(c.closed_at), c.connection_ordinal, c.event_id
+       LIMIT 1),
+      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
+    ) AS close_at
+  FROM issue_reopen_events r
+  JOIN issues i ON i.number=r.issue_number
+  WHERE r.reopened_at IS NOT NULL
+)
+`;
 
 const publicIssueSummaryFreshnessStmt = db.prepare(`
 WITH target_releases AS (
@@ -1210,41 +12381,17 @@ WITH target_releases AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE prerelease=0
-  ORDER BY published_at DESC
+    AND catalog_active=1
+  ORDER BY catalog_rank IS NULL, catalog_rank, published_at DESC
   LIMIT ?
 ),
-issue_open_intervals AS (
-  SELECT
-    i.number AS issue_number,
-    i.created_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=i.number
-         AND c.closed_at > i.created_at),
-      i.closed_at
-    ) AS close_at
-  FROM issues i
-  UNION ALL
-  SELECT
-    r.issue_number,
-    r.reopened_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=r.issue_number
-         AND c.closed_at > r.reopened_at),
-      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
-    ) AS close_at
-  FROM issue_reopen_events r
-  JOIN issues i ON i.number=r.issue_number
-  WHERE r.reopened_at IS NOT NULL
-),
+${issueOpenIntervalsSql},
 issue_universe AS (
   SELECT DISTINCT i.number
   FROM issues i
@@ -1361,20 +12508,22 @@ ORDER BY source, item_key
 `);
 
 export function publicIssueSummaryFreshness(limit: number): { count: number; max_ts: string | null; digest: string } {
-  const rows = publicIssueSummaryFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown> & { max_ts?: string | null }>;
-  const hash = createHash('sha256');
-  let maxTs: string | null = null;
-  for (const row of rows) {
-    const ts = typeof row.max_ts === 'string' ? row.max_ts : null;
-    if (ts && (!maxTs || ts > maxTs)) maxTs = ts;
-    hash.update(JSON.stringify(row));
-    hash.update('\n');
-  }
-  return {
-    count: rows.length,
-    max_ts: maxTs,
-    digest: hash.digest('hex'),
-  };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const rows = publicIssueSummaryFreshnessStmt.all(Math.max(1, Math.floor(limit))) as Array<Record<string, unknown> & { max_ts?: string | null }>;
+    const hash = createHash('sha256');
+    let maxTs: string | null = null;
+    for (const row of rows) {
+      const ts = typeof row.max_ts === 'string' ? row.max_ts : null;
+      if (ts && (!maxTs || ts > maxTs)) maxTs = ts;
+      hash.update(JSON.stringify(row));
+      hash.update('\n');
+    }
+    return {
+      count: rows.length,
+      max_ts: maxTs,
+      digest: hash.digest('hex'),
+    };
+  });
 }
 
 export interface ReleaseDataFreshnessSource {
@@ -1408,6 +12557,7 @@ const hasReleaseRowFreshnessColumns = tableHasColumns('releases', [
   'release_artifact_checked_at',
 ]);
 const hasIssueFetchFreshnessColumn = tableHasColumns('issues', ['fetched_at']);
+const issueObservationColumn = tableHasColumns('issues', ['checked_at']) ? 'checked_at' : 'fetched_at';
 
 const releaseDataFreshnessStmt = db.prepare(`
 WITH target AS (
@@ -1418,39 +12568,15 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
-issue_open_intervals AS (
-  SELECT
-    i.number AS issue_number,
-    i.created_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=i.number
-         AND c.closed_at > i.created_at),
-      i.closed_at
-    ) AS close_at
-  FROM issues i
-  UNION ALL
-  SELECT
-    r.issue_number,
-    r.reopened_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=r.issue_number
-         AND c.closed_at > r.reopened_at),
-      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
-    ) AS close_at
-  FROM issue_reopen_events r
-  JOIN issues i ON i.number=r.issue_number
-  WHERE r.reopened_at IS NOT NULL
-),
+${issueOpenIntervalsSql},
 issue_universe AS (
   SELECT DISTINCT i.number
   FROM issues i
@@ -1497,10 +12623,10 @@ pr_universe AS (
 	  SELECT 'issue_rows', COUNT(*), COALESCE(SUM(CASE WHEN i.updated_at IS NULL THEN 1 ELSE 0 END), 0), MAX(i.updated_at)
 	  FROM issues i JOIN issue_universe u ON u.number=i.number
 	  ${hasIssueFetchFreshnessColumn ? `UNION ALL
-	  SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN i.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(i.fetched_at)
+		  SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN i.${issueObservationColumn} IS NULL THEN 1 ELSE 0 END), 0), MAX(i.${issueObservationColumn})
 	  FROM issues i JOIN issue_universe u ON u.number=i.number` : ''}
 	  UNION ALL
-	  SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN s.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.fetched_at)
+	  SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN s.verified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.verified_at)
 	  FROM issue_comment_snapshots s JOIN issue_universe u ON u.number=s.issue_number
 	  UNION ALL
 	  SELECT 'classification_rows', COUNT(*), COALESCE(SUM(CASE WHEN c.classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(c.classified_at)
@@ -1511,6 +12637,9 @@ pr_universe AS (
 	  UNION ALL
 	  SELECT 'label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN s.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.fetched_at)
 	  FROM issue_label_snapshots s JOIN issue_universe u ON u.number=s.issue_number
+	  UNION ALL
+	  SELECT 'issue_state_event_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN s.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.fetched_at)
+	  FROM issue_state_event_snapshots s JOIN issue_universe u ON u.number=s.issue_number
 	  UNION ALL
 	  SELECT 'closure_proofs', COUNT(*), COALESCE(SUM(CASE WHEN p.checked_at IS NULL THEN 1 ELSE 0 END), 0), MAX(p.checked_at)
 	  FROM issue_closure_proofs p
@@ -1527,6 +12656,10 @@ pr_universe AS (
 	  UNION ALL
 	  SELECT 'issue_commit_references', COUNT(*), COALESCE(SUM(CASE WHEN c.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(c.fetched_at)
 	  FROM issue_commit_references c JOIN closed_universe u ON u.number=c.issue_number
+	  UNION ALL
+	  SELECT 'release_closure_dependency_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN s.captured_at IS NULL THEN 1 ELSE 0 END), 0), MAX(s.captured_at)
+	  FROM release_closure_dependency_snapshots s
+	  JOIN target ON target.tag=s.release_tag
 	  UNION ALL
 	  SELECT 'pull_request_fixes', COUNT(*), COALESCE(SUM(CASE WHEN p.fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(p.fetched_at)
 	  FROM pull_request_fixes p
@@ -1546,6 +12679,7 @@ const latestScoredStableReleaseTagStmt = db.prepare(`
 SELECT tag
 FROM releases r
 WHERE r.prerelease=0
+  AND r.catalog_active=1
   AND (
     r.final_score IS NOT NULL
     OR EXISTS (
@@ -1559,41 +12693,47 @@ LIMIT 1
 `);
 
 export function latestScoredStableReleaseTag(): string | null {
-  const row = latestScoredStableReleaseTagStmt.get() as { tag: string } | undefined;
-  return row?.tag ?? null;
+  return withAuthorizedReleaseCatalogRead(() => {
+    const row = latestScoredStableReleaseTagStmt.get() as { tag: string } | undefined;
+    return row?.tag ?? null;
+  });
 }
 
 export function releaseDataFreshness(tag: string): ReleaseDataFreshness {
-  const audit = getReleaseScoreAudit(tag);
-  const scoredAt = audit?.scored_at ?? null;
-  const rows = releaseDataFreshnessStmt.all(tag, tag, tag) as Array<{ source: string; count: number; null_count: number; max_ts: string | null }>;
-  const sources = rows.map((row) => ({
-    source: row.source,
-    count: Number(row.count ?? 0),
-    nullCount: Number(row.null_count ?? 0),
-    maxAt: row.max_ts ?? null,
-    ageHoursAtScore: ageHoursAtScore(row.max_ts ?? null, scoredAt),
-  }));
-  const sourceFetchedAtMax = maxTimestamp(sources.map((source) => source.maxAt));
-  const issueUpdatedAtMax = sources.find((source) => source.source === 'issue_rows')?.maxAt ?? null;
-  const closureProofCheckedAtMax = sources.find((source) => source.source === 'closure_proofs')?.maxAt ?? null;
-  return {
-    schemaVersion: 1,
-    tag,
-    scoredAt,
-    issueUpdatedAtMax,
-    issueUpdatedAgeHoursAtScore: ageHoursAtScore(issueUpdatedAtMax, scoredAt),
-    closureProofCheckedAtMax,
-    sourceFetchedAtMax,
-    sourceFetchedAgeHoursAtScore: ageHoursAtScore(sourceFetchedAtMax, scoredAt),
-    sources,
-  };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const audit = getReleaseScoreAudit(tag);
+    const scoredAt = audit?.scored_at ?? null;
+    const rows = releaseDataFreshnessStmt.all(tag, tag, tag) as Array<{ source: string; count: number; null_count: number; max_ts: string | null }>;
+    const sources = rows.map((row) => ({
+      source: row.source,
+      count: Number(row.count ?? 0),
+      nullCount: Number(row.null_count ?? 0),
+      maxAt: row.max_ts ?? null,
+      ageHoursAtScore: ageHoursAtScore(row.max_ts ?? null, scoredAt),
+    }));
+    const sourceFetchedAtMax = maxTimestamp(sources.map((source) => source.maxAt));
+    const issueUpdatedAtMax = sources.find((source) => source.source === 'issue_rows')?.maxAt ?? null;
+    const closureProofCheckedAtMax = sources.find((source) => source.source === 'closure_proofs')?.maxAt ?? null;
+    return {
+      schemaVersion: 1,
+      tag,
+      scoredAt,
+      issueUpdatedAtMax,
+      issueUpdatedAgeHoursAtScore: ageHoursAtScore(issueUpdatedAtMax, scoredAt),
+      closureProofCheckedAtMax,
+      sourceFetchedAtMax,
+      sourceFetchedAgeHoursAtScore: ageHoursAtScore(sourceFetchedAtMax, scoredAt),
+      sources,
+    };
+  });
 }
 
 const dataFreshnessCacheRowsStmt = db.prepare(`
 SELECT 'issues' AS source, COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS null_count, MAX(updated_at) AS max_ts FROM issues
-${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issues` : ''}
-UNION ALL SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_comment_snapshots
+${hasIssueFetchFreshnessColumn ? `UNION ALL SELECT 'issue_fetches', COUNT(*), COALESCE(SUM(CASE WHEN ${issueObservationColumn} IS NULL THEN 1 ELSE 0 END), 0), MAX(${issueObservationColumn}) FROM issues` : ''}
+UNION ALL SELECT 'issue_comments', COUNT(*), COALESCE(SUM(CASE WHEN verified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(verified_at)
+FROM issue_comment_snapshots
+WHERE schema_version=${AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION}
 UNION ALL SELECT 'classifications', COUNT(*), COALESCE(SUM(CASE WHEN classified_at IS NULL THEN 1 ELSE 0 END), 0), MAX(classified_at) FROM classifications
 UNION ALL SELECT 'issue_label_events', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_events
 UNION ALL SELECT 'issue_label_snapshots', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM issue_label_snapshots
@@ -1607,26 +12747,28 @@ UNION ALL SELECT 'release_pr_reachability', COUNT(*), COALESCE(SUM(CASE WHEN che
 ${hasReleaseRowFreshnessColumns ? `UNION ALL
 SELECT 'release_rows', COUNT(*) AS count, COALESCE(SUM(CASE WHEN updated_at IS NULL THEN 1 ELSE 0 END), 0) AS null_count, MAX(updated_at) AS max_ts
 FROM (
-  SELECT release_metadata_fetched_at AS updated_at FROM releases
-  UNION ALL SELECT release_derived_fetched_at FROM releases
-  UNION ALL SELECT release_artifact_checked_at FROM releases
+  SELECT release_metadata_fetched_at AS updated_at FROM releases WHERE catalog_active=1
+  UNION ALL SELECT release_derived_fetched_at FROM releases WHERE catalog_active=1
+  UNION ALL SELECT release_artifact_checked_at FROM releases WHERE catalog_active=1
 )` : ''}
 UNION ALL SELECT 'release_commits', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM release_commits
 UNION ALL SELECT 'advisories', COUNT(*), COALESCE(SUM(CASE WHEN fetched_at IS NULL THEN 1 ELSE 0 END), 0), MAX(fetched_at) FROM advisories
 `);
 
 export function dataFreshnessCacheDigest(): { count: number; max_ts: string | null; digest: string } {
-  const rows = dataFreshnessCacheRowsStmt.all() as Array<{ source: string; count: number; max_ts: string | null }>;
-  const hash = createHash('sha256');
-  let count = 0;
-  let maxTs: string | null = null;
-  for (const row of rows) {
-    count += Number(row.count ?? 0);
-    if (row.max_ts && (!maxTs || row.max_ts > maxTs)) maxTs = row.max_ts;
-    hash.update(JSON.stringify(row));
-    hash.update('\n');
-  }
-  return { count, max_ts: maxTs, digest: hash.digest('hex') };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const rows = dataFreshnessCacheRowsStmt.all() as Array<{ source: string; count: number; max_ts: string | null }>;
+    const hash = createHash('sha256');
+    let count = 0;
+    let maxTs: string | null = null;
+    for (const row of rows) {
+      count += Number(row.count ?? 0);
+      if (row.max_ts && (!maxTs || row.max_ts > maxTs)) maxTs = row.max_ts;
+      hash.update(JSON.stringify(row));
+      hash.update('\n');
+    }
+    return { count, max_ts: maxTs, digest: hash.digest('hex') };
+  });
 }
 
 function ageHoursAtScore(sourceAt: string | null, scoredAt: string | null): number | null {
@@ -1675,6 +12817,212 @@ function validateClosureProofGateEvidence(tag: string, gateEvidenceJson: string)
     releaseFixCredit.analyzedClosedCount !== closureProof.analyzedClosedCount) {
     throw new Error(`Release ${tag} releaseFixCredit counts must match closureProof counts`);
   }
+  const decisionProblems = releaseFixCreditPayloadProblems(tag, releaseFixCredit);
+  if (decisionProblems.length > 0) {
+    throw new Error(`Release ${tag} releaseFixCredit decision payload is invalid: ${decisionProblems.join('; ')}`);
+  }
+}
+
+export function releaseFixCreditPayloadProblems(
+  tag: string,
+  payload: Record<string, unknown>,
+  options: { requireDecisionDetails?: boolean } = {},
+): string[] {
+  const releaseFixCreditReasonCodeSet = new Set<string>(RELEASE_FIX_CREDIT_REASON_CODES);
+  const creditedReleaseFixCreditReasonCodes = new Set<ReleaseFixCreditReasonCode>([
+    'first_containing_trusted_pr',
+    'first_containing_direct_commit',
+  ]);
+  const invalidReleaseFixCreditReasonCodes = new Set<ReleaseFixCreditReasonCode>([
+    'missing_predecessor_boundary',
+    'invalid_predecessor_boundary',
+    'target_release_missing',
+    'predecessor_release_missing',
+    'target_closure_proof_missing',
+  ]);
+  const hasDecisionDetails =
+    Object.hasOwn(payload, 'targetTag') ||
+    Object.hasOwn(payload, 'predecessorTag') ||
+    Object.hasOwn(payload, 'decisionCounts') ||
+    Object.hasOwn(payload, 'decisions');
+  if (!hasDecisionDetails && !options.requireDecisionDetails) return [];
+
+  const problems: string[] = [];
+  if (payload.targetTag !== tag) problems.push(`targetTag must equal ${tag}`);
+  if (typeof payload.predecessorTag !== 'string' || !payload.predecessorTag) {
+    problems.push('predecessorTag must be a non-empty string');
+  }
+  const decisions = Array.isArray(payload.decisions) ? payload.decisions : null;
+  if (!decisions) problems.push('decisions must be an array');
+  const decisionCounts = payload.decisionCounts &&
+    typeof payload.decisionCounts === 'object' &&
+    !Array.isArray(payload.decisionCounts)
+    ? payload.decisionCounts as Record<string, unknown>
+    : null;
+  if (!decisionCounts) problems.push('decisionCounts must be an object');
+
+  let credited = 0;
+  let withheld = 0;
+  let invalid = 0;
+  const issueNumbers = new Set<number>();
+  for (const rawDecision of decisions ?? []) {
+    if (!rawDecision || typeof rawDecision !== 'object' || Array.isArray(rawDecision)) {
+      problems.push('every decision must be an object');
+      continue;
+    }
+    const decision = rawDecision as Record<string, unknown>;
+    const issueNumber = Number(decision.issueNumber);
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      problems.push('decision issueNumber must be a positive integer');
+    } else if (issueNumbers.has(issueNumber)) {
+      problems.push(`decision issueNumber ${issueNumber} is duplicated`);
+    } else {
+      issueNumbers.add(issueNumber);
+    }
+    if (decision.schemaVersion !== RELEASE_FIX_CREDIT_DECISION_SCHEMA_VERSION) {
+      problems.push(`decision ${issueNumber} schemaVersion is invalid`);
+    }
+    if (decision.targetTag !== tag) {
+      problems.push(`decision ${issueNumber} targetTag must equal ${tag}`);
+    }
+    if (decision.predecessorTag !== payload.predecessorTag) {
+      problems.push(`decision ${issueNumber} predecessorTag must match releaseFixCredit predecessorTag`);
+    }
+    const status = decision.status;
+    const reasonCode = decision.reasonCode;
+    if (status !== 'credited' && status !== 'withheld' && status !== 'invalid') {
+      problems.push(`decision ${issueNumber} status is invalid`);
+      continue;
+    }
+    if (typeof reasonCode !== 'string' || !releaseFixCreditReasonCodeSet.has(reasonCode)) {
+      problems.push(`decision ${issueNumber} reasonCode is invalid`);
+    } else if (
+      (status === 'credited') !==
+      creditedReleaseFixCreditReasonCodes.has(reasonCode as ReleaseFixCreditReasonCode)
+    ) {
+      problems.push(`decision ${issueNumber} credited status/reasonCode is inconsistent`);
+    } else if (
+      (status === 'invalid') !==
+      invalidReleaseFixCreditReasonCodes.has(reasonCode as ReleaseFixCreditReasonCode)
+    ) {
+      problems.push(`decision ${issueNumber} invalid status/reasonCode is inconsistent`);
+    }
+    const proofIdentities = Array.isArray(decision.proofIdentities)
+      ? decision.proofIdentities
+      : null;
+    if (!proofIdentities) {
+      problems.push(`decision ${issueNumber} proofIdentities must be an array`);
+    } else {
+      let trustedPullRequestProofCount = 0;
+      let completeCreditedPullRequestProofCount = 0;
+      let directCommitProofCount = 0;
+      let completeCreditedDirectCommitProofCount = 0;
+      for (const rawProof of proofIdentities) {
+        if (!rawProof || typeof rawProof !== 'object' || Array.isArray(rawProof)) {
+          problems.push(`decision ${issueNumber} proof identity must be an object`);
+          continue;
+        }
+        const proof = rawProof as Record<string, unknown>;
+        if (proof.kind === 'trusted_pull_request') {
+          trustedPullRequestProofCount++;
+          const target = proof.target as Record<string, unknown> | null;
+          const predecessor = proof.predecessor as Record<string, unknown> | null;
+          if (target && target.tag !== tag) {
+            problems.push(`decision ${issueNumber} target proof tag must equal ${tag}`);
+          }
+          if (predecessor && predecessor.tag !== payload.predecessorTag) {
+            problems.push(`decision ${issueNumber} predecessor proof tag must match predecessorTag`);
+          }
+          if (
+            proof.merged === true &&
+            target?.strictValid === true &&
+            target.status === 'reachable' &&
+            predecessor?.strictValid === true &&
+            predecessor.status === 'not_reachable'
+          ) {
+            completeCreditedPullRequestProofCount++;
+          }
+        } else if (proof.kind === 'direct_commit') {
+          directCommitProofCount++;
+          if (proof.targetTag !== tag || proof.predecessorTag !== payload.predecessorTag) {
+            problems.push(`decision ${issueNumber} direct commit proof boundary is inconsistent`);
+          }
+          if (proof.strictValid !== true || proof.validationReasonCode !== null) {
+            problems.push(`decision ${issueNumber} direct commit proof is not strictly valid`);
+          }
+          const target = proof.target as Record<string, unknown> | null;
+          const predecessor = proof.predecessor as Record<string, unknown> | null;
+          const releaseAncestry = proof.releaseAncestry as Record<string, unknown> | null;
+          if (
+            proof.creditEligible === true &&
+            proof.status === 'credited' &&
+            proof.reasonCode === 'first_containing_direct_commit' &&
+            target?.strictValid === true &&
+            target.status === 'reachable' &&
+            predecessor?.strictValid === true &&
+            predecessor.status === 'not_reachable' &&
+            releaseAncestry?.strictValid === true &&
+            releaseAncestry.status === 'reachable'
+          ) {
+            completeCreditedDirectCommitProofCount++;
+          }
+        } else {
+          problems.push(`decision ${issueNumber} proof identity kind is invalid`);
+        }
+      }
+      if (status === 'credited' && reasonCode === 'first_containing_trusted_pr' && (
+        trustedPullRequestProofCount === 0 ||
+        completeCreditedPullRequestProofCount !== trustedPullRequestProofCount
+      )) {
+        problems.push(
+          `decision ${issueNumber} credited without strict target/predecessor proof for every trusted merged PR`,
+        );
+      }
+      if (status === 'credited' && reasonCode === 'first_containing_direct_commit' && (
+        directCommitProofCount === 0 ||
+        completeCreditedDirectCommitProofCount === 0
+      )) {
+        problems.push(
+          `decision ${issueNumber} credited without a strict first-containing direct-commit proof`,
+        );
+      }
+    }
+    if (status === 'credited') credited++;
+    else if (status === 'withheld') withheld++;
+    else invalid++;
+  }
+
+  if (decisionCounts) {
+    if (decisionCounts.credited !== credited) problems.push('decisionCounts.credited must match decisions');
+    if (decisionCounts.withheld !== withheld) problems.push('decisionCounts.withheld must match decisions');
+    if (decisionCounts.invalid !== invalid) problems.push('decisionCounts.invalid must match decisions');
+  }
+  if (payload.countedClosedCount !== credited) {
+    problems.push('countedClosedCount must match credited decisions');
+  }
+  if (decisions) {
+    const fixedIssueNumbers = closureProofRows(tag)
+      .filter((row) => row.status === 'fixed_in_release')
+      .map((row) => row.issue_number)
+      .sort((left, right) => left - right);
+    const decisionIssueNumbers = [...issueNumbers].sort((left, right) => left - right);
+    if (JSON.stringify(fixedIssueNumbers) !== JSON.stringify(decisionIssueNumbers)) {
+      problems.push('decision issue numbers must match fixed_in_release closure proof rows');
+    }
+  }
+  const containedFixedCount = Number(payload.containedFixedCount);
+  if (!Number.isInteger(containedFixedCount) || containedFixedCount < 0) {
+    problems.push('containedFixedCount must be a non-negative integer');
+  } else {
+    if (decisions && decisions.length !== containedFixedCount) {
+      problems.push('containedFixedCount must match decision count');
+    }
+    if (payload.containedNotCreditedCount !== containedFixedCount - credited) {
+      problems.push('containedNotCreditedCount must equal containedFixedCount minus credited decisions');
+    }
+  }
+  if (invalid > 0) problems.push('structurally invalid fix-credit decisions cannot be persisted');
+  return problems;
 }
 
 function objectField(value: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -1753,99 +13101,2870 @@ export function getReleaseCommit(tag: string): ReleaseCommitRow | undefined {
 
 export interface IssueClosureEventInput {
   issue_number: number;
+  issue_node_id?: string | null;
   event_id: string;
   closed_at: string | null;
+  connection_ordinal?: number;
+  actor_node_id?: string | null;
   actor_login: string | null;
+  actor_type?: string | null;
   state_reason: string | null;
   closer_type: string | null;
   closer_number: number | null;
+  closer_node_id?: string | null;
   closer_oid: string | null;
   raw_json: string;
 }
 
 export interface IssueLabelEventInput {
   issue_number: number;
+  issue_node_id?: string | null;
   event_id: string;
   action: string;
   label_name: string;
+  actor_node_id?: string | null;
   actor_login: string | null;
+  actor_type?: string | null;
   created_at: string;
+  raw_json?: string | null;
 }
 
-const upsertIssueLabelEventStmt = db.prepare(`
+const hasIssueLabelEventActorType = tableHasColumns('issue_label_events', ['actor_type']);
+const hasIssueLabelEventV2RawColumns = tableHasColumns('issue_label_events', [
+  'issue_node_id',
+  'actor_node_id',
+  'raw_json',
+]);
+const upsertIssueLabelEventStmt =
+  !dbReadOnly && hasIssueLabelEventActorType && hasIssueLabelEventV2RawColumns
+  ? db.prepare(`
 INSERT INTO issue_label_events (
-  issue_number, event_id, action, label_name, actor_login, created_at, fetched_at
+  issue_number, issue_node_id, event_id, action, label_name, actor_node_id,
+  actor_login, actor_type, created_at, raw_json, fetched_at
 )
 VALUES (
-  :issue_number, :event_id, :action, :label_name, :actor_login, :created_at, :fetched_at
+  :issue_number, :issue_node_id, :event_id, :action, :label_name, :actor_node_id,
+  :actor_login, :actor_type, :created_at, :raw_json, :fetched_at
 )
-ON CONFLICT(event_id) DO UPDATE SET
-  issue_number=excluded.issue_number,
-  action=excluded.action,
-  label_name=excluded.label_name,
-  actor_login=excluded.actor_login,
-  created_at=excluded.created_at,
-  fetched_at=excluded.fetched_at
+ON CONFLICT(event_id) DO NOTHING
+`) : null;
+
+const issueLabelEventByIdStmt = db.prepare(`
+SELECT issue_number,
+  ${hasIssueLabelEventV2RawColumns ? 'issue_node_id' : 'NULL AS issue_node_id'},
+  event_id, action, label_name,
+  ${hasIssueLabelEventV2RawColumns ? 'actor_node_id' : 'NULL AS actor_node_id'},
+  actor_login,
+  ${hasIssueLabelEventActorType ? 'actor_type' : 'NULL AS actor_type'},
+  created_at,
+  ${hasIssueLabelEventV2RawColumns ? 'raw_json' : 'NULL AS raw_json'}
+FROM issue_label_events
+WHERE event_id=?
 `);
 
 export function upsertIssueLabelEvent(input: IssueLabelEventInput): void {
-  upsertIssueLabelEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueLabelEventStmt) {
+    throw new Error('Issue label event storage is unavailable or read-only');
+  }
+  const issueNodeId = input.issue_node_id ?? null;
+  const actorNodeId = input.actor_node_id ?? null;
+  const actorType = input.actor_type ?? null;
+  const rawJson = input.raw_json ?? null;
+  const existing = issueLabelEventByIdStmt.get(input.event_id) as
+    | (IssueLabelEventInput & {
+        issue_node_id: string | null;
+        actor_node_id: string | null;
+        actor_type: string | null;
+        raw_json: string | null;
+      })
+    | undefined;
+  if (
+    existing &&
+    (
+      existing.issue_number !== input.issue_number ||
+      existing.action !== input.action ||
+      existing.label_name !== input.label_name ||
+      existing.actor_login !== input.actor_login ||
+      (
+        existing.issue_node_id != null &&
+        issueNodeId != null &&
+        existing.issue_node_id !== issueNodeId
+      ) ||
+      (
+        existing.actor_node_id != null &&
+        actorNodeId != null &&
+        existing.actor_node_id !== actorNodeId
+      ) ||
+      (
+        existing.actor_type != null &&
+        actorType != null &&
+        existing.actor_type !== actorType
+      ) ||
+      existing.created_at !== input.created_at ||
+      (
+        existing.raw_json != null &&
+        rawJson != null &&
+        existing.raw_json !== rawJson
+      )
+    )
+  ) {
+    throw new Error(
+      `Issue label event ${input.event_id} conflicts with immutable persisted provenance`,
+    );
+  }
+  if (
+    existing &&
+    (
+      (existing.issue_node_id == null && issueNodeId != null) ||
+      (existing.actor_node_id == null && actorNodeId != null) ||
+      (existing.actor_type == null && actorType != null) ||
+      (existing.raw_json == null && rawJson != null)
+    )
+  ) {
+    throw new Error(
+      `Issue label event ${input.event_id} is legacy append-only evidence and cannot be ` +
+      'silently enriched; rebuild it in a fresh quality database',
+    );
+  }
+  upsertIssueLabelEventStmt.run({
+    ...input,
+    issue_node_id: issueNodeId,
+    actor_node_id: actorNodeId,
+    actor_type: actorType,
+    raw_json: rawJson,
+    fetched_at: new Date().toISOString(),
+  });
+}
+
+const collaboratorSnapshotColumns = [
+  'snapshot_id',
+  'schema_version',
+  'repository',
+  'observed_at',
+  'exhaustive',
+  'complete',
+  'total_count',
+  'row_count',
+  'page_count',
+  'pages_fetched',
+  'sweep_count',
+  'content_digest',
+  'source_identity',
+];
+const collaboratorRowColumns = [
+  'snapshot_id',
+  'actor_login',
+  'actor_type',
+  'permission',
+  'evidence_id',
+  'source_identity',
+];
+const rosterSnapshotColumns = [
+  'snapshot_id',
+  'schema_version',
+  'repository',
+  'approval_id',
+  'approved_at',
+  'row_count',
+  'content_digest',
+  'source_identity',
+];
+const rosterEntryColumns = [
+  'snapshot_id',
+  'evidence_id',
+  'source_identity',
+  'actor_login',
+  'actor_type',
+  'role',
+  'effective_from',
+  'effective_until',
+];
+const hasCollaboratorPermissionSnapshotTables =
+  tableHasColumns(
+    'repository_collaborator_permission_snapshots',
+    collaboratorSnapshotColumns,
+  ) &&
+  tableHasColumns(
+    'repository_collaborator_permission_rows',
+    collaboratorRowColumns,
+  );
+const hasApprovedRosterSnapshotTables =
+  tableHasColumns('approved_maintainer_roster_snapshots', rosterSnapshotColumns) &&
+  tableHasColumns('approved_maintainer_roster_entries', rosterEntryColumns);
+const signedRosterSnapshotColumns = [
+  'snapshot_id',
+  'schema_version',
+  'purpose',
+  'repository',
+  'repository_node_id',
+  'approval_id',
+  'approved_at',
+  'sequence',
+  'prior_digest',
+  'signer_key_id',
+  'keyring_digest',
+  'signature_algorithm',
+  'signature',
+  'signature_verified_at',
+  'signed_payload_json',
+  'row_count',
+  'rows_content_hash',
+  'source_identity',
+  'content_hash',
+];
+const signedRosterEntryColumns = [
+  'snapshot_id',
+  'entry_ordinal',
+  'evidence_id',
+  'actor_node_id',
+  'actor_login',
+  'actor_type',
+  'actor_association',
+  'role',
+  'effective_from',
+  'effective_until',
+  'raw_json',
+  'source_identity',
+  'content_hash',
+];
+const hasSignedApprovedRosterSnapshotTables =
+  tableHasColumns(
+    'signed_maintainer_roster_snapshots',
+    signedRosterSnapshotColumns,
+  ) &&
+  tableHasColumns(
+    'signed_maintainer_roster_entries',
+    signedRosterEntryColumns,
+  );
+const collaboratorSnapshotV2Columns = [
+  'snapshot_id',
+  'schema_version',
+  'repository',
+  'repository_node_id',
+  'observed_at',
+  'exhaustive',
+  'complete',
+  'total_count',
+  'row_count',
+  'page_count',
+  'pages_fetched',
+  'sweep_count',
+  'rows_content_hash',
+  'raw_json',
+  'source_identity',
+  'content_hash',
+];
+const collaboratorRowV2Columns = [
+  'snapshot_id',
+  'source_ordinal',
+  'actor_node_id',
+  'actor_login',
+  'actor_type',
+  'permission',
+  'raw_json',
+  'source_identity',
+  'content_hash',
+];
+const hasCollaboratorPermissionSnapshotV2Tables =
+  tableHasColumns(
+    'repository_collaborator_permission_snapshots_v2',
+    collaboratorSnapshotV2Columns,
+  ) &&
+  tableHasColumns(
+    'repository_collaborator_permission_rows_v2',
+    collaboratorRowV2Columns,
+  );
+const issueLabelEvidenceSnapshotColumns = [
+  'snapshot_id',
+  'schema_version',
+  'repository',
+  'repository_node_id',
+  'issue_number',
+  'issue_node_id',
+  'captured_at',
+  'issue_updated_at',
+  'total_count',
+  'fetched_count',
+  'page_count',
+  'sweep_count',
+  'stabilized',
+  'rows_content_hash',
+  'source_identity',
+  'content_hash',
+];
+const issueLabelEvidenceRowColumns = [
+  'snapshot_id',
+  'connection_ordinal',
+  'event_node_id',
+  'action',
+  'label_name',
+  'label_node_id',
+  'actor_node_id',
+  'actor_login',
+  'actor_type',
+  'created_at',
+  'raw_json',
+  'source_identity',
+  'content_hash',
+];
+const hasIssueLabelEvidenceSnapshotTables =
+  tableHasColumns(
+    'issue_label_evidence_snapshots',
+    issueLabelEvidenceSnapshotColumns,
+  ) &&
+  tableHasColumns(
+    'issue_label_evidence_rows',
+    issueLabelEvidenceRowColumns,
+  );
+
+const insertCollaboratorPermissionSnapshotStmt =
+  !dbReadOnly && hasCollaboratorPermissionSnapshotTables
+    ? db.prepare(`
+        INSERT INTO repository_collaborator_permission_snapshots (
+          snapshot_id, schema_version, repository, observed_at, exhaustive,
+          complete, total_count, row_count, page_count, pages_fetched,
+          sweep_count, content_digest, source_identity
+        )
+        VALUES (
+          :snapshot_id, :schema_version, :repository, :observed_at, :exhaustive,
+          :complete, :total_count, :row_count, :page_count, :pages_fetched,
+          :sweep_count, :content_digest, :source_identity
+        )
+      `)
+    : null;
+const insertCollaboratorPermissionRowStmt =
+  !dbReadOnly && hasCollaboratorPermissionSnapshotTables
+    ? db.prepare(`
+        INSERT INTO repository_collaborator_permission_rows (
+          snapshot_id, actor_login, actor_type, permission, evidence_id,
+          source_identity
+        )
+        VALUES (
+          :snapshot_id, :actor_login, :actor_type, :permission, :evidence_id,
+          :source_identity
+        )
+      `)
+    : null;
+const getCollaboratorPermissionSnapshotHeaderStmt =
+  hasCollaboratorPermissionSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_snapshots
+        WHERE snapshot_id=?
+      `)
+    : null;
+const listCollaboratorPermissionSnapshotHeadersStmt =
+  hasCollaboratorPermissionSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_snapshots
+        WHERE repository=?
+        ORDER BY observed_at, snapshot_id
+      `)
+    : null;
+const listCollaboratorPermissionRowsStmt =
+  hasCollaboratorPermissionSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_rows
+        WHERE snapshot_id=?
+        ORDER BY actor_login
+      `)
+    : null;
+const insertCollaboratorPermissionSnapshotV2Stmt =
+  !dbReadOnly && hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        INSERT INTO repository_collaborator_permission_snapshots_v2 (
+          snapshot_id, schema_version, repository, repository_node_id,
+          observed_at, exhaustive, complete, total_count, row_count,
+          page_count, pages_fetched, sweep_count, rows_content_hash, raw_json,
+          source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :schema_version, :repository, :repository_node_id,
+          :observed_at, :exhaustive, :complete, :total_count, :row_count,
+          :page_count, :pages_fetched, :sweep_count, :rows_content_hash,
+          :raw_json, :source_identity, :content_hash
+        )
+      `)
+    : null;
+const insertCollaboratorPermissionRowV2Stmt =
+  !dbReadOnly && hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        INSERT INTO repository_collaborator_permission_rows_v2 (
+          snapshot_id, source_ordinal, actor_node_id, actor_login, actor_type,
+          permission, raw_json, source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :source_ordinal, :actor_node_id, :actor_login,
+          :actor_type, :permission, :raw_json, :source_identity, :content_hash
+        )
+      `)
+    : null;
+const getCollaboratorPermissionSnapshotV2HeaderStmt =
+  hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_snapshots_v2
+        WHERE snapshot_id=?
+      `)
+    : null;
+const listCollaboratorPermissionSnapshotV2HeadersByRepositoryStmt =
+  hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_snapshots_v2
+        WHERE repository=?
+        ORDER BY observed_at, snapshot_id
+      `)
+    : null;
+const listCollaboratorPermissionSnapshotV2HeadersByRepositoryNodeIdStmt =
+  hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_snapshots_v2
+        WHERE repository_node_id=?
+        ORDER BY observed_at, snapshot_id
+      `)
+    : null;
+const listCollaboratorPermissionRowsV2Stmt =
+  hasCollaboratorPermissionSnapshotV2Tables
+    ? db.prepare(`
+        SELECT *
+        FROM repository_collaborator_permission_rows_v2
+        WHERE snapshot_id=?
+        ORDER BY source_ordinal
+      `)
+    : null;
+const insertIssueLabelEvidenceSnapshotStmt =
+  !dbReadOnly && hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        INSERT INTO issue_label_evidence_snapshots (
+          snapshot_id, schema_version, repository, repository_node_id,
+          issue_number, issue_node_id, captured_at, issue_updated_at,
+          total_count, fetched_count, page_count, sweep_count, stabilized,
+          rows_content_hash, source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :schema_version, :repository, :repository_node_id,
+          :issue_number, :issue_node_id, :captured_at, :issue_updated_at,
+          :total_count, :fetched_count, :page_count, :sweep_count, :stabilized,
+          :rows_content_hash, :source_identity, :content_hash
+        )
+      `)
+    : null;
+const insertIssueLabelEvidenceRowStmt =
+  !dbReadOnly && hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        INSERT INTO issue_label_evidence_rows (
+          snapshot_id, connection_ordinal, event_node_id, action, label_name,
+          label_node_id, actor_node_id, actor_login, actor_type, created_at,
+          raw_json, source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :connection_ordinal, :event_node_id, :action,
+          :label_name, :label_node_id, :actor_node_id, :actor_login,
+          :actor_type, :created_at, :raw_json, :source_identity, :content_hash
+        )
+      `)
+    : null;
+const getIssueLabelEvidenceSnapshotHeaderStmt =
+  hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM issue_label_evidence_snapshots
+        WHERE snapshot_id=?
+      `)
+    : null;
+const listIssueLabelEvidenceSnapshotHeadersStmt =
+  hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM issue_label_evidence_snapshots
+        WHERE issue_number=?
+        ORDER BY captured_at, snapshot_id
+      `)
+    : null;
+const listIssueLabelEvidenceSnapshotHeadersByEventStmt =
+  hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        SELECT snapshot.*
+        FROM issue_label_evidence_snapshots AS snapshot
+        JOIN issue_label_evidence_rows AS row
+          ON row.snapshot_id=snapshot.snapshot_id
+        WHERE row.event_node_id=?
+        ORDER BY snapshot.captured_at, snapshot.snapshot_id
+      `)
+    : null;
+const listIssueLabelEvidenceRowsStmt =
+  hasIssueLabelEvidenceSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM issue_label_evidence_rows
+        WHERE snapshot_id=?
+        ORDER BY connection_ordinal
+      `)
+    : null;
+
+const insertApprovedRosterSnapshotStmt =
+  !dbReadOnly && hasApprovedRosterSnapshotTables
+    ? db.prepare(`
+        INSERT INTO approved_maintainer_roster_snapshots (
+          snapshot_id, schema_version, repository, approval_id, approved_at,
+          row_count, content_digest, source_identity
+        )
+        VALUES (
+          :snapshot_id, :schema_version, :repository, :approval_id, :approved_at,
+          :row_count, :content_digest, :source_identity
+        )
+      `)
+    : null;
+const insertApprovedRosterEntryStmt =
+  !dbReadOnly && hasApprovedRosterSnapshotTables
+    ? db.prepare(`
+        INSERT INTO approved_maintainer_roster_entries (
+          snapshot_id, evidence_id, source_identity, actor_login, actor_type,
+          role, effective_from, effective_until
+        )
+        VALUES (
+          :snapshot_id, :evidence_id, :source_identity, :actor_login, :actor_type,
+          :role, :effective_from, :effective_until
+        )
+      `)
+    : null;
+const getApprovedRosterSnapshotHeaderStmt = hasApprovedRosterSnapshotTables
+  ? db.prepare(`
+      SELECT *
+      FROM approved_maintainer_roster_snapshots
+      WHERE snapshot_id=?
+    `)
+  : null;
+const listApprovedRosterSnapshotHeadersStmt = hasApprovedRosterSnapshotTables
+  ? db.prepare(`
+      SELECT *
+      FROM approved_maintainer_roster_snapshots
+      WHERE repository=?
+      ORDER BY approved_at, snapshot_id
+    `)
+  : null;
+const listApprovedRosterEntriesStmt = hasApprovedRosterSnapshotTables
+  ? db.prepare(`
+      SELECT *
+      FROM approved_maintainer_roster_entries
+      WHERE snapshot_id=?
+      ORDER BY actor_login, effective_from, effective_until, evidence_id
+    `)
+  : null;
+const insertSignedApprovedRosterSnapshotStmt =
+  !dbReadOnly && hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        INSERT INTO signed_maintainer_roster_snapshots (
+          snapshot_id, schema_version, purpose, repository, repository_node_id,
+          approval_id, approved_at, sequence, prior_digest, signer_key_id,
+          keyring_digest, signature_algorithm, signature,
+          signature_verified_at, signed_payload_json, row_count,
+          rows_content_hash, source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :schema_version, :purpose, :repository,
+          :repository_node_id, :approval_id, :approved_at, :sequence,
+          :prior_digest, :signer_key_id, :keyring_digest,
+          :signature_algorithm, :signature, :signature_verified_at,
+          :signed_payload_json, :row_count, :rows_content_hash,
+          :source_identity, :content_hash
+        )
+      `)
+    : null;
+const insertSignedApprovedRosterEntryStmt =
+  !dbReadOnly && hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        INSERT INTO signed_maintainer_roster_entries (
+          snapshot_id, entry_ordinal, evidence_id, actor_node_id, actor_login,
+          actor_type, actor_association, role, effective_from, effective_until,
+          raw_json, source_identity, content_hash
+        )
+        VALUES (
+          :snapshot_id, :entry_ordinal, :evidence_id, :actor_node_id,
+          :actor_login, :actor_type, :actor_association, :role,
+          :effective_from, :effective_until, :raw_json, :source_identity,
+          :content_hash
+        )
+      `)
+    : null;
+const getSignedApprovedRosterSnapshotHeaderStmt =
+  hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM signed_maintainer_roster_snapshots
+        WHERE snapshot_id=?
+          AND purpose='label_authority_approved_roster'
+          AND sequence IS NOT NULL
+      `)
+    : null;
+const listSignedApprovedRosterSnapshotHeadersByRepositoryStmt =
+  hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM signed_maintainer_roster_snapshots
+        WHERE repository=?
+          AND purpose='label_authority_approved_roster'
+          AND sequence IS NOT NULL
+        ORDER BY sequence, snapshot_id
+      `)
+    : null;
+const listSignedApprovedRosterSnapshotHeadersByRepositoryNodeIdStmt =
+  hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM signed_maintainer_roster_snapshots
+        WHERE repository_node_id=?
+          AND purpose='label_authority_approved_roster'
+          AND sequence IS NOT NULL
+        ORDER BY sequence, snapshot_id
+      `)
+    : null;
+const listSignedApprovedRosterEntriesStmt =
+  hasSignedApprovedRosterSnapshotTables
+    ? db.prepare(`
+        SELECT *
+        FROM signed_maintainer_roster_entries
+        WHERE snapshot_id=?
+        ORDER BY entry_ordinal
+      `)
+    : null;
+
+function collaboratorPermissionSnapshotFromHeader(
+  header: Record<string, unknown> | undefined,
+): RepositoryCollaboratorPermissionSnapshot | null {
+  if (!header || !listCollaboratorPermissionRowsStmt) return null;
+  const rows = listCollaboratorPermissionRowsStmt
+    .all(String(header.snapshot_id)) as Array<Record<string, unknown>>;
+  return {
+    snapshotId: String(header.snapshot_id),
+    schemaVersion: Number(header.schema_version) as RepositoryCollaboratorPermissionSnapshot['schemaVersion'],
+    repository: String(header.repository),
+    observedAt: String(header.observed_at),
+    exhaustive: Boolean(header.exhaustive) as true,
+    complete: Boolean(header.complete) as true,
+    totalCount: Number(header.total_count),
+    rowCount: Number(header.row_count),
+    pageCount: Number(header.page_count),
+    pagesFetched: Number(header.pages_fetched),
+    sweepCount: Number(header.sweep_count),
+    contentDigest: String(header.content_digest),
+    sourceIdentity: String(header.source_identity),
+    rows: rows.map((row) => ({
+      login: String(row.actor_login),
+      actorType: String(row.actor_type),
+      permission: String(row.permission) as RepositoryCollaboratorPermissionSnapshot['rows'][number]['permission'],
+      evidenceId: String(row.evidence_id),
+      sourceIdentity: String(row.source_identity),
+    })),
+  };
+}
+
+function collaboratorPermissionSnapshotV2FromHeader(
+  header: Record<string, unknown> | undefined,
+): RepositoryCollaboratorPermissionSnapshot | null {
+  if (!header || !listCollaboratorPermissionRowsV2Stmt) return null;
+  const snapshotId = String(header.snapshot_id);
+  const runHash = String(header.content_hash);
+  const rows = listCollaboratorPermissionRowsV2Stmt
+    .all(snapshotId) as Array<Record<string, unknown>>;
+  return {
+    snapshotId,
+    schemaVersion:
+      Number(header.schema_version) as RepositoryCollaboratorPermissionSnapshot['schemaVersion'],
+    repositoryNodeId: String(header.repository_node_id),
+    repository: String(header.repository),
+    observedAt: String(header.observed_at),
+    exhaustive: Boolean(header.exhaustive) as true,
+    complete: Boolean(header.complete) as true,
+    totalCount: Number(header.total_count),
+    rowCount: Number(header.row_count),
+    pageCount: Number(header.page_count),
+    pagesFetched: Number(header.pages_fetched),
+    sweepCount: Number(header.sweep_count),
+    contentDigest: String(header.rows_content_hash),
+    rowsContentHash: String(header.rows_content_hash),
+    rawJson: String(header.raw_json),
+    contentHash: runHash,
+    runHash,
+    sourceIdentity: String(header.source_identity),
+    rows: rows.map((row) => {
+      const rawJson = String(row.raw_json);
+      const raw = parseJsonObject(rawJson);
+      return {
+        nodeId: String(row.actor_node_id),
+        login: String(row.actor_login),
+        actorType: String(row.actor_type),
+        association:
+          raw.association == null ? null : String(raw.association),
+        permission:
+          String(row.permission) as RepositoryCollaboratorPermissionSnapshot['rows'][number]['permission'],
+        evidenceId: `collaborator-permission:v2:${String(row.content_hash)}`,
+        sourceIdentity: String(row.source_identity),
+        sourceOrdinal: Number(row.source_ordinal),
+        actorNodeId: String(row.actor_node_id),
+        actorLogin: String(row.actor_login),
+        rawJson,
+        contentHash: String(row.content_hash),
+        rowHash: String(row.content_hash),
+        runHash,
+      };
+    }),
+  };
+}
+
+function issueLabelEvidenceSnapshotFromHeader(
+  header: Record<string, unknown> | undefined,
+): IssueLabelEvidenceSnapshot | null {
+  if (!header || !listIssueLabelEvidenceRowsStmt) return null;
+  const snapshotId = String(header.snapshot_id);
+  const rows = listIssueLabelEvidenceRowsStmt.all(
+    snapshotId,
+  ) as Array<Record<string, unknown>>;
+  return {
+    snapshotId,
+    schemaVersion:
+      Number(header.schema_version) as IssueLabelEvidenceSnapshot['schemaVersion'],
+    repository: String(header.repository),
+    repositoryNodeId: String(header.repository_node_id),
+    issueNumber: Number(header.issue_number),
+    issueNodeId: String(header.issue_node_id),
+    capturedAt: String(header.captured_at),
+    issueUpdatedAt: String(header.issue_updated_at),
+    totalCount: Number(header.total_count),
+    fetchedCount: Number(header.fetched_count),
+    pageCount: Number(header.page_count),
+    sweepCount: Number(header.sweep_count),
+    stabilized: Boolean(header.stabilized) as true,
+    rowsContentHash: String(header.rows_content_hash),
+    sourceIdentity: String(header.source_identity),
+    contentHash: String(header.content_hash),
+    rows: rows.map((row) => ({
+      connectionOrdinal: Number(row.connection_ordinal),
+      eventNodeId: String(row.event_node_id),
+      action: String(row.action) as 'labeled' | 'unlabeled',
+      labelName: String(row.label_name),
+      labelNodeId: String(row.label_node_id),
+      actorNodeId:
+        row.actor_node_id == null ? null : String(row.actor_node_id),
+      actorLogin:
+        row.actor_login == null ? null : String(row.actor_login),
+      actorType:
+        row.actor_type == null ? null : String(row.actor_type),
+      createdAt: String(row.created_at),
+      rawJson: String(row.raw_json),
+      sourceIdentity: String(row.source_identity),
+      contentHash: String(row.content_hash),
+    })),
+  };
+}
+
+function approvedRosterSnapshotFromHeader(
+  header: Record<string, unknown> | undefined,
+): ApprovedMaintainerRosterSnapshot | null {
+  if (!header || !listApprovedRosterEntriesStmt) return null;
+  const rows = listApprovedRosterEntriesStmt
+    .all(String(header.snapshot_id)) as Array<Record<string, unknown>>;
+  return {
+    snapshotId: String(header.snapshot_id),
+    schemaVersion: Number(header.schema_version) as ApprovedMaintainerRosterSnapshot['schemaVersion'],
+    repository: String(header.repository),
+    approvalId: String(header.approval_id),
+    approvedAt: String(header.approved_at),
+    rowCount: Number(header.row_count),
+    contentDigest: String(header.content_digest),
+    sourceIdentity: String(header.source_identity),
+    entries: rows.map((row) => ({
+      kind: 'approved_roster_entry',
+      evidenceId: String(row.evidence_id),
+      sourceIdentity: String(row.source_identity),
+      approvalId: String(header.approval_id),
+      approvedAt: String(header.approved_at),
+      repository: String(header.repository),
+      actorLogin: String(row.actor_login),
+      actorType: String(row.actor_type),
+      role: String(row.role) as ApprovedMaintainerRosterEntry['role'],
+      effectiveFrom: String(row.effective_from),
+      effectiveUntil:
+        row.effective_until == null ? null : String(row.effective_until),
+    })),
+  };
+}
+
+function signedApprovedRosterSnapshotFromHeader(
+  header: Record<string, unknown> | undefined,
+): ApprovedMaintainerRosterSnapshot | null {
+  if (!header || !listSignedApprovedRosterEntriesStmt) return null;
+  const snapshotId = String(header.snapshot_id);
+  const runHash = String(header.content_hash);
+  const repositoryNodeId = String(header.repository_node_id);
+  const repository = String(header.repository);
+  const approvalId = String(header.approval_id);
+  const approvedAt = String(header.approved_at);
+  const sequence = Number(header.sequence);
+  const signerKeyId = String(header.signer_key_id);
+  const keyringDigest = String(header.keyring_digest);
+  const signatureVerifiedAt = String(header.signature_verified_at);
+  const rows = listSignedApprovedRosterEntriesStmt
+    .all(snapshotId) as Array<Record<string, unknown>>;
+  return {
+    snapshotId,
+    schemaVersion:
+      Number(header.schema_version) as ApprovedMaintainerRosterSnapshot['schemaVersion'],
+    purpose: String(header.purpose) as typeof APPROVED_ROSTER_PURPOSE,
+    repositoryNodeId,
+    repository,
+    approvalId,
+    approvedAt,
+    sequence,
+    priorDigest:
+      header.prior_digest == null ? null : String(header.prior_digest),
+    signerKeyId,
+    keyringDigest,
+    signatureAlgorithm:
+      String(header.signature_algorithm) as typeof APPROVED_ROSTER_SIGNATURE_ALGORITHM,
+    signature: String(header.signature),
+    signatureVerifiedAt,
+    rowCount: Number(header.row_count),
+    contentDigest: String(header.rows_content_hash),
+    rowsContentHash: String(header.rows_content_hash),
+    signedPayloadJson: String(header.signed_payload_json),
+    contentHash: runHash,
+    runHash,
+    sourceIdentity: String(header.source_identity),
+    entries: rows.map((row) => {
+      const rowHash = String(row.content_hash);
+      return {
+        kind: 'approved_roster_entry',
+        evidenceId: String(row.evidence_id),
+        sourceIdentity: String(row.source_identity),
+        approvalId,
+        approvedAt,
+        repositoryNodeId,
+        repository,
+        actorNodeId: String(row.actor_node_id),
+        actorLogin: String(row.actor_login),
+        actorType: String(row.actor_type),
+        actorAssociation:
+          row.actor_association == null
+            ? null
+            : String(row.actor_association),
+        role: String(row.role) as ApprovedMaintainerRosterEntry['role'],
+        effectiveFrom: String(row.effective_from),
+        effectiveUntil:
+          row.effective_until == null ? null : String(row.effective_until),
+        rosterSequence: sequence,
+        rosterRunDigest: runHash,
+        signerKeyId,
+        keyringDigest,
+        signatureVerifiedAt,
+        entryOrdinal: Number(row.entry_ordinal),
+        rawJson: String(row.raw_json),
+        contentHash: rowHash,
+        rowHash,
+      };
+    }),
+  };
+}
+
+export function getRepositoryCollaboratorPermissionSnapshot(
+  snapshotId: string,
+): RepositoryCollaboratorPermissionSnapshot | null {
+  if (!getCollaboratorPermissionSnapshotHeaderStmt) return null;
+  return collaboratorPermissionSnapshotFromHeader(
+    getCollaboratorPermissionSnapshotHeaderStmt.get(snapshotId) as
+      | Record<string, unknown>
+      | undefined,
+  );
+}
+
+export function listRepositoryCollaboratorPermissionSnapshots(
+  repository = `${config.github.owner}/${config.github.repo}`.toLowerCase(),
+): RepositoryCollaboratorPermissionSnapshot[] {
+  if (!listCollaboratorPermissionSnapshotHeadersStmt) return [];
+  return (listCollaboratorPermissionSnapshotHeadersStmt.all(repository) as
+    Array<Record<string, unknown>>)
+    .map((header) => collaboratorPermissionSnapshotFromHeader(header))
+    .filter((snapshot): snapshot is RepositoryCollaboratorPermissionSnapshot =>
+      snapshot != null);
+}
+
+export function insertRepositoryCollaboratorPermissionSnapshot(
+  snapshot: RepositoryCollaboratorPermissionSnapshot,
+): RepositoryCollaboratorPermissionSnapshot {
+  if (
+    !insertCollaboratorPermissionSnapshotStmt ||
+    !insertCollaboratorPermissionRowStmt
+  ) {
+    throw new Error(
+      'Repository collaborator permission snapshot storage is unavailable or read-only',
+    );
+  }
+  const problems = repositoryCollaboratorPermissionSnapshotProblems(snapshot);
+  if (problems.length > 0) {
+    throw new Error(
+      `Invalid repository collaborator permission snapshot: ${problems.join('; ')}`,
+    );
+  }
+  const existing = getRepositoryCollaboratorPermissionSnapshot(snapshot.snapshotId);
+  if (existing) {
+    if (canonicalOperationJson(existing) !== canonicalOperationJson(snapshot)) {
+      throw new Error(
+        `Repository collaborator permission snapshot ${snapshot.snapshotId} ` +
+          `conflicts with immutable persisted evidence`,
+      );
+    }
+    return existing;
+  }
+  return runInWriteTransaction(() => {
+    insertCollaboratorPermissionSnapshotStmt.run({
+      snapshot_id: snapshot.snapshotId,
+      schema_version: snapshot.schemaVersion,
+      repository: snapshot.repository,
+      observed_at: snapshot.observedAt,
+      exhaustive: snapshot.exhaustive ? 1 : 0,
+      complete: snapshot.complete ? 1 : 0,
+      total_count: snapshot.totalCount,
+      row_count: snapshot.rowCount,
+      page_count: snapshot.pageCount,
+      pages_fetched: snapshot.pagesFetched,
+      sweep_count: snapshot.sweepCount,
+      content_digest: snapshot.contentDigest,
+      source_identity: snapshot.sourceIdentity,
+    });
+    for (const row of snapshot.rows) {
+      insertCollaboratorPermissionRowStmt.run({
+        snapshot_id: snapshot.snapshotId,
+        actor_login: row.login,
+        actor_type: row.actorType,
+        permission: row.permission,
+        evidence_id: row.evidenceId,
+        source_identity: row.sourceIdentity,
+      });
+    }
+    return getRepositoryCollaboratorPermissionSnapshot(snapshot.snapshotId) ?? (() => {
+      throw new Error(
+        `Repository collaborator permission snapshot ${snapshot.snapshotId} was not persisted`,
+      );
+    })();
+  });
+}
+
+export function getRepositoryCollaboratorPermissionSnapshotV2(
+  snapshotId: string,
+): RepositoryCollaboratorPermissionSnapshot | null {
+  if (!getCollaboratorPermissionSnapshotV2HeaderStmt) return null;
+  return collaboratorPermissionSnapshotV2FromHeader(
+    getCollaboratorPermissionSnapshotV2HeaderStmt.get(snapshotId) as
+      | Record<string, unknown>
+      | undefined,
+  );
+}
+
+export function listRepositoryCollaboratorPermissionSnapshotsV2(
+  options: {
+    repository?: string;
+    repositoryNodeId?: string;
+  } = {},
+): RepositoryCollaboratorPermissionSnapshot[] {
+  const repositoryNodeId = options.repositoryNodeId?.trim();
+  const headers = repositoryNodeId
+    ? listCollaboratorPermissionSnapshotV2HeadersByRepositoryNodeIdStmt?.all(
+        repositoryNodeId,
+      )
+    : listCollaboratorPermissionSnapshotV2HeadersByRepositoryStmt?.all(
+        (
+          options.repository ??
+          `${config.github.owner}/${config.github.repo}`
+        ).toLowerCase(),
+      );
+  return ((headers ?? []) as Array<Record<string, unknown>>)
+    .map((header) => collaboratorPermissionSnapshotV2FromHeader(header))
+    .filter((snapshot): snapshot is RepositoryCollaboratorPermissionSnapshot =>
+      snapshot != null);
+}
+
+export function insertRepositoryCollaboratorPermissionSnapshotV2(
+  snapshot: RepositoryCollaboratorPermissionSnapshot,
+  options: { assertCanWrite?: (stage: string) => void } = {},
+): RepositoryCollaboratorPermissionSnapshot {
+  if (
+    !insertCollaboratorPermissionSnapshotV2Stmt ||
+    !insertCollaboratorPermissionRowV2Stmt
+  ) {
+    throw new Error(
+      'Repository collaborator permission v2 snapshot storage is unavailable or read-only',
+    );
+  }
+  const problems = repositoryCollaboratorPermissionSnapshotProblems(snapshot);
+  if (problems.length > 0) {
+    throw new Error(
+      `Invalid repository collaborator permission v2 snapshot: ` +
+        problems.join('; '),
+    );
+  }
+  const existing = getRepositoryCollaboratorPermissionSnapshotV2(
+    snapshot.snapshotId,
+  );
+  if (existing) {
+    if (canonicalOperationJson(existing) !== canonicalOperationJson(snapshot)) {
+      throw new Error(
+        `Repository collaborator permission v2 snapshot ${snapshot.snapshotId} ` +
+          'conflicts with immutable persisted evidence',
+      );
+    }
+    return existing;
+  }
+  options.assertCanWrite?.('repository collaborator snapshot persistence');
+  return runInWriteTransaction(() => {
+    options.assertCanWrite?.('repository collaborator snapshot transaction');
+    insertCollaboratorPermissionSnapshotV2Stmt.run({
+      snapshot_id: snapshot.snapshotId,
+      schema_version: snapshot.schemaVersion,
+      repository: snapshot.repository,
+      repository_node_id: snapshot.repositoryNodeId!,
+      observed_at: snapshot.observedAt,
+      exhaustive: snapshot.exhaustive ? 1 : 0,
+      complete: snapshot.complete ? 1 : 0,
+      total_count: snapshot.totalCount,
+      row_count: snapshot.rowCount,
+      page_count: snapshot.pageCount,
+      pages_fetched: snapshot.pagesFetched,
+      sweep_count: snapshot.sweepCount,
+      rows_content_hash: snapshot.rowsContentHash!,
+      raw_json: snapshot.rawJson!,
+      source_identity: snapshot.sourceIdentity,
+      content_hash: snapshot.contentHash!,
+    });
+    for (const row of snapshot.rows) {
+      insertCollaboratorPermissionRowV2Stmt.run({
+        snapshot_id: snapshot.snapshotId,
+        source_ordinal: row.sourceOrdinal!,
+        actor_node_id: row.actorNodeId!,
+        actor_login: row.actorLogin!,
+        actor_type: row.actorType,
+        permission: row.permission,
+        raw_json: row.rawJson!,
+        source_identity: row.sourceIdentity,
+        content_hash: row.contentHash!,
+      });
+    }
+    const stored = getRepositoryCollaboratorPermissionSnapshotV2(
+      snapshot.snapshotId,
+    );
+    if (
+      !stored ||
+      canonicalOperationJson(stored) !== canonicalOperationJson(snapshot)
+    ) {
+      throw new Error(
+        `Repository collaborator permission v2 snapshot ${snapshot.snapshotId} ` +
+          'failed post-insert verification',
+      );
+    }
+    options.assertCanWrite?.('repository collaborator snapshot commit');
+    return stored;
+  });
+}
+
+export function getIssueLabelEvidenceSnapshot(
+  snapshotId: string,
+): IssueLabelEvidenceSnapshot | null {
+  if (!getIssueLabelEvidenceSnapshotHeaderStmt) return null;
+  return issueLabelEvidenceSnapshotFromHeader(
+    getIssueLabelEvidenceSnapshotHeaderStmt.get(snapshotId) as
+      | Record<string, unknown>
+      | undefined,
+  );
+}
+
+export function listIssueLabelEvidenceSnapshots(
+  issueNumber: number,
+): IssueLabelEvidenceSnapshot[] {
+  if (!listIssueLabelEvidenceSnapshotHeadersStmt) return [];
+  return (
+    listIssueLabelEvidenceSnapshotHeadersStmt.all(
+      issueNumber,
+    ) as Array<Record<string, unknown>>
+  )
+    .map((header) => issueLabelEvidenceSnapshotFromHeader(header))
+    .filter((snapshot): snapshot is IssueLabelEvidenceSnapshot =>
+      snapshot != null);
+}
+
+export function insertIssueLabelEvidenceSnapshot(
+  snapshot: IssueLabelEvidenceSnapshot,
+): IssueLabelEvidenceSnapshot {
+  if (
+    !insertIssueLabelEvidenceSnapshotStmt ||
+    !insertIssueLabelEvidenceRowStmt
+  ) {
+    throw new Error(
+      'Issue label evidence snapshot storage is unavailable or read-only',
+    );
+  }
+  const problems = issueLabelEvidenceSnapshotProblems(snapshot);
+  if (problems.length > 0) {
+    throw new Error(
+      `Invalid issue label evidence snapshot: ${problems.join('; ')}`,
+    );
+  }
+  const issue = getIssue(snapshot.issueNumber);
+  if (!issue || issue.node_id !== snapshot.issueNodeId) {
+    throw new Error(
+      `Issue label evidence snapshot ${snapshot.snapshotId} does not match ` +
+        `persisted issue #${snapshot.issueNumber} identity`,
+    );
+  }
+  const persistedRevisionMs = Date.parse(issue.updated_at);
+  const snapshotRevisionMs = Date.parse(snapshot.issueUpdatedAt);
+  if (
+    !Number.isFinite(persistedRevisionMs) ||
+    !Number.isFinite(snapshotRevisionMs) ||
+    persistedRevisionMs !== snapshotRevisionMs
+  ) {
+    throw new Error(
+      `Issue label evidence snapshot ${snapshot.snapshotId} revision ` +
+        `${snapshot.issueUpdatedAt} does not match persisted issue revision ` +
+        `${issue.updated_at}`,
+    );
+  }
+  const existing = getIssueLabelEvidenceSnapshot(snapshot.snapshotId);
+  if (existing) {
+    if (canonicalOperationJson(existing) !== canonicalOperationJson(snapshot)) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} conflicts with ` +
+          'immutable persisted evidence',
+      );
+    }
+    return existing;
+  }
+  return runInWriteTransaction(() => {
+    insertIssueLabelEvidenceSnapshotStmt.run({
+      snapshot_id: snapshot.snapshotId,
+      schema_version: snapshot.schemaVersion,
+      repository: snapshot.repository,
+      repository_node_id: snapshot.repositoryNodeId,
+      issue_number: snapshot.issueNumber,
+      issue_node_id: snapshot.issueNodeId,
+      captured_at: snapshot.capturedAt,
+      issue_updated_at: snapshot.issueUpdatedAt,
+      total_count: snapshot.totalCount,
+      fetched_count: snapshot.fetchedCount,
+      page_count: snapshot.pageCount,
+      sweep_count: snapshot.sweepCount,
+      stabilized: snapshot.stabilized ? 1 : 0,
+      rows_content_hash: snapshot.rowsContentHash,
+      source_identity: snapshot.sourceIdentity,
+      content_hash: snapshot.contentHash,
+    });
+    for (const row of snapshot.rows) {
+      insertIssueLabelEvidenceRowStmt.run({
+        snapshot_id: snapshot.snapshotId,
+        connection_ordinal: row.connectionOrdinal,
+        event_node_id: row.eventNodeId,
+        action: row.action,
+        label_name: row.labelName,
+        label_node_id: row.labelNodeId,
+        actor_node_id: row.actorNodeId,
+        actor_login: row.actorLogin,
+        actor_type: row.actorType,
+        created_at: row.createdAt,
+        raw_json: row.rawJson,
+        source_identity: row.sourceIdentity,
+        content_hash: row.contentHash,
+      });
+    }
+    const stored = getIssueLabelEvidenceSnapshot(snapshot.snapshotId);
+    if (
+      !stored ||
+      canonicalOperationJson(stored) !== canonicalOperationJson(snapshot)
+    ) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} failed ` +
+          'post-insert verification',
+      );
+    }
+    return stored;
+  });
+}
+
+export function getApprovedMaintainerRosterSnapshot(
+  snapshotId: string,
+): ApprovedMaintainerRosterSnapshot | null {
+  if (!getApprovedRosterSnapshotHeaderStmt) return null;
+  return approvedRosterSnapshotFromHeader(
+    getApprovedRosterSnapshotHeaderStmt.get(snapshotId) as
+      | Record<string, unknown>
+      | undefined,
+  );
+}
+
+export function listApprovedMaintainerRosterSnapshots(
+  repository = `${config.github.owner}/${config.github.repo}`.toLowerCase(),
+): ApprovedMaintainerRosterSnapshot[] {
+  if (!listApprovedRosterSnapshotHeadersStmt) return [];
+  return (listApprovedRosterSnapshotHeadersStmt.all(repository) as
+    Array<Record<string, unknown>>)
+    .map((header) => approvedRosterSnapshotFromHeader(header))
+    .filter((snapshot): snapshot is ApprovedMaintainerRosterSnapshot =>
+      snapshot != null);
+}
+
+export function insertApprovedMaintainerRosterSnapshot(
+  snapshot: ApprovedMaintainerRosterSnapshot,
+): ApprovedMaintainerRosterSnapshot {
+  if (!insertApprovedRosterSnapshotStmt || !insertApprovedRosterEntryStmt) {
+    throw new Error(
+      'Approved maintainer roster snapshot storage is unavailable or read-only',
+    );
+  }
+  const problems = approvedMaintainerRosterSnapshotProblems(snapshot);
+  if (problems.length > 0) {
+    throw new Error(`Invalid approved maintainer roster snapshot: ${problems.join('; ')}`);
+  }
+  const existing = getApprovedMaintainerRosterSnapshot(snapshot.snapshotId);
+  if (existing) {
+    if (canonicalOperationJson(existing) !== canonicalOperationJson(snapshot)) {
+      throw new Error(
+        `Approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+          `conflicts with immutable persisted evidence`,
+      );
+    }
+    return existing;
+  }
+  return runInWriteTransaction(() => {
+    insertApprovedRosterSnapshotStmt.run({
+      snapshot_id: snapshot.snapshotId,
+      schema_version: snapshot.schemaVersion,
+      repository: snapshot.repository,
+      approval_id: snapshot.approvalId,
+      approved_at: snapshot.approvedAt,
+      row_count: snapshot.rowCount,
+      content_digest: snapshot.contentDigest,
+      source_identity: snapshot.sourceIdentity,
+    });
+    for (const entry of snapshot.entries) {
+      insertApprovedRosterEntryStmt.run({
+        snapshot_id: snapshot.snapshotId,
+        evidence_id: entry.evidenceId,
+        source_identity: entry.sourceIdentity,
+        actor_login: entry.actorLogin,
+        actor_type: entry.actorType,
+        role: entry.role,
+        effective_from: entry.effectiveFrom,
+        effective_until: entry.effectiveUntil,
+      });
+    }
+    return getApprovedMaintainerRosterSnapshot(snapshot.snapshotId) ?? (() => {
+      throw new Error(
+        `Approved maintainer roster snapshot ${snapshot.snapshotId} was not persisted`,
+      );
+    })();
+  });
+}
+
+export function getSignedApprovedMaintainerRosterSnapshot(
+  snapshotId: string,
+): ApprovedMaintainerRosterSnapshot | null {
+  if (!getSignedApprovedRosterSnapshotHeaderStmt) return null;
+  return signedApprovedRosterSnapshotFromHeader(
+    getSignedApprovedRosterSnapshotHeaderStmt.get(snapshotId) as
+      | Record<string, unknown>
+      | undefined,
+  );
+}
+
+export function listSignedApprovedMaintainerRosterSnapshots(
+  options: {
+    repository?: string;
+    repositoryNodeId?: string;
+  } = {},
+): ApprovedMaintainerRosterSnapshot[] {
+  const repositoryNodeId = options.repositoryNodeId?.trim();
+  const headers = repositoryNodeId
+    ? listSignedApprovedRosterSnapshotHeadersByRepositoryNodeIdStmt?.all(
+        repositoryNodeId,
+      )
+    : listSignedApprovedRosterSnapshotHeadersByRepositoryStmt?.all(
+        (
+          options.repository ??
+          `${config.github.owner}/${config.github.repo}`
+        ).toLowerCase(),
+      );
+  return ((headers ?? []) as Array<Record<string, unknown>>)
+    .map((header) => signedApprovedRosterSnapshotFromHeader(header))
+    .filter((snapshot): snapshot is ApprovedMaintainerRosterSnapshot =>
+      snapshot != null);
+}
+
+export function verifySignedApprovedMaintainerRosterChain(
+  options: {
+    repository?: string;
+    repositoryNodeId?: string;
+  } = {},
+): ApprovedMaintainerRosterSnapshot[] {
+  const snapshots = listSignedApprovedMaintainerRosterSnapshots(options);
+  let previousState: ApprovedMaintainerRosterChainState | null = null;
+  for (const snapshot of snapshots) {
+    const problems = approvedMaintainerRosterSnapshotProblems(snapshot, {
+      previousState,
+    });
+    if (problems.length > 0) {
+      throw new Error(
+        `Signed approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+          `failed immutable chain verification: ${problems.join('; ')}`,
+      );
+    }
+    previousState = approvedMaintainerRosterChainState(snapshot);
+  }
+  return snapshots;
+}
+
+export function insertSignedApprovedMaintainerRosterSnapshot(
+  snapshot: ApprovedMaintainerRosterSnapshot,
+): ApprovedMaintainerRosterSnapshot {
+  if (
+    !insertSignedApprovedRosterSnapshotStmt ||
+    !insertSignedApprovedRosterEntryStmt
+  ) {
+    throw new Error(
+      'Signed approved maintainer roster snapshot storage is unavailable or read-only',
+    );
+  }
+  const intrinsicProblems = approvedMaintainerRosterSnapshotProblems(snapshot);
+  if (intrinsicProblems.length > 0) {
+    throw new Error(
+      `Invalid signed approved maintainer roster snapshot: ` +
+        intrinsicProblems.join('; '),
+    );
+  }
+  const existing = getSignedApprovedMaintainerRosterSnapshot(
+    snapshot.snapshotId,
+  );
+  if (existing) {
+    if (canonicalOperationJson(existing) !== canonicalOperationJson(snapshot)) {
+      throw new Error(
+        `Signed approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+          'conflicts with immutable persisted evidence',
+      );
+    }
+    return existing;
+  }
+
+  return runInWriteTransaction(() => {
+    const racedExisting = getSignedApprovedMaintainerRosterSnapshot(
+      snapshot.snapshotId,
+    );
+    if (racedExisting) {
+      if (
+        canonicalOperationJson(racedExisting) !==
+        canonicalOperationJson(snapshot)
+      ) {
+        throw new Error(
+          `Signed approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+            'conflicts with immutable persisted evidence',
+        );
+      }
+      return racedExisting;
+    }
+    const chain = verifySignedApprovedMaintainerRosterChain({
+      repositoryNodeId: snapshot.repositoryNodeId,
+    });
+    const previousState = chain.length === 0
+      ? null
+      : approvedMaintainerRosterChainState(chain[chain.length - 1]);
+    const chainProblems = approvedMaintainerRosterSnapshotProblems(snapshot, {
+      previousState,
+    });
+    if (chainProblems.length > 0) {
+      throw new Error(
+        `Invalid signed approved maintainer roster chain append: ` +
+          chainProblems.join('; '),
+      );
+    }
+
+    insertSignedApprovedRosterSnapshotStmt.run({
+      snapshot_id: snapshot.snapshotId,
+      schema_version: snapshot.schemaVersion,
+      purpose: snapshot.purpose!,
+      repository: snapshot.repository,
+      repository_node_id: snapshot.repositoryNodeId!,
+      approval_id: snapshot.approvalId,
+      approved_at: snapshot.approvedAt,
+      sequence: snapshot.sequence!,
+      prior_digest: snapshot.priorDigest ?? null,
+      signer_key_id: snapshot.signerKeyId!,
+      keyring_digest: snapshot.keyringDigest!,
+      signature_algorithm: snapshot.signatureAlgorithm!,
+      signature: snapshot.signature!,
+      signature_verified_at: snapshot.signatureVerifiedAt!,
+      signed_payload_json: snapshot.signedPayloadJson!,
+      row_count: snapshot.rowCount,
+      rows_content_hash: snapshot.rowsContentHash!,
+      source_identity: snapshot.sourceIdentity,
+      content_hash: snapshot.contentHash!,
+    });
+    for (const entry of snapshot.entries) {
+      insertSignedApprovedRosterEntryStmt.run({
+        snapshot_id: snapshot.snapshotId,
+        entry_ordinal: entry.entryOrdinal!,
+        evidence_id: entry.evidenceId,
+        actor_node_id: entry.actorNodeId!,
+        actor_login: entry.actorLogin,
+        actor_type: entry.actorType,
+        actor_association: entry.actorAssociation ?? null,
+        role: entry.role,
+        effective_from: entry.effectiveFrom,
+        effective_until: entry.effectiveUntil,
+        raw_json: entry.rawJson!,
+        source_identity: entry.sourceIdentity,
+        content_hash: entry.contentHash!,
+      });
+    }
+    const stored = getSignedApprovedMaintainerRosterSnapshot(
+      snapshot.snapshotId,
+    );
+    const storedProblems = stored
+      ? approvedMaintainerRosterSnapshotProblems(stored, { previousState })
+      : ['snapshot was not persisted'];
+    if (
+      !stored ||
+      storedProblems.length > 0 ||
+      canonicalOperationJson(stored) !== canonicalOperationJson(snapshot)
+    ) {
+      throw new Error(
+        `Signed approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+          `failed post-insert verification: ${storedProblems.join('; ')}`,
+      );
+    }
+    return stored;
+  });
+}
+
+function approvedRosterManifestSequence(raw: string): number {
+  let value: unknown;
+  try {
+    value = JSON.parse(raw);
+  } catch {
+    throw new Error('Approved roster config is not valid JSON');
+  }
+  if (
+    value == null ||
+    typeof value !== 'object' ||
+    Array.isArray(value) ||
+    !Number.isInteger((value as Record<string, unknown>).sequence) ||
+    Number((value as Record<string, unknown>).sequence) <= 0
+  ) {
+    throw new Error(
+      'Approved roster config sequence must be a positive integer',
+    );
+  }
+  return Number((value as Record<string, unknown>).sequence);
+}
+
+function writeApprovedRosterChainState(
+  path: string,
+  state: ApprovedMaintainerRosterChainState,
+): void {
+  if (resolve(path) !== path) {
+    throw new Error('Approved roster chain state path must be absolute');
+  }
+  const directory = dirname(path);
+  mkdirSync(directory, { recursive: true, mode: 0o700 });
+  const temporaryPath =
+    `${path}.tmp-${process.pid}-${randomUUID()}`;
+  let fileDescriptor: number | null = null;
+  try {
+    fileDescriptor = openSync(temporaryPath, 'wx', 0o600);
+    writeFileSync(
+      fileDescriptor,
+      `${canonicalApprovedMaintainerRosterChainStateJson(state)}\n`,
+      'utf8',
+    );
+    fsyncSync(fileDescriptor);
+    closeSync(fileDescriptor);
+    fileDescriptor = null;
+    renameSync(temporaryPath, path);
+    const directoryDescriptor = openSync(directory, 'r');
+    try {
+      fsyncSync(directoryDescriptor);
+    } finally {
+      closeSync(directoryDescriptor);
+    }
+  } catch (error) {
+    if (fileDescriptor != null) closeSync(fileDescriptor);
+    rmSync(temporaryPath, { force: true });
+    throw error;
+  }
+}
+
+function assertApprovedRosterCheckpointMatchesChain(
+  state: ApprovedMaintainerRosterChainState,
+  chain: readonly ApprovedMaintainerRosterSnapshot[],
+): void {
+  const matchingSnapshot = chain.find((snapshot) =>
+    snapshot.sequence === state.sequence);
+  if (
+    !matchingSnapshot ||
+    matchingSnapshot.repositoryNodeId !== state.repositoryNodeId ||
+    matchingSnapshot.runHash !== state.runDigest
+  ) {
+    throw new Error(
+      'Approved roster chain state does not match immutable persisted history',
+    );
+  }
+}
+
+export function ingestConfiguredApprovedMaintainerRosterSnapshot(
+  path: string | null = config.labelAuthority.approvedRosterPath,
+  options: {
+    keyringPath?: string | null;
+    statePath?: string | null;
+    verifiedAt?: string;
+  } = {},
+): ApprovedMaintainerRosterSnapshot {
+  if (!path) {
+    throw new Error(
+      'LABEL_AUTHORITY_APPROVED_ROSTER_PATH is required for approved roster ingestion',
+    );
+  }
+  if (resolve(path) !== path) {
+    throw new Error('Approved roster config path must be absolute');
+  }
+  const keyringPath = options.keyringPath ??
+    config.labelAuthority.approvedRosterKeyringPath;
+  if (!keyringPath) {
+    throw new Error(
+      'LABEL_AUTHORITY_APPROVED_ROSTER_KEYRING_PATH is required for signed ' +
+        'approved roster ingestion',
+    );
+  }
+  if (resolve(keyringPath) !== keyringPath) {
+    throw new Error('Approved roster keyring path must be absolute');
+  }
+  const statePath = options.statePath ??
+    config.labelAuthority.approvedRosterStatePath;
+  if (statePath && resolve(statePath) !== statePath) {
+    throw new Error('Approved roster chain state path must be absolute');
+  }
+  const rosterRaw = readFileSync(path, 'utf8');
+  const requestedSequence = approvedRosterManifestSequence(rosterRaw);
+  const keyring = loadApprovedMaintainerRosterKeyring(keyringPath);
+  const repository = `${config.github.owner}/${config.github.repo}`.toLowerCase();
+  if (keyring.repository !== repository) {
+    throw new Error(
+      `Approved maintainer roster keyring repository ${keyring.repository} ` +
+        `does not match configured repository ${repository}`,
+    );
+  }
+  const persistedChain = verifySignedApprovedMaintainerRosterChain({
+    repositoryNodeId: keyring.repositoryNodeId,
+  });
+  if (statePath && existsSync(statePath)) {
+    const checkpoint = loadApprovedMaintainerRosterChainState(statePath);
+    assertApprovedRosterCheckpointMatchesChain(checkpoint, persistedChain);
+  }
+  const previousState = requestedSequence === 1
+    ? null
+    : (() => {
+        const previousSnapshot = persistedChain.find((snapshot) =>
+          snapshot.sequence === requestedSequence - 1);
+        if (!previousSnapshot) {
+          throw new Error(
+            `Approved roster sequence ${requestedSequence} has no immutable ` +
+              `persisted predecessor`,
+          );
+        }
+        return approvedMaintainerRosterChainState(previousSnapshot);
+      })();
+  const persistedAtRequestedSequence = persistedChain.find((snapshot) =>
+    snapshot.sequence === requestedSequence);
+  const snapshot = loadApprovedMaintainerRosterSnapshot(path, {
+    keyring,
+    expectedRepositoryNodeId: keyring.repositoryNodeId,
+    previousState,
+    verifiedAt:
+      persistedAtRequestedSequence?.signatureVerifiedAt ??
+      options.verifiedAt,
+    readFile: () => rosterRaw,
+  });
+  if (snapshot.repository !== repository) {
+    throw new Error(
+      `Approved maintainer roster repository ${snapshot.repository} ` +
+        `does not match configured repository ${repository}`,
+    );
+  }
+  const stored = insertSignedApprovedMaintainerRosterSnapshot(snapshot);
+  const finalChain = verifySignedApprovedMaintainerRosterChain({
+    repositoryNodeId: keyring.repositoryNodeId,
+  });
+  const finalSnapshot = finalChain[finalChain.length - 1];
+  if (!finalSnapshot) {
+    throw new Error('Signed approved maintainer roster chain is empty after ingestion');
+  }
+  if (statePath) {
+    writeApprovedRosterChainState(
+      statePath,
+      approvedMaintainerRosterChainState(finalSnapshot),
+    );
+  }
+  return stored;
+}
+
+function verifiedCollaboratorPermissionSnapshots(
+  repository: string,
+  repositoryNodeId: string,
+): RepositoryCollaboratorPermissionSnapshot[] {
+  const snapshots = listRepositoryCollaboratorPermissionSnapshotsV2({
+    repositoryNodeId,
+  });
+  for (const snapshot of snapshots) {
+    const problems = repositoryCollaboratorPermissionSnapshotProblems(snapshot);
+    if (problems.length > 0) {
+      throw new Error(
+        `Repository collaborator permission snapshot ${snapshot.snapshotId} ` +
+          `failed immutable verification: ${problems.join('; ')}`,
+      );
+    }
+    if (
+      snapshot.repository !== repository ||
+      snapshot.repositoryNodeId !== repositoryNodeId
+    ) {
+      throw new Error(
+        `Repository collaborator permission snapshot ${snapshot.snapshotId} ` +
+          'does not match the authority subject repository identity',
+      );
+    }
+  }
+  return snapshots;
+}
+
+function verifiedSignedApprovedRosterSnapshots(
+  repository: string,
+  repositoryNodeId: string,
+): ApprovedMaintainerRosterSnapshot[] {
+  const snapshots = verifySignedApprovedMaintainerRosterChain({
+    repositoryNodeId,
+  });
+  for (const snapshot of snapshots) {
+    if (
+      snapshot.repository !== repository ||
+      snapshot.repositoryNodeId !== repositoryNodeId
+    ) {
+      throw new Error(
+        `Signed approved maintainer roster snapshot ${snapshot.snapshotId} ` +
+          'does not match the authority subject repository identity',
+      );
+    }
+  }
+  return snapshots;
+}
+
+function verifiedIssueLabelEvidenceForEvent(
+  eventId: string,
+): {
+  snapshot: IssueLabelEvidenceSnapshot;
+  row: IssueLabelEvidenceSnapshot['rows'][number];
+} | null {
+  if (!listIssueLabelEvidenceSnapshotHeadersByEventStmt) return null;
+  const repository = `${config.github.owner}/${config.github.repo}`.toLowerCase();
+  const matches = (
+    listIssueLabelEvidenceSnapshotHeadersByEventStmt.all(eventId) as
+      Array<Record<string, unknown>>
+  ).map((header) => {
+    const snapshot = issueLabelEvidenceSnapshotFromHeader(header);
+    if (!snapshot) {
+      throw new Error(
+        `Issue label event ${eventId} references an unreadable evidence snapshot`,
+      );
+    }
+    const problems = issueLabelEvidenceSnapshotProblems(snapshot);
+    if (problems.length > 0) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} failed immutable ` +
+          `verification: ${problems.join('; ')}`,
+      );
+    }
+    if (snapshot.repository !== repository) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} repository ` +
+          `${snapshot.repository} does not match configured repository ${repository}`,
+      );
+    }
+    const issue = getIssue(snapshot.issueNumber);
+    if (!issue || issue.node_id !== snapshot.issueNodeId) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} does not match ` +
+          `persisted issue #${snapshot.issueNumber} identity`,
+      );
+    }
+    const row = snapshot.rows.find((candidate) =>
+      candidate.eventNodeId === eventId);
+    if (!row) {
+      throw new Error(
+        `Issue label evidence snapshot ${snapshot.snapshotId} does not contain ` +
+          `event ${eventId}`,
+      );
+    }
+    return { snapshot, row };
+  });
+  if (matches.length === 0) return null;
+
+  const eventIdentities = new Set(matches.map(({ snapshot, row }) =>
+    canonicalOperationJson([
+      snapshot.repository,
+      snapshot.repositoryNodeId,
+      snapshot.issueNumber,
+      snapshot.issueNodeId,
+      row.eventNodeId,
+      row.action,
+      row.labelName,
+      row.labelNodeId,
+      row.actorNodeId,
+      row.actorLogin,
+      row.actorType,
+      row.createdAt,
+      row.rawJson,
+    ])));
+  if (eventIdentities.size !== 1) {
+    throw new Error(
+      `Issue label event ${eventId} conflicts across immutable evidence snapshots`,
+    );
+  }
+  return matches[matches.length - 1];
+}
+
+export function labelAuthorityEvidenceForEvent(
+  eventId: string,
+): LabelAuthorityEvidence {
+  const projectedEvent = issueLabelEventByIdStmt.get(eventId) as
+    | {
+        issue_number: number;
+        issue_node_id: string | null;
+        event_id: string;
+        action: 'labeled' | 'unlabeled';
+        label_name: string;
+        actor_node_id: string | null;
+        actor_login: string | null;
+        actor_type: string | null;
+        created_at: string;
+        raw_json: string | null;
+      }
+    | undefined;
+  const repository = `${config.github.owner}/${config.github.repo}`.toLowerCase();
+  const immutableEvent = verifiedIssueLabelEvidenceForEvent(eventId);
+  if (!immutableEvent && !projectedEvent) {
+    throw new Error(`Issue label event ${eventId} is missing`);
+  }
+  if (immutableEvent && projectedEvent) {
+    const { snapshot, row } = immutableEvent;
+    const projectedCreatedAt = canonicalTimestampIdentity(
+      projectedEvent.created_at,
+      `Issue label event ${eventId} projected created_at`,
+    );
+    const immutableCreatedAt = canonicalTimestampIdentity(
+      row.createdAt,
+      `Issue label event ${eventId} immutable createdAt`,
+    );
+    const projectedIdentity = canonicalOperationJson([
+      projectedEvent.issue_number,
+      projectedEvent.issue_node_id,
+      projectedEvent.event_id,
+      projectedEvent.action,
+      projectedEvent.label_name,
+      projectedEvent.actor_node_id,
+      projectedEvent.actor_login?.toLowerCase() ?? null,
+      projectedEvent.actor_type,
+      projectedCreatedAt,
+    ]);
+    const immutableIdentity = canonicalOperationJson([
+      snapshot.issueNumber,
+      snapshot.issueNodeId,
+      row.eventNodeId,
+      row.action,
+      row.labelName,
+      row.actorNodeId,
+      row.actorLogin,
+      row.actorType,
+      immutableCreatedAt,
+    ]);
+    if (projectedIdentity !== immutableIdentity) {
+      throw new Error(
+        `Issue label event ${eventId} projection conflicts with immutable ` +
+          'label evidence',
+      );
+    }
+  }
+
+  const event = immutableEvent
+    ? {
+        issueNumber: immutableEvent.snapshot.issueNumber,
+        eventId: immutableEvent.row.eventNodeId,
+        action: immutableEvent.row.action,
+        label: immutableEvent.row.labelName,
+        eventTime: immutableEvent.row.createdAt,
+        sourceIdentity: immutableEvent.row.sourceIdentity,
+        repositoryNodeId: immutableEvent.snapshot.repositoryNodeId,
+        actorNodeId: immutableEvent.row.actorNodeId,
+        actorLogin: immutableEvent.row.actorLogin,
+        actorType: immutableEvent.row.actorType,
+      }
+    : {
+        issueNumber: projectedEvent!.issue_number,
+        eventId: projectedEvent!.event_id,
+        action: projectedEvent!.action,
+        label: projectedEvent!.label_name,
+        eventTime: projectedEvent!.created_at,
+        sourceIdentity: `github-graphql:issue-label-event:legacy:${
+          createHash('sha256')
+            .update(JSON.stringify([
+              projectedEvent!.issue_number,
+              projectedEvent!.issue_node_id,
+              projectedEvent!.event_id,
+              projectedEvent!.action,
+              projectedEvent!.label_name,
+              projectedEvent!.actor_node_id,
+              projectedEvent!.actor_login,
+              projectedEvent!.actor_type,
+              projectedEvent!.created_at,
+              projectedEvent!.raw_json,
+            ]))
+            .digest('hex')
+        }`,
+        repositoryNodeId: null,
+        actorNodeId: projectedEvent!.actor_node_id,
+        actorLogin: projectedEvent!.actor_login?.toLowerCase() ?? null,
+        actorType: projectedEvent!.actor_type,
+      };
+  const permissionObservations: RepositoryPermissionObservation[] = [];
+  const approvedRosterEntries: ApprovedMaintainerRosterEntry[] = [];
+  if (event.repositoryNodeId != null && event.actorNodeId != null) {
+    for (
+      const snapshot of verifiedCollaboratorPermissionSnapshots(
+        repository,
+        event.repositoryNodeId,
+      )
+    ) {
+      for (const row of snapshot.rows) {
+        if (row.actorNodeId !== event.actorNodeId) continue;
+        permissionObservations.push({
+          kind: 'repository_permission_observation',
+          evidenceId: row.evidenceId,
+          sourceIdentity: row.sourceIdentity,
+          repositoryNodeId: snapshot.repositoryNodeId,
+          repository: snapshot.repository,
+          actorNodeId: row.actorNodeId,
+          actorLogin: row.actorLogin ?? row.login,
+          actorType: row.actorType,
+          actorAssociation: row.association ?? null,
+          permission: row.permission,
+          observedAt: snapshot.observedAt,
+          sourceOrdinal: row.sourceOrdinal ?? null,
+          rawJson: row.rawJson ?? null,
+          contentHash: row.contentHash ?? null,
+          rowHash: row.rowHash ?? null,
+          runHash: row.runHash ?? snapshot.runHash ?? null,
+        });
+      }
+    }
+    for (
+      const snapshot of verifiedSignedApprovedRosterSnapshots(
+        repository,
+        event.repositoryNodeId,
+      )
+    ) {
+      for (const entry of snapshot.entries) {
+        if (entry.actorNodeId !== event.actorNodeId) continue;
+        approvedRosterEntries.push(entry);
+      }
+    }
+  }
+  const evidence: LabelAuthorityEvidence = {
+    schemaVersion: LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+    event: {
+      sourceIdentity: event.sourceIdentity,
+      repositoryNodeId: event.repositoryNodeId,
+      repository,
+      issueNumber: event.issueNumber,
+      eventId: event.eventId,
+      action: event.action,
+      label: event.label,
+      eventTime: event.eventTime,
+      actor: {
+        nodeId: event.actorNodeId,
+        login: event.actorLogin,
+        type: event.actorType,
+        association: null,
+      },
+    },
+    permissionObservations,
+    approvedRosterEntries,
+  };
+  const problems = labelAuthorityEvidenceProblems(evidence);
+  const nonConflictProblems = problems.filter((problem) =>
+    !problem.includes('does not match event') &&
+    !problem.includes('duplicate evidenceId') &&
+    !problem.includes('duplicate sourceIdentity'));
+  if (nonConflictProblems.length > 0) {
+    throw new Error(
+      `Issue label event ${eventId} authority evidence is invalid: ` +
+        nonConflictProblems.join('; '),
+    );
+  }
+  return evidence;
+}
+
+export function resolveLabelAuthorityForEvent(
+  eventId: string,
+): LabelAuthorityResolution {
+  return resolveLabelAuthority(labelAuthorityEvidenceForEvent(eventId));
+}
+
+export function closureClaimAuthorityEvidenceForCandidate(
+  candidateId: string,
+): ScoreClosureClaimAuthorityEvidence {
+  const candidate = getClosureClaimCandidate(candidateId);
+  if (!candidate) {
+    throw new Error(`Closure claim candidate ${candidateId} is missing`);
+  }
+  assertImmutableClosureClaimCandidate(candidate);
+  const repository = `${config.github.owner}/${config.github.repo}`.toLowerCase();
+  if (
+    candidate.repository.nameWithOwner.toLowerCase() !== repository ||
+    candidate.repository.nodeId == null
+  ) {
+    throw new Error(
+      `Closure claim candidate ${candidateId} does not match the configured ` +
+        'repository identity',
+    );
+  }
+  const issue = getIssue(candidate.issue.number);
+  if (!issue || issue.node_id !== candidate.issue.nodeId) {
+    throw new Error(
+      `Closure claim candidate ${candidateId} does not match persisted issue ` +
+      `#${candidate.issue.number} identity`,
+    );
+  }
+  const extractionReceipt = getCurrentClosureClaimExtractionReceipt(
+    candidate.issue.number,
+  );
+  if (!extractionReceipt) {
+    throw new Error(
+      `Closure claim candidate ${candidateId} has no extraction receipt for ` +
+        'the current issue, comment, and state evidence revisions',
+    );
+  }
+  if (
+    !extractionReceipt.members.some((member) =>
+      member.candidateId === candidateId)
+  ) {
+    throw new Error(
+      `Closure claim candidate ${candidateId} is historical or absent from ` +
+        `current extraction receipt ${extractionReceipt.receiptId}`,
+    );
+  }
+  const permissionObservations: RepositoryPermissionObservation[] = [];
+  const approvedRosterEntries: ApprovedMaintainerRosterEntry[] = [];
+  const actorNodeId = candidate.source.actor.nodeId;
+  if (actorNodeId != null) {
+    for (
+      const snapshot of verifiedCollaboratorPermissionSnapshots(
+        repository,
+        candidate.repository.nodeId,
+      )
+    ) {
+      for (const row of snapshot.rows) {
+        if (row.actorNodeId !== actorNodeId) continue;
+        permissionObservations.push({
+          kind: 'repository_permission_observation',
+          evidenceId: row.evidenceId,
+          sourceIdentity: row.sourceIdentity,
+          repositoryNodeId: snapshot.repositoryNodeId,
+          repository: snapshot.repository,
+          actorNodeId: row.actorNodeId,
+          actorLogin: row.actorLogin ?? row.login,
+          actorType: row.actorType,
+          actorAssociation: row.association ?? null,
+          permission: row.permission,
+          observedAt: snapshot.observedAt,
+          sourceOrdinal: row.sourceOrdinal ?? null,
+          rawJson: row.rawJson ?? null,
+          contentHash: row.contentHash ?? null,
+          rowHash: row.rowHash ?? null,
+          runHash: row.runHash ?? snapshot.runHash ?? null,
+        });
+      }
+    }
+    for (
+      const snapshot of verifiedSignedApprovedRosterSnapshots(
+        repository,
+        candidate.repository.nodeId,
+      )
+    ) {
+      for (const entry of snapshot.entries) {
+        if (entry.actorNodeId === actorNodeId) {
+          approvedRosterEntries.push(entry);
+        }
+      }
+    }
+  }
+
+  const stateSnapshot = validateIssueStateEventSnapshot(candidate.issue.number);
+  const snapshotIssueUpdatedAt = stateSnapshot.snapshot?.issue_updated_at ?? null;
+  const issueUpdatedAtMs = Date.parse(issue.updated_at);
+  const snapshotIssueUpdatedAtMs = snapshotIssueUpdatedAt == null
+    ? Number.NaN
+    : Date.parse(snapshotIssueUpdatedAt);
+  const stateSnapshotMatchesPersistedIssue =
+    stateSnapshot.snapshot?.issue_node_id === issue.node_id &&
+    stateSnapshot.snapshot?.issue_state === issue.state.toLowerCase() &&
+    Number.isFinite(issueUpdatedAtMs) &&
+    Number.isFinite(snapshotIssueUpdatedAtMs) &&
+    issueUpdatedAtMs === snapshotIssueUpdatedAtMs;
+  const finalEvent = stateSnapshot.reusable && stateSnapshotMatchesPersistedIssue
+    ? stateSnapshot.normalizedEvents.at(-1) ?? null
+    : null;
+  const stateSnapshotIssueNodeId =
+    stateSnapshot.snapshot?.issue_node_id ?? null;
+  const stabilizationIdentityDigest =
+    stateSnapshot.snapshot?.stabilization_identity_digest ?? null;
+  const finalClosure =
+    finalEvent?.type === 'closed' &&
+      stateSnapshotIssueNodeId != null &&
+      stateSnapshotIssueNodeId === candidate.issue.nodeId &&
+      stabilizationIdentityDigest != null
+      ? {
+          sourceIdentity:
+            `issue-state-event-snapshot:v2:` +
+            stabilizationIdentityDigest,
+          issueNodeId: stateSnapshotIssueNodeId,
+          eventId: finalEvent.eventId,
+          occurredAt: finalEvent.occurredAt,
+          actorNodeId: finalEvent.actorNodeId ?? null,
+          actorType: finalEvent.actorType ?? null,
+        }
+      : null;
+  return {
+    candidate,
+    extractionReceiptId: extractionReceipt.receiptId,
+    extractionReceiptContentHash: extractionReceipt.contentHash,
+    issueAuthorNodeId: issue.author_node_id ?? null,
+    issueAuthorType: issue.author_type ?? null,
+    permissionObservations,
+    approvedRosterEntries,
+    finalClosure,
+  };
+}
+
+export function resolveClosureClaimAuthorityForCandidate(
+  candidateId: string,
+): ScoreClosureClaimAuthorityResolution {
+  return buildScoreClosureClaimAuthorityResolution(
+    closureClaimAuthorityEvidenceForCandidate(candidateId),
+  );
 }
 
 export interface IssueLabelSnapshotInput {
   issue_number: number;
+  issue_node_id?: string | null;
   snapshot_at: string;
   labels_json: string;
 }
 
-const upsertIssueLabelSnapshotStmt = db.prepare(`
+const hasIssueLabelSnapshotV2Identity =
+  tableHasColumns('issue_label_snapshots', ['issue_node_id']);
+const upsertIssueLabelSnapshotStmt =
+  !dbReadOnly && hasIssueLabelSnapshotV2Identity
+  ? db.prepare(`
 INSERT INTO issue_label_snapshots (
-  issue_number, snapshot_at, labels_json, fetched_at
+  issue_number, issue_node_id, snapshot_at, labels_json, fetched_at
 )
 VALUES (
-  :issue_number, :snapshot_at, :labels_json, :fetched_at
+  :issue_number, :issue_node_id, :snapshot_at, :labels_json, :fetched_at
 )
 ON CONFLICT(issue_number, snapshot_at) DO UPDATE SET
+  issue_node_id=COALESCE(excluded.issue_node_id, issue_label_snapshots.issue_node_id),
   labels_json=excluded.labels_json,
-  fetched_at=excluded.fetched_at
+  fetched_at=CASE
+    WHEN issue_label_snapshots.labels_json IS NOT excluded.labels_json
+    THEN excluded.fetched_at
+    ELSE issue_label_snapshots.fetched_at
+  END
+`)
+  : null;
+const latestIssueLabelSnapshotStmt = db.prepare(`
+SELECT issue_node_id, labels_json
+FROM issue_label_snapshots
+WHERE issue_number=?
+ORDER BY snapshot_at DESC
+LIMIT 1
 `);
 
 export function upsertIssueLabelSnapshot(input: IssueLabelSnapshotInput): void {
-  upsertIssueLabelSnapshotStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueLabelSnapshotStmt) {
+    throw new Error('Issue label snapshot storage is unavailable or read-only');
+  }
+  const latest = latestIssueLabelSnapshotStmt.get(input.issue_number) as
+    | { issue_node_id: string | null; labels_json: string }
+    | undefined;
+  if (
+    latest?.labels_json === input.labels_json &&
+    (
+      input.issue_node_id == null ||
+      latest.issue_node_id === input.issue_node_id
+    )
+  ) {
+    return;
+  }
+  upsertIssueLabelSnapshotStmt.run({
+    ...input,
+    issue_node_id: input.issue_node_id ?? null,
+    fetched_at: new Date().toISOString(),
+  });
 }
 
 export interface IssueCommentSnapshotInput {
   issue_number: number;
+  repository_node_id?: string | null;
+  issue_node_id?: string | null;
+  issue_author_node_id?: string | null;
+  issue_author_login?: string | null;
+  issue_author_type?: string | null;
+  schema_version?: number;
   comment_count: number;
   fetched_comment_count: number;
   latest_comment_updated_at: string | null;
   comments_digest: string;
+  authority_digest?: string | null;
+  issue_updated_at?: string | null;
+  comments_json?: string | null;
+  stabilization_json?: string | null;
+  stabilization_identity_digest?: string | null;
+  verified_at?: string | null;
+  revision?: number;
 }
 
-const upsertIssueCommentSnapshotStmt = db.prepare(`
+const hasIssueCommentSnapshotV2Identity =
+  tableHasColumns('issue_comment_snapshots', [
+    'repository_node_id',
+    'issue_node_id',
+    'issue_author_node_id',
+    'issue_author_login',
+    'issue_author_type',
+    'authority_digest',
+    'stabilization_json',
+    'stabilization_identity_digest',
+  ]);
+const upsertIssueCommentSnapshotStmt =
+  !dbReadOnly && hasIssueCommentSnapshotV2Identity
+  ? db.prepare(`
 INSERT INTO issue_comment_snapshots (
-  issue_number, fetched_at, comment_count, fetched_comment_count, latest_comment_updated_at, comments_digest
+  issue_number, repository_node_id, issue_node_id, issue_author_node_id, issue_author_login,
+  issue_author_type, schema_version, fetched_at, verified_at, comment_count,
+  fetched_comment_count, latest_comment_updated_at, comments_digest,
+  authority_digest, issue_updated_at, comments_json, stabilization_json,
+  stabilization_identity_digest
 )
 VALUES (
-  :issue_number, :fetched_at, :comment_count, :fetched_comment_count, :latest_comment_updated_at, :comments_digest
+  :issue_number, :repository_node_id, :issue_node_id, :issue_author_node_id, :issue_author_login,
+  :issue_author_type, :schema_version, :fetched_at, :verified_at, :comment_count,
+  :fetched_comment_count, :latest_comment_updated_at, :comments_digest,
+  :authority_digest, :issue_updated_at, :comments_json, :stabilization_json,
+  :stabilization_identity_digest
 )
 ON CONFLICT(issue_number) DO UPDATE SET
-  fetched_at=CASE
-    WHEN issue_comment_snapshots.comment_count IS NOT excluded.comment_count
+  revision=CASE
+    WHEN (excluded.repository_node_id IS NOT NULL
+          AND issue_comment_snapshots.repository_node_id IS NOT excluded.repository_node_id)
+      OR (excluded.issue_node_id IS NOT NULL
+          AND issue_comment_snapshots.issue_node_id IS NOT excluded.issue_node_id)
+      OR (excluded.issue_author_node_id IS NOT NULL
+          AND issue_comment_snapshots.issue_author_node_id IS NOT excluded.issue_author_node_id)
+      OR (excluded.issue_author_type IS NOT NULL
+          AND issue_comment_snapshots.issue_author_type IS NOT excluded.issue_author_type)
+      OR issue_comment_snapshots.issue_author_login IS NOT excluded.issue_author_login
+      OR issue_comment_snapshots.schema_version IS NOT excluded.schema_version
+      OR issue_comment_snapshots.comment_count IS NOT excluded.comment_count
       OR issue_comment_snapshots.fetched_comment_count IS NOT excluded.fetched_comment_count
       OR issue_comment_snapshots.latest_comment_updated_at IS NOT excluded.latest_comment_updated_at
       OR issue_comment_snapshots.comments_digest IS NOT excluded.comments_digest
+      OR issue_comment_snapshots.authority_digest IS NOT excluded.authority_digest
+      OR issue_comment_snapshots.issue_updated_at IS NOT excluded.issue_updated_at
+      OR issue_comment_snapshots.comments_json IS NOT excluded.comments_json
+      OR issue_comment_snapshots.stabilization_json IS NOT excluded.stabilization_json
+      OR issue_comment_snapshots.stabilization_identity_digest
+        IS NOT excluded.stabilization_identity_digest
+    THEN issue_comment_snapshots.revision + 1
+    ELSE issue_comment_snapshots.revision
+  END,
+  repository_node_id=COALESCE(
+    excluded.repository_node_id,
+    issue_comment_snapshots.repository_node_id
+  ),
+  issue_node_id=COALESCE(excluded.issue_node_id, issue_comment_snapshots.issue_node_id),
+  issue_author_node_id=COALESCE(
+    excluded.issue_author_node_id,
+    issue_comment_snapshots.issue_author_node_id
+  ),
+  issue_author_login=excluded.issue_author_login,
+  issue_author_type=COALESCE(
+    excluded.issue_author_type,
+    issue_comment_snapshots.issue_author_type
+  ),
+  fetched_at=CASE
+    WHEN (excluded.repository_node_id IS NOT NULL
+          AND issue_comment_snapshots.repository_node_id IS NOT excluded.repository_node_id)
+      OR (excluded.issue_node_id IS NOT NULL
+          AND issue_comment_snapshots.issue_node_id IS NOT excluded.issue_node_id)
+      OR (excluded.issue_author_node_id IS NOT NULL
+          AND issue_comment_snapshots.issue_author_node_id IS NOT excluded.issue_author_node_id)
+      OR (excluded.issue_author_type IS NOT NULL
+          AND issue_comment_snapshots.issue_author_type IS NOT excluded.issue_author_type)
+      OR issue_comment_snapshots.issue_author_login IS NOT excluded.issue_author_login
+      OR issue_comment_snapshots.comment_count IS NOT excluded.comment_count
+      OR issue_comment_snapshots.fetched_comment_count IS NOT excluded.fetched_comment_count
+      OR issue_comment_snapshots.latest_comment_updated_at IS NOT excluded.latest_comment_updated_at
+      OR issue_comment_snapshots.comments_digest IS NOT excluded.comments_digest
+      OR issue_comment_snapshots.authority_digest IS NOT excluded.authority_digest
+      OR issue_comment_snapshots.issue_updated_at IS NOT excluded.issue_updated_at
+      OR issue_comment_snapshots.comments_json IS NOT excluded.comments_json
+      OR issue_comment_snapshots.stabilization_json IS NOT excluded.stabilization_json
+      OR issue_comment_snapshots.stabilization_identity_digest
+        IS NOT excluded.stabilization_identity_digest
     THEN excluded.fetched_at
     ELSE issue_comment_snapshots.fetched_at
   END,
+  schema_version=excluded.schema_version,
+  verified_at=excluded.verified_at,
   comment_count=excluded.comment_count,
   fetched_comment_count=excluded.fetched_comment_count,
   latest_comment_updated_at=excluded.latest_comment_updated_at,
-  comments_digest=excluded.comments_digest
-`);
+  comments_digest=excluded.comments_digest,
+  authority_digest=excluded.authority_digest,
+  issue_updated_at=excluded.issue_updated_at,
+  comments_json=excluded.comments_json,
+  stabilization_json=excluded.stabilization_json,
+  stabilization_identity_digest=excluded.stabilization_identity_digest
+`)
+  : null;
 
 export function upsertIssueCommentSnapshot(input: IssueCommentSnapshotInput): void {
-  upsertIssueCommentSnapshotStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueCommentSnapshotStmt) {
+    throw new Error('Issue comment snapshot storage is unavailable or read-only');
+  }
+  const schemaVersion = input.schema_version ?? 1;
+  if (
+    schemaVersion === 2 ||
+    schemaVersion === AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION
+  ) {
+    if (
+      input.comment_count !== input.fetched_comment_count ||
+      !Number.isInteger(input.comment_count) ||
+      input.comment_count < 0 ||
+      !input.issue_updated_at ||
+      !Number.isFinite(Date.parse(input.issue_updated_at)) ||
+      !input.comments_json
+    ) {
+      throw new Error(`Verified issue comment snapshot ${input.issue_number} is incomplete`);
+    }
+    let recomputedDigest: string;
+    try {
+      recomputedDigest = commentEvidenceDigestFromJson(
+        input.comment_count,
+        input.comments_json,
+      );
+    } catch (error) {
+      throw new Error(
+        `Verified issue comment snapshot ${input.issue_number} is invalid: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    if (recomputedDigest !== input.comments_digest) {
+      throw new Error(
+        `Verified issue comment snapshot ${input.issue_number} comments digest mismatch: ` +
+        `expected ${recomputedDigest}, got ${input.comments_digest}`,
+      );
+    }
+    if (schemaVersion === AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION) {
+      const repositoryNodeId = requiredCanonicalStoredIdentity(
+        input.repository_node_id,
+        `Authoritative issue comment snapshot ${input.issue_number} repository node ID`,
+      );
+      const issueNodeId = requiredCanonicalStoredIdentity(
+        input.issue_node_id,
+        `Authoritative issue comment snapshot ${input.issue_number} issue node ID`,
+      );
+      const issueAuthorNodeId = requiredCanonicalStoredIdentity(
+        input.issue_author_node_id,
+        `Authoritative issue comment snapshot ${input.issue_number} author node ID`,
+      );
+      const issueAuthorLogin = requiredCanonicalStoredIdentity(
+        input.issue_author_login,
+        `Authoritative issue comment snapshot ${input.issue_number} author login`,
+      );
+      const issueAuthorType = requiredCanonicalStoredIdentity(
+        input.issue_author_type,
+        `Authoritative issue comment snapshot ${input.issue_number} author type`,
+      );
+      const authorityDigest = requiredSha256Digest(
+        input.authority_digest,
+        `Authoritative issue comment snapshot ${input.issue_number} authority digest`,
+      );
+      const stabilizationJson = requiredCanonicalStoredIdentity(
+        input.stabilization_json,
+        `Authoritative issue comment snapshot ${input.issue_number} stabilization JSON`,
+      );
+      const stabilizationIdentityDigest = requiredSha256Digest(
+        input.stabilization_identity_digest,
+        `Authoritative issue comment snapshot ${input.issue_number} stabilization identity digest`,
+      );
+      const recomputedAuthorityDigest = commentEvidenceDigestFromJson(
+        input.comment_count,
+        input.comments_json,
+        {
+          repositoryNodeId,
+          issueNodeId,
+          issueNodeType: 'Issue',
+          issueAuthor: {
+            nodeId: issueAuthorNodeId,
+            login: issueAuthorLogin,
+            actorType: issueAuthorType,
+          },
+        },
+      );
+      if (recomputedAuthorityDigest !== authorityDigest) {
+        throw new Error(
+          `Authoritative issue comment snapshot ${input.issue_number} authority digest mismatch: ` +
+          `expected ${recomputedAuthorityDigest}, got ${authorityDigest}`,
+        );
+      }
+      const stabilization = parseCommentEvidenceStabilizationIdentity(
+        stabilizationJson,
+      );
+      const normalizedIssueUpdatedAt = new Date(
+        Date.parse(input.issue_updated_at),
+      ).toISOString();
+      if (
+        stabilization.identityDigest !== stabilizationIdentityDigest ||
+        stabilization.secondSweep.issueUpdatedAt !== normalizedIssueUpdatedAt ||
+        stabilization.secondSweep.totalCount !== input.comment_count ||
+        stabilization.secondSweep.authorityDigest !== authorityDigest
+      ) {
+        throw new Error(
+          `Authoritative issue comment snapshot ${input.issue_number} stabilization proof mismatch`,
+        );
+      }
+    }
+  } else if (schemaVersion !== 1) {
+    throw new Error(`Unsupported issue comment snapshot schema version ${schemaVersion}`);
+  }
+  const now = new Date().toISOString();
+  const { revision: _revision, ...snapshot } = input;
+  upsertIssueCommentSnapshotStmt.run({
+    ...snapshot,
+    repository_node_id: input.repository_node_id ?? null,
+    issue_node_id: input.issue_node_id ?? null,
+    issue_author_node_id: input.issue_author_node_id ?? null,
+    issue_author_login: input.issue_author_login ?? null,
+    issue_author_type: input.issue_author_type ?? null,
+    schema_version: schemaVersion,
+    authority_digest: input.authority_digest ?? null,
+    issue_updated_at: input.issue_updated_at ?? null,
+    comments_json: input.comments_json ?? null,
+    stabilization_json: input.stabilization_json ?? null,
+    stabilization_identity_digest: input.stabilization_identity_digest ?? null,
+    fetched_at: now,
+    verified_at: schemaVersion >= 2 ? input.verified_at ?? now : input.verified_at ?? null,
+  });
+}
+
+function requiredCanonicalStoredIdentity(
+  value: string | null | undefined,
+  context: string,
+): string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) {
+    throw new Error(`${context} must be a non-empty canonical string`);
+  }
+  return value;
+}
+
+function requiredSha256Digest(
+  value: string | null | undefined,
+  context: string,
+): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new Error(`${context} must be a lowercase SHA-256 digest`);
+  }
+  return value;
+}
+
+function optionalIssueCommentEvidenceColumn(
+  table: 'issues' | 'issue_comment_snapshots',
+  tableAlias: 'issue' | 'snapshot',
+  column: string,
+  resultAlias: string,
+): string {
+  return tableHasColumns(table, [column])
+    ? `${tableAlias}.${column} AS ${resultAlias}`
+    : `NULL AS ${resultAlias}`;
+}
+
+const issueCommentEvidenceOptionalProjection = [
+  optionalIssueCommentEvidenceColumn('issues', 'issue', 'node_id', 'issue_node_id'),
+  optionalIssueCommentEvidenceColumn(
+    'issues',
+    'issue',
+    'author_node_id',
+    'issue_author_node_id',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issues',
+    'issue',
+    'author_type',
+    'issue_author_type',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'repository_node_id',
+    'snapshot_repository_node_id',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'issue_node_id',
+    'snapshot_issue_node_id',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'issue_author_node_id',
+    'snapshot_issue_author_node_id',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'issue_author_login',
+    'snapshot_issue_author_login',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'issue_author_type',
+    'snapshot_issue_author_type',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'schema_version',
+    'schema_version',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'verified_at',
+    'verified_at',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'fetched_comment_count',
+    'fetched_comment_count',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'authority_digest',
+    'authority_digest',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'issue_updated_at',
+    'issue_updated_at',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'comments_json',
+    'comments_json',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'stabilization_json',
+    'stabilization_json',
+  ),
+  optionalIssueCommentEvidenceColumn(
+    'issue_comment_snapshots',
+    'snapshot',
+    'stabilization_identity_digest',
+    'stabilization_identity_digest',
+  ),
+].join(',\n  ');
+
+const completeIssueCommentEvidenceStmt = db.prepare(`
+SELECT
+  issue.number,
+  issue.comments,
+  issue.updated_at,
+  ${issueCommentEvidenceOptionalProjection},
+  snapshot.comment_count,
+  snapshot.comments_digest
+FROM issues issue
+LEFT JOIN issue_comment_snapshots snapshot ON snapshot.issue_number=issue.number
+WHERE issue.number=?
+`);
+
+export function completeIssueComments(issueNumber: number): CommentEvidenceRow[] {
+  const row = completeIssueCommentEvidenceStmt.get(issueNumber) as
+    | StoredIssueCommentSnapshotValidationRow
+    | undefined;
+  if (!row) throw new Error(`Issue #${issueNumber} is missing`);
+  if (row.comments === 0 && row.schema_version == null) return [];
+  const comments = validatedStoredIssueCommentSnapshot(row);
+  if (!comments) {
+    throw new Error(`Issue #${issueNumber} cached comment payload failed validation`);
+  }
+  return comments;
+}
+
+interface StoredIssueCommentSnapshotValidationRow {
+  number: number;
+  comments: number;
+  updated_at: string;
+  issue_node_id: string | null;
+  issue_author_node_id: string | null;
+  issue_author_type: string | null;
+  snapshot_repository_node_id: string | null;
+  snapshot_issue_node_id: string | null;
+  snapshot_issue_author_node_id: string | null;
+  snapshot_issue_author_login: string | null;
+  snapshot_issue_author_type: string | null;
+  schema_version: number | null;
+  verified_at: string | null;
+  comment_count: number | null;
+  fetched_comment_count: number | null;
+  comments_digest: string | null;
+  authority_digest: string | null;
+  issue_updated_at: string | null;
+  comments_json: string | null;
+  stabilization_json: string | null;
+  stabilization_identity_digest: string | null;
+}
+
+function validatedStoredIssueCommentSnapshot(
+  row: StoredIssueCommentSnapshotValidationRow,
+): CommentEvidenceRow[] | null {
+  const verifiedSchema =
+    row.schema_version === 2 ||
+    row.schema_version === AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION;
+  if (
+    !verifiedSchema ||
+    typeof row.verified_at !== 'string' ||
+    !Number.isFinite(Date.parse(row.verified_at)) ||
+    row.comment_count !== row.comments ||
+    row.fetched_comment_count !== row.comment_count ||
+    row.issue_updated_at !== row.updated_at ||
+    typeof row.comments_digest !== 'string' ||
+    typeof row.comments_json !== 'string'
+  ) {
+    return null;
+  }
+  const comments = parseCachedCommentEvidence<CommentEvidenceRow>(
+    row.comments_json,
+    Number(row.comment_count),
+    row.comments_digest,
+  );
+  if (!comments) return null;
+  if (row.schema_version !== AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION) {
+    return comments;
+  }
+  try {
+    const repositoryNodeId = requiredCanonicalStoredIdentity(
+      row.snapshot_repository_node_id,
+      `Authoritative issue comment snapshot ${row.number} repository node ID`,
+    );
+    const issueNodeId = requiredCanonicalStoredIdentity(
+      row.snapshot_issue_node_id,
+      `Authoritative issue comment snapshot ${row.number} issue node ID`,
+    );
+    const issueAuthorNodeId = requiredCanonicalStoredIdentity(
+      row.snapshot_issue_author_node_id,
+      `Authoritative issue comment snapshot ${row.number} author node ID`,
+    );
+    const issueAuthorLogin = requiredCanonicalStoredIdentity(
+      row.snapshot_issue_author_login,
+      `Authoritative issue comment snapshot ${row.number} author login`,
+    );
+    const issueAuthorType = requiredCanonicalStoredIdentity(
+      row.snapshot_issue_author_type,
+      `Authoritative issue comment snapshot ${row.number} author type`,
+    );
+    if (
+      row.issue_node_id !== issueNodeId ||
+      row.issue_author_node_id !== issueAuthorNodeId ||
+      row.issue_author_type !== issueAuthorType
+    ) {
+      return null;
+    }
+    const authorityDigest = requiredSha256Digest(
+      row.authority_digest,
+      `Authoritative issue comment snapshot ${row.number} authority digest`,
+    );
+    const recomputedAuthorityDigest = commentEvidenceDigestFromJson(
+      Number(row.comment_count),
+      row.comments_json,
+      {
+        repositoryNodeId,
+        issueNodeId,
+        issueNodeType: 'Issue',
+        issueAuthor: {
+          nodeId: issueAuthorNodeId,
+          login: issueAuthorLogin,
+          actorType: issueAuthorType,
+        },
+      },
+    );
+    if (recomputedAuthorityDigest !== authorityDigest) return null;
+    const stabilizationJson = requiredCanonicalStoredIdentity(
+      row.stabilization_json,
+      `Authoritative issue comment snapshot ${row.number} stabilization JSON`,
+    );
+    const stabilizationIdentityDigest = requiredSha256Digest(
+      row.stabilization_identity_digest,
+      `Authoritative issue comment snapshot ${row.number} stabilization identity digest`,
+    );
+    const stabilization = parseCommentEvidenceStabilizationIdentity(stabilizationJson);
+    const normalizedIssueUpdatedAt = new Date(Date.parse(row.updated_at)).toISOString();
+    if (
+      stabilization.identityDigest !== stabilizationIdentityDigest ||
+      stabilization.secondSweep.issueUpdatedAt !== normalizedIssueUpdatedAt ||
+      stabilization.secondSweep.totalCount !== row.comment_count ||
+      stabilization.secondSweep.authorityDigest !== authorityDigest
+    ) {
+      return null;
+    }
+    return comments;
+  } catch {
+    return null;
+  }
+}
+
+export interface CompactIssueCommentEvidenceRow {
+  issue_number: number;
+  complete: number;
+  id: number | null;
+  comment_node_id: string | null;
+  comment_node_type: string | null;
+  url: string | null;
+  actor_node_id: string | null;
+  author: string | null;
+  actor_type: string | null;
+  author_association: string | null;
+  body: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+interface CompactIssueCommentSnapshotRow {
+  number: number;
+  comments: number;
+  updated_at: string;
+  issue_node_id: string | null;
+  issue_author_node_id: string | null;
+  issue_author_type: string | null;
+  snapshot_repository_node_id: string | null;
+  snapshot_issue_node_id: string | null;
+  snapshot_issue_author_node_id: string | null;
+  snapshot_issue_author_login: string | null;
+  snapshot_issue_author_type: string | null;
+  schema_version: number | null;
+  verified_at: string | null;
+  comment_count: number | null;
+  fetched_comment_count: number | null;
+  comments_digest: string | null;
+  authority_digest: string | null;
+  issue_updated_at: string | null;
+  comments_json: string | null;
+  stabilization_json: string | null;
+  stabilization_identity_digest: string | null;
+}
+
+const compactIssueCommentEvidenceStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+)
+SELECT
+  selected.issue_number AS number,
+  issue.comments,
+  issue.updated_at,
+  ${issueCommentEvidenceOptionalProjection},
+  snapshot.comment_count,
+  snapshot.comments_digest
+FROM selected
+JOIN issues issue ON issue.number=selected.issue_number
+LEFT JOIN issue_comment_snapshots snapshot ON snapshot.issue_number=selected.issue_number
+ORDER BY selected.issue_number
+`);
+
+export function compactIssueCommentEvidence(
+  issueNumbers: number[],
+): Iterable<CompactIssueCommentEvidenceRow> {
+  const selected = [...new Set(issueNumbers)]
+    .filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0);
+  if (!selected.length) return [];
+  const snapshots = compactIssueCommentEvidenceStmt.iterate(
+    JSON.stringify(selected),
+  ) as Iterable<CompactIssueCommentSnapshotRow>;
+  return validatedCompactIssueCommentEvidence(snapshots);
+}
+
+function* validatedCompactIssueCommentEvidence(
+  snapshots: Iterable<CompactIssueCommentSnapshotRow>,
+): Iterable<CompactIssueCommentEvidenceRow> {
+  for (const snapshot of snapshots) {
+    let comments: CommentEvidenceRow[] | null = null;
+    if (
+      snapshot.comments === 0 &&
+      snapshot.schema_version == null
+    ) {
+      comments = [];
+    } else {
+      comments = validatedStoredIssueCommentSnapshot(snapshot);
+    }
+    if (!comments?.length) {
+      yield {
+        issue_number: snapshot.number,
+        complete: comments == null ? 0 : 1,
+        id: null,
+        comment_node_id: null,
+        comment_node_type: null,
+        url: null,
+        actor_node_id: null,
+        author: null,
+        actor_type: null,
+        author_association: null,
+        body: null,
+        created_at: null,
+        updated_at: null,
+      };
+      continue;
+    }
+    for (const comment of comments) {
+      yield {
+        issue_number: snapshot.number,
+        complete: 1,
+        id: comment.id ?? null,
+        comment_node_id: comment.node_id ?? comment.nodeId ?? null,
+        comment_node_type:
+          comment.node_type ?? comment.nodeType ?? comment.__typename ?? null,
+        url: comment.url ?? null,
+        actor_node_id:
+          comment.user?.id ??
+          comment.user?.node_id ??
+          comment.user?.nodeId ??
+          null,
+        author: comment.user?.login ?? null,
+        actor_type:
+          comment.user?.type ??
+          comment.user?.actor_type ??
+          comment.user?.actorType ??
+          comment.user?.__typename ??
+          null,
+        author_association: comment.author_association ?? null,
+        body: comment.body ?? null,
+        created_at: comment.created_at ?? null,
+        updated_at: comment.updated_at ?? null,
+      };
+    }
+  }
+}
+
+const closureEvidenceIssuesNeedingRefreshStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT value FROM json_each(?)
+)
+SELECT i.number
+FROM selected selected
+JOIN issues i ON i.number=selected.issue_number
+LEFT JOIN issue_comment_snapshots comments ON comments.issue_number=i.number
+LEFT JOIN issue_closure_evidence_state state ON state.issue_number=i.number
+WHERE state.issue_number IS NULL
+   OR state.schema_version != ?
+   OR state.issue_updated_at != i.updated_at
+   OR comments.issue_number IS NULL
+   OR comments.schema_version != ${AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION}
+   OR comments.issue_updated_at IS NOT i.updated_at
+   OR comments.comments_json IS NULL
+   OR comments.fetched_comment_count != comments.comment_count
+   OR comments.repository_node_id IS NULL
+   OR comments.issue_node_id IS NULL
+   OR comments.issue_author_node_id IS NULL
+   OR comments.issue_author_type IS NULL
+   OR comments.authority_digest IS NULL
+   OR comments.stabilization_json IS NULL
+   OR comments.stabilization_identity_digest IS NULL
+   OR state.comments_digest != comments.comments_digest
+ORDER BY i.number
+`);
+
+export function closureEvidenceIssuesNeedingRefresh(
+  issueNumbers: number[],
+  schemaVersion: number,
+): number[] {
+  if (!issueNumbers.length) return [];
+  return (closureEvidenceIssuesNeedingRefreshStmt.all(
+    JSON.stringify([...new Set(issueNumbers)]),
+    schemaVersion,
+  ) as unknown as Array<{ number: number }>).map((row) => row.number);
+}
+
+const markIssueClosureEvidenceRefreshedStmt = db.prepare(`
+INSERT INTO issue_closure_evidence_state (
+  issue_number, schema_version, issue_updated_at, comments_digest, checked_at
+)
+SELECT i.number, ?, i.updated_at, comments.comments_digest, ?
+FROM issues i
+JOIN issue_comment_snapshots comments ON comments.issue_number=i.number
+WHERE i.number IN (SELECT value FROM json_each(?))
+  AND comments.issue_updated_at=i.updated_at
+  AND comments.schema_version=${AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION}
+  AND comments.comments_json IS NOT NULL
+  AND comments.fetched_comment_count=comments.comment_count
+  AND comments.repository_node_id IS NOT NULL
+  AND comments.issue_node_id IS NOT NULL
+  AND comments.issue_author_node_id IS NOT NULL
+  AND comments.issue_author_type IS NOT NULL
+  AND comments.authority_digest IS NOT NULL
+  AND comments.stabilization_json IS NOT NULL
+  AND comments.stabilization_identity_digest IS NOT NULL
+ON CONFLICT(issue_number) DO UPDATE SET
+  schema_version=excluded.schema_version,
+  issue_updated_at=excluded.issue_updated_at,
+  comments_digest=excluded.comments_digest,
+  checked_at=excluded.checked_at
+`);
+
+export function markIssueClosureEvidenceRefreshed(
+  issueNumbers: number[],
+  schemaVersion: number,
+): void {
+  if (!issueNumbers.length) return;
+  const unique = [...new Set(issueNumbers)];
+  const result = markIssueClosureEvidenceRefreshedStmt.run(
+    schemaVersion,
+    new Date().toISOString(),
+    JSON.stringify(unique),
+  );
+  if (Number(result.changes ?? 0) !== unique.length) {
+    throw new Error(
+      `Refusing to mark closure evidence fresh for ${unique.length} issue(s); only ${result.changes ?? 0} had complete current comment evidence`,
+    );
+  }
 }
 
 const issueLabelEventsUntilStmt = db.prepare(`
@@ -1854,6 +15973,17 @@ FROM issue_label_events
 WHERE issue_number=?
   AND (? IS NULL OR created_at <= ?)
 ORDER BY created_at ASC, event_id ASC
+`);
+const latestIssueLabelEventAtStmt = db.prepare(`
+SELECT event_id, action, label_name, actor_login,
+  ${hasIssueLabelEventActorType ? 'actor_type' : 'NULL AS actor_type'},
+  created_at
+FROM issue_label_events
+WHERE issue_number=?
+  AND label_name=?
+  AND (? IS NULL OR created_at <= ?)
+ORDER BY created_at DESC, event_id DESC
+LIMIT 1
 `);
 
 const issueLabelEventCountStmt = db.prepare(`SELECT COUNT(*) AS count FROM issue_label_events WHERE issue_number=?`);
@@ -1879,6 +16009,28 @@ export function issueLabelEventCount(issueNumber: number): number {
 export function issueLabelSnapshotCountAt(issueNumber: number, cutoff: string | null): number {
   if (!cutoff) return 0;
   return Number((issueLabelSnapshotCountAtStmt.get(issueNumber, cutoff) as { count: number }).count ?? 0);
+}
+
+export interface IssueLabelEventAt {
+  event_id: string;
+  action: string;
+  label_name: string;
+  actor_login: string | null;
+  actor_type: string | null;
+  created_at: string;
+}
+
+export function latestIssueLabelEventAt(
+  issueNumber: number,
+  labelName: string,
+  cutoff: string | null,
+): IssueLabelEventAt | null {
+  return latestIssueLabelEventAtStmt.get(
+    issueNumber,
+    labelName,
+    cutoff,
+    cutoff,
+  ) as IssueLabelEventAt | undefined ?? null;
 }
 
 export function labelSnapshotForIssueAt(issueNumber: number, cutoff: string | null): string[] | null {
@@ -1932,14 +16084,17 @@ VALUES (
   :release_tag, :issue_number, :status, :summary, :evidence_json, :checked_at
 )
 ON CONFLICT(release_tag, issue_number) DO UPDATE SET
+  checked_at=excluded.checked_at,
   status=excluded.status,
   summary=excluded.summary,
-  evidence_json=excluded.evidence_json,
-  checked_at=excluded.checked_at
+  evidence_json=excluded.evidence_json
 `);
 
 export function upsertIssueClosureProof(input: IssueClosureProofInput): void {
-  upsertIssueClosureProofStmt.run({ ...input, checked_at: new Date().toISOString() });
+  upsertIssueClosureProofStmt.run({
+    ...input,
+    checked_at: new Date().toISOString(),
+  });
 }
 
 const deleteIssueClosureProofsForReleaseStmt = db.prepare(`DELETE FROM issue_closure_proofs WHERE release_tag=?`);
@@ -1984,6 +16139,7 @@ export function closureProofSummary(releaseTag: string): Array<{ status: string;
 const closureProofRiskRowsStmt = db.prepare(`
 SELECT p.status,
        p.issue_number,
+       p.evidence_json,
        i.title,
        i.labels,
        c.sentiment,
@@ -2012,6 +16168,7 @@ ORDER BY count DESC
 export interface ClosureProofRiskRow {
   status: string;
   issue_number: number;
+  evidence_json: string;
   title: string;
   labels: string;
   sentiment: string | null;
@@ -2080,97 +16237,831 @@ export function closureProofRows(releaseTag: string): ClosureProofJoinedRow[] {
   return closureProofRowsStmt.all(releaseTag) as unknown as ClosureProofJoinedRow[];
 }
 
-const upsertIssueClosureEventStmt = db.prepare(`
+const hasIssueClosureEventV2Identity = tableHasColumns('issue_closure_events', [
+  'issue_node_id',
+  'actor_node_id',
+  'actor_type',
+  'closer_node_id',
+]);
+const upsertIssueClosureEventStmt =
+  !dbReadOnly && hasIssueClosureEventV2Identity
+  ? db.prepare(`
 INSERT INTO issue_closure_events (
-  issue_number, event_id, closed_at, actor_login, state_reason,
-  closer_type, closer_number, closer_oid, raw_json, fetched_at
+  issue_number, issue_node_id, event_id, closed_at, connection_ordinal,
+  actor_node_id, actor_login, actor_type, state_reason, closer_type, closer_number,
+  closer_node_id, closer_oid, raw_json, fetched_at
 )
 VALUES (
-  :issue_number, :event_id, :closed_at, :actor_login, :state_reason,
-  :closer_type, :closer_number, :closer_oid, :raw_json, :fetched_at
+  :issue_number, :issue_node_id, :event_id, :closed_at, :connection_ordinal,
+  :actor_node_id, :actor_login, :actor_type, :state_reason, :closer_type, :closer_number,
+  :closer_node_id, :closer_oid, :raw_json, :fetched_at
 )
 ON CONFLICT(event_id) DO UPDATE SET
+  fetched_at=CASE
+    WHEN issue_closure_events.issue_number IS NOT excluded.issue_number
+      OR (
+        excluded.issue_node_id IS NOT NULL
+        AND issue_closure_events.issue_node_id IS NOT excluded.issue_node_id
+      )
+      OR issue_closure_events.closed_at IS NOT excluded.closed_at
+      OR issue_closure_events.connection_ordinal IS NOT excluded.connection_ordinal
+      OR (
+        excluded.actor_node_id IS NOT NULL
+        AND issue_closure_events.actor_node_id IS NOT excluded.actor_node_id
+      )
+      OR issue_closure_events.actor_login IS NOT excluded.actor_login
+      OR (
+        excluded.actor_type IS NOT NULL
+        AND issue_closure_events.actor_type IS NOT excluded.actor_type
+      )
+      OR issue_closure_events.state_reason IS NOT excluded.state_reason
+      OR issue_closure_events.closer_type IS NOT excluded.closer_type
+      OR issue_closure_events.closer_number IS NOT excluded.closer_number
+      OR (
+        excluded.closer_node_id IS NOT NULL
+        AND issue_closure_events.closer_node_id IS NOT excluded.closer_node_id
+      )
+      OR issue_closure_events.closer_oid IS NOT excluded.closer_oid
+      OR issue_closure_events.raw_json IS NOT excluded.raw_json
+    THEN excluded.fetched_at
+    ELSE issue_closure_events.fetched_at
+  END,
   issue_number=excluded.issue_number,
+  issue_node_id=COALESCE(excluded.issue_node_id, issue_closure_events.issue_node_id),
   closed_at=excluded.closed_at,
+  connection_ordinal=excluded.connection_ordinal,
+  actor_node_id=COALESCE(excluded.actor_node_id, issue_closure_events.actor_node_id),
   actor_login=excluded.actor_login,
+  actor_type=COALESCE(excluded.actor_type, issue_closure_events.actor_type),
   state_reason=excluded.state_reason,
   closer_type=excluded.closer_type,
   closer_number=excluded.closer_number,
+  closer_node_id=COALESCE(excluded.closer_node_id, issue_closure_events.closer_node_id),
   closer_oid=excluded.closer_oid,
-  raw_json=excluded.raw_json,
-  fetched_at=excluded.fetched_at
-`);
+  raw_json=excluded.raw_json
+`)
+  : null;
 
 export function upsertIssueClosureEvent(input: IssueClosureEventInput): void {
-  upsertIssueClosureEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueClosureEventStmt) {
+    throw new Error('Issue closure event storage is unavailable or read-only');
+  }
+  upsertIssueClosureEventStmt.run({
+    ...input,
+    issue_node_id: input.issue_node_id ?? null,
+    actor_node_id: input.actor_node_id ?? null,
+    actor_type: input.actor_type ?? null,
+    closer_node_id: input.closer_node_id ?? null,
+    connection_ordinal: input.connection_ordinal ?? 0,
+    fetched_at: new Date().toISOString(),
+  });
 }
 
 export interface IssueReopenEventInput {
   issue_number: number;
+  issue_node_id?: string | null;
   event_id: string;
   reopened_at: string | null;
+  connection_ordinal?: number;
+  actor_node_id?: string | null;
   actor_login: string | null;
+  actor_type?: string | null;
   raw_json: string;
 }
 
-const upsertIssueReopenEventStmt = db.prepare(`
+const hasIssueReopenEventV2Identity = tableHasColumns('issue_reopen_events', [
+  'issue_node_id',
+  'actor_node_id',
+  'actor_type',
+]);
+const upsertIssueReopenEventStmt =
+  !dbReadOnly && hasIssueReopenEventV2Identity
+  ? db.prepare(`
 INSERT INTO issue_reopen_events (
-  issue_number, event_id, reopened_at, actor_login, raw_json, fetched_at
+  issue_number, issue_node_id, event_id, reopened_at, connection_ordinal,
+  actor_node_id, actor_login, actor_type, raw_json, fetched_at
 )
 VALUES (
-  :issue_number, :event_id, :reopened_at, :actor_login, :raw_json, :fetched_at
+  :issue_number, :issue_node_id, :event_id, :reopened_at, :connection_ordinal,
+  :actor_node_id, :actor_login, :actor_type, :raw_json, :fetched_at
 )
 ON CONFLICT(event_id) DO UPDATE SET
+  fetched_at=CASE
+    WHEN issue_reopen_events.issue_number IS NOT excluded.issue_number
+      OR (
+        excluded.issue_node_id IS NOT NULL
+        AND issue_reopen_events.issue_node_id IS NOT excluded.issue_node_id
+      )
+      OR issue_reopen_events.reopened_at IS NOT excluded.reopened_at
+      OR issue_reopen_events.connection_ordinal IS NOT excluded.connection_ordinal
+      OR (
+        excluded.actor_node_id IS NOT NULL
+        AND issue_reopen_events.actor_node_id IS NOT excluded.actor_node_id
+      )
+      OR issue_reopen_events.actor_login IS NOT excluded.actor_login
+      OR (
+        excluded.actor_type IS NOT NULL
+        AND issue_reopen_events.actor_type IS NOT excluded.actor_type
+      )
+      OR issue_reopen_events.raw_json IS NOT excluded.raw_json
+    THEN excluded.fetched_at
+    ELSE issue_reopen_events.fetched_at
+  END,
   issue_number=excluded.issue_number,
+  issue_node_id=COALESCE(excluded.issue_node_id, issue_reopen_events.issue_node_id),
   reopened_at=excluded.reopened_at,
+  connection_ordinal=excluded.connection_ordinal,
+  actor_node_id=COALESCE(excluded.actor_node_id, issue_reopen_events.actor_node_id),
   actor_login=excluded.actor_login,
-  raw_json=excluded.raw_json,
-  fetched_at=excluded.fetched_at
-`);
+  actor_type=COALESCE(excluded.actor_type, issue_reopen_events.actor_type),
+  raw_json=excluded.raw_json
+`)
+  : null;
 
 export function upsertIssueReopenEvent(input: IssueReopenEventInput): void {
-  upsertIssueReopenEventStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueReopenEventStmt) {
+    throw new Error('Issue reopen event storage is unavailable or read-only');
+  }
+  upsertIssueReopenEventStmt.run({
+    ...input,
+    issue_node_id: input.issue_node_id ?? null,
+    actor_node_id: input.actor_node_id ?? null,
+    actor_type: input.actor_type ?? null,
+    connection_ordinal: input.connection_ordinal ?? 0,
+    fetched_at: new Date().toISOString(),
+  });
+}
+
+export interface IssueStateEventSnapshotInput {
+  issue_number: number;
+  repository_node_id: string;
+  issue_node_id: string;
+  issue_node_type: 'Issue';
+  schema_version?: number;
+  issue_state: 'open' | 'closed';
+  issue_updated_at: string;
+  total_count: number;
+  fetched_count: number;
+  events_digest: string;
+  authority_digest: string;
+  sweep_count: number;
+  stabilized: boolean;
+  stabilization: IssueStateEventStabilizationIdentity;
+  closure_events: IssueClosureEventInput[];
+  reopen_events: IssueReopenEventInput[];
+  verified_at?: string;
+}
+
+export interface IssueStateEventSnapshotRow {
+  issue_number: number;
+  repository_node_id: string | null;
+  issue_node_id: string | null;
+  issue_node_type: string | null;
+  schema_version: number;
+  issue_state: 'open' | 'closed';
+  issue_updated_at: string;
+  total_count: number;
+  fetched_count: number;
+  events_digest: string;
+  authority_digest: string | null;
+  events_json: string;
+  sweep_count: number;
+  stabilized: number;
+  stabilization_json: string | null;
+  stabilization_identity_digest: string | null;
+  revision: number;
+  fetched_at: string;
+  verified_at: string;
+}
+
+const getIssueStateEventSnapshotStmt = db.prepare(`
+SELECT *
+FROM issue_state_event_snapshots
+WHERE issue_number=?
+`);
+const deleteIssueClosureEventsOutsideSnapshotStmt = db.prepare(`
+DELETE FROM issue_closure_events
+WHERE issue_number=?
+  AND event_id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+`);
+const deleteIssueReopenEventsOutsideSnapshotStmt = db.prepare(`
+DELETE FROM issue_reopen_events
+WHERE issue_number=?
+  AND event_id NOT IN (SELECT CAST(value AS TEXT) FROM json_each(?))
+`);
+const issueClosureEventProjectionStmt = db.prepare(`
+SELECT issue_node_id, event_id, closed_at, connection_ordinal, actor_node_id, actor_login,
+       actor_type, state_reason, closer_node_id, closer_type, closer_number,
+       closer_oid
+FROM issue_closure_events
+WHERE issue_number=?
+`);
+const issueReopenEventProjectionStmt = db.prepare(`
+SELECT issue_node_id, event_id, reopened_at, connection_ordinal, actor_node_id, actor_login,
+       actor_type
+FROM issue_reopen_events
+WHERE issue_number=?
+`);
+const hasIssueStateEventSnapshotV2Identity =
+  tableHasColumns('issue_state_event_snapshots', [
+    'repository_node_id',
+    'issue_node_id',
+    'issue_node_type',
+    'authority_digest',
+    'stabilization_json',
+    'stabilization_identity_digest',
+  ]);
+const upsertIssueStateEventSnapshotStmt =
+  !dbReadOnly && hasIssueStateEventSnapshotV2Identity
+  ? db.prepare(`
+INSERT INTO issue_state_event_snapshots (
+  issue_number, repository_node_id, issue_node_id, issue_node_type, schema_version, issue_state,
+  issue_updated_at, total_count, fetched_count, events_digest, authority_digest,
+  events_json, sweep_count, stabilized, stabilization_json,
+  stabilization_identity_digest, revision, fetched_at, verified_at
+)
+VALUES (
+  :issue_number, :repository_node_id, :issue_node_id, :issue_node_type, :schema_version, :issue_state,
+  :issue_updated_at, :total_count, :fetched_count, :events_digest, :authority_digest,
+  :events_json, :sweep_count, :stabilized, :stabilization_json,
+  :stabilization_identity_digest, 1, :fetched_at, :verified_at
+)
+ON CONFLICT(issue_number) DO UPDATE SET
+  revision=CASE
+    WHEN (excluded.repository_node_id IS NOT NULL
+          AND issue_state_event_snapshots.repository_node_id IS NOT excluded.repository_node_id)
+      OR (excluded.issue_node_id IS NOT NULL
+          AND issue_state_event_snapshots.issue_node_id IS NOT excluded.issue_node_id)
+      OR (excluded.issue_node_type IS NOT NULL
+          AND issue_state_event_snapshots.issue_node_type IS NOT excluded.issue_node_type)
+      OR issue_state_event_snapshots.schema_version IS NOT excluded.schema_version
+      OR issue_state_event_snapshots.issue_state IS NOT excluded.issue_state
+      OR issue_state_event_snapshots.issue_updated_at IS NOT excluded.issue_updated_at
+      OR issue_state_event_snapshots.total_count IS NOT excluded.total_count
+      OR issue_state_event_snapshots.fetched_count IS NOT excluded.fetched_count
+      OR issue_state_event_snapshots.events_digest IS NOT excluded.events_digest
+      OR issue_state_event_snapshots.authority_digest IS NOT excluded.authority_digest
+      OR issue_state_event_snapshots.events_json IS NOT excluded.events_json
+      OR issue_state_event_snapshots.sweep_count IS NOT excluded.sweep_count
+      OR issue_state_event_snapshots.stabilized IS NOT excluded.stabilized
+      OR issue_state_event_snapshots.stabilization_json IS NOT excluded.stabilization_json
+      OR issue_state_event_snapshots.stabilization_identity_digest
+        IS NOT excluded.stabilization_identity_digest
+    THEN issue_state_event_snapshots.revision + 1
+    ELSE issue_state_event_snapshots.revision
+  END,
+  repository_node_id=COALESCE(
+    excluded.repository_node_id,
+    issue_state_event_snapshots.repository_node_id
+  ),
+  issue_node_id=COALESCE(excluded.issue_node_id, issue_state_event_snapshots.issue_node_id),
+  issue_node_type=COALESCE(
+    excluded.issue_node_type,
+    issue_state_event_snapshots.issue_node_type
+  ),
+  schema_version=excluded.schema_version,
+  issue_state=excluded.issue_state,
+  issue_updated_at=excluded.issue_updated_at,
+  total_count=excluded.total_count,
+  fetched_count=excluded.fetched_count,
+  events_digest=excluded.events_digest,
+  authority_digest=excluded.authority_digest,
+  events_json=excluded.events_json,
+  sweep_count=excluded.sweep_count,
+  stabilized=excluded.stabilized,
+  stabilization_json=excluded.stabilization_json,
+  stabilization_identity_digest=excluded.stabilization_identity_digest,
+  fetched_at=CASE
+    WHEN (excluded.repository_node_id IS NOT NULL
+          AND issue_state_event_snapshots.repository_node_id IS NOT excluded.repository_node_id)
+      OR (excluded.issue_node_id IS NOT NULL
+          AND issue_state_event_snapshots.issue_node_id IS NOT excluded.issue_node_id)
+      OR (excluded.issue_node_type IS NOT NULL
+          AND issue_state_event_snapshots.issue_node_type IS NOT excluded.issue_node_type)
+      OR issue_state_event_snapshots.schema_version IS NOT excluded.schema_version
+      OR issue_state_event_snapshots.issue_state IS NOT excluded.issue_state
+      OR issue_state_event_snapshots.issue_updated_at IS NOT excluded.issue_updated_at
+      OR issue_state_event_snapshots.total_count IS NOT excluded.total_count
+      OR issue_state_event_snapshots.fetched_count IS NOT excluded.fetched_count
+      OR issue_state_event_snapshots.events_digest IS NOT excluded.events_digest
+      OR issue_state_event_snapshots.authority_digest IS NOT excluded.authority_digest
+      OR issue_state_event_snapshots.events_json IS NOT excluded.events_json
+      OR issue_state_event_snapshots.sweep_count IS NOT excluded.sweep_count
+      OR issue_state_event_snapshots.stabilized IS NOT excluded.stabilized
+      OR issue_state_event_snapshots.stabilization_json IS NOT excluded.stabilization_json
+      OR issue_state_event_snapshots.stabilization_identity_digest
+        IS NOT excluded.stabilization_identity_digest
+    THEN excluded.fetched_at
+    ELSE issue_state_event_snapshots.fetched_at
+  END,
+  verified_at=excluded.verified_at
+`)
+  : null;
+
+export function getIssueStateEventSnapshot(
+  issueNumber: number,
+): IssueStateEventSnapshotRow | undefined {
+  return getIssueStateEventSnapshotStmt.get(issueNumber) as IssueStateEventSnapshotRow | undefined;
+}
+
+export interface IssueStateEventSnapshotValidation {
+  snapshot: IssueStateEventSnapshotRow | undefined;
+  normalizedEvents: NormalizedIssueStateEvent[];
+  snapshotValid: boolean;
+  projectionMatches: boolean;
+  reusable: boolean;
+}
+
+function projectedIssueStateEvents(
+  issueNumber: number,
+  issueNodeId: string,
+): NormalizedIssueStateEvent[] {
+  const closureRows = issueClosureEventProjectionStmt.all(issueNumber) as Array<{
+    issue_node_id: string | null;
+    event_id: string;
+    closed_at: string | null;
+    connection_ordinal: number;
+    actor_node_id: string | null;
+    actor_login: string | null;
+    actor_type: string | null;
+    state_reason: string | null;
+    closer_node_id: string | null;
+    closer_type: string | null;
+    closer_number: number | null;
+    closer_oid: string | null;
+  }>;
+  const reopenRows = issueReopenEventProjectionStmt.all(issueNumber) as Array<{
+    issue_node_id: string | null;
+    event_id: string;
+    reopened_at: string | null;
+    connection_ordinal: number;
+    actor_node_id: string | null;
+    actor_login: string | null;
+    actor_type: string | null;
+  }>;
+  for (const event of [...closureRows, ...reopenRows]) {
+    if (event.issue_node_id !== issueNodeId) {
+      throw new Error(
+        `Issue #${issueNumber} projected state event identity does not match ${issueNodeId}`,
+      );
+    }
+  }
+  return normalizeIssueStateEvents([
+    ...closureRows.map((event) => ({
+      eventId: event.event_id,
+      type: 'closed' as const,
+      eventNodeType: 'ClosedEvent' as const,
+      occurredAt: event.closed_at ?? '',
+      connectionOrdinal: event.connection_ordinal,
+      actorNodeId: event.actor_node_id,
+      actorLogin: event.actor_login,
+      actorType: event.actor_type,
+      stateReason: event.state_reason,
+      closerNodeId: event.closer_node_id,
+      closerType: event.closer_type,
+      closerNumber: event.closer_number,
+      closerOid: event.closer_oid,
+    })),
+    ...reopenRows.map((event) => ({
+      eventId: event.event_id,
+      type: 'reopened' as const,
+      eventNodeType: 'ReopenedEvent' as const,
+      occurredAt: event.reopened_at ?? '',
+      connectionOrdinal: event.connection_ordinal,
+      actorNodeId: event.actor_node_id,
+      actorLogin: event.actor_login,
+      actorType: event.actor_type,
+      stateReason: null,
+      closerNodeId: null,
+      closerType: null,
+      closerNumber: null,
+      closerOid: null,
+    })),
+  ]);
+}
+
+export function validateIssueStateEventSnapshot(
+  issueNumber: number,
+): IssueStateEventSnapshotValidation {
+  const snapshot = getIssueStateEventSnapshot(issueNumber);
+  if (!snapshot) {
+    return {
+      snapshot,
+      normalizedEvents: [],
+      snapshotValid: false,
+      projectionMatches: false,
+      reusable: false,
+    };
+  }
+  let normalizedEvents: NormalizedIssueStateEvent[] = [];
+  let snapshotValid = false;
+  try {
+    const parsed = JSON.parse(snapshot.events_json);
+    if (!Array.isArray(parsed)) throw new Error('events_json is not an array');
+    normalizedEvents = normalizeIssueStateEvents(parsed as NormalizedIssueStateEvent[]);
+    assertAuthoritativeIssueStateEvents(normalizedEvents);
+    const canonicalJson = JSON.stringify(normalizedEvents);
+    const latestEvent = normalizedEvents.at(-1) ?? null;
+    const projectedState = latestEvent?.type === 'closed' ? 'closed' : 'open';
+    if (
+      snapshot.repository_node_id == null ||
+      snapshot.issue_node_id == null ||
+      snapshot.issue_node_type !== 'Issue' ||
+      snapshot.authority_digest == null ||
+      snapshot.stabilization_json == null ||
+      snapshot.stabilization_identity_digest == null
+    ) {
+      throw new Error('authoritative state-event snapshot identity is incomplete');
+    }
+    const identity = {
+      repositoryNodeId: snapshot.repository_node_id,
+      issueNodeId: snapshot.issue_node_id,
+      issueNodeType: snapshot.issue_node_type,
+    };
+    const authorityDigest = issueStateEventSweepDigest({
+      repositoryNodeId: snapshot.repository_node_id,
+      issueNumber: snapshot.issue_number,
+      issueNodeId: snapshot.issue_node_id,
+      issueNodeType: snapshot.issue_node_type,
+      issueState: snapshot.issue_state,
+      issueUpdatedAt: snapshot.issue_updated_at,
+      totalCount: snapshot.total_count,
+      events: normalizedEvents,
+    });
+    const stabilization = parseIssueStateEventStabilizationIdentity(
+      snapshot.stabilization_json,
+    );
+    snapshotValid =
+      snapshot.schema_version === ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION &&
+      Number.isInteger(snapshot.total_count) &&
+      snapshot.total_count >= 0 &&
+      snapshot.fetched_count === snapshot.total_count &&
+      Number.isInteger(snapshot.sweep_count) &&
+      snapshot.sweep_count >= 2 &&
+      snapshot.stabilized === 1 &&
+      normalizedEvents.length === snapshot.total_count &&
+      canonicalJson === snapshot.events_json &&
+      issueStateEventsDigest(normalizedEvents, identity) === snapshot.events_digest &&
+      authorityDigest === snapshot.authority_digest &&
+      stabilization.sweepCount === snapshot.sweep_count &&
+      stabilization.secondSweep.sweepDigest === snapshot.authority_digest &&
+      stabilization.identityDigest === snapshot.stabilization_identity_digest &&
+      projectedState === snapshot.issue_state &&
+      (snapshot.issue_state !== 'closed' || latestEvent !== null);
+  } catch {
+    snapshotValid = false;
+  }
+
+  let projectionMatches = false;
+  if (snapshotValid) {
+    try {
+      projectionMatches =
+        JSON.stringify(projectedIssueStateEvents(issueNumber, snapshot.issue_node_id!)) ===
+        JSON.stringify(normalizedEvents);
+    } catch {
+      projectionMatches = false;
+    }
+  }
+  return {
+    snapshot,
+    normalizedEvents,
+    snapshotValid,
+    projectionMatches,
+    reusable: snapshotValid && projectionMatches,
+  };
+}
+
+export function issueStateEventSnapshotIsReusable(issueNumber: number): boolean {
+  return validateIssueStateEventSnapshot(issueNumber).reusable;
+}
+
+export function replaceIssueStateEventSnapshot(input: IssueStateEventSnapshotInput): void {
+  if (!upsertIssueStateEventSnapshotStmt) {
+    throw new Error('Issue state event snapshot storage is unavailable or read-only');
+  }
+  const schemaVersion = input.schema_version ?? ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION;
+  if (schemaVersion !== ISSUE_STATE_EVENT_SNAPSHOT_SCHEMA_VERSION) {
+    throw new Error(`Unsupported issue state event snapshot schema version ${schemaVersion}`);
+  }
+  if (!Number.isInteger(input.issue_number) || input.issue_number <= 0) {
+    throw new Error(`Invalid issue state event snapshot issue number ${input.issue_number}`);
+  }
+  if (input.issue_state !== 'open' && input.issue_state !== 'closed') {
+    throw new Error(`Issue #${input.issue_number} state event snapshot has invalid issue state`);
+  }
+  if (
+    typeof input.repository_node_id !== 'string' ||
+    input.repository_node_id.length === 0 ||
+    input.repository_node_id.trim() !== input.repository_node_id
+  ) {
+    throw new Error(
+      `Issue #${input.issue_number} state event snapshot requires a canonical repository node identity`,
+    );
+  }
+  if (
+    typeof input.issue_node_id !== 'string' ||
+    input.issue_node_id.length === 0 ||
+    input.issue_node_id.trim() !== input.issue_node_id ||
+    input.issue_node_type !== 'Issue'
+  ) {
+    throw new Error(
+      `Issue #${input.issue_number} state event snapshot requires a canonical Issue node identity`,
+    );
+  }
+  if (!Number.isFinite(Date.parse(input.issue_updated_at))) {
+    throw new Error(`Issue #${input.issue_number} state event snapshot has invalid issue updated_at`);
+  }
+  if (
+    !Number.isInteger(input.total_count) ||
+    input.total_count < 0 ||
+    input.fetched_count !== input.total_count
+  ) {
+    throw new Error(`Issue #${input.issue_number} state event snapshot is incomplete`);
+  }
+  if (
+    !Number.isInteger(input.sweep_count) ||
+    input.sweep_count < 2 ||
+    input.stabilized !== true
+  ) {
+    throw new Error(`Issue #${input.issue_number} state event snapshot is not stabilized`);
+  }
+  const normalizedEvents = normalizeIssueStateEvents([
+    ...input.closure_events.map((event): NormalizedIssueStateEvent => {
+      if (event.issue_number !== input.issue_number) {
+        throw new Error(`Closure event ${event.event_id} does not belong to issue #${input.issue_number}`);
+      }
+      if (!event.closed_at) {
+        throw new Error(`Closure event ${event.event_id} is missing closed_at`);
+      }
+      if (event.issue_node_id !== input.issue_node_id) {
+        throw new Error(
+          `Closure event ${event.event_id} issue identity does not match issue #${input.issue_number}`,
+        );
+      }
+      return {
+        eventId: event.event_id,
+        eventNodeType: 'ClosedEvent',
+        type: 'closed',
+        occurredAt: event.closed_at,
+        connectionOrdinal: event.connection_ordinal,
+        actorNodeId: event.actor_node_id ?? null,
+        actorLogin: event.actor_login,
+        actorType: event.actor_type ?? null,
+        stateReason: event.state_reason,
+        closerNodeId: event.closer_node_id ?? null,
+        closerType: event.closer_type,
+        closerNumber: event.closer_number,
+        closerOid: event.closer_oid,
+      };
+    }),
+    ...input.reopen_events.map((event): NormalizedIssueStateEvent => {
+      if (event.issue_number !== input.issue_number) {
+        throw new Error(`Reopen event ${event.event_id} does not belong to issue #${input.issue_number}`);
+      }
+      if (!event.reopened_at) {
+        throw new Error(`Reopen event ${event.event_id} is missing reopened_at`);
+      }
+      if (event.issue_node_id !== input.issue_node_id) {
+        throw new Error(
+          `Reopen event ${event.event_id} issue identity does not match issue #${input.issue_number}`,
+        );
+      }
+      return {
+        eventId: event.event_id,
+        eventNodeType: 'ReopenedEvent',
+        type: 'reopened',
+        occurredAt: event.reopened_at,
+        connectionOrdinal: event.connection_ordinal,
+        actorNodeId: event.actor_node_id ?? null,
+        actorLogin: event.actor_login,
+        actorType: event.actor_type ?? null,
+        stateReason: null,
+        closerNodeId: null,
+        closerType: null,
+        closerNumber: null,
+        closerOid: null,
+      };
+    }),
+  ]);
+  assertAuthoritativeIssueStateEvents(normalizedEvents);
+  if (normalizedEvents.length !== input.fetched_count) {
+    throw new Error(
+      `Issue #${input.issue_number} state event snapshot count mismatch: ` +
+      `${normalizedEvents.length}/${input.fetched_count}`,
+    );
+  }
+  const identity = {
+    repositoryNodeId: input.repository_node_id,
+    issueNodeId: input.issue_node_id,
+    issueNodeType: input.issue_node_type,
+  };
+  const digest = issueStateEventsDigest(normalizedEvents, identity);
+  if (digest !== input.events_digest) {
+    throw new Error(`Issue #${input.issue_number} state event snapshot digest mismatch`);
+  }
+  const authorityDigest = issueStateEventSweepDigest({
+    repositoryNodeId: input.repository_node_id,
+    issueNumber: input.issue_number,
+    issueNodeId: input.issue_node_id,
+    issueNodeType: input.issue_node_type,
+    issueState: input.issue_state,
+    issueUpdatedAt: input.issue_updated_at,
+    totalCount: input.total_count,
+    events: normalizedEvents,
+  });
+  if (authorityDigest !== input.authority_digest) {
+    throw new Error(`Issue #${input.issue_number} state event snapshot authority digest mismatch`);
+  }
+  const stabilization = parseIssueStateEventStabilizationIdentity(
+    JSON.stringify(input.stabilization),
+  );
+  if (
+    stabilization.sweepCount !== input.sweep_count ||
+    stabilization.secondSweep.sweepDigest !== authorityDigest
+  ) {
+    throw new Error(
+      `Issue #${input.issue_number} state event snapshot stabilization proof mismatch`,
+    );
+  }
+  const stabilizationJson = JSON.stringify(stabilization);
+  const eventsJson = JSON.stringify(normalizedEvents);
+  const latestEvent = normalizedEvents.at(-1) ?? null;
+  const projectedState = latestEvent?.type === 'closed' ? 'closed' : 'open';
+  if (
+    projectedState !== input.issue_state ||
+    (input.issue_state === 'closed' && latestEvent == null)
+  ) {
+    throw new Error(
+      `Issue #${input.issue_number} state event snapshot does not explain current ${input.issue_state} state`,
+    );
+  }
+  const closureEventsById = new Map(input.closure_events.map((event) => [event.event_id, event]));
+  const reopenEventsById = new Map(input.reopen_events.map((event) => [event.event_id, event]));
+  const normalizedClosureEvents = normalizedEvents
+    .filter((event) => event.type === 'closed')
+    .map((event) => ({
+      ...closureEventsById.get(event.eventId)!,
+      issue_node_id:
+        closureEventsById.get(event.eventId)!.issue_node_id ??
+        input.issue_node_id ??
+        null,
+      closed_at: event.occurredAt,
+      connection_ordinal: event.connectionOrdinal,
+      actor_node_id: event.actorNodeId,
+      actor_login: event.actorLogin,
+      actor_type: event.actorType,
+      state_reason: event.stateReason,
+      closer_node_id: event.closerNodeId,
+      closer_type: event.closerType,
+      closer_number: event.closerNumber,
+      closer_oid: event.closerOid,
+    }));
+  const normalizedReopenEvents = normalizedEvents
+    .filter((event) => event.type === 'reopened')
+    .map((event) => ({
+      ...reopenEventsById.get(event.eventId)!,
+      issue_node_id:
+        reopenEventsById.get(event.eventId)!.issue_node_id ??
+        input.issue_node_id ??
+        null,
+      reopened_at: event.occurredAt,
+      connection_ordinal: event.connectionOrdinal,
+      actor_node_id: event.actorNodeId,
+      actor_login: event.actorLogin,
+      actor_type: event.actorType,
+    }));
+  const now = new Date().toISOString();
+  runInWriteTransaction(() => {
+    deleteIssueClosureEventsOutsideSnapshotStmt.run(
+      input.issue_number,
+      JSON.stringify(normalizedClosureEvents.map((event) => event.event_id)),
+    );
+    deleteIssueReopenEventsOutsideSnapshotStmt.run(
+      input.issue_number,
+      JSON.stringify(normalizedReopenEvents.map((event) => event.event_id)),
+    );
+    for (const event of normalizedClosureEvents) upsertIssueClosureEvent(event);
+    for (const event of normalizedReopenEvents) upsertIssueReopenEvent(event);
+    upsertIssueStateEventSnapshotStmt.run({
+      issue_number: input.issue_number,
+      repository_node_id: input.repository_node_id,
+      issue_node_id: input.issue_node_id,
+      issue_node_type: input.issue_node_type,
+      schema_version: schemaVersion,
+      issue_state: input.issue_state,
+      issue_updated_at: input.issue_updated_at,
+      total_count: input.total_count,
+      fetched_count: input.fetched_count,
+      events_digest: digest,
+      authority_digest: authorityDigest,
+      events_json: eventsJson,
+      sweep_count: input.sweep_count,
+      stabilized: input.stabilized ? 1 : 0,
+      stabilization_json: stabilizationJson,
+      stabilization_identity_digest: stabilization.identityDigest,
+      fetched_at: now,
+      verified_at: input.verified_at ?? now,
+    });
+  });
 }
 
 export interface IssuePrLinkInput {
   issue_number: number;
+  issue_node_id?: string | null;
   pr_repository_owner?: string | null;
   pr_repository_name?: string | null;
   pr_repository_name_with_owner?: string | null;
   pr_number: number;
+  pr_node_id?: string | null;
   source: string;
+  source_node_id?: string | null;
   will_close_target: number | null;
   referenced_at: string | null;
   source_comment_database_id?: number | null;
   source_comment_url?: string | null;
+  raw_json?: string | null;
 }
 
-const upsertIssuePrLinkStmt = db.prepare(`
+const hasIssuePrLinkV2IdentityColumns = tableHasColumns('issue_pr_links', [
+  'issue_node_id',
+  'pr_node_id',
+  'source_node_id',
+  'source_comment_database_id',
+  'source_comment_url',
+  'raw_json',
+]);
+const upsertIssuePrLinkStmt =
+  !dbReadOnly && hasIssuePrLinkV2IdentityColumns
+  ? db.prepare(`
 INSERT INTO issue_pr_links (
-  issue_number, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-  pr_number, source, will_close_target, referenced_at, source_comment_database_id, source_comment_url, fetched_at
+  issue_number, issue_node_id, pr_repository_owner, pr_repository_name,
+  pr_repository_name_with_owner, pr_number, pr_node_id, source, source_node_id,
+  will_close_target, referenced_at, source_comment_database_id,
+  source_comment_url, raw_json, fetched_at
 )
 VALUES (
-  :issue_number, :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-  :pr_number, :source, :will_close_target, :referenced_at, :source_comment_database_id, :source_comment_url, :fetched_at
+  :issue_number, :issue_node_id, :pr_repository_owner, :pr_repository_name,
+  :pr_repository_name_with_owner, :pr_number, :pr_node_id, :source, :source_node_id,
+  :will_close_target, :referenced_at, :source_comment_database_id,
+  :source_comment_url, :raw_json, :fetched_at
 )
 ON CONFLICT(issue_number, pr_repository_name_with_owner, pr_number, source) DO UPDATE SET
+  fetched_at=CASE
+    WHEN (
+        excluded.issue_node_id IS NOT NULL
+        AND issue_pr_links.issue_node_id IS NOT excluded.issue_node_id
+      )
+      OR issue_pr_links.pr_repository_owner IS NOT excluded.pr_repository_owner
+      OR issue_pr_links.pr_repository_name IS NOT excluded.pr_repository_name
+      OR (
+        excluded.pr_node_id IS NOT NULL
+        AND issue_pr_links.pr_node_id IS NOT excluded.pr_node_id
+      )
+      OR (
+        excluded.source_node_id IS NOT NULL
+        AND issue_pr_links.source_node_id IS NOT excluded.source_node_id
+      )
+      OR issue_pr_links.will_close_target IS NOT excluded.will_close_target
+      OR issue_pr_links.referenced_at IS NOT excluded.referenced_at
+      OR issue_pr_links.source_comment_database_id IS NOT excluded.source_comment_database_id
+      OR issue_pr_links.source_comment_url IS NOT excluded.source_comment_url
+      OR (excluded.raw_json IS NOT NULL AND issue_pr_links.raw_json IS NOT excluded.raw_json)
+    THEN excluded.fetched_at
+    ELSE issue_pr_links.fetched_at
+  END,
+  issue_node_id=COALESCE(issue_pr_links.issue_node_id, excluded.issue_node_id),
   pr_repository_owner=excluded.pr_repository_owner,
   pr_repository_name=excluded.pr_repository_name,
+  pr_node_id=COALESCE(issue_pr_links.pr_node_id, excluded.pr_node_id),
+  source_node_id=COALESCE(issue_pr_links.source_node_id, excluded.source_node_id),
   will_close_target=excluded.will_close_target,
   referenced_at=excluded.referenced_at,
   source_comment_database_id=excluded.source_comment_database_id,
   source_comment_url=excluded.source_comment_url,
-  fetched_at=excluded.fetched_at
-`);
+  raw_json=COALESCE(excluded.raw_json, issue_pr_links.raw_json)
+`)
+  : null;
 
 export function upsertIssuePrLink(input: IssuePrLinkInput): void {
-  upsertIssuePrLinkStmt.run({
+  if (!upsertIssuePrLinkStmt) {
+    throw new Error('Issue PR link storage is unavailable or read-only');
+  }
+  const prepared = {
     ...input,
     ...normalizePrRepository(input),
+    issue_node_id: input.issue_node_id ?? null,
+    pr_node_id: input.pr_node_id ?? null,
+    source_node_id: input.source_node_id ?? null,
     source_comment_database_id: input.source_comment_database_id ?? null,
     source_comment_url: input.source_comment_url ?? null,
-    fetched_at: new Date().toISOString(),
+    raw_json: input.raw_json ?? null,
+  };
+  const snapshot = replacementFreshnessSnapshot('issuePrLinks', issuePrLinkKey(prepared));
+  upsertIssuePrLinkStmt.run({
+    ...prepared,
+    fetched_at: snapshot?.content === issuePrLinkContent(prepared)
+      ? snapshot.timestamp
+      : new Date().toISOString(),
   });
 }
 
@@ -2178,10 +17069,26 @@ const deleteIssuePrLinksForIssuesStmt = db.prepare(`
 DELETE FROM issue_pr_links
 WHERE issue_number IN (SELECT value FROM json_each(?))
 `);
+const issuePrLinkFreshnessForIssuesStmt = hasIssuePrLinkV2IdentityColumns
+  ? db.prepare(`
+SELECT issue_number, issue_node_id, pr_repository_owner, pr_repository_name,
+       pr_repository_name_with_owner, pr_number, pr_node_id, source, source_node_id,
+       will_close_target, referenced_at, source_comment_database_id,
+       source_comment_url, raw_json, fetched_at
+FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+`)
+  : null;
 
 export function deleteIssuePrLinksForIssues(issueNumbers: number[]): void {
   if (!issueNumbers.length) return;
-  deleteIssuePrLinksForIssuesStmt.run(JSON.stringify(issueNumbers));
+  const encodedIssueNumbers = JSON.stringify(issueNumbers);
+  if (currentReplacementFreshnessContext() && issuePrLinkFreshnessForIssuesStmt) {
+    stageIssuePrLinkFreshness(
+      issuePrLinkFreshnessForIssuesStmt.all(encodedIssueNumbers) as unknown as Array<IssuePrLinkFreshnessRow>,
+    );
+  }
+  deleteIssuePrLinksForIssuesStmt.run(encodedIssueNumbers);
 }
 
 const deleteCommentIssuePrLinksForIssuesStmt = db.prepare(`
@@ -2189,14 +17096,108 @@ DELETE FROM issue_pr_links
 WHERE issue_number IN (SELECT value FROM json_each(?))
   AND source IN ('ClosureComment.fixProof', 'ClosureComment.prMention')
 `);
+const commentIssuePrLinkFreshnessForIssuesStmt = hasIssuePrLinkV2IdentityColumns
+  ? db.prepare(`
+SELECT issue_number, issue_node_id, pr_repository_owner, pr_repository_name,
+       pr_repository_name_with_owner, pr_number, pr_node_id, source, source_node_id,
+       will_close_target, referenced_at, source_comment_database_id,
+       source_comment_url, raw_json, fetched_at
+FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+  AND source IN ('ClosureComment.fixProof', 'ClosureComment.prMention')
+`)
+  : null;
 
 export function deleteCommentIssuePrLinksForIssues(issueNumbers: number[]): void {
   if (!issueNumbers.length) return;
-  deleteCommentIssuePrLinksForIssuesStmt.run(JSON.stringify(issueNumbers));
+  const encodedIssueNumbers = JSON.stringify(issueNumbers);
+  if (currentReplacementFreshnessContext() && commentIssuePrLinkFreshnessForIssuesStmt) {
+    stageIssuePrLinkFreshness(
+      commentIssuePrLinkFreshnessForIssuesStmt.all(encodedIssueNumbers) as unknown as Array<IssuePrLinkFreshnessRow>,
+    );
+  }
+  deleteCommentIssuePrLinksForIssuesStmt.run(encodedIssueNumbers);
+}
+
+const deleteStateDerivedIssuePrLinksForIssuesStmt = db.prepare(`
+DELETE FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+  AND source NOT IN ('ClosureComment.fixProof', 'ClosureComment.prMention')
+`);
+const stateDerivedIssuePrLinkFreshnessForIssuesStmt = hasIssuePrLinkV2IdentityColumns
+  ? db.prepare(`
+SELECT issue_number, issue_node_id, pr_repository_owner, pr_repository_name,
+       pr_repository_name_with_owner, pr_number, pr_node_id, source, source_node_id,
+       will_close_target, referenced_at, source_comment_database_id,
+       source_comment_url, raw_json, fetched_at
+FROM issue_pr_links
+WHERE issue_number IN (SELECT value FROM json_each(?))
+  AND source NOT IN ('ClosureComment.fixProof', 'ClosureComment.prMention')
+`)
+  : null;
+
+export function deleteStateDerivedIssuePrLinksForIssues(issueNumbers: number[]): void {
+  if (!issueNumbers.length) return;
+  const encodedIssueNumbers = JSON.stringify(issueNumbers);
+  if (currentReplacementFreshnessContext() && stateDerivedIssuePrLinkFreshnessForIssuesStmt) {
+    stageIssuePrLinkFreshness(
+      stateDerivedIssuePrLinkFreshnessForIssuesStmt.all(encodedIssueNumbers) as unknown as Array<IssuePrLinkFreshnessRow>,
+    );
+  }
+  deleteStateDerivedIssuePrLinksForIssuesStmt.run(encodedIssueNumbers);
+}
+
+type PreparedIssuePrLink = IssuePrLinkInput & PrRepositoryIdentity & {
+  issue_node_id: string | null;
+  pr_node_id: string | null;
+  source_node_id: string | null;
+  source_comment_database_id: number | null;
+  source_comment_url: string | null;
+  raw_json: string | null;
+};
+
+type IssuePrLinkFreshnessRow = PreparedIssuePrLink & {
+  fetched_at: string;
+};
+
+function issuePrLinkKey(input: PreparedIssuePrLink): string {
+  return semanticContent([
+    input.issue_number,
+    input.pr_repository_name_with_owner,
+    input.pr_number,
+    input.pr_node_id,
+    input.source,
+    input.source_node_id,
+  ]);
+}
+
+function issuePrLinkContent(input: PreparedIssuePrLink): string {
+  return semanticContent([
+    input.pr_repository_owner,
+    input.pr_repository_name,
+    input.issue_node_id,
+    input.will_close_target,
+    input.referenced_at,
+    input.source_comment_database_id,
+    input.source_comment_url,
+    input.raw_json,
+  ]);
+}
+
+function stageIssuePrLinkFreshness(rows: IssuePrLinkFreshnessRow[]): void {
+  const context = currentReplacementFreshnessContext();
+  if (!context) return;
+  for (const row of rows) {
+    context.issuePrLinks.set(
+      issuePrLinkKey(row),
+      { content: issuePrLinkContent(row), timestamp: row.fetched_at },
+    );
+  }
 }
 
 export interface IssueCommitReferenceInput {
   issue_number: number;
+  issue_node_id?: string | null;
   event_id: string;
   commit_oid: string;
   commit_message_headline: string | null;
@@ -2206,23 +17207,54 @@ export interface IssueCommitReferenceInput {
   is_cross_repository: number;
   is_direct_reference: number;
   referenced_at: string | null;
+  actor_node_id?: string | null;
   actor_login: string | null;
   raw_json: string;
 }
 
-const upsertIssueCommitReferenceStmt = db.prepare(`
+const hasIssueCommitReferenceV2IdentityColumns = tableHasColumns(
+  'issue_commit_references',
+  ['issue_node_id', 'commit_message_headline', 'actor_node_id'],
+);
+const upsertIssueCommitReferenceStmt =
+  !dbReadOnly && hasIssueCommitReferenceV2IdentityColumns
+  ? db.prepare(`
 INSERT INTO issue_commit_references (
-  issue_number, event_id, commit_oid, commit_message_headline, commit_repository_owner, commit_repository_name,
+  issue_number, issue_node_id, event_id, commit_oid, commit_message_headline, commit_repository_owner, commit_repository_name,
   commit_repository_name_with_owner, is_cross_repository, is_direct_reference,
-  referenced_at, actor_login, raw_json, fetched_at
+  referenced_at, actor_node_id, actor_login, raw_json, fetched_at
 )
 VALUES (
-  :issue_number, :event_id, :commit_oid, :commit_message_headline, :commit_repository_owner, :commit_repository_name,
+  :issue_number, :issue_node_id, :event_id, :commit_oid, :commit_message_headline, :commit_repository_owner, :commit_repository_name,
   :commit_repository_name_with_owner, :is_cross_repository, :is_direct_reference,
-  :referenced_at, :actor_login, :raw_json, :fetched_at
+  :referenced_at, :actor_node_id, :actor_login, :raw_json, :fetched_at
 )
 ON CONFLICT(event_id) DO UPDATE SET
+  fetched_at=CASE
+    WHEN issue_commit_references.issue_number IS NOT excluded.issue_number
+      OR (
+        excluded.issue_node_id IS NOT NULL
+        AND issue_commit_references.issue_node_id IS NOT excluded.issue_node_id
+      )
+      OR issue_commit_references.commit_oid IS NOT excluded.commit_oid
+      OR issue_commit_references.commit_message_headline IS NOT excluded.commit_message_headline
+      OR issue_commit_references.commit_repository_owner IS NOT excluded.commit_repository_owner
+      OR issue_commit_references.commit_repository_name IS NOT excluded.commit_repository_name
+      OR issue_commit_references.commit_repository_name_with_owner IS NOT excluded.commit_repository_name_with_owner
+      OR issue_commit_references.is_cross_repository IS NOT excluded.is_cross_repository
+      OR issue_commit_references.is_direct_reference IS NOT excluded.is_direct_reference
+      OR issue_commit_references.referenced_at IS NOT excluded.referenced_at
+      OR (
+        excluded.actor_node_id IS NOT NULL
+        AND issue_commit_references.actor_node_id IS NOT excluded.actor_node_id
+      )
+      OR issue_commit_references.actor_login IS NOT excluded.actor_login
+      OR issue_commit_references.raw_json IS NOT excluded.raw_json
+    THEN excluded.fetched_at
+    ELSE issue_commit_references.fetched_at
+  END,
   issue_number=excluded.issue_number,
+  issue_node_id=COALESCE(issue_commit_references.issue_node_id, excluded.issue_node_id),
   commit_oid=excluded.commit_oid,
   commit_message_headline=excluded.commit_message_headline,
   commit_repository_owner=excluded.commit_repository_owner,
@@ -2231,13 +17263,85 @@ ON CONFLICT(event_id) DO UPDATE SET
   is_cross_repository=excluded.is_cross_repository,
   is_direct_reference=excluded.is_direct_reference,
   referenced_at=excluded.referenced_at,
+  actor_node_id=COALESCE(issue_commit_references.actor_node_id, excluded.actor_node_id),
   actor_login=excluded.actor_login,
-  raw_json=excluded.raw_json,
-  fetched_at=excluded.fetched_at
-`);
+  raw_json=excluded.raw_json
+`)
+  : null;
 
 export function upsertIssueCommitReference(input: IssueCommitReferenceInput): void {
-  upsertIssueCommitReferenceStmt.run({ ...input, fetched_at: new Date().toISOString() });
+  if (!upsertIssueCommitReferenceStmt) {
+    throw new Error('Issue commit reference storage is unavailable or read-only');
+  }
+  const snapshot = replacementFreshnessSnapshot('issueCommitReferences', input.event_id);
+  upsertIssueCommitReferenceStmt.run({
+    ...input,
+    issue_node_id: input.issue_node_id ?? null,
+    actor_node_id: input.actor_node_id ?? null,
+    fetched_at: snapshot?.content === issueCommitReferenceContent(input)
+      ? snapshot.timestamp
+      : new Date().toISOString(),
+  });
+}
+
+type IssueCommitReferenceFreshnessRow = IssueCommitReferenceInput & {
+  fetched_at: string;
+};
+
+const deleteIssueCommitReferencesForIssuesStmt = db.prepare(`
+DELETE FROM issue_commit_references
+WHERE issue_number IN (SELECT value FROM json_each(?))
+`);
+const issueCommitReferenceFreshnessForIssuesStmt =
+  hasIssueCommitReferenceV2IdentityColumns
+  ? db.prepare(`
+SELECT issue_number, issue_node_id, event_id, commit_oid, commit_message_headline,
+       commit_repository_owner, commit_repository_name, commit_repository_name_with_owner,
+       is_cross_repository, is_direct_reference, referenced_at, actor_node_id,
+       actor_login, raw_json, fetched_at
+FROM issue_commit_references
+WHERE issue_number IN (SELECT value FROM json_each(?))
+`)
+  : null;
+
+function issueCommitReferenceContent(input: IssueCommitReferenceInput): string {
+  return semanticContent([
+    input.issue_number,
+    input.issue_node_id ?? null,
+    input.commit_oid,
+    input.commit_message_headline,
+    input.commit_repository_owner,
+    input.commit_repository_name,
+    input.commit_repository_name_with_owner,
+    input.is_cross_repository,
+    input.is_direct_reference,
+    input.referenced_at,
+    input.actor_node_id ?? null,
+    input.actor_login,
+    input.raw_json,
+  ]);
+}
+
+function stageIssueCommitReferenceFreshness(rows: IssueCommitReferenceFreshnessRow[]): void {
+  const context = currentReplacementFreshnessContext();
+  if (!context) return;
+  for (const row of rows) {
+    context.issueCommitReferences.set(
+      row.event_id,
+      { content: issueCommitReferenceContent(row), timestamp: row.fetched_at },
+    );
+  }
+}
+
+export function deleteIssueCommitReferencesForIssues(issueNumbers: number[]): void {
+  if (!issueNumbers.length) return;
+  const encodedIssueNumbers = JSON.stringify(issueNumbers);
+  if (currentReplacementFreshnessContext() && issueCommitReferenceFreshnessForIssuesStmt) {
+    stageIssueCommitReferenceFreshness(
+      issueCommitReferenceFreshnessForIssuesStmt.all(encodedIssueNumbers) as unknown as IssueCommitReferenceFreshnessRow[],
+    );
+  }
+  deleteIssueCommitReferencesForIssuesStmt.run(encodedIssueNumbers);
 }
 
 export interface PullRequestFixInput {
@@ -2245,6 +17349,8 @@ export interface PullRequestFixInput {
   pr_repository_name?: string | null;
   pr_repository_name_with_owner?: string | null;
   pr_number: number;
+  node_id?: string | null;
+  repository_node_id?: string | null;
   title: string | null;
   url: string | null;
   state: string | null;
@@ -2252,21 +17358,40 @@ export interface PullRequestFixInput {
   merged_at: string | null;
   merge_commit_oid: string | null;
   base_ref_name: string | null;
+  raw_json?: string | null;
 }
 
-const upsertPullRequestFixStmt = db.prepare(`
+const hasPullRequestFixV2IdentityColumns = tableHasColumns('pull_request_fixes', [
+  'node_id',
+  'repository_node_id',
+  'raw_json',
+  'checked_at',
+]);
+const upsertPullRequestFixStmt =
+  !dbReadOnly && hasPullRequestFixV2IdentityColumns
+  ? db.prepare(`
 INSERT INTO pull_request_fixes (
   pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
-  pr_number, title, url, state, merged, merged_at, merge_commit_oid, base_ref_name, fetched_at
+  pr_number, node_id, repository_node_id, title, url, state, merged, merged_at,
+  merge_commit_oid, base_ref_name, raw_json, fetched_at, checked_at
 )
 VALUES (
   :pr_repository_owner, :pr_repository_name, :pr_repository_name_with_owner,
-  :pr_number, :title, :url, :state, :merged, :merged_at, :merge_commit_oid, :base_ref_name, :fetched_at
+  :pr_number, :node_id, :repository_node_id, :title, :url, :state, :merged, :merged_at,
+  :merge_commit_oid, :base_ref_name, :raw_json, :fetched_at, :checked_at
 )
 ON CONFLICT(pr_repository_name_with_owner, pr_number) DO UPDATE SET
   fetched_at=CASE
     WHEN pull_request_fixes.pr_repository_owner IS NOT excluded.pr_repository_owner
       OR pull_request_fixes.pr_repository_name IS NOT excluded.pr_repository_name
+      OR (
+        excluded.node_id IS NOT NULL
+        AND pull_request_fixes.node_id IS NOT excluded.node_id
+      )
+      OR (
+        excluded.repository_node_id IS NOT NULL
+        AND pull_request_fixes.repository_node_id IS NOT excluded.repository_node_id
+      )
       OR pull_request_fixes.title IS NOT excluded.title
       OR pull_request_fixes.url IS NOT excluded.url
       OR pull_request_fixes.state IS NOT excluded.state
@@ -2274,25 +17399,45 @@ ON CONFLICT(pr_repository_name_with_owner, pr_number) DO UPDATE SET
       OR pull_request_fixes.merged_at IS NOT excluded.merged_at
       OR pull_request_fixes.merge_commit_oid IS NOT excluded.merge_commit_oid
       OR pull_request_fixes.base_ref_name IS NOT excluded.base_ref_name
+      OR (
+        excluded.raw_json IS NOT NULL
+        AND pull_request_fixes.raw_json IS NOT excluded.raw_json
+      )
     THEN excluded.fetched_at
     ELSE pull_request_fixes.fetched_at
   END,
   pr_repository_owner=excluded.pr_repository_owner,
   pr_repository_name=excluded.pr_repository_name,
+  node_id=COALESCE(pull_request_fixes.node_id, excluded.node_id),
+  repository_node_id=COALESCE(
+    pull_request_fixes.repository_node_id,
+    excluded.repository_node_id
+  ),
   title=excluded.title,
   url=excluded.url,
   state=excluded.state,
   merged=excluded.merged,
   merged_at=excluded.merged_at,
   merge_commit_oid=excluded.merge_commit_oid,
-  base_ref_name=excluded.base_ref_name
-`);
+  base_ref_name=excluded.base_ref_name,
+  raw_json=COALESCE(excluded.raw_json, pull_request_fixes.raw_json),
+  checked_at=excluded.checked_at
+`)
+  : null;
 
 export function upsertPullRequestFix(input: PullRequestFixInput): void {
+  if (!upsertPullRequestFixStmt) {
+    throw new Error('Pull request fix storage is unavailable or read-only');
+  }
+  const checkedAt = new Date().toISOString();
   upsertPullRequestFixStmt.run({
     ...input,
     ...normalizePrRepository(input),
-    fetched_at: new Date().toISOString(),
+    node_id: input.node_id ?? null,
+    repository_node_id: input.repository_node_id ?? null,
+    raw_json: input.raw_json ?? null,
+    fetched_at: checkedAt,
+    checked_at: checkedAt,
   });
 }
 
@@ -2308,6 +17453,55 @@ export interface ReleasePrReachabilityInput {
   status: 'reachable' | 'not_reachable' | 'unknown';
   method?: string;
   evidence_json: string;
+}
+
+export interface AuthorizedReleaseReachabilityCatalogIdentity {
+  readonly repositoryNameWithOwner: string;
+  readonly digest: string;
+  readonly receiptId: string;
+  readonly receiptContentHash: string;
+  readonly releaseCount: number;
+}
+
+export interface AuthorizedReleaseReachabilityRelease {
+  readonly tag: string;
+  readonly releaseNodeId: string;
+  readonly publishedAt: string;
+  readonly catalogRank: number;
+  readonly prerelease: boolean;
+  readonly catalogTagCommitOid: string;
+  readonly resolvedTagCommitOid: string | null;
+}
+
+export interface AuthorizedReleaseReachabilityPullRequestCandidate {
+  readonly pr_repository_owner: string;
+  readonly pr_repository_name: string;
+  readonly pr_repository_name_with_owner: string;
+  readonly pr_number: number;
+  readonly merge_commit_oid: string | null;
+  readonly base_ref_name: string | null;
+  readonly fetched_at: string;
+}
+
+export interface AuthorizedReleaseReachabilityRequestedRelease {
+  readonly tag: string;
+  readonly release: AuthorizedReleaseReachabilityRelease | null;
+  readonly reachabilityRows: readonly ReleasePrReachabilityRow[];
+  readonly integrity: ReleasePrReachabilityIntegrity;
+}
+
+export interface AuthorizedReleaseReachabilityData {
+  readonly catalog: AuthorizedReleaseReachabilityCatalogIdentity;
+  readonly releases: readonly AuthorizedReleaseReachabilityRelease[];
+  readonly pullRequestCandidates:
+    readonly AuthorizedReleaseReachabilityPullRequestCandidate[];
+  readonly requestedReleases:
+    readonly AuthorizedReleaseReachabilityRequestedRelease[];
+}
+
+export interface AuthorizedReleaseReachabilityReadOptions {
+  readonly releaseTags?: readonly string[];
+  readonly integrityExampleLimit?: number;
 }
 
 const reachabilityStatuses = new Set(['reachable', 'not_reachable', 'unknown']);
@@ -2334,6 +17528,18 @@ VALUES (
   :pr_number, :tag_commit_oid, :merge_commit_oid, :base_ref_name, :status, :method, :evidence_json, :checked_at
 )
 ON CONFLICT(tag, pr_repository_name_with_owner, pr_number) DO UPDATE SET
+  checked_at=CASE
+    WHEN release_pr_reachability.pr_repository_owner IS NOT excluded.pr_repository_owner
+      OR release_pr_reachability.pr_repository_name IS NOT excluded.pr_repository_name
+      OR release_pr_reachability.tag_commit_oid IS NOT excluded.tag_commit_oid
+      OR release_pr_reachability.merge_commit_oid IS NOT excluded.merge_commit_oid
+      OR release_pr_reachability.base_ref_name IS NOT excluded.base_ref_name
+      OR release_pr_reachability.status IS NOT excluded.status
+      OR release_pr_reachability.method IS NOT excluded.method
+      OR release_pr_reachability.evidence_json IS NOT excluded.evidence_json
+    THEN excluded.checked_at
+    ELSE release_pr_reachability.checked_at
+  END,
   pr_repository_owner=excluded.pr_repository_owner,
   pr_repository_name=excluded.pr_repository_name,
   tag_commit_oid=excluded.tag_commit_oid,
@@ -2341,8 +17547,7 @@ ON CONFLICT(tag, pr_repository_name_with_owner, pr_number) DO UPDATE SET
   base_ref_name=excluded.base_ref_name,
   status=excluded.status,
   method=excluded.method,
-  evidence_json=excluded.evidence_json,
-  checked_at=excluded.checked_at
+  evidence_json=excluded.evidence_json
 `);
 
 export function upsertReleasePrReachability(input: ReleasePrReachabilityInput): void {
@@ -2360,20 +17565,86 @@ export function deleteReleasePrReachabilityForRelease(tag: string): void {
 }
 
 export function replaceReleasePrReachabilityForRelease(tag: string, rows: ReleasePrReachabilityInput[]): void {
-  const prepared = rows.map((row) => validateReleasePrReachabilityInput(tag, row));
   runInWriteTransaction(() => {
+    const authorized = readAuthorizedReleaseReachabilityData({
+      releaseTags: [tag],
+      integrityExampleLimit: 0,
+    });
+    const requested = authorized.requestedReleases[0];
+    if (!requested?.release) {
+      throw new Error(
+        `Release ${JSON.stringify(tag)} is not an authorized active catalog member`,
+      );
+    }
+    const catalogProof = reachabilityCatalogProofIdentity(
+      authorized.catalog,
+      requested.release,
+    );
+    const prepared = rows.map((row) =>
+      validateReleasePrReachabilityInput(
+        tag,
+        row,
+        requested.release!,
+        catalogProof,
+      ));
+    const previousRows = releasePrReachabilityForReleaseStmt.all(tag) as unknown as
+      Array<ReleasePrReachabilityFreshnessRow>;
+    const previousByKey = new Map(
+      previousRows.map((row) => [releasePrReachabilityKey(row), row]),
+    );
     deleteReleasePrReachabilityForReleaseStmt.run(tag);
     for (const row of prepared) {
+      const previous = previousByKey.get(releasePrReachabilityKey(row));
       upsertReleasePrReachabilityStmt.run({
         ...row,
         method: row.method ?? 'git-merge-base',
-        checked_at: new Date().toISOString(),
+        checked_at: previous && releasePrReachabilityContent(previous) === releasePrReachabilityContent(row)
+          ? previous.checked_at
+          : new Date().toISOString(),
       });
     }
   });
 }
 
-function validateReleasePrReachabilityInput(tag: string, input: ReleasePrReachabilityInput): ReleasePrReachabilityInput {
+type PreparedReleasePrReachability = ReleasePrReachabilityInput & PrRepositoryIdentity & {
+  method: string;
+};
+
+type ReleasePrReachabilityFreshnessRow = PreparedReleasePrReachability & {
+  checked_at: string;
+};
+
+const releasePrReachabilityForReleaseStmt = db.prepare(`
+SELECT tag, pr_repository_owner, pr_repository_name, pr_repository_name_with_owner,
+       pr_number, tag_commit_oid, merge_commit_oid, base_ref_name,
+       status, method, evidence_json, checked_at
+FROM release_pr_reachability
+WHERE tag=?
+`);
+
+function releasePrReachabilityKey(input: ReleasePrReachabilityInput & PrRepositoryIdentity): string {
+  return semanticContent([input.tag, input.pr_repository_name_with_owner, input.pr_number]);
+}
+
+function releasePrReachabilityContent(input: ReleasePrReachabilityInput & PrRepositoryIdentity): string {
+  return semanticContent([
+    input.pr_repository_owner,
+    input.pr_repository_name,
+    input.tag_commit_oid,
+    input.merge_commit_oid,
+    input.base_ref_name,
+    input.status,
+    input.method ?? 'git-merge-base',
+    input.evidence_json,
+  ]);
+}
+
+function validateReleasePrReachabilityInput(
+  tag: string,
+  input: ReleasePrReachabilityInput,
+  release: AuthorizedReleaseReachabilityRelease,
+  catalogProof: ReachabilityCatalogProofIdentity,
+): PreparedReleasePrReachability {
   if (input.tag !== tag) {
     throw new Error(`Reachability row tag ${JSON.stringify(input.tag)} does not match replacement tag ${JSON.stringify(tag)}`);
   }
@@ -2391,10 +17662,51 @@ function validateReleasePrReachabilityInput(tag: string, input: ReleasePrReachab
   if (evidence.schemaVersion !== 1 || typeof evidence.evidence !== 'string' || !reachabilityEvidenceReasons.has(evidence.evidence)) {
     throw new Error(`Reachability row for ${tag} PR #${input.pr_number} has invalid evidence JSON`);
   }
+  const expectedTagCommitOid = normalizeReleaseFixOid(
+    release.resolvedTagCommitOid,
+  );
+  const catalogTagCommitOid = normalizeReleaseFixOid(
+    release.catalogTagCommitOid,
+  );
+  if (
+    !expectedTagCommitOid ||
+    !catalogTagCommitOid ||
+    expectedTagCommitOid !== catalogTagCommitOid
+  ) {
+    throw new Error(
+      `Authorized release ${tag} does not have one exact catalog/resolved commit identity`,
+    );
+  }
+  if (
+    !input.tag_commit_oid ||
+    normalizeReleaseFixOid(input.tag_commit_oid) !== expectedTagCommitOid
+  ) {
+    throw new Error(
+      `Reachability row for ${tag} PR #${input.pr_number} does not match the ` +
+      `authorized release commit`,
+    );
+  }
   if ((input.status === 'reachable' || input.status === 'not_reachable') &&
-    (!input.tag_commit_oid || !fullCommitOidRe.test(input.tag_commit_oid) ||
-      !input.merge_commit_oid || !fullCommitOidRe.test(input.merge_commit_oid))) {
+    (!input.merge_commit_oid || !fullCommitOidRe.test(input.merge_commit_oid))) {
     throw new Error(`Reachability row for ${tag} PR #${input.pr_number} is ${input.status} without full tag and merge commit OIDs`);
+  }
+  const validation = validateReachabilityEvidence({
+    evidence,
+    method: input.method ?? REACHABILITY_METHOD,
+    status: input.status,
+    identity: {
+      kind: 'pull_request',
+      tagCommitOid: expectedTagCommitOid,
+      checkedCommitOid: input.merge_commit_oid,
+      baseRefName: input.base_ref_name,
+      catalogProof,
+    },
+  });
+  if (!validation.valid) {
+    throw new Error(
+      `Reachability row for ${tag} PR #${input.pr_number} violates evidence contract: ` +
+      validation.reasonCode,
+    );
   }
   return {
     ...input,
@@ -2443,6 +17755,7 @@ export interface ReleasePrReachabilityIntegrity {
   extraCount: number;
   staleCount: number;
   mismatchedCount: number;
+  invalidEvidenceCount: number;
   examples: Array<{
     kind: 'missing' | 'extra' | 'stale' | 'mismatch';
     repository: string;
@@ -2474,10 +17787,13 @@ WITH candidates AS (
     p.base_ref_name
 ),
 rows AS (
-  SELECT *
-  FROM release_pr_reachability
-  WHERE tag=?
-    AND pr_repository_name_with_owner=?
+  SELECT
+    r.*,
+    release.tag_commit_oid AS current_tag_commit_oid
+  FROM release_pr_reachability r
+  LEFT JOIN release_commits release ON release.tag=r.tag
+  WHERE r.tag=?
+    AND r.pr_repository_name_with_owner=?
 )
 `;
 
@@ -2509,11 +17825,14 @@ SELECT
    JOIN rows r
      ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
     AND r.pr_number=c.pr_number
-   WHERE r.status != 'unknown'
-     AND (
-       COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
-       OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
-     )) AS mismatchedCount
+   WHERE COALESCE(r.tag_commit_oid, '') != COALESCE(r.current_tag_commit_oid, '')
+      OR (
+        r.status != 'unknown'
+        AND (
+          COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
+          OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
+        )
+      )) AS mismatchedCount
 `);
 
 const reachabilityIntegrityExamplesStmt = db.prepare(`
@@ -2576,17 +17895,33 @@ FROM (
   JOIN rows r
     ON r.pr_repository_name_with_owner=c.pr_repository_name_with_owner
    AND r.pr_number=c.pr_number
-  WHERE r.status != 'unknown'
-    AND (
-      COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
-      OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
-    )
+  WHERE COALESCE(r.tag_commit_oid, '') != COALESCE(r.current_tag_commit_oid, '')
+     OR (
+       r.status != 'unknown'
+       AND (
+         COALESCE(r.merge_commit_oid, '') != COALESCE(c.merge_commit_oid, '')
+         OR COALESCE(r.base_ref_name, '') != COALESCE(c.base_ref_name, '')
+       )
+     )
 )
 ORDER BY kind, repository, prNumber
 LIMIT ?
 `);
 
 export function releasePrReachabilityIntegrity(tag: string, exampleLimit = 10): ReleasePrReachabilityIntegrity {
+  const authorized = readAuthorizedReleaseReachabilityData({
+    releaseTags: [tag],
+    integrityExampleLimit: exampleLimit,
+  });
+  return authorized.requestedReleases[0]!.integrity;
+}
+
+function releasePrReachabilityIntegrityInCurrentTransaction(
+  tag: string,
+  exampleLimit: number,
+  release: AuthorizedReleaseReachabilityRelease | null,
+  catalogProof: ReachabilityCatalogProofIdentity | null,
+): ReleasePrReachabilityIntegrity {
   const counts = reachabilityIntegrityCountsStmt.get(
     defaultPrRepositoryNameWithOwner,
     tag,
@@ -2598,6 +17933,54 @@ export function releasePrReachabilityIntegrity(tag: string, exampleLimit = 10): 
     defaultPrRepositoryNameWithOwner,
     Math.max(0, Math.floor(exampleLimit)),
   ) as ReleasePrReachabilityIntegrity['examples'];
+  const rows = releasePrReachabilityRowsRaw(tag);
+  const expectedTagCommitOid = normalizeReleaseFixOid(
+    release?.resolvedTagCommitOid,
+  );
+  const expectedCatalogTagCommitOid = normalizeReleaseFixOid(
+    release?.catalogTagCommitOid,
+  );
+  const invalidEvidenceRows = rows.filter((row) => {
+    if (
+      !release ||
+      !catalogProof ||
+      !expectedTagCommitOid ||
+      expectedTagCommitOid !== expectedCatalogTagCommitOid ||
+      normalizeReleaseFixOid(row.tag_commit_oid) !== expectedTagCommitOid ||
+      row.merged !== 1 ||
+      normalizeReleaseFixOid(row.merge_commit_oid) !==
+        normalizeReleaseFixOid(row.pr_merge_commit_oid) ||
+      (row.base_ref_name ?? null) !== (row.pr_base_ref_name ?? null)
+    ) {
+      return true;
+    }
+    const validation = validateReachabilityEvidence({
+      evidence: row.evidence_json,
+      method: row.method,
+      status: row.status,
+      identity: {
+        kind: 'pull_request',
+        tagCommitOid: expectedTagCommitOid,
+        checkedCommitOid: row.pr_merge_commit_oid,
+        baseRefName: row.pr_base_ref_name,
+        catalogProof,
+      },
+    });
+    return !validation.valid;
+  });
+  for (const row of invalidEvidenceRows) {
+    if (examples.length >= Math.max(0, Math.floor(exampleLimit))) break;
+    examples.push({
+      kind: 'mismatch',
+      repository: row.pr_repository_name_with_owner,
+      prNumber: row.pr_number,
+      checkedAt: row.checked_at,
+      dependencyFetchedAt: null,
+      detail:
+        'reachability evidence violates the authorized catalog, release, PR, ' +
+        'status, or command contract',
+    });
+  }
   return {
     tag,
     candidateCount: Number(counts?.candidateCount ?? 0),
@@ -2605,7 +17988,8 @@ export function releasePrReachabilityIntegrity(tag: string, exampleLimit = 10): 
     missingCount: Number(counts?.missingCount ?? 0),
     extraCount: Number(counts?.extraCount ?? 0),
     staleCount: Number(counts?.staleCount ?? 0),
-    mismatchedCount: Number(counts?.mismatchedCount ?? 0),
+    mismatchedCount: Number(counts?.mismatchedCount ?? 0) + invalidEvidenceRows.length,
+    invalidEvidenceCount: invalidEvidenceRows.length,
     examples: examples.map((example) => ({
       kind: example.kind,
       repository: example.repository,
@@ -2627,7 +18011,499 @@ export function formatReleasePrReachabilityIntegrityFailure(report: ReleasePrRea
   const suffix = examples ? `; examples: ${examples}` : '';
   return `${report.tag}: PR reachability evidence is not current for ${failed} row(s) ` +
     `(candidates=${report.candidateCount}, rows=${report.rowCount}, missing=${report.missingCount}, ` +
-    `extra=${report.extraCount}, stale=${report.staleCount}, mismatched=${report.mismatchedCount})${suffix}`;
+    `extra=${report.extraCount}, stale=${report.staleCount}, mismatched=${report.mismatchedCount}, ` +
+    `invalidEvidence=${report.invalidEvidenceCount})${suffix}`;
+}
+
+export const RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION = 2;
+
+export interface ReleaseClosureDependencyIdentity {
+  schemaVersion: typeof RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION;
+  releaseTag: string;
+  issueNumbers: number[];
+  rowCount: number;
+  digest: string;
+}
+
+export interface ReleaseClosureDependencySnapshotRow {
+  release_tag: string;
+  schema_version: number;
+  analyzer_version: number;
+  issue_numbers_json: string;
+  dependency_digest: string;
+  dependency_row_count: number;
+  captured_at: string;
+}
+
+export interface ReleaseClosureDependencyMembership {
+  issueNumbers: number[];
+  referencedIssueNumbers: number[];
+  invalidEvidenceCount: number;
+}
+
+type ReleaseClosureDependencyProofRow = {
+  issue_number: unknown;
+  evidence_json?: unknown;
+};
+
+export function releaseClosureDependencyMembership(
+  rawClosedIssueNumbers: number[],
+  proofRows: ReleaseClosureDependencyProofRow[],
+): ReleaseClosureDependencyMembership {
+  const issueNumbers = new Set(
+    rawClosedIssueNumbers.filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0),
+  );
+  const referencedIssueNumbers = new Set<number>();
+  let invalidEvidenceCount = 0;
+  for (const row of proofRows) {
+    let evidence: unknown;
+    try {
+      evidence = typeof row.evidence_json === 'string'
+        ? JSON.parse(row.evidence_json)
+        : row.evidence_json;
+    } catch {
+      invalidEvidenceCount++;
+      continue;
+    }
+    if (!evidence || typeof evidence !== 'object' || Array.isArray(evidence)) {
+      invalidEvidenceCount++;
+      continue;
+    }
+    for (const issueNumber of closureProofEvidenceIssueReferences(
+      evidence as Record<string, unknown>,
+    )) {
+      issueNumbers.add(issueNumber);
+      referencedIssueNumbers.add(issueNumber);
+    }
+  }
+  return {
+    issueNumbers: [...issueNumbers].sort((left, right) => left - right),
+    referencedIssueNumbers: [...referencedIssueNumbers].sort((left, right) => left - right),
+    invalidEvidenceCount,
+  };
+}
+
+function closureProofEvidenceIssueReferences(evidence: Record<string, unknown>): number[] {
+  const issueNumbers = new Set<number>();
+  const addNumber = (value: unknown) => {
+    const issueNumber = Number(value);
+    if (Number.isInteger(issueNumber) && issueNumber > 0) issueNumbers.add(issueNumber);
+  };
+  const addNumberArray = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const issueNumber of value) addNumber(issueNumber);
+    }
+  };
+  const addIssueObject = (value: unknown) => {
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      addNumber((value as Record<string, unknown>).number);
+    }
+  };
+  const addIssueObjectArray = (value: unknown) => {
+    if (Array.isArray(value)) {
+      for (const issue of value) addIssueObject(issue);
+    }
+  };
+  const addTerminalProof = (value: unknown) => {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) return;
+    const proof = value as Record<string, unknown>;
+    addNumber(proof.issueNumber);
+    addNumber(proof.terminalIssueNumber);
+    addNumber(proof.sourceIssueNumber);
+  };
+
+  addNumberArray(evidence.canonicalIssues);
+  addIssueObjectArray(evidence.canonicalIssueDetails);
+  if (Array.isArray(evidence.canonicalFixCommitProof)) {
+    for (const proof of evidence.canonicalFixCommitProof) {
+      if (proof && typeof proof === 'object' && !Array.isArray(proof)) {
+        addNumber((proof as Record<string, unknown>).sourceIssueNumber);
+      }
+    }
+  }
+  const resolution = evidence.canonicalResolution;
+  if (resolution && typeof resolution === 'object' && !Array.isArray(resolution)) {
+    const canonical = resolution as Record<string, unknown>;
+    addNumberArray(canonical.path);
+    addNumberArray(canonical.blockingBranch);
+    addIssueObject(canonical.terminalIssue);
+    addIssueObjectArray(canonical.terminalIssues);
+    addIssueObject(canonical.cycleTerminalIssue);
+    addTerminalProof(canonical.terminalProof);
+    if (Array.isArray(canonical.branches)) {
+      for (const branchValue of canonical.branches) {
+        if (!branchValue || typeof branchValue !== 'object' || Array.isArray(branchValue)) {
+          continue;
+        }
+        const branch = branchValue as Record<string, unknown>;
+        addNumberArray(branch.path);
+        addIssueObject(branch.terminalIssue);
+        addTerminalProof(branch.terminalProof);
+      }
+    }
+  }
+  return [...issueNumbers].sort((left, right) => left - right);
+}
+
+const releaseClosureDependencyRawClosedIssueNumbersStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+    AND catalog_active=1
+)
+SELECT issue.number
+FROM issues issue
+JOIN target
+WHERE target.start_at IS NOT NULL
+  AND issue.closed_at IS NOT NULL
+  AND issue.closed_at >= target.start_at
+  AND issue.closed_at < target.end_at
+ORDER BY issue.number
+`);
+const releaseClosureDependencyProofRowsStmt = db.prepare(`
+SELECT issue_number, evidence_json
+FROM issue_closure_proofs
+WHERE release_tag=?
+ORDER BY issue_number
+`);
+const missingReleaseClosureDependencyIssuesStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+)
+SELECT selected.issue_number
+FROM selected
+LEFT JOIN issues issue ON issue.number=selected.issue_number
+WHERE issue.number IS NULL
+ORDER BY selected.issue_number
+`);
+
+function releaseClosureDependencyMembershipForRelease(
+  releaseTag: string,
+): ReleaseClosureDependencyMembership {
+  const rawClosedIssueNumbers = (releaseClosureDependencyRawClosedIssueNumbersStmt.all(
+    releaseTag,
+  ) as Array<{ number: number }>).map((row) => Number(row.number));
+  const proofRows = releaseClosureDependencyProofRowsStmt.all(
+    releaseTag,
+  ) as ReleaseClosureDependencyProofRow[];
+  return releaseClosureDependencyMembership(rawClosedIssueNumbers, proofRows);
+}
+
+function missingReleaseClosureDependencyIssueNumbers(issueNumbers: number[]): number[] {
+  return (missingReleaseClosureDependencyIssuesStmt.all(
+    JSON.stringify(issueNumbers),
+  ) as Array<{ issue_number: number }>).map((row) => Number(row.issue_number));
+}
+
+const hasReleaseClosureDependencyIdentityProjection =
+  tableHasColumns('issues', [
+    'node_id',
+    'author_node_id',
+    'author_type',
+    'raw_json',
+  ]);
+const releaseClosureDependencyIssueRowsStmt =
+  hasReleaseClosureDependencyIdentityProjection
+    ? db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+)
+SELECT
+  i.number, i.node_id, i.state, i.title, i.body, i.author_node_id, i.author_type,
+  i.created_at, i.updated_at, i.closed_at, i.comments, i.labels, i.revision,
+  c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+  c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+  c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+  c.classified_comments_digest, c.prompt_version,
+  c.source_identity_json, c.source_identity_digest, c.classification_origin,
+  c.raw_model_output, c.provenance_json,
+  c.revision AS classification_revision,
+  comments.schema_version AS comment_schema_version,
+  comments.repository_node_id AS comment_repository_node_id,
+  comments.issue_node_id AS comment_issue_node_id,
+  comments.issue_author_node_id, comments.issue_author_login, comments.issue_author_type,
+  comments.comment_count, comments.fetched_comment_count,
+  comments.comments_digest, comments.issue_updated_at AS comment_issue_updated_at,
+  comments.authority_digest, comments.comments_json,
+  comments.stabilization_json, comments.stabilization_identity_digest,
+  comments.verified_at AS comment_verified_at,
+  comments.revision AS comment_revision,
+  state.repository_node_id AS state_repository_node_id,
+  state.issue_node_id AS state_issue_node_id,
+  state.issue_node_type AS state_issue_node_type,
+  state.schema_version AS state_schema_version,
+  state.issue_state, state.issue_updated_at AS state_issue_updated_at,
+  state.total_count AS state_total_count, state.fetched_count AS state_fetched_count,
+  state.events_digest, state.authority_digest AS state_authority_digest,
+  state.events_json, state.sweep_count AS state_sweep_count,
+  state.stabilized AS state_stabilized,
+  state.stabilization_json AS state_stabilization_json,
+  state.stabilization_identity_digest AS state_stabilization_identity_digest,
+  state.verified_at AS state_verified_at,
+  state.revision AS state_revision,
+  closure_state.schema_version AS closure_evidence_schema_version,
+  closure_state.issue_updated_at AS closure_evidence_issue_updated_at,
+  closure_state.comments_digest AS closure_evidence_comments_digest,
+  closure_state.checked_at AS closure_evidence_checked_at
+FROM selected
+LEFT JOIN issues i ON i.number=selected.issue_number
+LEFT JOIN classifications c ON c.issue_number=selected.issue_number
+LEFT JOIN issue_comment_snapshots comments ON comments.issue_number=selected.issue_number
+LEFT JOIN issue_state_event_snapshots state ON state.issue_number=selected.issue_number
+LEFT JOIN issue_closure_evidence_state closure_state ON closure_state.issue_number=selected.issue_number
+ORDER BY selected.issue_number
+`)
+    : null;
+
+function selectedIssueRowsStatement(table: string, columns: string, orderBy: string) {
+  return db.prepare(`
+    WITH selected(issue_number) AS (
+      SELECT CAST(value AS INTEGER) FROM json_each(?)
+    )
+    SELECT ${columns}
+    FROM ${table} row
+    JOIN selected ON selected.issue_number=row.issue_number
+    ORDER BY ${orderBy}
+  `);
+}
+
+const releaseClosureDependencyLabelEventsStmt = selectedIssueRowsStatement(
+  'issue_label_events',
+  `row.issue_number, row.issue_node_id, row.event_id, row.action, row.label_name,
+   row.actor_node_id, row.actor_login, row.actor_type, row.created_at, row.raw_json,
+   row.fetched_at`,
+  'row.issue_number, row.created_at, row.event_id',
+);
+const releaseClosureDependencyLabelSnapshotsStmt = selectedIssueRowsStatement(
+  'issue_label_snapshots',
+  'row.issue_number, row.issue_node_id, row.snapshot_at, row.labels_json, row.fetched_at',
+  'row.issue_number, row.snapshot_at',
+);
+const releaseClosureDependencyClosureEventsStmt = selectedIssueRowsStatement(
+  'issue_closure_events',
+  `row.issue_number, row.issue_node_id, row.event_id, row.closed_at,
+   row.connection_ordinal, row.actor_node_id, row.actor_login, row.actor_type, row.state_reason,
+   row.closer_type, row.closer_number, row.closer_node_id, row.closer_oid,
+   row.raw_json, row.fetched_at`,
+  'row.issue_number, unixepoch(row.closed_at), row.connection_ordinal, row.event_id',
+);
+const releaseClosureDependencyReopenEventsStmt = selectedIssueRowsStatement(
+  'issue_reopen_events',
+  `row.issue_number, row.issue_node_id, row.event_id, row.reopened_at,
+   row.connection_ordinal, row.actor_node_id, row.actor_login, row.actor_type, row.raw_json,
+   row.fetched_at`,
+  'row.issue_number, unixepoch(row.reopened_at), row.connection_ordinal, row.event_id',
+);
+const releaseClosureDependencyPrLinksStmt = selectedIssueRowsStatement(
+  'issue_pr_links',
+  `row.issue_number, row.issue_node_id, row.pr_repository_name_with_owner,
+   row.pr_number, row.pr_node_id, row.source, row.source_node_id,
+   row.will_close_target, row.referenced_at, row.source_comment_database_id,
+   row.source_comment_url, row.raw_json, row.fetched_at`,
+  'row.issue_number, row.pr_repository_name_with_owner, row.pr_number, row.source',
+);
+const releaseClosureDependencyCommitReferencesStmt = selectedIssueRowsStatement(
+  'issue_commit_references',
+  `row.issue_number, row.issue_node_id, row.event_id, row.commit_oid, row.commit_message_headline,
+   row.commit_repository_name_with_owner, row.is_cross_repository,
+   row.is_direct_reference, row.referenced_at, row.actor_node_id, row.actor_login,
+   row.raw_json, row.fetched_at`,
+  'row.issue_number, row.event_id',
+);
+const releaseClosureDependencyPrFixesStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+),
+keys AS (
+  SELECT DISTINCT link.pr_repository_name_with_owner, link.pr_number
+  FROM issue_pr_links link
+  JOIN selected ON selected.issue_number=link.issue_number
+)
+SELECT
+  fix.pr_repository_owner, fix.pr_repository_name,
+  fix.pr_repository_name_with_owner, fix.pr_number,
+  fix.node_id, fix.repository_node_id, fix.title, fix.url,
+  fix.state, fix.merged, fix.merged_at, fix.merge_commit_oid,
+  fix.base_ref_name, fix.raw_json, fix.fetched_at
+FROM pull_request_fixes fix
+JOIN keys
+  ON keys.pr_repository_name_with_owner=fix.pr_repository_name_with_owner
+ AND keys.pr_number=fix.pr_number
+ORDER BY fix.pr_repository_name_with_owner, fix.pr_number
+`);
+const releaseClosureDependencyReachabilityStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+),
+keys AS (
+  SELECT DISTINCT link.pr_repository_name_with_owner, link.pr_number
+  FROM issue_pr_links link
+  JOIN selected ON selected.issue_number=link.issue_number
+)
+SELECT
+  reachability.tag, reachability.pr_repository_owner, reachability.pr_repository_name,
+  reachability.pr_repository_name_with_owner,
+  reachability.pr_number, reachability.tag_commit_oid,
+  reachability.merge_commit_oid, reachability.base_ref_name,
+  reachability.status, reachability.method,
+  reachability.evidence_json, reachability.checked_at
+FROM release_pr_reachability reachability
+JOIN keys
+  ON keys.pr_repository_name_with_owner=reachability.pr_repository_name_with_owner
+ AND keys.pr_number=reachability.pr_number
+WHERE reachability.tag=?
+ORDER BY reachability.pr_repository_name_with_owner, reachability.pr_number
+`);
+const releaseClosureDependencyCrossProofsStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+)
+SELECT
+  proof.release_tag, proof.issue_number, proof.status,
+  proof.summary, proof.evidence_json
+FROM issue_closure_proofs proof
+JOIN selected ON selected.issue_number=proof.issue_number
+WHERE proof.release_tag != ?
+ORDER BY proof.issue_number, proof.release_tag
+`);
+const releaseClosureDependencyReleaseStmt = db.prepare(`
+SELECT
+  release.tag, release.published_at, release.prerelease,
+  release_commit.tag_commit_oid, release_commit.committed_at, release_commit.fetched_at
+FROM releases release
+LEFT JOIN release_commits release_commit ON release_commit.tag=release.tag
+WHERE release.tag=?
+  AND release.catalog_active=1
+`);
+
+export function releaseClosureDependencyIdentity(
+  releaseTag: string,
+  issueNumbers: number[],
+): ReleaseClosureDependencyIdentity {
+  return withAuthorizedReleaseCatalogRead(
+    () => releaseClosureDependencyIdentityRaw(releaseTag, issueNumbers),
+  );
+}
+
+function releaseClosureDependencyIdentityRaw(
+  releaseTag: string,
+  issueNumbers: number[],
+): ReleaseClosureDependencyIdentity {
+  if (!releaseClosureDependencyIssueRowsStmt) {
+    throw new Error(
+      'Release closure dependency identity is unavailable for this legacy database schema',
+    );
+  }
+  const selected = [...new Set(issueNumbers)]
+    .filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0)
+    .sort((left, right) => left - right);
+  const selectedJson = JSON.stringify(selected);
+  const sources = [
+    ['release', releaseClosureDependencyReleaseStmt.all(releaseTag)],
+    ['issues', releaseClosureDependencyIssueRowsStmt.all(selectedJson)],
+    ['label_events', releaseClosureDependencyLabelEventsStmt.all(selectedJson)],
+    ['label_snapshots', releaseClosureDependencyLabelSnapshotsStmt.all(selectedJson)],
+    ['closure_events', releaseClosureDependencyClosureEventsStmt.all(selectedJson)],
+    ['reopen_events', releaseClosureDependencyReopenEventsStmt.all(selectedJson)],
+    ['pr_links', releaseClosureDependencyPrLinksStmt.all(selectedJson)],
+    ['commit_references', releaseClosureDependencyCommitReferencesStmt.all(selectedJson)],
+    ['pull_requests', releaseClosureDependencyPrFixesStmt.all(selectedJson)],
+    ['reachability', releaseClosureDependencyReachabilityStmt.all(selectedJson, releaseTag)],
+    ['cross_release_proofs', releaseClosureDependencyCrossProofsStmt.all(selectedJson, releaseTag)],
+  ] as const;
+  const hash = createHash('sha256');
+  hash.update(JSON.stringify([
+    'release_closure_dependency_identity',
+    RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION,
+    releaseTag,
+    selected,
+  ]));
+  let rowCount = 0;
+  for (const [source, rows] of sources) {
+    rowCount += rows.length;
+    hash.update('\n');
+    hash.update(JSON.stringify([source, rows]));
+  }
+  return {
+    schemaVersion: RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION,
+    releaseTag,
+    issueNumbers: selected,
+    rowCount,
+    digest: hash.digest('hex'),
+  };
+}
+
+const getReleaseClosureDependencySnapshotStmt = db.prepare(`
+SELECT *
+FROM release_closure_dependency_snapshots
+WHERE release_tag=?
+`);
+const upsertReleaseClosureDependencySnapshotStmt = db.prepare(`
+INSERT INTO release_closure_dependency_snapshots (
+  release_tag, schema_version, analyzer_version, issue_numbers_json,
+  dependency_digest, dependency_row_count, captured_at
+)
+VALUES (?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(release_tag) DO UPDATE SET
+  schema_version=excluded.schema_version,
+  analyzer_version=excluded.analyzer_version,
+  issue_numbers_json=excluded.issue_numbers_json,
+  dependency_digest=excluded.dependency_digest,
+  dependency_row_count=excluded.dependency_row_count,
+  captured_at=CASE
+    WHEN release_closure_dependency_snapshots.schema_version IS NOT excluded.schema_version
+      OR release_closure_dependency_snapshots.analyzer_version IS NOT excluded.analyzer_version
+      OR release_closure_dependency_snapshots.issue_numbers_json IS NOT excluded.issue_numbers_json
+      OR release_closure_dependency_snapshots.dependency_digest IS NOT excluded.dependency_digest
+      OR release_closure_dependency_snapshots.dependency_row_count IS NOT excluded.dependency_row_count
+    THEN excluded.captured_at
+    ELSE release_closure_dependency_snapshots.captured_at
+  END
+`);
+
+export function getReleaseClosureDependencySnapshot(
+  releaseTag: string,
+): ReleaseClosureDependencySnapshotRow | undefined {
+  return getReleaseClosureDependencySnapshotStmt.get(releaseTag) as
+    ReleaseClosureDependencySnapshotRow | undefined;
+}
+
+export function replaceReleaseClosureDependencySnapshot(
+  identity: ReleaseClosureDependencyIdentity,
+  analyzerVersion = CLOSURE_PROOF_ANALYZER_VERSION,
+): void {
+  if (identity.schemaVersion !== RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION) {
+    throw new Error(`Unsupported release closure dependency snapshot schema ${identity.schemaVersion}`);
+  }
+  const current = releaseClosureDependencyIdentity(identity.releaseTag, identity.issueNumbers);
+  if (
+    current.digest !== identity.digest ||
+    current.rowCount !== identity.rowCount ||
+    JSON.stringify(current.issueNumbers) !== JSON.stringify(identity.issueNumbers)
+  ) {
+    throw new Error(
+      `Release ${identity.releaseTag} closure dependencies changed before snapshot persistence`,
+    );
+  }
+  upsertReleaseClosureDependencySnapshotStmt.run(
+    identity.releaseTag,
+    identity.schemaVersion,
+    analyzerVersion,
+    JSON.stringify(identity.issueNumbers),
+    identity.digest,
+    identity.rowCount,
+    new Date().toISOString(),
+  );
 }
 
 export interface ReleaseClosureProofIntegrity {
@@ -2637,10 +18513,17 @@ export interface ReleaseClosureProofIntegrity {
   missingCount: number;
   extraCount: number;
   staleCount: number;
+  analyzerVersionMismatchCount: number;
+  dependencySnapshotMissingCount: number;
+  dependencySnapshotMismatchCount: number;
+  dependencySnapshotSchemaMismatchCount: number;
+  dependencySnapshotMembershipMismatchCount: number;
+  dependencyReferencedIssueMissingCount: number;
+  dependencyEvidenceInvalidCount: number;
   dependencyMaxAt: string | null;
   minProofCheckedAt: string | null;
   examples: Array<{
-    kind: 'missing' | 'extra' | 'stale';
+    kind: 'missing' | 'extra' | 'stale' | 'analyzer_version';
     issueNumber: number;
     checkedAt: string | null;
     dependencyMaxAt: string | null;
@@ -2657,11 +18540,13 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
 raw_closed AS (
   SELECT i.number
@@ -2673,7 +18558,7 @@ raw_closed AS (
     AND i.closed_at < target.end_at
 ),
 proofs AS (
-  SELECT issue_number, checked_at
+  SELECT issue_number, checked_at, evidence_json
   FROM issue_closure_proofs
   WHERE release_tag=?
 ),
@@ -2718,6 +18603,7 @@ SELECT
   (SELECT COUNT(*) FROM raw_closed c LEFT JOIN proofs p ON p.issue_number=c.number WHERE p.issue_number IS NULL) AS missingCount,
   (SELECT COUNT(*) FROM proofs p LEFT JOIN raw_closed c ON c.number=p.issue_number WHERE c.number IS NULL) AS extraCount,
   (SELECT COUNT(*) FROM proofs p JOIN dependency d WHERE d.max_ts IS NOT NULL AND unixepoch(p.checked_at) < unixepoch(d.max_ts)) AS staleCount,
+  (SELECT COUNT(*) FROM proofs WHERE COALESCE(json_extract(evidence_json, '$.proofAnalyzerVersion'), 0) != ${CLOSURE_PROOF_ANALYZER_VERSION}) AS analyzerVersionMismatchCount,
   (SELECT max_ts FROM dependency) AS dependencyMaxAt,
   (SELECT MIN(checked_at) FROM proofs) AS minProofCheckedAt
 `);
@@ -2735,6 +18621,17 @@ FROM (
   FROM raw_closed c
   LEFT JOIN proofs p ON p.issue_number=c.number
   WHERE p.issue_number IS NULL
+
+  UNION ALL
+
+  SELECT
+    'analyzer_version' AS kind,
+    p.issue_number AS issueNumber,
+    p.checked_at AS checkedAt,
+    (SELECT max_ts FROM dependency) AS dependencyMaxAt,
+    'closure proof row was produced by a stale analyzer version' AS detail
+  FROM proofs p
+  WHERE COALESCE(json_extract(p.evidence_json, '$.proofAnalyzerVersion'), 0) != ${CLOSURE_PROOF_ANALYZER_VERSION}
 
   UNION ALL
 
@@ -2766,15 +18663,88 @@ LIMIT ?
 `);
 
 export function releaseClosureProofIntegrity(tag: string, exampleLimit = 10): ReleaseClosureProofIntegrity {
+  return withAuthorizedReleaseCatalogRead(
+    () => releaseClosureProofIntegrityRaw(tag, exampleLimit),
+  );
+}
+
+function releaseClosureProofIntegrityRaw(
+  tag: string,
+  exampleLimit: number,
+): ReleaseClosureProofIntegrity {
   const counts = closureProofIntegrityCountsStmt.get(tag, tag, tag) as Record<string, unknown> | undefined;
   const examples = closureProofIntegrityExamplesStmt.all(tag, tag, tag, Math.max(0, Math.floor(exampleLimit))) as ReleaseClosureProofIntegrity['examples'];
+  const dependencySnapshot = getReleaseClosureDependencySnapshot(tag);
+  let dependencySnapshotMissingCount = 0;
+  let dependencySnapshotMismatchCount = 0;
+  let dependencySnapshotSchemaMismatchCount = 0;
+  let dependencySnapshotMembershipMismatchCount = 0;
+  const membership = releaseClosureDependencyMembershipForRelease(tag);
+  const missingReferencedIssueNumbers = missingReleaseClosureDependencyIssueNumbers(
+    membership.referencedIssueNumbers,
+  );
+  if (!dependencySnapshot) {
+    dependencySnapshotMissingCount = 1;
+  } else if (
+    dependencySnapshot.schema_version !== RELEASE_CLOSURE_DEPENDENCY_SNAPSHOT_SCHEMA_VERSION ||
+    dependencySnapshot.analyzer_version !== CLOSURE_PROOF_ANALYZER_VERSION
+  ) {
+    dependencySnapshotSchemaMismatchCount = 1;
+  } else {
+    try {
+      const issueNumbers = JSON.parse(dependencySnapshot.issue_numbers_json);
+      if (!Array.isArray(issueNumbers)) throw new Error('issue_numbers_json is not an array');
+      const normalizedIssueNumbers = [...new Set(issueNumbers.map(Number))]
+        .filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0)
+        .sort((left, right) => left - right);
+      // A dependency snapshot may be staged before proof rows exist. That state
+      // already fails proof coverage, so retain digest-only validation until the
+      // persisted proofs provide an independently derivable membership set.
+      const expectedIssueNumbers = Number(counts?.proofRowCount ?? 0) > 0
+        ? membership.issueNumbers
+        : normalizedIssueNumbers;
+      if (
+        JSON.stringify(normalizedIssueNumbers) !== dependencySnapshot.issue_numbers_json ||
+        JSON.stringify(normalizedIssueNumbers) !== JSON.stringify(expectedIssueNumbers)
+      ) {
+        dependencySnapshotMembershipMismatchCount = 1;
+      }
+      const identity = releaseClosureDependencyIdentity(
+        tag,
+        expectedIssueNumbers,
+      );
+      if (
+        identity.digest !== dependencySnapshot.dependency_digest ||
+        identity.rowCount !== dependencySnapshot.dependency_row_count ||
+        JSON.stringify(identity.issueNumbers) !== dependencySnapshot.issue_numbers_json ||
+        membership.invalidEvidenceCount > 0 ||
+        missingReferencedIssueNumbers.length > 0
+      ) {
+        dependencySnapshotMismatchCount = 1;
+      }
+    } catch {
+      dependencySnapshotMismatchCount = 1;
+    }
+  }
+  const dependencySnapshotFreshnessFailureCount =
+    dependencySnapshotMissingCount +
+    dependencySnapshotMismatchCount;
   return {
     tag,
     rawClosedCount: Number(counts?.rawClosedCount ?? 0),
     proofRowCount: Number(counts?.proofRowCount ?? 0),
     missingCount: Number(counts?.missingCount ?? 0),
     extraCount: Number(counts?.extraCount ?? 0),
-    staleCount: Number(counts?.staleCount ?? 0),
+    staleCount: Number(counts?.staleCount ?? 0) + dependencySnapshotFreshnessFailureCount,
+    analyzerVersionMismatchCount:
+      Number(counts?.analyzerVersionMismatchCount ?? 0) +
+      dependencySnapshotSchemaMismatchCount,
+    dependencySnapshotMissingCount,
+    dependencySnapshotMismatchCount,
+    dependencySnapshotSchemaMismatchCount,
+    dependencySnapshotMembershipMismatchCount,
+    dependencyReferencedIssueMissingCount: missingReferencedIssueNumbers.length,
+    dependencyEvidenceInvalidCount: membership.invalidEvidenceCount,
     dependencyMaxAt: typeof counts?.dependencyMaxAt === 'string' ? counts.dependencyMaxAt : null,
     minProofCheckedAt: typeof counts?.minProofCheckedAt === 'string' ? counts.minProofCheckedAt : null,
     examples: examples.map((example) => ({
@@ -2788,7 +18758,7 @@ export function releaseClosureProofIntegrity(tag: string, exampleLimit = 10): Re
 }
 
 export function formatReleaseClosureProofIntegrityFailure(report: ReleaseClosureProofIntegrity): string | null {
-  const failed = report.missingCount + report.extraCount + report.staleCount;
+  const failed = report.missingCount + report.extraCount + report.staleCount + report.analyzerVersionMismatchCount;
   if (failed === 0) return null;
   const examples = report.examples
     .slice(0, 3)
@@ -2797,7 +18767,14 @@ export function formatReleaseClosureProofIntegrityFailure(report: ReleaseClosure
   const suffix = examples ? `; examples: ${examples}` : '';
   return `${report.tag}: closure proof evidence is not current for ${failed} row(s) ` +
     `(rawClosed=${report.rawClosedCount}, proofRows=${report.proofRowCount}, missing=${report.missingCount}, ` +
-    `extra=${report.extraCount}, stale=${report.staleCount}, dependencyMaxAt=${report.dependencyMaxAt ?? 'none'}, ` +
+    `extra=${report.extraCount}, stale=${report.staleCount}, analyzerVersion=${report.analyzerVersionMismatchCount}, ` +
+    `dependencySnapshotMissing=${report.dependencySnapshotMissingCount}, ` +
+    `dependencySnapshotMismatch=${report.dependencySnapshotMismatchCount}, ` +
+    `dependencySnapshotSchema=${report.dependencySnapshotSchemaMismatchCount}, ` +
+    `dependencySnapshotMembership=${report.dependencySnapshotMembershipMismatchCount}, ` +
+    `dependencyMissingIssues=${report.dependencyReferencedIssueMissingCount}, ` +
+    `dependencyInvalidEvidence=${report.dependencyEvidenceInvalidCount}, ` +
+    `dependencyMaxAt=${report.dependencyMaxAt ?? 'none'}, ` +
     `minProofCheckedAt=${report.minProofCheckedAt ?? 'none'})${suffix}`;
 }
 
@@ -2818,12 +18795,13 @@ WITH duplicate_timestamps AS (
   SELECT published_at, COUNT(*) AS count
   FROM releases
   WHERE prerelease = 0
+    AND catalog_active = 1
     AND published_at IS NOT NULL
   GROUP BY published_at
   HAVING COUNT(*) > 1
 )
 SELECT
-  (SELECT COUNT(*) FROM releases WHERE prerelease = 0 AND published_at IS NULL) AS missingPublishedAtCount,
+  (SELECT COUNT(*) FROM releases WHERE prerelease = 0 AND catalog_active = 1 AND published_at IS NULL) AS missingPublishedAtCount,
   (SELECT COUNT(*) FROM duplicate_timestamps) AS duplicatePublishedAtCount,
   COALESCE((SELECT SUM(count) FROM duplicate_timestamps), 0) AS duplicateReleaseCount
 `);
@@ -2838,6 +18816,7 @@ FROM (
     1 AS count
   FROM releases
   WHERE prerelease = 0
+    AND catalog_active = 1
     AND published_at IS NULL
 
   UNION ALL
@@ -2849,6 +18828,7 @@ FROM (
     COUNT(*) AS count
   FROM releases
   WHERE prerelease = 0
+    AND catalog_active = 1
     AND published_at IS NOT NULL
   GROUP BY published_at
   HAVING COUNT(*) > 1
@@ -2858,24 +18838,26 @@ LIMIT ?
 `);
 
 export function stableReleaseWindowIntegrity(exampleLimit = 10): StableReleaseWindowIntegrity {
-  const counts = stableReleaseWindowIntegrityCountsStmt.get() as Record<string, unknown> | undefined;
-  const examples = stableReleaseWindowIntegrityExamplesStmt.all(Math.max(0, Math.floor(exampleLimit))) as Array<{
-    kind: StableReleaseWindowIntegrity['examples'][number]['kind'];
-    publishedAt: string | null;
-    tags: string | null;
-    count: number;
-  }>;
-  return {
-    missingPublishedAtCount: Number(counts?.missingPublishedAtCount ?? 0),
-    duplicatePublishedAtCount: Number(counts?.duplicatePublishedAtCount ?? 0),
-    duplicateReleaseCount: Number(counts?.duplicateReleaseCount ?? 0),
-    examples: examples.map((example) => ({
-      kind: example.kind,
-      publishedAt: example.publishedAt ?? null,
-      tags: String(example.tags ?? '').split(',').filter(Boolean),
-      count: Number(example.count ?? 0),
-    })),
-  };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const counts = stableReleaseWindowIntegrityCountsStmt.get() as Record<string, unknown> | undefined;
+    const examples = stableReleaseWindowIntegrityExamplesStmt.all(Math.max(0, Math.floor(exampleLimit))) as Array<{
+      kind: StableReleaseWindowIntegrity['examples'][number]['kind'];
+      publishedAt: string | null;
+      tags: string | null;
+      count: number;
+    }>;
+    return {
+      missingPublishedAtCount: Number(counts?.missingPublishedAtCount ?? 0),
+      duplicatePublishedAtCount: Number(counts?.duplicatePublishedAtCount ?? 0),
+      duplicateReleaseCount: Number(counts?.duplicateReleaseCount ?? 0),
+      examples: examples.map((example) => ({
+        kind: example.kind,
+        publishedAt: example.publishedAt ?? null,
+        tags: String(example.tags ?? '').split(',').filter(Boolean),
+        count: Number(example.count ?? 0),
+      })),
+    };
+  });
 }
 
 export function formatStableReleaseWindowIntegrityFailure(report: StableReleaseWindowIntegrity): string | null {
@@ -2891,6 +18873,239 @@ export function formatStableReleaseWindowIntegrityFailure(report: StableReleaseW
   return `stable release windows are ambiguous for ${failed} release row(s) ` +
     `(missingPublishedAt=${report.missingPublishedAtCount}, duplicateTimestamps=${report.duplicatePublishedAtCount}, ` +
     `duplicateReleases=${report.duplicateReleaseCount})${suffix}`;
+}
+
+export interface ReleaseIssueStateSnapshotIntegrity {
+  tag: string;
+  candidateIssueCount: number;
+  missingSnapshotCount: number;
+  invalidSnapshotCount: number;
+  metadataMismatchCount: number;
+  projectionMismatchCount: number;
+  latestStateMismatchCount: number;
+  failedCount: number;
+  examples: Array<{
+    kind: 'missing' | 'invalid' | 'metadata_mismatch' | 'projection_mismatch' | 'latest_state_mismatch';
+    issueNumber: number;
+    detail: string;
+  }>;
+}
+
+const releaseIssueStateSnapshotIntegrityBaseSql = `
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+    AND catalog_active=1
+),
+candidates AS (
+  SELECT i.*
+  FROM issues i
+  JOIN target
+  WHERE target.start_at IS NOT NULL
+    AND i.created_at < target.end_at
+    AND (
+      i.state='open'
+      OR i.closed_at IS NULL
+      OR i.closed_at > target.start_at
+    )
+),
+projection_counts AS (
+  SELECT
+    candidate.number AS issue_number,
+    (SELECT COUNT(*) FROM issue_closure_events close_event
+     WHERE close_event.issue_number=candidate.number) AS closure_count,
+    (SELECT COUNT(*) FROM issue_reopen_events reopen_event
+     WHERE reopen_event.issue_number=candidate.number) AS reopen_count
+  FROM candidates candidate
+),
+latest_events AS (
+  SELECT issue_number, event_type, occurred_at
+  FROM (
+    SELECT
+      event.issue_number,
+      event.event_type,
+      event.occurred_at,
+      event.connection_ordinal,
+      event.event_id,
+      ROW_NUMBER() OVER (
+        PARTITION BY event.issue_number
+        ORDER BY unixepoch(event.occurred_at) DESC, event.connection_ordinal DESC, event.event_id DESC
+      ) AS rank
+    FROM (
+      SELECT issue_number, 'closed' AS event_type, closed_at AS occurred_at,
+             connection_ordinal, event_id
+      FROM issue_closure_events
+      WHERE closed_at IS NOT NULL
+      UNION ALL
+      SELECT issue_number, 'reopened' AS event_type, reopened_at AS occurred_at,
+             connection_ordinal, event_id
+      FROM issue_reopen_events
+      WHERE reopened_at IS NOT NULL
+    ) event
+  )
+  WHERE rank=1
+),
+integrity AS (
+  SELECT
+    candidate.number AS issue_number,
+    candidate.node_id AS current_issue_node_id,
+    candidate.state AS current_state,
+    candidate.updated_at,
+    candidate.closed_at,
+    snapshot.schema_version,
+    snapshot.issue_node_id,
+    snapshot.issue_node_type,
+    snapshot.issue_state AS snapshot_state,
+    snapshot.issue_updated_at,
+    snapshot.total_count,
+    snapshot.fetched_count,
+    snapshot.events_digest,
+    snapshot.authority_digest,
+    snapshot.events_json,
+    snapshot.sweep_count,
+    snapshot.stabilized,
+    snapshot.stabilization_json,
+    snapshot.stabilization_identity_digest,
+    COALESCE(projection.closure_count, 0) + COALESCE(projection.reopen_count, 0) AS projection_count,
+    latest.event_type AS latest_event_type
+  FROM candidates candidate
+  LEFT JOIN issue_state_event_snapshots snapshot ON snapshot.issue_number=candidate.number
+  LEFT JOIN projection_counts projection ON projection.issue_number=candidate.number
+  LEFT JOIN latest_events latest ON latest.issue_number=candidate.number
+)
+`;
+
+const releaseIssueStateSnapshotIntegrityRowsStmt =
+  hasReleaseClosureDependencyIdentityProjection
+    ? db.prepare(`
+${releaseIssueStateSnapshotIntegrityBaseSql}
+SELECT *
+FROM integrity
+ORDER BY issue_number
+`)
+    : null;
+
+export function releaseIssueStateSnapshotIntegrity(
+  tag: string,
+  exampleLimit = 10,
+): ReleaseIssueStateSnapshotIntegrity {
+  return withAuthorizedReleaseCatalogRead(
+    () => releaseIssueStateSnapshotIntegrityRaw(tag, exampleLimit),
+  );
+}
+
+function releaseIssueStateSnapshotIntegrityRaw(
+  tag: string,
+  exampleLimit: number,
+): ReleaseIssueStateSnapshotIntegrity {
+  if (!releaseIssueStateSnapshotIntegrityRowsStmt) {
+    throw new Error(
+      'Release issue state snapshot integrity is unavailable for this legacy database schema',
+    );
+  }
+  const rows = releaseIssueStateSnapshotIntegrityRowsStmt.all(tag) as Array<Record<string, unknown>>;
+  const examples: ReleaseIssueStateSnapshotIntegrity['examples'] = [];
+  let missingSnapshotCount = 0;
+  let invalidSnapshotCount = 0;
+  let metadataMismatchCount = 0;
+  let projectionMismatchCount = 0;
+  let latestStateMismatchCount = 0;
+  const addExample = (
+    kind: ReleaseIssueStateSnapshotIntegrity['examples'][number]['kind'],
+    issueNumber: number,
+    detail: string,
+  ): void => {
+    if (examples.length < Math.max(0, Math.floor(exampleLimit))) {
+      examples.push({ kind, issueNumber, detail });
+    }
+  };
+
+  for (const row of rows) {
+    const issueNumber = Number(row.issue_number);
+    if (row.schema_version == null) {
+      missingSnapshotCount++;
+      addExample('missing', issueNumber, 'issue is missing a verified state-event snapshot');
+      continue;
+    }
+    const validation = validateIssueStateEventSnapshot(issueNumber);
+    const totalCount = Number(row.total_count);
+    const fetchedCount = Number(row.fetched_count);
+    if (!validation.snapshotValid) {
+      invalidSnapshotCount++;
+      addExample('invalid', issueNumber, 'state-event snapshot count, schema, JSON, or digest is invalid');
+    }
+    if (
+      row.snapshot_state !== row.current_state ||
+      row.issue_updated_at !== row.updated_at ||
+      row.issue_node_id !== row.current_issue_node_id ||
+      row.issue_node_type !== 'Issue'
+    ) {
+      metadataMismatchCount++;
+      addExample('metadata_mismatch', issueNumber, 'snapshot state or updated_at differs from the issue row');
+    }
+    if (validation.snapshotValid && !validation.projectionMatches) {
+      projectionMismatchCount++;
+      addExample(
+        'projection_mismatch',
+        issueNumber,
+        'projected close/reopen rows do not fully match snapshot event fields',
+      );
+    }
+    const latestEventType = validation.normalizedEvents.at(-1)?.type ?? null;
+    const currentState = row.current_state;
+    const latestMismatch =
+      (currentState === 'open' && latestEventType === 'closed') ||
+      (currentState === 'closed' && latestEventType === 'reopened') ||
+      (currentState === 'closed' && totalCount === 0 && row.closed_at != null);
+    if (latestMismatch) {
+      latestStateMismatchCount++;
+      addExample('latest_state_mismatch', issueNumber, 'latest state event does not agree with current issue state');
+    }
+  }
+
+  return {
+    tag,
+    candidateIssueCount: rows.length,
+    missingSnapshotCount,
+    invalidSnapshotCount,
+    metadataMismatchCount,
+    projectionMismatchCount,
+    latestStateMismatchCount,
+    failedCount:
+      missingSnapshotCount +
+      invalidSnapshotCount +
+      metadataMismatchCount +
+      projectionMismatchCount +
+      latestStateMismatchCount,
+    examples,
+  };
+}
+
+export function formatReleaseIssueStateSnapshotIntegrityFailure(
+  report: ReleaseIssueStateSnapshotIntegrity,
+): string | null {
+  if (report.failedCount === 0) return null;
+  const examples = report.examples
+    .slice(0, 3)
+    .map((example) => `${example.kind} #${example.issueNumber}`)
+    .join(', ');
+  const suffix = examples ? `; examples: ${examples}` : '';
+  return `${report.tag}: issue state-event snapshots are incomplete or inconsistent for ` +
+    `${report.failedCount} check(s) across ${report.candidateIssueCount} candidate issue(s) ` +
+    `(missing=${report.missingSnapshotCount}, invalid=${report.invalidSnapshotCount}, ` +
+    `metadata=${report.metadataMismatchCount}, projection=${report.projectionMismatchCount}, ` +
+    `latestState=${report.latestStateMismatchCount})${suffix}`;
 }
 
 export interface ReleaseIssueTimelineIntegrity {
@@ -2914,11 +19129,13 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
 ambiguous_reopens AS (
   SELECT
@@ -2938,7 +19155,13 @@ ambiguous_reopens AS (
       FROM issue_closure_events c
       WHERE c.issue_number=r.issue_number
         AND c.closed_at IS NOT NULL
-        AND c.closed_at < r.reopened_at
+        AND (
+          unixepoch(c.closed_at) < unixepoch(r.reopened_at)
+          OR (
+            unixepoch(c.closed_at) = unixepoch(r.reopened_at)
+            AND c.connection_ordinal < r.connection_ordinal
+          )
+        )
     )
 )
 `;
@@ -2960,19 +19183,21 @@ LIMIT ?
 `);
 
 export function releaseIssueTimelineIntegrity(tag: string, exampleLimit = 10): ReleaseIssueTimelineIntegrity {
-  const counts = releaseIssueTimelineIntegrityCountsStmt.get(tag) as Record<string, unknown> | undefined;
-  const examples = releaseIssueTimelineIntegrityExamplesStmt.all(tag, Math.max(0, Math.floor(exampleLimit))) as ReleaseIssueTimelineIntegrity['examples'];
-  return {
-    tag,
-    ambiguousReopenCount: Number(counts?.ambiguousReopenCount ?? 0),
-    issueCount: Number(counts?.issueCount ?? 0),
-    examples: examples.map((example) => ({
-      issueNumber: Number(example.issueNumber),
-      reopenedAt: example.reopenedAt,
-      createdAt: example.createdAt ?? null,
-      closedAt: example.closedAt ?? null,
-    })),
-  };
+  return withAuthorizedReleaseCatalogRead(() => {
+    const counts = releaseIssueTimelineIntegrityCountsStmt.get(tag) as Record<string, unknown> | undefined;
+    const examples = releaseIssueTimelineIntegrityExamplesStmt.all(tag, Math.max(0, Math.floor(exampleLimit))) as ReleaseIssueTimelineIntegrity['examples'];
+    return {
+      tag,
+      ambiguousReopenCount: Number(counts?.ambiguousReopenCount ?? 0),
+      issueCount: Number(counts?.issueCount ?? 0),
+      examples: examples.map((example) => ({
+        issueNumber: Number(example.issueNumber),
+        reopenedAt: example.reopenedAt,
+        createdAt: example.createdAt ?? null,
+        closedAt: example.closedAt ?? null,
+      })),
+    };
+  });
 }
 
 export function formatReleaseIssueTimelineIntegrityFailure(report: ReleaseIssueTimelineIntegrity): string | null {
@@ -3011,8 +19236,234 @@ ORDER BY
   r.pr_number
 `);
 
+interface AuthorizedReleaseReachabilityReleaseStorageRow {
+  tag: string;
+  node_id: string | null;
+  published_at: string | null;
+  catalog_rank: number | null;
+  prerelease: number;
+  catalog_digest: string | null;
+  catalog_tag_commit_oid: string | null;
+  resolved_tag_commit_oid: string | null;
+}
+
+const authorizedReleaseReachabilityReleasesStmt = db.prepare(`
+SELECT
+  release.tag,
+  release.node_id,
+  release.published_at,
+  release.catalog_rank,
+  release.prerelease,
+  release.catalog_digest,
+  release.catalog_tag_commit_oid,
+  release_commit.tag_commit_oid AS resolved_tag_commit_oid
+FROM releases release
+LEFT JOIN release_commits release_commit ON release_commit.tag=release.tag
+WHERE release.catalog_active=1
+ORDER BY release.catalog_rank IS NULL, release.catalog_rank, release.tag
+`);
+
+const authorizedReleaseReachabilityCandidatesStmt = db.prepare(`
+SELECT DISTINCT
+  fix.pr_repository_owner,
+  fix.pr_repository_name,
+  fix.pr_repository_name_with_owner,
+  fix.pr_number,
+  fix.merge_commit_oid,
+  fix.base_ref_name,
+  fix.fetched_at
+FROM pull_request_fixes fix
+JOIN issue_pr_links link
+  ON link.pr_repository_name_with_owner=fix.pr_repository_name_with_owner
+ AND link.pr_number=fix.pr_number
+WHERE fix.merged=1
+  AND fix.pr_repository_name_with_owner=?
+ORDER BY fix.pr_repository_name_with_owner, fix.pr_number
+`);
+
+export function readAuthorizedReleaseReachabilityData(
+  options: AuthorizedReleaseReachabilityReadOptions = {},
+): AuthorizedReleaseReachabilityData {
+  const requestedTags = canonicalReleaseReachabilityTags(
+    options.releaseTags ?? [],
+  );
+  const exampleLimit = Math.max(
+    0,
+    Math.floor(options.integrityExampleLimit ?? 10),
+  );
+  return runInReadTransaction(() => {
+    const activeCatalog =
+      authorizedActiveReleaseCatalogInCurrentTransaction();
+    const receipt = latestReleaseCatalogCaptureReceiptStmt?.get() as unknown as
+      ReleaseCatalogCaptureReceiptStorageRow | undefined;
+    if (
+      !receipt ||
+      receipt.receipt_id.length !== 64 ||
+      !/^[0-9a-f]{64}$/.test(receipt.receipt_id) ||
+      !/^[0-9a-f]{64}$/.test(receipt.content_hash) ||
+      receipt.repository !== defaultPrRepositoryNameWithOwner ||
+      receipt.active_catalog_digest !== activeCatalog.digest ||
+      receipt.active_release_count !== activeCatalog.releaseCount
+    ) {
+      throw new Error(
+        'Authorized release reachability read could not bind the exact ' +
+        'active catalog receipt identity',
+      );
+    }
+
+    const storageRows =
+      authorizedReleaseReachabilityReleasesStmt.all() as unknown as
+        AuthorizedReleaseReachabilityReleaseStorageRow[];
+    if (storageRows.length !== activeCatalog.releaseCount) {
+      throw new Error(
+        'Authorized release reachability read observed a release-count ' +
+        'mismatch inside the catalog transaction',
+      );
+    }
+    const releases = storageRows.map((row) =>
+      authorizedReleaseReachabilityReleaseFromStorage(
+        row,
+        activeCatalog.digest,
+      ));
+    if (
+      releases.some((release, index) => release.catalogRank !== index) ||
+      new Set(releases.map((release) => release.releaseNodeId)).size !==
+        releases.length
+    ) {
+      throw new Error(
+        'Authorized release reachability read did not preserve exact ' +
+        'catalog rank or immutable release node identity',
+      );
+    }
+    const releasesByTag = new Map(
+      releases.map((release) => [release.tag, release]),
+    );
+    const catalog: AuthorizedReleaseReachabilityCatalogIdentity = {
+      repositoryNameWithOwner: defaultPrRepositoryNameWithOwner,
+      digest: activeCatalog.digest,
+      receiptId: receipt.receipt_id,
+      receiptContentHash: receipt.content_hash,
+      releaseCount: activeCatalog.releaseCount,
+    };
+    const pullRequestCandidates =
+      authorizedReleaseReachabilityCandidatesStmt.all(
+        defaultPrRepositoryNameWithOwner,
+      ) as unknown as AuthorizedReleaseReachabilityPullRequestCandidate[];
+    const requestedReleases = requestedTags.map((tag) => {
+      const release = releasesByTag.get(tag) ?? null;
+      const catalogProof = release
+        ? reachabilityCatalogProofIdentity(catalog, release)
+        : null;
+      return {
+        tag,
+        release,
+        reachabilityRows: releasePrReachabilityRowsRaw(tag),
+        integrity: releasePrReachabilityIntegrityInCurrentTransaction(
+          tag,
+          exampleLimit,
+          release,
+          catalogProof,
+        ),
+      };
+    });
+    return {
+      catalog,
+      releases,
+      pullRequestCandidates,
+      requestedReleases,
+    };
+  });
+}
+
 export function releasePrReachabilityRows(tag: string): ReleasePrReachabilityRow[] {
-  return releasePrReachabilityRowsStmt.all(tag) as unknown as ReleasePrReachabilityRow[];
+  const authorized = readAuthorizedReleaseReachabilityData({
+    releaseTags: [tag],
+    integrityExampleLimit: 0,
+  });
+  return [...authorized.requestedReleases[0]!.reachabilityRows];
+}
+
+function releasePrReachabilityRowsRaw(tag: string): ReleasePrReachabilityRow[] {
+  return releasePrReachabilityRowsStmt.all(tag) as unknown as
+    ReleasePrReachabilityRow[];
+}
+
+function authorizedReleaseReachabilityReleaseFromStorage(
+  row: AuthorizedReleaseReachabilityReleaseStorageRow,
+  expectedCatalogDigest: string,
+): AuthorizedReleaseReachabilityRelease {
+  if (
+    !row.tag ||
+    row.tag.trim() !== row.tag ||
+    !row.node_id ||
+    row.node_id.trim() !== row.node_id ||
+    !row.published_at ||
+    !Number.isFinite(Date.parse(row.published_at)) ||
+    !Number.isSafeInteger(row.catalog_rank) ||
+    Number(row.catalog_rank) < 0 ||
+    (row.prerelease !== 0 && row.prerelease !== 1) ||
+    !row.catalog_digest ||
+    !/^[0-9a-f]{64}$/.test(row.catalog_digest) ||
+    row.catalog_digest !== expectedCatalogDigest ||
+    !row.catalog_tag_commit_oid ||
+    !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(
+      row.catalog_tag_commit_oid,
+    ) ||
+    (
+      row.resolved_tag_commit_oid != null &&
+      !/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/.test(
+        row.resolved_tag_commit_oid,
+      )
+    ) ||
+    (
+      row.resolved_tag_commit_oid != null &&
+      row.resolved_tag_commit_oid !== row.catalog_tag_commit_oid
+    )
+  ) {
+    throw new Error(
+      `Authorized release reachability catalog member ` +
+      `${JSON.stringify(row.tag)} has incomplete or mismatched immutable identity`,
+    );
+  }
+  return {
+    tag: row.tag,
+    releaseNodeId: row.node_id,
+    publishedAt: row.published_at,
+    catalogRank: Number(row.catalog_rank),
+    prerelease: row.prerelease === 1,
+    catalogTagCommitOid: row.catalog_tag_commit_oid,
+    resolvedTagCommitOid: row.resolved_tag_commit_oid,
+  };
+}
+
+function reachabilityCatalogProofIdentity(
+  catalog: AuthorizedReleaseReachabilityCatalogIdentity,
+  release: AuthorizedReleaseReachabilityRelease,
+  checkedRelease: AuthorizedReleaseReachabilityRelease | null = null,
+): ReachabilityCatalogProofIdentity {
+  return {
+    catalogDigest: catalog.digest,
+    catalogReceiptId: catalog.receiptId,
+    releaseNodeId: release.releaseNodeId,
+    checkedReleaseNodeId: checkedRelease?.releaseNodeId ?? null,
+  };
+}
+
+function canonicalReleaseReachabilityTags(
+  values: readonly string[],
+): string[] {
+  const tags = new Set<string>();
+  for (const value of values) {
+    if (!value || value.trim() !== value) {
+      throw new Error(
+        `Authorized release reachability read received invalid release tag ` +
+        `${JSON.stringify(value)}`,
+      );
+    }
+    tags.add(value);
+  }
+  return [...tags].sort((left, right) =>
+    Buffer.compare(Buffer.from(left, 'utf8'), Buffer.from(right, 'utf8')));
 }
 
 export interface IngestionEvidenceFailureInput {
@@ -3042,6 +19493,8 @@ export interface IngestionEvidenceFailureRow {
   message: string;
   context_json: string | null;
   scoring_blocking: number;
+  superseded_at: string | null;
+  superseded_by_run_id: string | null;
 }
 
 const hasIngestionEvidenceFailuresTable = tableHasColumns('ingestion_evidence_failures', [
@@ -3097,6 +19550,7 @@ const ingestionEvidenceFailuresAfterStmt = hasIngestionEvidenceFailuresTable ? d
 SELECT *
 FROM ingestion_evidence_failures
 WHERE scoring_blocking = 1
+  AND superseded_by_run_id IS NULL
   AND occurred_at > ?
 ORDER BY occurred_at DESC, id DESC
 LIMIT ?
@@ -3111,6 +19565,7 @@ const ingestionEvidenceFailureSourceCountsAfterStmt = hasIngestionEvidenceFailur
 SELECT source, COUNT(*) AS count, MAX(occurred_at) AS maxAt
 FROM ingestion_evidence_failures
 WHERE scoring_blocking = 1
+  AND superseded_by_run_id IS NULL
   AND occurred_at > ?
 GROUP BY source
 ORDER BY count DESC, source
@@ -3125,35 +19580,130 @@ export function ingestionEvidenceFailureSourceCountsAfter(timestamp: string): Ar
   }));
 }
 
+const listActiveIngestionEvidenceFailuresStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+SELECT *
+FROM ingestion_evidence_failures
+WHERE scoring_blocking = 1
+  AND superseded_by_run_id IS NULL
+ORDER BY occurred_at DESC, id DESC
+LIMIT ?
+`) : null;
+
+export function listActiveIngestionEvidenceFailures(limit = 25): IngestionEvidenceFailureRow[] {
+  if (!listActiveIngestionEvidenceFailuresStmt) return [];
+  return listActiveIngestionEvidenceFailuresStmt.all(
+    Math.max(1, Math.floor(limit)),
+  ) as unknown as IngestionEvidenceFailureRow[];
+}
+
+const supersedeIngestionEvidenceFailuresStmt = hasIngestionEvidenceFailuresTable ? db.prepare(`
+UPDATE ingestion_evidence_failures
+SET superseded_at=:superseded_at,
+    superseded_by_run_id=:successful_run_id
+WHERE scoring_blocking=1
+  AND superseded_by_run_id IS NULL
+  AND run_id != :successful_run_id
+  AND occurred_at <= :superseded_at
+  AND (
+    :sources_json IS NULL
+    OR source IN (SELECT value FROM json_each(:sources_json))
+  )
+  AND (
+    :scopes_json IS NULL
+    OR scope IN (SELECT value FROM json_each(:scopes_json))
+  )
+  AND (
+    :release_tags_json IS NULL
+    OR release_tag IN (SELECT value FROM json_each(:release_tags_json))
+  )
+`) : null;
+
+export function supersedeIngestionEvidenceFailures(input: {
+  successfulRunId: string;
+  supersededAt?: string;
+  sources?: string[];
+  scopes?: string[];
+  releaseTags?: string[];
+}): number {
+  if (!supersedeIngestionEvidenceFailuresStmt) return 0;
+  if (!input.successfulRunId.trim()) throw new Error('Successful ingestion run ID is required');
+  const supersededAt = input.supersededAt ?? new Date().toISOString();
+  if (!Number.isFinite(Date.parse(supersededAt))) {
+    throw new Error(`Invalid ingestion failure supersession timestamp ${supersededAt}`);
+  }
+  const sources = input.sources == null
+    ? null
+    : [...new Set(input.sources.map((source) => source.trim()).filter(Boolean))].sort();
+  if (sources && sources.length === 0) return 0;
+  const scopes = input.scopes == null
+    ? null
+    : [...new Set(input.scopes.map((scope) => scope.trim()).filter(Boolean))].sort();
+  if (scopes && scopes.length === 0) return 0;
+  const releaseTags = input.releaseTags == null
+    ? null
+    : [...new Set(input.releaseTags.map((tag) => tag.trim()).filter(Boolean))].sort();
+  if (releaseTags && releaseTags.length === 0) return 0;
+  return Number(supersedeIngestionEvidenceFailuresStmt.run({
+    successful_run_id: input.successfulRunId,
+    superseded_at: supersededAt,
+    sources_json: sources == null ? null : JSON.stringify(sources),
+    scopes_json: scopes == null ? null : JSON.stringify(scopes),
+    release_tags_json: releaseTags == null ? null : JSON.stringify(releaseTags),
+  }).changes ?? 0);
+}
+
 // Stable-only view. Prereleases live in the DB for derived-stat computation
 // (beta_count, hours_to_next_release) but are not surfaced to scoring or the
 // API — the UI is "should I install this stable release?", betas don't get
 // installed individually by end users.
 const listReleasesStmt = db.prepare(`
-SELECT * FROM releases WHERE prerelease = 0 ORDER BY published_at IS NULL, published_at DESC LIMIT ?
+SELECT *
+FROM releases
+WHERE prerelease = 0
+  AND catalog_active = 1
+ORDER BY catalog_rank IS NULL, catalog_rank, published_at IS NULL, published_at DESC, tag
+LIMIT ?
 `);
 
 export function listReleasesDb(limit = 20): ReleaseRow[] {
-  return listReleasesStmt.all(limit) as unknown as ReleaseRow[];
+  return withAuthorizedReleaseCatalogRead(
+    () => listReleasesStmt.all(limit) as unknown as ReleaseRow[],
+  );
 }
 
 const getReleaseStmt = db.prepare(`SELECT * FROM releases WHERE tag=?`);
 export function getRelease(tag: string): ReleaseRow | undefined {
-  return getReleaseStmt.get(tag) as ReleaseRow | undefined;
+  return runInReadTransaction(() => {
+    const release = getReleaseStmt.get(tag) as ReleaseRow | undefined;
+    if (release?.catalog_active === 1) {
+      authorizedActiveReleaseCatalogInCurrentTransaction();
+    }
+    return release;
+  });
 }
 
-const lastScoredAtStmt = db.prepare(`SELECT MAX(scored_at) AS ts FROM releases`);
+const lastScoredAtStmt = db.prepare(`
+SELECT MAX(scored_at) AS ts
+FROM releases
+WHERE catalog_active=1
+`);
 export function getLastScoredAt(): string | null {
-  const row = lastScoredAtStmt.get() as { ts: string | null };
-  return row?.ts ?? null;
+  return withAuthorizedReleaseCatalogRead(() => {
+    const row = lastScoredAtStmt.get() as { ts: string | null };
+    return row?.ts ?? null;
+  });
 }
 
 // ---------- issues ----------
 export interface IssueRow {
   number: number;
+  node_id?: string | null;
   state: string;
   title: string;
+  body?: string | null;
   author: string | null;
+  author_node_id?: string | null;
+  author_type?: string | null;
   author_association?: string | null;
   html_url: string;
   created_at: string;
@@ -3169,23 +19719,94 @@ export interface IssueRow {
   labels: string;
   is_bot: number; // 0/1; computed at write time via detectBot()
   fetched_at?: string | null;
+  checked_at?: string | null;
+  revision?: number;
+  raw_json?: string | null;
 }
 
-const upsertIssueStmt = db.prepare(`
+const hasIssueV2IdentityColumns = tableHasColumns('issues', [
+  'node_id',
+  'author_node_id',
+  'author_type',
+  'raw_json',
+]);
+const upsertIssueStmt = !dbReadOnly && hasIssueV2IdentityColumns ? db.prepare(`
 INSERT INTO issues (
-  number, state, title, author, author_association, html_url, created_at, updated_at, closed_at,
+  number, node_id, state, title, body, author, author_node_id, author_type,
+  author_association, html_url, created_at, updated_at, closed_at,
   comments, unique_human_commenters, maintainer_commenters, contributor_commenters, commenter_scan_truncated,
-  reaction_total, positive_reactions, labels, is_bot, fetched_at
+  reaction_total, positive_reactions, labels, is_bot, fetched_at, checked_at, raw_json
 )
 VALUES (
-  :number, :state, :title, :author, :author_association, :html_url, :created_at, :updated_at, :closed_at,
+  :number, :node_id, :state, :title, :body, :author, :author_node_id, :author_type,
+  :author_association, :html_url, :created_at, :updated_at, :closed_at,
   :comments, :unique_human_commenters, :maintainer_commenters, :contributor_commenters, :commenter_scan_truncated,
-  :reaction_total, :positive_reactions, :labels, :is_bot, :fetched_at
+  :reaction_total, :positive_reactions, :labels, :is_bot, :fetched_at, :checked_at, :raw_json
 )
 ON CONFLICT(number) DO UPDATE SET
+  revision=CASE
+    WHEN (excluded.node_id IS NOT NULL AND issues.node_id IS NOT excluded.node_id)
+      OR issues.state IS NOT excluded.state
+      OR issues.title IS NOT excluded.title
+      OR issues.body IS NOT excluded.body
+      OR issues.author IS NOT excluded.author
+      OR (excluded.author_node_id IS NOT NULL
+        AND issues.author_node_id IS NOT excluded.author_node_id)
+      OR (excluded.author_type IS NOT NULL
+        AND issues.author_type IS NOT excluded.author_type)
+      OR issues.author_association IS NOT excluded.author_association
+      OR issues.html_url IS NOT excluded.html_url
+      OR issues.created_at IS NOT excluded.created_at
+      OR issues.updated_at IS NOT excluded.updated_at
+      OR issues.closed_at IS NOT excluded.closed_at
+      OR issues.comments IS NOT excluded.comments
+      OR issues.unique_human_commenters IS NOT excluded.unique_human_commenters
+      OR issues.maintainer_commenters IS NOT excluded.maintainer_commenters
+      OR issues.contributor_commenters IS NOT excluded.contributor_commenters
+      OR issues.commenter_scan_truncated IS NOT excluded.commenter_scan_truncated
+      OR issues.reaction_total IS NOT excluded.reaction_total
+      OR issues.positive_reactions IS NOT excluded.positive_reactions
+      OR issues.labels IS NOT excluded.labels
+      OR issues.is_bot IS NOT excluded.is_bot
+      OR (excluded.raw_json IS NOT NULL AND issues.raw_json IS NOT excluded.raw_json)
+    THEN issues.revision + 1
+    ELSE issues.revision
+  END,
+  fetched_at=CASE
+    WHEN (excluded.node_id IS NOT NULL AND issues.node_id IS NOT excluded.node_id)
+      OR issues.state IS NOT excluded.state
+      OR issues.title IS NOT excluded.title
+      OR issues.body IS NOT excluded.body
+      OR issues.author IS NOT excluded.author
+      OR (excluded.author_node_id IS NOT NULL
+        AND issues.author_node_id IS NOT excluded.author_node_id)
+      OR (excluded.author_type IS NOT NULL
+        AND issues.author_type IS NOT excluded.author_type)
+      OR issues.author_association IS NOT excluded.author_association
+      OR issues.html_url IS NOT excluded.html_url
+      OR issues.created_at IS NOT excluded.created_at
+      OR issues.updated_at IS NOT excluded.updated_at
+      OR issues.closed_at IS NOT excluded.closed_at
+      OR issues.comments IS NOT excluded.comments
+      OR issues.unique_human_commenters IS NOT excluded.unique_human_commenters
+      OR issues.maintainer_commenters IS NOT excluded.maintainer_commenters
+      OR issues.contributor_commenters IS NOT excluded.contributor_commenters
+      OR issues.commenter_scan_truncated IS NOT excluded.commenter_scan_truncated
+      OR issues.reaction_total IS NOT excluded.reaction_total
+      OR issues.positive_reactions IS NOT excluded.positive_reactions
+      OR issues.labels IS NOT excluded.labels
+      OR issues.is_bot IS NOT excluded.is_bot
+      OR (excluded.raw_json IS NOT NULL AND issues.raw_json IS NOT excluded.raw_json)
+    THEN excluded.fetched_at
+    ELSE issues.fetched_at
+  END,
+  node_id=COALESCE(excluded.node_id, issues.node_id),
   state=excluded.state,
   title=excluded.title,
+  body=excluded.body,
   author=excluded.author,
+  author_node_id=COALESCE(excluded.author_node_id, issues.author_node_id),
+  author_type=COALESCE(excluded.author_type, issues.author_type),
   author_association=excluded.author_association,
   html_url=excluded.html_url,
   created_at=excluded.created_at,
@@ -3200,12 +19821,20 @@ ON CONFLICT(number) DO UPDATE SET
   positive_reactions=excluded.positive_reactions,
   labels=excluded.labels,
   is_bot=excluded.is_bot,
-  fetched_at=excluded.fetched_at
-`);
+  checked_at=excluded.checked_at,
+  raw_json=COALESCE(excluded.raw_json, issues.raw_json)
+`) : null;
 
 export function upsertIssue(i: IssueRow): void {
+  if (!upsertIssueStmt) throw new Error('Issue storage is unavailable or read-only');
+  const observedAt = i.checked_at ?? i.fetched_at ?? new Date().toISOString();
+  const { revision: _revision, ...input } = i;
   upsertIssueStmt.run({
-    ...i,
+    ...input,
+    node_id: i.node_id ?? null,
+    body: i.body ?? null,
+    author_node_id: i.author_node_id ?? null,
+    author_type: i.author_type ?? null,
     author_association: i.author_association ?? null,
     unique_human_commenters: i.unique_human_commenters ?? 0,
     maintainer_commenters: i.maintainer_commenters ?? 0,
@@ -3213,8 +19842,126 @@ export function upsertIssue(i: IssueRow): void {
     commenter_scan_truncated: i.commenter_scan_truncated ?? 0,
     reaction_total: i.reaction_total ?? 0,
     positive_reactions: i.positive_reactions ?? 0,
-    fetched_at: i.fetched_at ?? new Date().toISOString(),
+    fetched_at: i.fetched_at ?? observedAt,
+    checked_at: observedAt,
+    raw_json: i.raw_json ?? null,
   } as unknown as Record<string, string | number | null>);
+}
+
+const upsertIssueMetadataStmt =
+  !dbReadOnly && hasIssueV2IdentityColumns
+  ? db.prepare(`
+INSERT INTO issues (
+  number, node_id, state, title, body, author, author_node_id, author_type,
+  author_association, html_url, created_at, updated_at, closed_at,
+  comments, unique_human_commenters, maintainer_commenters, contributor_commenters, commenter_scan_truncated,
+  reaction_total, positive_reactions, labels, is_bot, fetched_at, checked_at, raw_json
+)
+VALUES (
+  :number, :node_id, :state, :title, :body, :author, :author_node_id, :author_type,
+  :author_association, :html_url, :created_at, :updated_at, :closed_at,
+  :comments, 0, 0, 0, 0,
+  :reaction_total, :positive_reactions, :labels, :is_bot, :fetched_at, :checked_at, :raw_json
+)
+ON CONFLICT(number) DO UPDATE SET
+  revision=CASE
+    WHEN (excluded.node_id IS NOT NULL AND issues.node_id IS NOT excluded.node_id)
+      OR issues.state IS NOT excluded.state
+      OR issues.title IS NOT excluded.title
+      OR issues.body IS NOT excluded.body
+      OR issues.author IS NOT excluded.author
+      OR (excluded.author_node_id IS NOT NULL
+        AND issues.author_node_id IS NOT excluded.author_node_id)
+      OR (excluded.author_type IS NOT NULL
+        AND issues.author_type IS NOT excluded.author_type)
+      OR issues.author_association IS NOT excluded.author_association
+      OR issues.html_url IS NOT excluded.html_url
+      OR issues.created_at IS NOT excluded.created_at
+      OR issues.updated_at IS NOT excluded.updated_at
+      OR issues.closed_at IS NOT excluded.closed_at
+      OR issues.comments IS NOT excluded.comments
+      OR issues.reaction_total IS NOT excluded.reaction_total
+      OR issues.positive_reactions IS NOT excluded.positive_reactions
+      OR issues.labels IS NOT excluded.labels
+      OR issues.is_bot IS NOT excluded.is_bot
+      OR (excluded.raw_json IS NOT NULL AND issues.raw_json IS NOT excluded.raw_json)
+    THEN issues.revision + 1
+    ELSE issues.revision
+  END,
+  fetched_at=CASE
+    WHEN (excluded.node_id IS NOT NULL AND issues.node_id IS NOT excluded.node_id)
+      OR issues.state IS NOT excluded.state
+      OR issues.title IS NOT excluded.title
+      OR issues.body IS NOT excluded.body
+      OR issues.author IS NOT excluded.author
+      OR (excluded.author_node_id IS NOT NULL
+        AND issues.author_node_id IS NOT excluded.author_node_id)
+      OR (excluded.author_type IS NOT NULL
+        AND issues.author_type IS NOT excluded.author_type)
+      OR issues.author_association IS NOT excluded.author_association
+      OR issues.html_url IS NOT excluded.html_url
+      OR issues.created_at IS NOT excluded.created_at
+      OR issues.updated_at IS NOT excluded.updated_at
+      OR issues.closed_at IS NOT excluded.closed_at
+      OR issues.comments IS NOT excluded.comments
+      OR issues.reaction_total IS NOT excluded.reaction_total
+      OR issues.positive_reactions IS NOT excluded.positive_reactions
+      OR issues.labels IS NOT excluded.labels
+      OR issues.is_bot IS NOT excluded.is_bot
+      OR (excluded.raw_json IS NOT NULL AND issues.raw_json IS NOT excluded.raw_json)
+    THEN excluded.fetched_at
+    ELSE issues.fetched_at
+  END,
+  node_id=COALESCE(excluded.node_id, issues.node_id),
+  state=excluded.state,
+  title=excluded.title,
+  body=excluded.body,
+  author=excluded.author,
+  author_node_id=COALESCE(excluded.author_node_id, issues.author_node_id),
+  author_type=COALESCE(excluded.author_type, issues.author_type),
+  author_association=excluded.author_association,
+  html_url=excluded.html_url,
+  created_at=excluded.created_at,
+  updated_at=excluded.updated_at,
+  closed_at=excluded.closed_at,
+  comments=excluded.comments,
+  reaction_total=excluded.reaction_total,
+  positive_reactions=excluded.positive_reactions,
+  labels=excluded.labels,
+  is_bot=excluded.is_bot,
+  checked_at=excluded.checked_at,
+  raw_json=COALESCE(excluded.raw_json, issues.raw_json)
+`)
+  : null;
+
+export function upsertIssueMetadata(i: IssueRow): void {
+  if (!upsertIssueMetadataStmt) {
+    throw new Error('Issue metadata storage is unavailable or read-only');
+  }
+  const observedAt = i.checked_at ?? i.fetched_at ?? new Date().toISOString();
+  upsertIssueMetadataStmt.run({
+    number: i.number,
+    node_id: i.node_id ?? null,
+    state: i.state,
+    title: i.title,
+    body: i.body ?? null,
+    author: i.author,
+    author_node_id: i.author_node_id ?? null,
+    author_type: i.author_type ?? null,
+    author_association: i.author_association ?? null,
+    html_url: i.html_url,
+    created_at: i.created_at,
+    updated_at: i.updated_at,
+    closed_at: i.closed_at,
+    comments: i.comments,
+    reaction_total: i.reaction_total ?? 0,
+    positive_reactions: i.positive_reactions ?? 0,
+    labels: i.labels,
+    is_bot: i.is_bot,
+    fetched_at: i.fetched_at ?? observedAt,
+    checked_at: observedAt,
+    raw_json: i.raw_json ?? null,
+  });
 }
 
 const getIssueStmt = db.prepare(`SELECT * FROM issues WHERE number=?`);
@@ -3222,17 +19969,872 @@ export function getIssue(number: number): IssueRow | undefined {
   return getIssueStmt.get(number) as IssueRow | undefined;
 }
 
+// ---------- classifier attempt ledger ----------
+type ClassifierAppendResult<T> = {
+  inserted: boolean;
+  equivalent: boolean;
+  row: T;
+};
+
+interface ClassifierAttemptRunStorageRow {
+  run_id: string;
+  issue_number: number;
+  started_at: string;
+  max_attempts: number;
+  classifier_identity_hash: string;
+  request_hash: string;
+  content_hash: string;
+  run_json: string;
+}
+
+interface ClassifierAttemptStorageRow {
+  attempt_id: string;
+  run_id: string;
+  issue_number: number;
+  ordinal: number;
+  status: string;
+  started_at: string;
+  finished_at: string;
+  previous_content_hash: string;
+  content_hash: string;
+  attempt_json: string;
+}
+
+interface ClassifierAttemptTerminalReceiptStorageRow {
+  receipt_id: string;
+  run_id: string;
+  issue_number: number;
+  status: string;
+  finished_at: string;
+  attempt_count: number;
+  previous_content_hash: string;
+  content_hash: string;
+  receipt_json: string;
+}
+
+const hasClassifierAttemptRuns = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='classifier_attempt_runs'
+`).get() != null;
+const hasClassifierAttempts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='classifier_attempts'
+`).get() != null;
+const hasClassifierAttemptTerminalReceipts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='classifier_attempt_terminal_receipts'
+`).get() != null;
+
+const classifierAttemptRunByIdStmt = hasClassifierAttemptRuns
+  ? db.prepare(`SELECT * FROM classifier_attempt_runs WHERE run_id=?`)
+  : null;
+const listClassifierAttemptRunsStmt = hasClassifierAttemptRuns
+  ? db.prepare(`SELECT * FROM classifier_attempt_runs ORDER BY started_at, run_id`)
+  : null;
+const insertClassifierAttemptRunStmt = !dbReadOnly && hasClassifierAttemptRuns
+  ? db.prepare(`
+      INSERT INTO classifier_attempt_runs (
+        run_id, issue_number, started_at, max_attempts, classifier_identity_hash,
+        request_hash, content_hash, run_json
+      )
+      VALUES (
+        :run_id, :issue_number, :started_at, :max_attempts, :classifier_identity_hash,
+        :request_hash, :content_hash, :run_json
+      )
+    `)
+  : null;
+
+const classifierAttemptByIdStmt = hasClassifierAttempts
+  ? db.prepare(`SELECT * FROM classifier_attempts WHERE attempt_id=?`)
+  : null;
+const classifierAttemptByRunOrdinalStmt = hasClassifierAttempts
+  ? db.prepare(`SELECT * FROM classifier_attempts WHERE run_id=? AND ordinal=?`)
+  : null;
+const listClassifierAttemptsForRunStmt = hasClassifierAttempts
+  ? db.prepare(`SELECT * FROM classifier_attempts WHERE run_id=? ORDER BY ordinal`)
+  : null;
+const listClassifierAttemptsStmt = hasClassifierAttempts
+  ? db.prepare(`SELECT * FROM classifier_attempts ORDER BY run_id, ordinal`)
+  : null;
+const insertClassifierAttemptStmt = !dbReadOnly && hasClassifierAttempts
+  ? db.prepare(`
+      INSERT INTO classifier_attempts (
+        attempt_id, run_id, issue_number, ordinal, status, started_at, finished_at,
+        previous_content_hash, content_hash, attempt_json
+      )
+      VALUES (
+        :attempt_id, :run_id, :issue_number, :ordinal, :status, :started_at, :finished_at,
+        :previous_content_hash, :content_hash, :attempt_json
+      )
+    `)
+  : null;
+
+const classifierAttemptReceiptByRunStmt = hasClassifierAttemptTerminalReceipts
+  ? db.prepare(`SELECT * FROM classifier_attempt_terminal_receipts WHERE run_id=?`)
+  : null;
+const classifierAttemptReceiptByIdStmt = hasClassifierAttemptTerminalReceipts
+  ? db.prepare(`SELECT * FROM classifier_attempt_terminal_receipts WHERE receipt_id=?`)
+  : null;
+const listClassifierAttemptReceiptsStmt = hasClassifierAttemptTerminalReceipts
+  ? db.prepare(`SELECT * FROM classifier_attempt_terminal_receipts ORDER BY finished_at, receipt_id`)
+  : null;
+const insertClassifierAttemptReceiptStmt =
+  !dbReadOnly && hasClassifierAttemptTerminalReceipts
+    ? db.prepare(`
+        INSERT INTO classifier_attempt_terminal_receipts (
+          receipt_id, run_id, issue_number, status, finished_at, attempt_count,
+          previous_content_hash, content_hash, receipt_json
+        )
+        VALUES (
+          :receipt_id, :run_id, :issue_number, :status, :finished_at, :attempt_count,
+          :previous_content_hash, :content_hash, :receipt_json
+        )
+      `)
+    : null;
+
+function classifierLedgerStorageUnavailable(): never {
+  throw new Error('Classifier attempt ledger storage is unavailable or read-only');
+}
+
+function classifierAttemptRunFromStorage(
+  row: ClassifierAttemptRunStorageRow,
+): ClassifierAttemptRun {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.run_json);
+  } catch (error) {
+    throw new Error(`Classifier run ${JSON.stringify(row.run_id)} contains invalid JSON`, {
+      cause: error,
+    });
+  }
+  const run = validateClassifierAttemptRun(parsed);
+  if (
+    row.run_json !== canonicalClassifierAttemptLedgerJson(run) ||
+    row.run_id !== run.runId ||
+    Number(row.issue_number) !== run.issueNumber ||
+    row.started_at !== run.startedAt ||
+    Number(row.max_attempts) !== run.maxAttempts ||
+    row.classifier_identity_hash !== run.classifierIdentityHash ||
+    row.request_hash !== run.requestHash ||
+    row.content_hash !== run.contentHash
+  ) {
+    throw new Error(`Classifier run ${JSON.stringify(row.run_id)} storage does not match its canonical payload`);
+  }
+  return run;
+}
+
+function classifierAttemptFromStorage(
+  row: ClassifierAttemptStorageRow,
+): ClassifierAttempt {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.attempt_json);
+  } catch (error) {
+    throw new Error(`Classifier attempt ${JSON.stringify(row.attempt_id)} contains invalid JSON`, {
+      cause: error,
+    });
+  }
+  const attempt = validateClassifierAttempt(parsed);
+  if (
+    row.attempt_json !== canonicalClassifierAttemptLedgerJson(attempt) ||
+    row.attempt_id !== attempt.attemptId ||
+    row.run_id !== attempt.runId ||
+    Number(row.issue_number) !== attempt.issueNumber ||
+    Number(row.ordinal) !== attempt.ordinal ||
+    row.status !== attempt.status ||
+    row.started_at !== attempt.startedAt ||
+    row.finished_at !== attempt.finishedAt ||
+    row.previous_content_hash !== attempt.previousContentHash ||
+    row.content_hash !== attempt.contentHash
+  ) {
+    throw new Error(
+      `Classifier attempt ${JSON.stringify(row.attempt_id)} storage does not match its canonical payload`,
+    );
+  }
+  return attempt;
+}
+
+function classifierAttemptReceiptFromStorage(
+  row: ClassifierAttemptTerminalReceiptStorageRow,
+): ClassifierAttemptTerminalReceipt {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.receipt_json);
+  } catch (error) {
+    throw new Error(`Classifier receipt ${JSON.stringify(row.receipt_id)} contains invalid JSON`, {
+      cause: error,
+    });
+  }
+  const receipt = validateClassifierAttemptTerminalReceipt(parsed);
+  if (
+    row.receipt_json !== canonicalClassifierAttemptLedgerJson(receipt) ||
+    row.receipt_id !== receipt.receiptId ||
+    row.run_id !== receipt.runId ||
+    Number(row.issue_number) !== receipt.issueNumber ||
+    row.status !== receipt.status ||
+    row.finished_at !== receipt.finishedAt ||
+    Number(row.attempt_count) !== receipt.attemptCount ||
+    row.previous_content_hash !== receipt.previousContentHash ||
+    row.content_hash !== receipt.contentHash
+  ) {
+    throw new Error(
+      `Classifier receipt ${JSON.stringify(row.receipt_id)} storage does not match its canonical payload`,
+    );
+  }
+  return receipt;
+}
+
+function storedClassifierAttemptRun(runId: string): ClassifierAttemptRun | null {
+  const row = classifierAttemptRunByIdStmt?.get(runId) as
+    | ClassifierAttemptRunStorageRow
+    | undefined;
+  return row ? classifierAttemptRunFromStorage(row) : null;
+}
+
+function storedClassifierAttempts(runId: string): ClassifierAttempt[] {
+  return (
+    listClassifierAttemptsForRunStmt?.all(runId) as
+      | ClassifierAttemptStorageRow[]
+      | undefined ?? []
+  ).map(classifierAttemptFromStorage);
+}
+
+function storedClassifierAttemptReceipt(
+  runId: string,
+): ClassifierAttemptTerminalReceipt | null {
+  const row = classifierAttemptReceiptByRunStmt?.get(runId) as
+    | ClassifierAttemptTerminalReceiptStorageRow
+    | undefined;
+  return row ? classifierAttemptReceiptFromStorage(row) : null;
+}
+
+function classifierAttemptPrefixProblems(
+  run: ClassifierAttemptRun,
+  attempts: readonly ClassifierAttempt[],
+): string[] {
+  const problems: string[] = [];
+  if (attempts.length > run.maxAttempts) {
+    problems.push(`attempt count ${attempts.length} exceeds run.maxAttempts ${run.maxAttempts}`);
+  }
+  const attemptIds = new Set<string>();
+  let previousHash = run.contentHash;
+  let previousFinishedAt = Date.parse(run.startedAt);
+  let acceptedOrdinal: number | null = null;
+  for (const [index, attempt] of attempts.entries()) {
+    const path = `attempts[${index}]`;
+    if (attemptIds.has(attempt.attemptId)) {
+      problems.push(`${path}.attemptId duplicates ${JSON.stringify(attempt.attemptId)}`);
+    }
+    attemptIds.add(attempt.attemptId);
+    if (attempt.ordinal !== index + 1) {
+      problems.push(`${path}.ordinal must equal ${index + 1}`);
+    }
+    if (attempt.runId !== run.runId) {
+      problems.push(`${path}.runId does not match run.runId`);
+    }
+    if (attempt.issueNumber !== run.issueNumber) {
+      problems.push(`${path}.issueNumber does not match run.issueNumber`);
+    }
+    if (attempt.provenance.requestHash !== run.requestHash) {
+      problems.push(`${path}.provenance.requestHash does not match run.requestHash`);
+    }
+    if (attempt.previousContentHash !== previousHash) {
+      problems.push(`${path}.previousContentHash does not match the append chain`);
+    }
+    if (Date.parse(attempt.startedAt) < previousFinishedAt) {
+      problems.push(`${path}.startedAt overlaps or precedes the prior ledger event`);
+    }
+    previousFinishedAt = Date.parse(attempt.finishedAt);
+    if (attempt.status === 'accepted_success') {
+      if (acceptedOrdinal !== null) {
+        problems.push(`${path} is a second accepted_success after ordinal ${acceptedOrdinal}`);
+      }
+      acceptedOrdinal = attempt.ordinal;
+    } else if (acceptedOrdinal !== null) {
+      problems.push(`${path} cannot follow accepted_success ordinal ${acceptedOrdinal}`);
+    }
+    if (index < attempts.length - 1 && attempt.retry.decision !== 'retry') {
+      problems.push(`${path}.retry.decision must be retry before a later attempt`);
+    }
+    previousHash = attempt.contentHash;
+  }
+  return [...new Set(problems)];
+}
+
+function assertClassifierAttemptPrefix(
+  run: ClassifierAttemptRun,
+  attempts: readonly ClassifierAttempt[],
+): void {
+  const problems = classifierAttemptPrefixProblems(run, attempts);
+  if (problems.length > 0) {
+    throw new Error(`Invalid stored classifier attempt prefix: ${problems.join('; ')}`);
+  }
+}
+
+function verifiedStoredClassifierAttemptLedger(
+  runId: string,
+): ClassifierAttemptLedger | null {
+  const run = storedClassifierAttemptRun(runId);
+  if (!run) return null;
+  const attempts = storedClassifierAttempts(runId);
+  assertClassifierAttemptPrefix(run, attempts);
+  const receipt = storedClassifierAttemptReceipt(runId);
+  if (!receipt) return null;
+  const ledger: ClassifierAttemptLedger = {
+    schemaVersion: CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION,
+    run,
+    attempts,
+    receipt,
+  };
+  const verification = verifyClassifierAttemptLedger(ledger);
+  if (!verification.valid) {
+    throw new Error(
+      `Stored classifier attempt ledger ${JSON.stringify(runId)} is invalid: ` +
+      verification.problems.join('; '),
+    );
+  }
+  return ledger;
+}
+
+export function recordClassifierAttemptRun(
+  input: ClassifierAttemptRun,
+): ClassifierAppendResult<ClassifierAttemptRun> {
+  if (!classifierAttemptRunByIdStmt || !insertClassifierAttemptRunStmt) {
+    classifierLedgerStorageUnavailable();
+  }
+  const run = validateClassifierAttemptRun(input);
+  return runInWriteTransaction(() => {
+    const existingRow = classifierAttemptRunByIdStmt.get(run.runId) as
+      | ClassifierAttemptRunStorageRow
+      | undefined;
+    if (existingRow) {
+      const existing = classifierAttemptRunFromStorage(existingRow);
+      if (
+        canonicalClassifierAttemptLedgerJson(existing) ===
+        canonicalClassifierAttemptLedgerJson(run)
+      ) {
+        return { inserted: false, equivalent: true, row: existing };
+      }
+      throw new Error(`Classifier attempt run conflict for ${JSON.stringify(run.runId)}`);
+    }
+    insertClassifierAttemptRunStmt.run({
+      run_id: run.runId,
+      issue_number: run.issueNumber,
+      started_at: run.startedAt,
+      max_attempts: run.maxAttempts,
+      classifier_identity_hash: run.classifierIdentityHash,
+      request_hash: run.requestHash,
+      content_hash: run.contentHash,
+      run_json: canonicalClassifierAttemptLedgerJson(run),
+    });
+    const stored = storedClassifierAttemptRun(run.runId);
+    if (!stored) {
+      throw new Error(`Classifier attempt run ${JSON.stringify(run.runId)} was not persisted`);
+    }
+    return { inserted: true, equivalent: false, row: stored };
+  });
+}
+
+export function recordClassifierAttempt(
+  input: ClassifierAttempt,
+): ClassifierAppendResult<ClassifierAttempt> {
+  if (
+    !classifierAttemptByIdStmt ||
+    !classifierAttemptByRunOrdinalStmt ||
+    !insertClassifierAttemptStmt
+  ) {
+    classifierLedgerStorageUnavailable();
+  }
+  const attempt = validateClassifierAttempt(input);
+  return runInWriteTransaction(() => {
+    const run = storedClassifierAttemptRun(attempt.runId);
+    if (!run) {
+      throw new Error(
+        `Classifier attempt ${JSON.stringify(attempt.attemptId)} references unknown run ` +
+        JSON.stringify(attempt.runId),
+      );
+    }
+    const attempts = storedClassifierAttempts(attempt.runId);
+    assertClassifierAttemptPrefix(run, attempts);
+    const receipt = storedClassifierAttemptReceipt(attempt.runId);
+    if (receipt) {
+      verifiedStoredClassifierAttemptLedger(attempt.runId);
+    }
+    const existingByIdRow = classifierAttemptByIdStmt.get(attempt.attemptId) as
+      | ClassifierAttemptStorageRow
+      | undefined;
+    const existingByOrdinalRow = classifierAttemptByRunOrdinalStmt.get(
+      attempt.runId,
+      attempt.ordinal,
+    ) as ClassifierAttemptStorageRow | undefined;
+    const existingRow = existingByIdRow ?? existingByOrdinalRow;
+    if (existingRow) {
+      const existing = classifierAttemptFromStorage(existingRow);
+      if (
+        canonicalClassifierAttemptLedgerJson(existing) ===
+        canonicalClassifierAttemptLedgerJson(attempt)
+      ) {
+        return { inserted: false, equivalent: true, row: existing };
+      }
+      throw new Error(
+        `Classifier attempt conflict for ${JSON.stringify(attempt.attemptId)} ` +
+        `or run ordinal ${attempt.ordinal}`,
+      );
+    }
+    if (receipt) {
+      throw new Error(
+        `Classifier attempt cannot be appended after terminal receipt for ` +
+        JSON.stringify(attempt.runId),
+      );
+    }
+    assertClassifierAttemptPrefix(run, [...attempts, attempt]);
+    insertClassifierAttemptStmt.run({
+      attempt_id: attempt.attemptId,
+      run_id: attempt.runId,
+      issue_number: attempt.issueNumber,
+      ordinal: attempt.ordinal,
+      status: attempt.status,
+      started_at: attempt.startedAt,
+      finished_at: attempt.finishedAt,
+      previous_content_hash: attempt.previousContentHash,
+      content_hash: attempt.contentHash,
+      attempt_json: canonicalClassifierAttemptLedgerJson(attempt),
+    });
+    const storedRow = classifierAttemptByIdStmt.get(attempt.attemptId) as
+      | ClassifierAttemptStorageRow
+      | undefined;
+    if (!storedRow) {
+      throw new Error(`Classifier attempt ${JSON.stringify(attempt.attemptId)} was not persisted`);
+    }
+    const stored = classifierAttemptFromStorage(storedRow);
+    assertClassifierAttemptPrefix(run, storedClassifierAttempts(attempt.runId));
+    return { inserted: true, equivalent: false, row: stored };
+  });
+}
+
+export function recordClassifierAttemptTerminalReceipt(
+  input: ClassifierAttemptTerminalReceipt,
+): ClassifierAppendResult<ClassifierAttemptTerminalReceipt> {
+  if (
+    !classifierAttemptReceiptByRunStmt ||
+    !classifierAttemptReceiptByIdStmt ||
+    !insertClassifierAttemptReceiptStmt
+  ) {
+    classifierLedgerStorageUnavailable();
+  }
+  const receipt = validateClassifierAttemptTerminalReceipt(input);
+  return runInWriteTransaction(() => {
+    const run = storedClassifierAttemptRun(receipt.runId);
+    if (!run) {
+      throw new Error(
+        `Classifier terminal receipt ${JSON.stringify(receipt.receiptId)} references ` +
+        `unknown run ${JSON.stringify(receipt.runId)}`,
+      );
+    }
+    const attempts = storedClassifierAttempts(receipt.runId);
+    assertClassifierAttemptPrefix(run, attempts);
+    const existingByRunRow = classifierAttemptReceiptByRunStmt.get(receipt.runId) as
+      | ClassifierAttemptTerminalReceiptStorageRow
+      | undefined;
+    const existingByIdRow = classifierAttemptReceiptByIdStmt.get(receipt.receiptId) as
+      | ClassifierAttemptTerminalReceiptStorageRow
+      | undefined;
+    const existingRow = existingByRunRow ?? existingByIdRow;
+    if (existingRow) {
+      const existing = classifierAttemptReceiptFromStorage(existingRow);
+      const ledger = verifiedStoredClassifierAttemptLedger(existing.runId);
+      if (
+        ledger &&
+        canonicalClassifierAttemptLedgerJson(existing) ===
+          canonicalClassifierAttemptLedgerJson(receipt)
+      ) {
+        return { inserted: false, equivalent: true, row: existing };
+      }
+      throw new Error(
+        `Classifier terminal receipt conflict for run ${JSON.stringify(receipt.runId)}`,
+      );
+    }
+    const ledger: ClassifierAttemptLedger = {
+      schemaVersion: CLASSIFIER_ATTEMPT_LEDGER_SCHEMA_VERSION,
+      run,
+      attempts,
+      receipt,
+    };
+    const verification = verifyClassifierAttemptLedger(ledger);
+    if (!verification.valid) {
+      throw new Error(
+        `Classifier terminal receipt semantic validation failed: ` +
+        verification.problems.join('; '),
+      );
+    }
+    insertClassifierAttemptReceiptStmt.run({
+      receipt_id: receipt.receiptId,
+      run_id: receipt.runId,
+      issue_number: receipt.issueNumber,
+      status: receipt.status,
+      finished_at: receipt.finishedAt,
+      attempt_count: receipt.attemptCount,
+      previous_content_hash: receipt.previousContentHash,
+      content_hash: receipt.contentHash,
+      receipt_json: canonicalClassifierAttemptLedgerJson(receipt),
+    });
+    const storedLedger = verifiedStoredClassifierAttemptLedger(receipt.runId);
+    if (!storedLedger) {
+      throw new Error(
+        `Classifier terminal receipt ${JSON.stringify(receipt.receiptId)} was not persisted`,
+      );
+    }
+    return { inserted: true, equivalent: false, row: storedLedger.receipt };
+  });
+}
+
+export function createClassifierAttemptRecorder(): ClassifierAttemptRecorder {
+  return {
+    recordRun(run) {
+      recordClassifierAttemptRun(run);
+    },
+    recordAttempt(attempt) {
+      recordClassifierAttempt(attempt);
+    },
+    recordTerminalReceipt(receipt) {
+      recordClassifierAttemptTerminalReceipt(receipt);
+    },
+  };
+}
+
+export function getClassifierAttemptLedger(
+  runId: string,
+): ClassifierAttemptLedger | null {
+  return verifiedStoredClassifierAttemptLedger(runId);
+}
+
+export function listClassifierAttemptRuns(): ClassifierAttemptRun[] {
+  return (
+    listClassifierAttemptRunsStmt?.all() as
+      | ClassifierAttemptRunStorageRow[]
+      | undefined ?? []
+  ).map(classifierAttemptRunFromStorage);
+}
+
+export function listClassifierAttempts(runId?: string): ClassifierAttempt[] {
+  const rows = runId
+    ? listClassifierAttemptsForRunStmt?.all(runId)
+    : listClassifierAttemptsStmt?.all();
+  return (rows as ClassifierAttemptStorageRow[] | undefined ?? [])
+    .map(classifierAttemptFromStorage);
+}
+
+export function listClassifierAttemptTerminalReceipts():
+  ClassifierAttemptTerminalReceipt[] {
+  return (
+    listClassifierAttemptReceiptsStmt?.all() as
+      | ClassifierAttemptTerminalReceiptStorageRow[]
+      | undefined ?? []
+  ).map(classifierAttemptReceiptFromStorage);
+}
+
 // ---------- classifications ----------
 // `has_workaround` is the legacy boolean — we keep writing it for back-compat with old
 // rows, but new scoring code only reads `workaround_status`.
+export const CLASSIFIER_SOURCE_IDENTITY_SCHEMA_VERSION = 2;
+
+export interface ClassifierSourceIdentity {
+  schemaVersion: typeof CLASSIFIER_SOURCE_IDENTITY_SCHEMA_VERSION;
+  model: string;
+  reasoningEffort: string;
+  serviceTier: string;
+  promptVersion: number;
+  promptTemplateHash: string;
+  knownTags: string[];
+  knownTagSetDigest: string;
+  digest: string;
+}
+
+export function classifierSourceIdentity(
+  knownTags: string[],
+  promptVersion: number,
+): ClassifierSourceIdentity {
+  if (!Number.isInteger(promptVersion) || promptVersion < 0) {
+    throw new Error(`Classifier prompt version must be a non-negative integer, got ${promptVersion}`);
+  }
+  const effectiveKnownTags = knownTags.map((tag) => String(tag));
+  if (effectiveKnownTags.some((tag) => !tag)) {
+    throw new Error('Classifier source identity tags must be non-empty strings');
+  }
+  if (new Set(effectiveKnownTags).size !== effectiveKnownTags.length) {
+    throw new Error('Classifier source identity tags must not contain duplicates');
+  }
+  const knownTagSetDigest = createHash('sha256')
+    .update(JSON.stringify([...effectiveKnownTags].sort()))
+    .digest('hex');
+  const payload = {
+    schemaVersion: CLASSIFIER_SOURCE_IDENTITY_SCHEMA_VERSION as typeof CLASSIFIER_SOURCE_IDENTITY_SCHEMA_VERSION,
+    model: config.openai.model,
+    reasoningEffort: config.openai.reasoningEffort,
+    serviceTier: config.openai.serviceTier,
+    promptVersion,
+    promptTemplateHash: CLASSIFICATION_PROMPT_TEMPLATE_HASH,
+    knownTags: effectiveKnownTags,
+    knownTagSetDigest,
+  };
+  return {
+    ...payload,
+    digest: createHash('sha256').update(JSON.stringify(payload)).digest('hex'),
+  };
+}
+
+export interface AcceptedClassifierClassificationInput {
+  ledger: ClassifierAttemptLedger;
+  selectedAttemptBinding: ClassifierSelectedAttemptBinding;
+  evidenceRevisions: Pick<
+    IssueEvidenceRevision,
+    'issueRevision' | 'snapshotRevision' | 'stateSnapshotRevision'
+  >;
+}
+
+export interface ClassifierClassificationPublicationRow {
+  id: number;
+  publication_id: string;
+  issue_number: number;
+  classification_revision: number;
+  classification_content_hash: string;
+  run_id: string;
+  run_content_hash: string;
+  receipt_id: string;
+  receipt_content_hash: string;
+  request_hash: string;
+  selected_attempt_id: string;
+  selected_attempt_ordinal: number;
+  selected_attempt_content_hash: string;
+  raw_response_hash: string;
+  raw_model_output_hash: string;
+  attempt_provenance_hash: string;
+  issue_revision: number | null;
+  snapshot_revision: number | null;
+  state_snapshot_revision: number | null;
+  source_identity_digest: string;
+  published_at: string;
+  binding_json: string;
+  content_hash: string;
+}
+
+const hasClassifierClassificationPublications = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='classifier_classification_publications'
+`).get() != null;
+const classifierPublicationByIssueRevisionStmt =
+  hasClassifierClassificationPublications
+    ? db.prepare(`
+        SELECT *
+        FROM classifier_classification_publications
+        WHERE issue_number=? AND classification_revision=?
+      `)
+    : null;
+const classifierPublicationByReceiptStmt = hasClassifierClassificationPublications
+  ? db.prepare(`
+      SELECT *
+      FROM classifier_classification_publications
+      WHERE receipt_id=?
+    `)
+  : null;
+const listClassifierClassificationPublicationsStmt =
+  hasClassifierClassificationPublications
+    ? db.prepare(`
+        SELECT *
+        FROM classifier_classification_publications
+        ORDER BY issue_number, classification_revision
+      `)
+    : null;
+const insertClassifierClassificationPublicationStmt =
+  !dbReadOnly && hasClassifierClassificationPublications
+    ? db.prepare(`
+        INSERT INTO classifier_classification_publications (
+          publication_id, issue_number, classification_revision,
+          classification_content_hash, run_id, run_content_hash, receipt_id,
+          receipt_content_hash, request_hash, selected_attempt_id,
+          selected_attempt_ordinal, selected_attempt_content_hash,
+          raw_response_hash, raw_model_output_hash, attempt_provenance_hash,
+          issue_revision, snapshot_revision, state_snapshot_revision,
+          source_identity_digest, published_at, binding_json, content_hash
+        )
+        VALUES (
+          :publication_id, :issue_number, :classification_revision,
+          :classification_content_hash, :run_id, :run_content_hash, :receipt_id,
+          :receipt_content_hash, :request_hash, :selected_attempt_id,
+          :selected_attempt_ordinal, :selected_attempt_content_hash,
+          :raw_response_hash, :raw_model_output_hash, :attempt_provenance_hash,
+          :issue_revision, :snapshot_revision, :state_snapshot_revision,
+          :source_identity_digest, :published_at, :binding_json, :content_hash
+        )
+      `)
+    : null;
+
+function sha256WithDomain(domain: string, value: string): string {
+  return createHash('sha256').update(`${domain}\0${value}`).digest('hex');
+}
+
+function classificationProjectionContentHash(
+  row: Pick<
+    ClassificationRow,
+    | 'issue_number'
+    | 'sentiment'
+    | 'severity'
+    | 'scope'
+    | 'functionality'
+    | 'affected_users'
+    | 'has_workaround'
+    | 'workaround_status'
+    | 'duplicate_cluster'
+    | 'affects_version'
+    | 'confidence'
+    | 'rationale'
+    | 'classified_at'
+    | 'classified_updated_at'
+    | 'classified_comments_digest'
+    | 'prompt_version'
+    | 'source_identity_json'
+    | 'source_identity_digest'
+    | 'classification_origin'
+    | 'raw_model_output'
+    | 'provenance_json'
+  >,
+): string {
+  return sha256WithDomain(
+    'classifier-classification-projection-v1',
+    canonicalClassifierAttemptLedgerJson({
+      issueNumber: row.issue_number,
+      sentiment: row.sentiment,
+      severity: row.severity,
+      scope: row.scope,
+      functionality: row.functionality,
+      affectedUsers: row.affected_users,
+      hasWorkaround: row.has_workaround,
+      workaroundStatus: row.workaround_status,
+      duplicateCluster: row.duplicate_cluster,
+      affectsVersion: row.affects_version,
+      confidence: row.confidence,
+      rationale: row.rationale,
+      classifiedAt: row.classified_at,
+      classifiedUpdatedAt: row.classified_updated_at,
+      classifiedCommentsDigest: row.classified_comments_digest,
+      promptVersion: row.prompt_version,
+      sourceIdentityJson: row.source_identity_json,
+      sourceIdentityDigest: row.source_identity_digest,
+      classificationOrigin: row.classification_origin,
+      rawModelOutput: row.raw_model_output,
+      provenanceJson: row.provenance_json,
+    }),
+  );
+}
+
+function acceptedClassifierInputProblems(
+  issueNumber: number,
+  classification: IssueClassification,
+  sourceIdentity: ClassifierSourceIdentity | null,
+  accepted: AcceptedClassifierClassificationInput | null,
+): string[] {
+  const problems: string[] = [];
+  if (!accepted) return ['accepted classifier ledger binding is required'];
+  const verification = verifyClassifierAttemptLedger(accepted.ledger);
+  if (!verification.valid) {
+    problems.push(...verification.problems.map((problem) => `ledger ${problem}`));
+    return problems;
+  }
+  const { ledger, selectedAttemptBinding, evidenceRevisions } = accepted;
+  if (ledger.receipt.status !== 'accepted_success') {
+    problems.push(`terminal receipt is ${ledger.receipt.status}, not accepted_success`);
+  }
+  if (ledger.run.issueNumber !== issueNumber || ledger.receipt.issueNumber !== issueNumber) {
+    problems.push('ledger issue number does not match the classification issue');
+  }
+  if (
+    !ledger.receipt.selectedAttempt ||
+    canonicalClassifierAttemptLedgerJson(ledger.receipt.selectedAttempt) !==
+      canonicalClassifierAttemptLedgerJson(selectedAttemptBinding)
+  ) {
+    problems.push('selected attempt binding does not match the terminal receipt');
+  }
+  const storedLedger = getClassifierAttemptLedger(ledger.run.runId);
+  if (!storedLedger) {
+    problems.push('accepted classifier terminal receipt is missing from durable storage');
+  } else if (
+    canonicalClassifierAttemptLedgerJson(storedLedger) !==
+    canonicalClassifierAttemptLedgerJson(ledger)
+  ) {
+    problems.push('accepted classifier ledger does not match durable storage');
+  }
+  if (!sourceIdentity) {
+    problems.push('classifier source identity is missing');
+  } else {
+    if (ledger.run.classifierIdentityHash !== sourceIdentity.promptTemplateHash) {
+      problems.push('classifier run identity does not match classifier source identity');
+    }
+    if (sourceIdentity.digest.length !== 64) {
+      problems.push('classifier source identity digest is invalid');
+    }
+  }
+  const provenance = classification.provenance;
+  if (!provenance) {
+    problems.push('accepted classifier classification is missing raw provenance');
+  } else {
+    if (provenance.rawModelOutputHash !== selectedAttemptBinding.rawModelOutputHash) {
+      problems.push('classification raw model output hash does not match selected attempt');
+    }
+    if (provenance.responseId !== selectedAttemptBinding.provenance.responseId) {
+      problems.push('classification response ID does not match selected attempt');
+    }
+    if (provenance.responseModel !== selectedAttemptBinding.provenance.responseModel) {
+      problems.push('classification response model does not match selected attempt');
+    }
+    if (
+      provenance.responseServiceTier !==
+      selectedAttemptBinding.provenance.responseServiceTier
+    ) {
+      problems.push('classification response service tier does not match selected attempt');
+    }
+  }
+  if (
+    selectedAttemptBinding.provenance.requestHash !== ledger.run.requestHash
+  ) {
+    problems.push('selected attempt request hash does not match classifier run');
+  }
+  const current = issueEvidenceRevisions([issueNumber]).get(issueNumber);
+  if (!current) {
+    problems.push('classification source evidence revisions are unavailable');
+  } else if (
+    current.issueRevision !== evidenceRevisions.issueRevision ||
+    current.snapshotRevision !== evidenceRevisions.snapshotRevision ||
+    current.stateSnapshotRevision !== (evidenceRevisions.stateSnapshotRevision ?? null)
+  ) {
+    problems.push(
+      `classification source evidence revisions changed: expected ` +
+      JSON.stringify(evidenceRevisions) + `, found ` + JSON.stringify({
+        issueRevision: current.issueRevision,
+        snapshotRevision: current.snapshotRevision,
+        stateSnapshotRevision: current.stateSnapshotRevision,
+      }),
+    );
+  }
+  return [...new Set(problems)];
+}
+
 const upsertClassificationStmt = db.prepare(`
 INSERT INTO classifications (issue_number, sentiment, severity, scope, functionality, affected_users,
   has_workaround, workaround_status, duplicate_cluster, affects_version, confidence, rationale,
-  classified_at, classified_updated_at, prompt_version)
+  classified_at, classified_updated_at, classified_comments_digest, prompt_version,
+  source_identity_json, source_identity_digest, classification_origin, raw_model_output,
+  provenance_json)
 VALUES (:issue_number, :sentiment, :severity, :scope, :functionality, :affected_users,
   :has_workaround, :workaround_status, :duplicate_cluster, :affects_version, :confidence, :rationale,
-  :classified_at, :classified_updated_at, :prompt_version)
+  :classified_at, :classified_updated_at, :classified_comments_digest, :prompt_version,
+  :source_identity_json, :source_identity_digest, :classification_origin, :raw_model_output,
+  :provenance_json)
 ON CONFLICT(issue_number) DO UPDATE SET
+  revision=classifications.revision + 1,
   sentiment=excluded.sentiment,
   severity=excluded.severity,
   scope=excluded.scope,
@@ -3246,7 +20848,13 @@ ON CONFLICT(issue_number) DO UPDATE SET
   rationale=excluded.rationale,
   classified_at=excluded.classified_at,
   classified_updated_at=excluded.classified_updated_at,
-  prompt_version=excluded.prompt_version
+  classified_comments_digest=excluded.classified_comments_digest,
+  prompt_version=excluded.prompt_version,
+  source_identity_json=excluded.source_identity_json,
+  source_identity_digest=excluded.source_identity_digest,
+  classification_origin=excluded.classification_origin,
+  raw_model_output=excluded.raw_model_output,
+  provenance_json=excluded.provenance_json
 `);
 
 export function upsertClassification(
@@ -3254,15 +20862,22 @@ export function upsertClassification(
   c: IssueClassification,
   issueUpdatedAt: string,
   promptVersion: number,
+  commentsDigest: string | null = null,
+  sourceIdentity: ClassifierSourceIdentity | null = null,
+  acceptedClassifier: AcceptedClassifierClassificationInput | null = null,
 ): void {
-  upsertClassificationStmt.run({
+  const rawRow = {
     issue_number: issueNumber,
     sentiment: c.sentiment,
     severity: c.severity,
     scope: c.scope,
     functionality: c.functionality,
     affected_users: c.affectedUsers,
-    has_workaround: c.workaroundStatus === 'confirmed' ? 1 : 0,
+    has_workaround: c.hasWorkaround === true ||
+      c.workaroundStatus === 'partial' ||
+      c.workaroundStatus === 'confirmed'
+      ? 1
+      : 0,
     workaround_status: c.workaroundStatus,
     duplicate_cluster: c.duplicateCluster,
     affects_version: c.affectsVersion,
@@ -3270,7 +20885,149 @@ export function upsertClassification(
     rationale: c.rationale,
     classified_at: new Date().toISOString(),
     classified_updated_at: issueUpdatedAt,
+    classified_comments_digest: commentsDigest,
     prompt_version: promptVersion,
+    source_identity_json: sourceIdentity == null ? null : JSON.stringify(sourceIdentity),
+    source_identity_digest: sourceIdentity?.digest ?? null,
+    classification_origin: c.provenance ? 'raw_model' : 'legacy_or_manual',
+    raw_model_output: c.provenance?.rawModelOutput ?? null,
+    provenance_json: c.provenance ? JSON.stringify(c.provenance) : null,
+  };
+  if (c.provenance) {
+    const problems = rawClassificationStorageProblems(rawRow, promptVersion);
+    if (problems.length > 0) {
+      throw new Error(
+        `Refusing raw classification persistence for issue #${issueNumber}: ${problems.join('; ')}`,
+      );
+    }
+    if (
+      !sourceIdentity ||
+      sourceIdentity.model !== c.provenance.requestedModel ||
+      sourceIdentity.reasoningEffort !== c.provenance.reasoningEffort ||
+      sourceIdentity.serviceTier !== c.provenance.requestedServiceTier ||
+      sourceIdentity.promptVersion !== c.provenance.promptVersion ||
+      sourceIdentity.promptTemplateHash !== c.provenance.promptTemplateHash
+    ) {
+      throw new Error(`Raw classification provenance for issue #${issueNumber} does not match source identity`);
+    }
+  } else if (acceptedClassifier) {
+    throw new Error(
+      `Refusing accepted classifier ledger binding for legacy/manual issue #${issueNumber}`,
+    );
+  }
+  runInWriteTransaction(() => {
+    if (c.provenance) {
+      const acceptedProblems = acceptedClassifierInputProblems(
+        issueNumber,
+        c,
+        sourceIdentity,
+        acceptedClassifier,
+      );
+      if (acceptedProblems.length > 0) {
+        throw new Error(
+          `Refusing raw classification persistence for issue #${issueNumber}: ` +
+          acceptedProblems.join('; '),
+        );
+      }
+    }
+    upsertClassificationStmt.run(rawRow);
+    if (!acceptedClassifier || !sourceIdentity) return;
+    if (
+      !insertClassifierClassificationPublicationStmt ||
+      !classifierPublicationByIssueRevisionStmt ||
+      !classifierPublicationByReceiptStmt
+    ) {
+      throw new Error('Accepted classifier classification publication storage is unavailable');
+    }
+    const stored = getClassification(issueNumber);
+    if (!stored || !Number.isInteger(stored.revision) || Number(stored.revision) <= 0) {
+      throw new Error(`Persisted raw classification for issue #${issueNumber} has no revision`);
+    }
+    const ledger = acceptedClassifier.ledger;
+    const selected = acceptedClassifier.selectedAttemptBinding;
+    const classificationContentHash = classificationProjectionContentHash(stored);
+    const bindingWithoutHash = {
+      schemaVersion: 1,
+      issueNumber,
+      classificationRevision: Number(stored.revision),
+      classificationContentHash,
+      runId: ledger.run.runId,
+      runContentHash: ledger.run.contentHash,
+      receiptId: ledger.receipt.receiptId,
+      receiptContentHash: ledger.receipt.contentHash,
+      requestHash: ledger.run.requestHash,
+      selectedAttempt: selected,
+      evidenceRevisions: {
+        issueRevision: acceptedClassifier.evidenceRevisions.issueRevision,
+        snapshotRevision: acceptedClassifier.evidenceRevisions.snapshotRevision,
+        stateSnapshotRevision:
+          acceptedClassifier.evidenceRevisions.stateSnapshotRevision ?? null,
+      },
+      sourceIdentityDigest: sourceIdentity.digest,
+      publishedAt: stored.classified_at,
+    };
+    const contentHash = sha256WithDomain(
+      'classifier-classification-publication-v1',
+      canonicalClassifierAttemptLedgerJson(bindingWithoutHash),
+    );
+    const binding = {
+      ...bindingWithoutHash,
+      contentHash,
+    };
+    const existingByReceipt = classifierPublicationByReceiptStmt.get(
+      ledger.receipt.receiptId,
+    ) as ClassifierClassificationPublicationRow | undefined;
+    if (existingByReceipt) {
+      throw new Error(
+        `Classifier receipt ${JSON.stringify(ledger.receipt.receiptId)} already authorized ` +
+        `classification issue #${existingByReceipt.issue_number} revision ` +
+        existingByReceipt.classification_revision,
+      );
+    }
+    insertClassifierClassificationPublicationStmt.run({
+      publication_id: `classifier-publication:${contentHash}`,
+      issue_number: issueNumber,
+      classification_revision: Number(stored.revision),
+      classification_content_hash: classificationContentHash,
+      run_id: ledger.run.runId,
+      run_content_hash: ledger.run.contentHash,
+      receipt_id: ledger.receipt.receiptId,
+      receipt_content_hash: ledger.receipt.contentHash,
+      request_hash: ledger.run.requestHash,
+      selected_attempt_id: selected.attemptId,
+      selected_attempt_ordinal: selected.ordinal,
+      selected_attempt_content_hash: selected.attemptContentHash,
+      raw_response_hash: selected.rawResponseHash,
+      raw_model_output_hash: selected.rawModelOutputHash,
+      attempt_provenance_hash: selected.provenanceHash,
+      issue_revision: acceptedClassifier.evidenceRevisions.issueRevision,
+      snapshot_revision: acceptedClassifier.evidenceRevisions.snapshotRevision,
+      state_snapshot_revision:
+        acceptedClassifier.evidenceRevisions.stateSnapshotRevision ?? null,
+      source_identity_digest: sourceIdentity.digest,
+      published_at: stored.classified_at,
+      binding_json: canonicalClassifierAttemptLedgerJson(binding),
+      content_hash: contentHash,
+    });
+    const publication = classifierPublicationByIssueRevisionStmt.get(
+      issueNumber,
+      Number(stored.revision),
+    ) as ClassifierClassificationPublicationRow | undefined;
+    if (!publication) {
+      throw new Error(
+        `Accepted classifier publication for issue #${issueNumber} was not persisted`,
+      );
+    }
+    const publicationProblems = classifierClassificationPublicationProblems(
+      stored,
+      publication,
+    );
+    if (publicationProblems.length > 0) {
+      throw new Error(
+        `Persisted classifier publication for issue #${issueNumber} is invalid: ` +
+        publicationProblems.join('; '),
+      );
+    }
   });
 }
 
@@ -3289,12 +21046,357 @@ export interface ClassificationRow {
   rationale: string | null;
   classified_at: string;
   classified_updated_at: string;
+  classified_comments_digest: string | null;
   prompt_version: number;
+  source_identity_json: string | null;
+  source_identity_digest: string | null;
+  classification_origin: string;
+  raw_model_output: string | null;
+  provenance_json: string | null;
+  revision?: number;
+  accepted_classifier_receipt_id?: string | null;
 }
 
-const getClassificationStmt = db.prepare(`SELECT * FROM classifications WHERE issue_number=?`);
+const getClassificationStmt = hasClassifierClassificationPublications
+  ? db.prepare(`
+      SELECT classifications.*,
+        publications.receipt_id AS accepted_classifier_receipt_id
+      FROM classifications
+      LEFT JOIN classifier_classification_publications publications
+        ON publications.issue_number=classifications.issue_number
+       AND publications.classification_revision=classifications.revision
+      WHERE classifications.issue_number=?
+    `)
+  : db.prepare(`
+      SELECT classifications.*, NULL AS accepted_classifier_receipt_id
+      FROM classifications
+      WHERE issue_number=?
+    `);
 export function getClassification(issueNumber: number): ClassificationRow | undefined {
   return getClassificationStmt.get(issueNumber) as ClassificationRow | undefined;
+}
+
+export interface IssueEvidenceRevision {
+  issueRevision: number | null;
+  snapshotRevision: number | null;
+  stateSnapshotRevision?: number | null;
+  classificationRevision: number | null;
+}
+
+export class StaleIssueEvidenceRevisionError extends Error {
+  readonly issueNumber: number;
+  readonly expected: IssueEvidenceRevision;
+  readonly actual: IssueEvidenceRevision;
+
+  constructor(
+    issueNumber: number,
+    expected: IssueEvidenceRevision,
+    actual: IssueEvidenceRevision,
+  ) {
+    super(
+      `Issue #${issueNumber} evidence revision changed while work was staged: ` +
+      `expected ${JSON.stringify(expected)}, found ${JSON.stringify(actual)}`,
+    );
+    this.name = 'StaleIssueEvidenceRevisionError';
+    this.issueNumber = issueNumber;
+    this.expected = expected;
+    this.actual = actual;
+  }
+}
+
+const issueEvidenceRevisionsStmt = db.prepare(`
+WITH selected(issue_number) AS (
+  SELECT CAST(value AS INTEGER) FROM json_each(?)
+)
+SELECT
+  selected.issue_number,
+  issues.revision AS issue_revision,
+  snapshots.revision AS snapshot_revision,
+  state_snapshots.revision AS state_snapshot_revision,
+  classifications.revision AS classification_revision
+FROM selected
+LEFT JOIN issues ON issues.number=selected.issue_number
+LEFT JOIN issue_comment_snapshots snapshots ON snapshots.issue_number=selected.issue_number
+LEFT JOIN issue_state_event_snapshots state_snapshots ON state_snapshots.issue_number=selected.issue_number
+LEFT JOIN classifications ON classifications.issue_number=selected.issue_number
+ORDER BY selected.issue_number
+`);
+
+export function issueEvidenceRevisions(
+  issueNumbers: number[],
+): Map<number, IssueEvidenceRevision> {
+  const selected = [...new Set(issueNumbers)]
+    .filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0)
+    .sort((left, right) => left - right);
+  if (selected.length === 0) return new Map();
+  const rows = issueEvidenceRevisionsStmt.all(JSON.stringify(selected)) as Array<{
+    issue_number: number;
+    issue_revision: number | null;
+    snapshot_revision: number | null;
+    state_snapshot_revision: number | null;
+    classification_revision: number | null;
+  }>;
+  return new Map(rows.map((row) => [
+    Number(row.issue_number),
+    {
+      issueRevision: row.issue_revision == null ? null : Number(row.issue_revision),
+      snapshotRevision: row.snapshot_revision == null ? null : Number(row.snapshot_revision),
+      stateSnapshotRevision: row.state_snapshot_revision == null ? null : Number(row.state_snapshot_revision),
+      classificationRevision: row.classification_revision == null ? null : Number(row.classification_revision),
+    },
+  ]));
+}
+
+export function assertIssueEvidenceRevisions(
+  expectedByIssue: Map<number, IssueEvidenceRevision>,
+): void {
+  if (expectedByIssue.size === 0) return;
+  const actualByIssue = issueEvidenceRevisions([...expectedByIssue.keys()]);
+  for (const [issueNumber, expected] of expectedByIssue) {
+    const actual = actualByIssue.get(issueNumber) ?? {
+      issueRevision: null,
+      snapshotRevision: null,
+      stateSnapshotRevision: null,
+      classificationRevision: null,
+    };
+    if (
+      actual.issueRevision !== expected.issueRevision ||
+      actual.snapshotRevision !== expected.snapshotRevision ||
+      actual.stateSnapshotRevision !== (expected.stateSnapshotRevision ?? null) ||
+      actual.classificationRevision !== expected.classificationRevision
+    ) {
+      throw new StaleIssueEvidenceRevisionError(issueNumber, expected, actual);
+    }
+  }
+}
+
+function classifierClassificationPublicationProblems(
+  classification: ClassificationRow,
+  publication?: ClassifierClassificationPublicationRow | null,
+): string[] {
+  const problems: string[] = [];
+  if (classification.classification_origin !== 'raw_model') {
+    if (publication) {
+      problems.push('legacy/manual classification cannot have an accepted classifier publication');
+    }
+    return problems;
+  }
+  if (!publication) {
+    return ['raw-model classification is missing an accepted classifier publication'];
+  }
+  const revision = Number(classification.revision);
+  if (!Number.isInteger(revision) || revision <= 0) {
+    problems.push('classification revision is invalid');
+  }
+  if (
+    publication.issue_number !== classification.issue_number ||
+    publication.classification_revision !== revision
+  ) {
+    problems.push('classification publication does not bind the current issue revision');
+  }
+  const classificationContentHash = classificationProjectionContentHash(classification);
+  if (publication.classification_content_hash !== classificationContentHash) {
+    problems.push('classification publication content hash does not bind the current projection');
+  }
+  let ledger: ClassifierAttemptLedger | null = null;
+  try {
+    ledger = getClassifierAttemptLedger(publication.run_id);
+  } catch (error) {
+    problems.push(
+      `stored classifier ledger is invalid: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!ledger) {
+    problems.push('classifier publication references a missing terminal ledger');
+  } else {
+    const selected = ledger.receipt.selectedAttempt;
+    if (ledger.receipt.status !== 'accepted_success' || !selected) {
+      problems.push('classifier publication terminal receipt is not accepted_success');
+    } else {
+      if (publication.run_content_hash !== ledger.run.contentHash) {
+        problems.push('classifier publication run content hash is invalid');
+      }
+      if (
+        publication.receipt_id !== ledger.receipt.receiptId ||
+        publication.receipt_content_hash !== ledger.receipt.contentHash
+      ) {
+        problems.push('classifier publication receipt binding is invalid');
+      }
+      if (publication.request_hash !== ledger.run.requestHash) {
+        problems.push('classifier publication request hash is invalid');
+      }
+      if (
+        publication.selected_attempt_id !== selected.attemptId ||
+        publication.selected_attempt_ordinal !== selected.ordinal ||
+        publication.selected_attempt_content_hash !== selected.attemptContentHash ||
+        publication.raw_response_hash !== selected.rawResponseHash ||
+        publication.raw_model_output_hash !== selected.rawModelOutputHash ||
+        publication.attempt_provenance_hash !== selected.provenanceHash
+      ) {
+        problems.push('classifier publication selected-attempt binding is invalid');
+      }
+      let provenance: Record<string, unknown> | null = null;
+      try {
+        provenance = typeof classification.provenance_json === 'string'
+          ? JSON.parse(classification.provenance_json) as Record<string, unknown>
+          : null;
+      } catch {
+        problems.push('classification provenance JSON is invalid');
+      }
+      if (
+        !provenance ||
+        provenance.rawModelOutputHash !== selected.rawModelOutputHash ||
+        provenance.responseId !== selected.provenance.responseId ||
+        provenance.responseModel !== selected.provenance.responseModel ||
+        provenance.responseServiceTier !== selected.provenance.responseServiceTier
+      ) {
+        problems.push('classification provenance does not bind the selected attempt');
+      }
+      if (classification.source_identity_digest !== publication.source_identity_digest) {
+        problems.push('classifier publication source identity digest is invalid');
+      }
+      const expectedWithoutHash = {
+        schemaVersion: 1,
+        issueNumber: classification.issue_number,
+        classificationRevision: revision,
+        classificationContentHash,
+        runId: ledger.run.runId,
+        runContentHash: ledger.run.contentHash,
+        receiptId: ledger.receipt.receiptId,
+        receiptContentHash: ledger.receipt.contentHash,
+        requestHash: ledger.run.requestHash,
+        selectedAttempt: selected,
+        evidenceRevisions: {
+          issueRevision: publication.issue_revision,
+          snapshotRevision: publication.snapshot_revision,
+          stateSnapshotRevision: publication.state_snapshot_revision,
+        },
+        sourceIdentityDigest: classification.source_identity_digest,
+        publishedAt: classification.classified_at,
+      };
+      const expectedContentHash = sha256WithDomain(
+        'classifier-classification-publication-v1',
+        canonicalClassifierAttemptLedgerJson(expectedWithoutHash),
+      );
+      const expectedBindingJson = canonicalClassifierAttemptLedgerJson({
+        ...expectedWithoutHash,
+        contentHash: expectedContentHash,
+      });
+      if (
+        publication.content_hash !== expectedContentHash ||
+        publication.publication_id !== `classifier-publication:${expectedContentHash}` ||
+        publication.binding_json !== expectedBindingJson ||
+        publication.published_at !== classification.classified_at
+      ) {
+        problems.push('classifier publication canonical binding or content hash is invalid');
+      }
+    }
+  }
+  const current = issueEvidenceRevisions([classification.issue_number])
+    .get(classification.issue_number);
+  if (
+    !current ||
+    current.issueRevision !== publication.issue_revision ||
+    current.snapshotRevision !== publication.snapshot_revision ||
+    current.stateSnapshotRevision !== publication.state_snapshot_revision
+  ) {
+    problems.push('classifier publication source evidence revisions are no longer current');
+  }
+  return [...new Set(problems)];
+}
+
+export function getClassifierClassificationPublication(
+  issueNumber: number,
+  classificationRevision?: number,
+): ClassifierClassificationPublicationRow | null {
+  const revision = classificationRevision ??
+    Number(getClassification(issueNumber)?.revision ?? 0);
+  if (!Number.isInteger(revision) || revision <= 0) return null;
+  return classifierPublicationByIssueRevisionStmt?.get(
+    issueNumber,
+    revision,
+  ) as ClassifierClassificationPublicationRow | undefined ?? null;
+}
+
+export function listClassifierClassificationPublications():
+  ClassifierClassificationPublicationRow[] {
+  return listClassifierClassificationPublicationsStmt
+    ? listClassifierClassificationPublicationsStmt.all() as unknown as
+      ClassifierClassificationPublicationRow[]
+    : [];
+}
+
+export function classifierClassificationPublicationIntegrity(
+  issueNumber: number,
+): {
+  valid: boolean;
+  problems: string[];
+  publication: ClassifierClassificationPublicationRow | null;
+} {
+  const classification = getClassification(issueNumber);
+  if (!classification) {
+    return {
+      valid: false,
+      problems: [`Classification for issue #${issueNumber} is missing`],
+      publication: null,
+    };
+  }
+  const publication = getClassifierClassificationPublication(
+    issueNumber,
+    Number(classification.revision),
+  );
+  const problems = classifierClassificationPublicationProblems(
+    classification,
+    publication,
+  );
+  return {
+    valid: problems.length === 0,
+    problems,
+    publication,
+  };
+}
+
+function assertAcceptedClassifierClassificationPublications(): void {
+  if (!hasClassifierClassificationPublications) {
+    const rawCount = Number(
+      (db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM classifications
+        WHERE classification_origin='raw_model'
+      `).get() as { count?: number } | undefined)?.count ?? 0,
+    );
+    if (rawCount > 0) {
+      throw new Error(
+        'Raw-model classifications cannot be scored without classifier publication storage',
+      );
+    }
+    return;
+  }
+  const rows = db.prepare(`
+    SELECT classifications.*,
+      publications.receipt_id AS accepted_classifier_receipt_id
+    FROM classifications
+    LEFT JOIN classifier_classification_publications publications
+      ON publications.issue_number=classifications.issue_number
+     AND publications.classification_revision=classifications.revision
+    WHERE classifications.classification_origin='raw_model'
+    ORDER BY classifications.issue_number
+  `).all() as unknown as ClassificationRow[];
+  const failures = rows.flatMap((classification) => {
+    const publication = getClassifierClassificationPublication(
+      classification.issue_number,
+      Number(classification.revision),
+    );
+    return classifierClassificationPublicationProblems(
+      classification,
+      publication,
+    ).map((problem) => `issue #${classification.issue_number}: ${problem}`);
+  });
+  if (failures.length > 0) {
+    throw new Error(
+      `Raw classifier publication integrity failed: ${failures.join('; ')}`,
+    );
+  }
 }
 
 // Joined view for scoring + UI
@@ -3344,43 +21446,22 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
-issue_open_intervals AS (
-  SELECT
-    i.number AS issue_number,
-    i.created_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=i.number
-         AND c.closed_at > i.created_at),
-      i.closed_at
-    ) AS close_at
-  FROM issues i
-  UNION ALL
-  SELECT
-    r.issue_number,
-    r.reopened_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=r.issue_number
-         AND c.closed_at > r.reopened_at),
-      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
-    ) AS close_at
-  FROM issue_reopen_events r
-  JOIN issues i ON i.number=r.issue_number
-  WHERE r.reopened_at IS NOT NULL
-)
+${issueOpenIntervalsSql}
 SELECT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
-       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN target
@@ -3397,7 +21478,408 @@ ORDER BY i.updated_at DESC
 `);
 
 export function issuesForVersion(tag: string): JoinedIssue[] {
-  return issuesForVersionStmt.all(tag) as unknown as JoinedIssue[];
+  return withAuthorizedReleaseCatalogRead(
+    () => issuesForVersionStmt.all(tag) as unknown as JoinedIssue[],
+  );
+}
+
+export type ReleaseAttributionCandidateRow = IssueRow & Partial<ClassificationRow>;
+
+const closedBeforeReleaseCommentCandidatesStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+    AND catalog_active=1
+),
+${issueOpenIntervalsSql}
+SELECT i.*,
+       c.issue_number, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+       c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
+FROM issues i
+LEFT JOIN classifications c ON c.issue_number=i.number
+JOIN target
+WHERE target.start_at IS NOT NULL
+  AND i.closed_at IS NOT NULL
+  AND i.closed_at <= target.start_at
+  AND i.comments > 0
+  AND i.updated_at >= target.start_at
+  AND NOT EXISTS (
+    SELECT 1
+    FROM issue_open_intervals interval
+    WHERE interval.issue_number=i.number
+      AND interval.open_at < target.end_at
+      AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+  )
+ORDER BY i.updated_at DESC, i.number
+`);
+
+export function closedBeforeReleaseCommentCandidates(
+  tag: string,
+): ReleaseAttributionCandidateRow[] {
+  return withAuthorizedReleaseCatalogRead(
+    () => closedBeforeReleaseCommentCandidatesStmt.all(tag) as unknown as ReleaseAttributionCandidateRow[],
+  );
+}
+
+const compactJoinedIssueNodeIdColumn =
+  tableHasColumns('issues', ['node_id'])
+    ? 'i.node_id'
+    : 'NULL AS node_id';
+const compactJoinedIssueColumns = `
+  i.number, ${compactJoinedIssueNodeIdColumn}, i.state, i.title, i.body, i.author, i.author_node_id,
+  i.author_type, i.author_association, i.html_url,
+  i.created_at, i.updated_at, i.closed_at, i.comments,
+  i.unique_human_commenters, i.maintainer_commenters, i.contributor_commenters,
+  i.commenter_scan_truncated, i.reaction_total, i.positive_reactions,
+  i.labels, i.is_bot, i.fetched_at, i.checked_at, i.revision,
+  c.issue_number, c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
+  c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
+  c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+  c.classified_comments_digest, c.prompt_version,
+  NULL AS source_identity_json, NULL AS source_identity_digest,
+  c.classification_origin, NULL AS raw_model_output, NULL AS provenance_json
+`;
+
+const publicIssuesForVersionStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+    AND catalog_active=1
+),
+${issueOpenIntervalsSql}
+SELECT ${compactJoinedIssueColumns}
+FROM issues i
+JOIN classifications c ON c.issue_number=i.number
+JOIN target
+WHERE
+  target.start_at IS NOT NULL
+  AND EXISTS (
+    SELECT 1
+    FROM issue_open_intervals interval
+    WHERE interval.issue_number=i.number
+      AND interval.open_at < target.end_at
+      AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+  )
+ORDER BY i.updated_at DESC
+`);
+
+export function publicIssuesForVersion(tag: string): JoinedIssue[] {
+  return withAuthorizedReleaseCatalogRead(
+    () => publicIssuesForVersionStmt.all(tag) as unknown as JoinedIssue[],
+  );
+}
+
+const releaseCommentClassificationIntegrityStmt = db.prepare(`
+WITH target AS (
+  SELECT
+    tag,
+    published_at AS start_at,
+    COALESCE(
+      (SELECT MIN(next.published_at)
+       FROM releases next
+       WHERE next.published_at > releases.published_at
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
+      '9999-12-31T23:59:59Z'
+    ) AS end_at
+  FROM releases
+  WHERE tag=?
+    AND catalog_active=1
+),
+${issueOpenIntervalsSql},
+supplemental AS (
+  SELECT CAST(value AS INTEGER) AS issue_number
+  FROM json_each(?)
+),
+universe AS (
+  SELECT DISTINCT i.number
+  FROM issues i
+  JOIN target
+  WHERE target.start_at IS NOT NULL
+    AND EXISTS (
+      SELECT 1
+      FROM issue_open_intervals interval
+      WHERE interval.issue_number=i.number
+        AND interval.open_at < target.end_at
+        AND (interval.close_at IS NULL OR interval.close_at > target.start_at)
+    )
+  UNION
+  SELECT issue_number
+  FROM supplemental
+)
+SELECT
+  issues.number AS issue_number,
+  ${hasReleaseClosureDependencyIdentityProjection
+    ? 'issues.node_id'
+    : 'NULL'} AS issue_node_id,
+  issues.author_node_id AS issue_author_node_id,
+  issues.author_type AS issue_author_type,
+  issues.updated_at AS issue_updated_at,
+  issues.comments AS issue_comment_count,
+  snapshots.issue_number AS snapshot_issue_number,
+  snapshots.repository_node_id AS snapshot_repository_node_id,
+  snapshots.issue_node_id AS snapshot_issue_node_id,
+  snapshots.issue_author_node_id AS snapshot_issue_author_node_id,
+  snapshots.issue_author_login AS snapshot_issue_author_login,
+  snapshots.issue_author_type AS snapshot_issue_author_type,
+  snapshots.schema_version AS snapshot_schema_version,
+  snapshots.comment_count AS snapshot_comment_count,
+  snapshots.fetched_comment_count AS snapshot_fetched_comment_count,
+  snapshots.comments_digest AS snapshot_comments_digest,
+  snapshots.authority_digest AS snapshot_authority_digest,
+  snapshots.issue_updated_at AS snapshot_issue_updated_at,
+  snapshots.comments_json AS snapshot_comments_json,
+  snapshots.stabilization_json AS snapshot_stabilization_json,
+  snapshots.stabilization_identity_digest AS snapshot_stabilization_identity_digest,
+  snapshots.verified_at AS snapshot_verified_at,
+  classifications.issue_number AS classification_issue_number,
+  classifications.prompt_version AS classification_prompt_version,
+  classifications.classified_updated_at,
+  classifications.classified_comments_digest,
+  classifications.source_identity_json AS classification_source_identity_json,
+  classifications.source_identity_digest AS classification_source_identity_digest,
+  classifications.sentiment,
+  classifications.severity,
+  classifications.scope,
+  classifications.functionality,
+  classifications.affected_users,
+  classifications.has_workaround,
+  classifications.workaround_status,
+  classifications.duplicate_cluster,
+  classifications.affects_version,
+  classifications.confidence,
+  classifications.rationale,
+  classifications.classification_origin,
+  classifications.raw_model_output,
+  classifications.provenance_json
+FROM universe
+JOIN issues ON issues.number=universe.number
+LEFT JOIN issue_comment_snapshots snapshots ON snapshots.issue_number=issues.number
+LEFT JOIN classifications ON classifications.issue_number=issues.number
+ORDER BY issues.number
+`);
+
+export interface ReleaseCommentClassificationIntegrity {
+  issueCount: number;
+  missingSnapshotCount: number;
+  invalidSnapshotCount: number;
+  commentDigestMismatchCount: number;
+  missingClassificationCount: number;
+  staleClassificationCount: number;
+  classifierSourceIdentityMismatchCount: number;
+  invalidRawClassificationCount: number;
+  expectedClassifierSourceIdentityDigest: string;
+  failedCount: number;
+}
+
+export function releaseCommentClassificationIntegrity(
+  tag: string,
+  promptVersion: number,
+  classifierKnownTags: string[],
+  supplementalIssueNumbers: number[] = [],
+): ReleaseCommentClassificationIntegrity {
+  return withAuthorizedReleaseCatalogRead(
+    () => releaseCommentClassificationIntegrityRaw(
+      tag,
+      promptVersion,
+      classifierKnownTags,
+      supplementalIssueNumbers,
+    ),
+  );
+}
+
+function releaseCommentClassificationIntegrityRaw(
+  tag: string,
+  promptVersion: number,
+  classifierKnownTags: string[],
+  supplementalIssueNumbers: number[],
+): ReleaseCommentClassificationIntegrity {
+  const expectedClassifierIdentity = classifierSourceIdentity(classifierKnownTags, promptVersion);
+  const supplemental = [...new Set(supplementalIssueNumbers)]
+    .filter((issueNumber) => Number.isInteger(issueNumber) && issueNumber > 0)
+    .sort((left, right) => left - right);
+  const rows = releaseCommentClassificationIntegrityStmt.all(
+    tag,
+    JSON.stringify(supplemental),
+  ) as Array<Record<string, unknown>>;
+  const summary = {
+    issueCount: rows.length,
+    missingSnapshotCount: 0,
+    invalidSnapshotCount: 0,
+    commentDigestMismatchCount: 0,
+    missingClassificationCount: 0,
+    staleClassificationCount: 0,
+    classifierSourceIdentityMismatchCount: 0,
+    invalidRawClassificationCount: 0,
+  };
+  for (const row of rows) {
+    const missingSnapshot = row.snapshot_issue_number == null;
+    if (missingSnapshot) {
+      summary.missingSnapshotCount++;
+    } else {
+      let digestMatches = false;
+      let authoritativeSnapshotValid = false;
+      try {
+        digestMatches =
+          typeof row.snapshot_comments_json === 'string' &&
+          commentEvidenceDigestFromJson(
+            Number(row.snapshot_comment_count),
+            row.snapshot_comments_json,
+          ) === row.snapshot_comments_digest;
+        authoritativeSnapshotValid = validatedStoredIssueCommentSnapshot({
+          number: Number(row.issue_number),
+          comments: Number(row.issue_comment_count),
+          updated_at: String(row.issue_updated_at),
+          issue_node_id: row.issue_node_id as string | null,
+          issue_author_node_id: row.issue_author_node_id as string | null,
+          issue_author_type: row.issue_author_type as string | null,
+          snapshot_repository_node_id:
+            row.snapshot_repository_node_id as string | null,
+          snapshot_issue_node_id: row.snapshot_issue_node_id as string | null,
+          snapshot_issue_author_node_id: row.snapshot_issue_author_node_id as string | null,
+          snapshot_issue_author_login: row.snapshot_issue_author_login as string | null,
+          snapshot_issue_author_type: row.snapshot_issue_author_type as string | null,
+          schema_version: Number(row.snapshot_schema_version),
+          verified_at: row.snapshot_verified_at as string | null,
+          comment_count: Number(row.snapshot_comment_count),
+          fetched_comment_count: Number(row.snapshot_fetched_comment_count),
+          comments_digest: row.snapshot_comments_digest as string | null,
+          authority_digest: row.snapshot_authority_digest as string | null,
+          issue_updated_at: row.snapshot_issue_updated_at as string | null,
+          comments_json: row.snapshot_comments_json as string | null,
+          stabilization_json: row.snapshot_stabilization_json as string | null,
+          stabilization_identity_digest:
+            row.snapshot_stabilization_identity_digest as string | null,
+        }) != null;
+      } catch {
+        digestMatches = false;
+        authoritativeSnapshotValid = false;
+      }
+      if (!digestMatches) summary.commentDigestMismatchCount++;
+      const invalidSnapshot =
+        Number(row.snapshot_schema_version) !==
+          AUTHORITATIVE_COMMENT_EVIDENCE_SNAPSHOT_SCHEMA_VERSION ||
+        Number(row.snapshot_comment_count) !== Number(row.issue_comment_count) ||
+        Number(row.snapshot_fetched_comment_count) !== Number(row.snapshot_comment_count) ||
+        row.snapshot_issue_updated_at !== row.issue_updated_at ||
+        typeof row.snapshot_comments_json !== 'string' ||
+        typeof row.snapshot_verified_at !== 'string' ||
+        !Number.isFinite(Date.parse(row.snapshot_verified_at)) ||
+        !digestMatches ||
+        !authoritativeSnapshotValid;
+      if (invalidSnapshot) summary.invalidSnapshotCount++;
+    }
+
+    if (row.classification_issue_number == null) {
+      summary.missingClassificationCount++;
+      continue;
+    }
+    const sourceIdentityMatches =
+      row.classification_source_identity_digest === expectedClassifierIdentity.digest &&
+      classifierSourceIdentityMatches(
+        row.classification_source_identity_json,
+        expectedClassifierIdentity,
+      );
+    if (!sourceIdentityMatches) summary.classifierSourceIdentityMismatchCount++;
+    const rawClassificationProblems = promptVersion >= 7
+      ? rawClassificationStorageProblems({
+          ...(row as any),
+          prompt_version: row.classification_prompt_version,
+        }, promptVersion)
+      : [];
+    if (
+      row.classification_origin === 'raw_model' &&
+      !classifierClassificationPublicationIntegrity(
+        Number(row.classification_issue_number),
+      ).valid
+    ) {
+      rawClassificationProblems.push('accepted classifier publication is invalid');
+    }
+    if (rawClassificationProblems.length > 0) {
+      summary.invalidRawClassificationCount++;
+    }
+    if (
+      Number(row.classification_prompt_version) !== promptVersion ||
+      row.classified_updated_at !== row.issue_updated_at ||
+      typeof row.classified_comments_digest !== 'string' ||
+      row.classified_comments_digest !== row.snapshot_comments_digest ||
+      !sourceIdentityMatches
+    ) {
+      summary.staleClassificationCount++;
+    }
+  }
+  return {
+    ...summary,
+    expectedClassifierSourceIdentityDigest: expectedClassifierIdentity.digest,
+    failedCount:
+      summary.missingSnapshotCount +
+      summary.invalidSnapshotCount +
+      summary.missingClassificationCount +
+      summary.staleClassificationCount +
+      summary.invalidRawClassificationCount,
+  };
+}
+
+function classifierSourceIdentityMatches(
+  json: unknown,
+  expected: ClassifierSourceIdentity,
+): boolean {
+  if (typeof json !== 'string') return false;
+  try {
+    const value = JSON.parse(json) as Record<string, unknown>;
+    return value != null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      value.schemaVersion === expected.schemaVersion &&
+      value.model === expected.model &&
+      value.reasoningEffort === expected.reasoningEffort &&
+      value.serviceTier === expected.serviceTier &&
+      value.promptVersion === expected.promptVersion &&
+      value.promptTemplateHash === expected.promptTemplateHash &&
+      JSON.stringify(value.knownTags) === JSON.stringify(expected.knownTags) &&
+      value.knownTagSetDigest === expected.knownTagSetDigest &&
+      value.digest === expected.digest &&
+      Object.keys(value).sort().join(',') ===
+        [
+          'digest',
+          'knownTagSetDigest',
+          'knownTags',
+          'model',
+          'promptTemplateHash',
+          'promptVersion',
+          'reasoningEffort',
+          'schemaVersion',
+          'serviceTier',
+        ].join(',');
+  } catch {
+    return false;
+  }
 }
 
 const issueCountForVersionStmt = db.prepare(`
@@ -3409,39 +21891,15 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
-issue_open_intervals AS (
-  SELECT
-    i.number AS issue_number,
-    i.created_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=i.number
-         AND c.closed_at > i.created_at),
-      i.closed_at
-    ) AS close_at
-  FROM issues i
-  UNION ALL
-  SELECT
-    r.issue_number,
-    r.reopened_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=r.issue_number
-         AND c.closed_at > r.reopened_at),
-      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
-    ) AS close_at
-  FROM issue_reopen_events r
-  JOIN issues i ON i.number=r.issue_number
-  WHERE r.reopened_at IS NOT NULL
-)
+${issueOpenIntervalsSql}
 SELECT COUNT(DISTINCT i.number) AS count
 FROM issues i
 JOIN target
@@ -3457,7 +21915,9 @@ WHERE
 `);
 
 export function issueCountForVersion(tag: string): number {
-  return Number((issueCountForVersionStmt.get(tag) as { count: number }).count ?? 0);
+  return withAuthorizedReleaseCatalogRead(
+    () => Number((issueCountForVersionStmt.get(tag) as { count: number }).count ?? 0),
+  );
 }
 
 const unclassifiedIssuesForVersionStmt = db.prepare(`
@@ -3469,39 +21929,15 @@ WITH target AS (
       (SELECT MIN(next.published_at)
        FROM releases next
        WHERE next.published_at > releases.published_at
-         AND next.prerelease = 0),
+         AND next.prerelease = 0
+         AND next.catalog_active = 1),
       '9999-12-31T23:59:59Z'
     ) AS end_at
   FROM releases
   WHERE tag=?
+    AND catalog_active=1
 ),
-issue_open_intervals AS (
-  SELECT
-    i.number AS issue_number,
-    i.created_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=i.number
-         AND c.closed_at > i.created_at),
-      i.closed_at
-    ) AS close_at
-  FROM issues i
-  UNION ALL
-  SELECT
-    r.issue_number,
-    r.reopened_at AS open_at,
-    COALESCE(
-      (SELECT MIN(c.closed_at)
-       FROM issue_closure_events c
-       WHERE c.issue_number=r.issue_number
-         AND c.closed_at > r.reopened_at),
-      CASE WHEN i.closed_at > r.reopened_at THEN i.closed_at ELSE NULL END
-    ) AS close_at
-  FROM issue_reopen_events r
-  JOIN issues i ON i.number=r.issue_number
-  WHERE r.reopened_at IS NOT NULL
-)
+${issueOpenIntervalsSql}
 SELECT i.*
 FROM issues i
 JOIN target
@@ -3523,7 +21959,9 @@ LIMIT ?
 `);
 
 export function unclassifiedIssuesForVersion(tag: string, limit = 25): IssueRow[] {
-  return unclassifiedIssuesForVersionStmt.all(tag, limit) as unknown as IssueRow[];
+  return withAuthorizedReleaseCatalogRead(
+    () => unclassifiedIssuesForVersionStmt.all(tag, limit) as unknown as IssueRow[],
+  );
 }
 
 // Issues with final close timestamps during a release's reign — the "fixes
@@ -3536,29 +21974,37 @@ const closedDuringReignStmt = db.prepare(`
 SELECT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
-       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN releases target ON target.tag = ?
 WHERE
-  target.published_at IS NOT NULL
+  target.catalog_active=1
+  AND target.published_at IS NOT NULL
   AND i.closed_at IS NOT NULL
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+         WHERE next.published_at > target.published_at
+           AND next.prerelease = 0
+           AND next.catalog_active = 1),
         '9999-12-31T23:59:59Z'
       )
 ORDER BY i.closed_at DESC
 `);
 
 export function closedDuringReign(tag: string): JoinedIssue[] {
-  return closedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
+  return withAuthorizedReleaseCatalogRead(
+    () => closedDuringReignStmt.all(tag) as unknown as JoinedIssue[],
+  );
 }
 
 const verifiedFixedForReleaseStmt = db.prepare(`
 WITH target AS (
-  SELECT * FROM releases WHERE tag=?
+  SELECT * FROM releases WHERE tag=? AND catalog_active=1
 ),
 window_closure AS (
   SELECT e.*
@@ -3570,7 +22016,10 @@ window_closure AS (
 SELECT DISTINCT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
-       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN target
@@ -3580,7 +22029,9 @@ WHERE
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+         WHERE next.published_at > target.published_at
+           AND next.prerelease = 0
+           AND next.catalog_active = 1),
         '9999-12-31T23:59:59Z'
       )
   AND EXISTS (
@@ -3602,24 +22053,1208 @@ ORDER BY i.closed_at DESC
 `);
 
 export function verifiedFixedForRelease(tag: string): JoinedIssue[] {
-  return verifiedFixedForReleaseStmt.all(tag) as unknown as JoinedIssue[];
+  return withAuthorizedReleaseCatalogRead(
+    () => verifiedFixedForReleaseStmt.all(tag) as unknown as JoinedIssue[],
+  );
+}
+
+export const RELEASE_FIX_CREDIT_DECISION_SCHEMA_VERSION = 1 as const;
+
+export const RELEASE_FIX_CREDIT_REASON_CODES = [
+  'first_containing_trusted_pr',
+  'first_containing_direct_commit',
+  'target_trusted_pr_missing',
+  'target_reachability_missing',
+  'target_reachability_unknown',
+  'target_reachability_not_reachable',
+  'target_reachability_invalid',
+  'predecessor_reachability_missing',
+  'predecessor_reachability_unknown',
+  'predecessor_reachability_invalid',
+  'predecessor_reachable',
+  'predecessor_contains_other_trusted_pr',
+  'direct_commit_only_predecessor_evidence_unavailable',
+  'direct_commit_first_containing_proof_missing',
+  'direct_commit_first_containing_proof_invalid',
+  'direct_commit_not_first_containing',
+  'direct_commit_first_containment_unproven',
+  'missing_predecessor_boundary',
+  'invalid_predecessor_boundary',
+  'target_release_missing',
+  'predecessor_release_missing',
+  'target_closure_proof_missing',
+] as const;
+
+export type ReleaseFixCreditReasonCode = typeof RELEASE_FIX_CREDIT_REASON_CODES[number];
+export type ReleaseFixCreditDecisionStatus = 'credited' | 'withheld' | 'invalid';
+
+export interface ReleaseFixCreditCatalogIdentity {
+  catalogDigest: string;
+  catalogReceiptId: string;
+  targetReleaseNodeId: string;
+  predecessorReleaseNodeId: string;
+}
+
+export interface ReleaseFixCreditReachabilityProof {
+  tag: string;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+  tagCommitOid: string | null;
+  checkedCommitOid: string | null;
+  baseRefName: string | null;
+  method: string;
+  checkedAt: string | null;
+  evidenceReason: string | null;
+  catalogProof: ReachabilityCatalogProofIdentity;
+  strictValid: boolean;
+  validationReasonCode: string | null;
+}
+
+export interface ReleaseFixCreditDirectReachabilityProof {
+  releaseNodeId: string;
+  tag: string;
+  catalogRank: number;
+  catalogDigest: string;
+  catalogReleaseCount: number;
+  status: 'reachable' | 'not_reachable' | 'unknown';
+  tagCommitOid: string | null;
+  checkedCommitOid: string | null;
+  method: string;
+  evidence: Record<string, unknown> | null;
+  catalogProof: ReachabilityCatalogProofIdentity;
+  strictValid: boolean;
+  validationReasonCode: string | null;
+}
+
+export type ReleaseFixCreditProofIdentity =
+  | {
+      kind: 'trusted_pull_request';
+      repositoryNameWithOwner: string;
+      prNumber: number;
+      sources: string[];
+      merged: boolean;
+      mergeCommitOid: string | null;
+      baseRefName: string | null;
+      catalogIdentity: ReleaseFixCreditCatalogIdentity;
+      target: ReleaseFixCreditReachabilityProof | null;
+      predecessor: ReleaseFixCreditReachabilityProof | null;
+    }
+  | {
+      kind: 'direct_commit';
+      schemaVersion: number;
+      repositoryNameWithOwner: string;
+      commitOid: string;
+      targetTag: string;
+      predecessorTag: string | null;
+      status: 'credited' | 'withheld';
+      reasonCode: string;
+      creditEligible: boolean;
+      catalogIdentity: ReleaseFixCreditCatalogIdentity;
+      target: ReleaseFixCreditDirectReachabilityProof | null;
+      predecessor: ReleaseFixCreditDirectReachabilityProof | null;
+      olderReleases: ReleaseFixCreditDirectReachabilityProof[];
+      releaseAncestry: ReleaseFixCreditDirectReachabilityProof | null;
+      strictValid: boolean;
+      validationReasonCode: string | null;
+    };
+
+type ReleaseFixCreditPullRequestProofIdentity = Extract<
+  ReleaseFixCreditProofIdentity,
+  { kind: 'trusted_pull_request' }
+>;
+
+export interface ReleaseFixCreditDecision {
+  schemaVersion: typeof RELEASE_FIX_CREDIT_DECISION_SCHEMA_VERSION;
+  issueNumber: number;
+  status: ReleaseFixCreditDecisionStatus;
+  reasonCode: ReleaseFixCreditReasonCode;
+  targetTag: string;
+  predecessorTag: string | null;
+  proofIdentities: ReleaseFixCreditProofIdentity[];
+}
+
+const issueClosureProofForCreditStmt = db.prepare(`
+SELECT status, evidence_json
+FROM issue_closure_proofs
+WHERE release_tag=? AND issue_number=?
+`);
+
+function releaseFixCreditDecisionResult(
+  issueNumber: number,
+  status: ReleaseFixCreditDecisionStatus,
+  reasonCode: ReleaseFixCreditReasonCode,
+  targetTag: string,
+  predecessorTag: string | null,
+  proofIdentities: ReleaseFixCreditProofIdentity[] = [],
+): ReleaseFixCreditDecision {
+  return {
+    schemaVersion: RELEASE_FIX_CREDIT_DECISION_SCHEMA_VERSION,
+    issueNumber,
+    status,
+    reasonCode,
+    targetTag,
+    predecessorTag,
+    proofIdentities,
+  };
+}
+
+function releaseFixCreditReachabilityProof(
+  row: ReleasePrReachabilityRow | null,
+  release: AuthorizedReleaseReachabilityRelease,
+  catalog: AuthorizedReleaseReachabilityCatalogIdentity,
+  expected: {
+    repositoryNameWithOwner: string;
+    prNumber: number;
+    mergeCommitOid: string | null;
+    baseRefName: string | null;
+  },
+): ReleaseFixCreditReachabilityProof | null {
+  if (!row) return null;
+  const status = row.status;
+  const tag = release.tag;
+  const tagCommitOid = row.tag_commit_oid;
+  const checkedCommitOid = row.merge_commit_oid;
+  const baseRefName = row.base_ref_name;
+  const method = row.method ?? REACHABILITY_METHOD;
+  const evidenceJson = row.evidence_json;
+  const expectedTagCommitOid = normalizeReleaseFixOid(
+    release.resolvedTagCommitOid,
+  ) ?? '';
+  const catalogProof = reachabilityCatalogProofIdentity(
+    catalog,
+    release,
+  );
+  const validation = validateReachabilityEvidence({
+    evidence: evidenceJson,
+    method,
+    status,
+    identity: {
+      kind: 'pull_request',
+      tagCommitOid: expectedTagCommitOid,
+      checkedCommitOid: expected.mergeCommitOid,
+      baseRefName: expected.baseRefName,
+      catalogProof,
+    },
+  });
+  let validationReasonCode: string | null = validation.valid ? null : validation.reasonCode;
+  if (
+    !validationReasonCode &&
+    (
+      !expectedTagCommitOid ||
+      normalizeReleaseFixOid(tagCommitOid) !== expectedTagCommitOid
+    )
+  ) {
+    validationReasonCode = 'release_tag_commit_mismatch';
+  }
+  if (
+    !validationReasonCode &&
+    (
+      row.tag !== tag ||
+      row.pr_repository_name_with_owner.toLowerCase() !==
+        expected.repositoryNameWithOwner.toLowerCase() ||
+      row.pr_number !== expected.prNumber
+    )
+  ) {
+    validationReasonCode = 'pull_request_identity_mismatch';
+  }
+  if (
+    !validationReasonCode &&
+    status !== 'unknown' &&
+    (
+      !expected.mergeCommitOid ||
+      normalizeReleaseFixOid(checkedCommitOid) !==
+        normalizeReleaseFixOid(expected.mergeCommitOid)
+    )
+  ) {
+    validationReasonCode = 'pull_request_merge_commit_mismatch';
+  }
+  if (
+    !validationReasonCode &&
+    baseRefName !== expected.baseRefName
+  ) {
+    validationReasonCode = 'pull_request_base_ref_mismatch';
+  }
+  let evidenceReason: string | null = null;
+  if (evidenceJson) {
+    try {
+      const parsed = JSON.parse(evidenceJson) as Record<string, unknown>;
+      evidenceReason = typeof parsed.evidence === 'string' ? parsed.evidence : null;
+    } catch {
+      // Strict validation records malformed JSON below.
+    }
+  }
+  return {
+    tag,
+    status,
+    tagCommitOid,
+    checkedCommitOid,
+    baseRefName,
+    method,
+    checkedAt: row.checked_at,
+    evidenceReason,
+    catalogProof,
+    strictValid: validationReasonCode == null,
+    validationReasonCode,
+  };
+}
+
+const directCommitFirstContainingReasonCodes = new Set([
+  'first_containing_direct_commit',
+  'repository_identity_mismatch',
+  'invalid_commit_oid',
+  'missing_predecessor_boundary',
+  'target_release_missing',
+  'predecessor_release_missing',
+  'invalid_release_boundary',
+  'release_retag_conflict',
+  'release_alias_conflict',
+  'repository_state_unavailable',
+  'shallow_repository',
+  'release_object_unavailable',
+  'commit_object_unavailable',
+  'ambiguous_release_ancestry',
+  'target_commit_not_reachable',
+  'predecessor_contains_commit',
+  'git_evidence_unavailable',
+]);
+
+type ReleaseFixDirectCommitProofIdentity = Extract<
+  ReleaseFixCreditProofIdentity,
+  { kind: 'direct_commit' }
+>;
+
+interface DirectCommitProofIdentitySummary {
+  proofs: ReleaseFixDirectCommitProofIdentity[];
+  candidateCommitOids: string[];
+  declaredCreditedCommitOids: string[];
+  creditedCommitOids: string[];
+  predecessorContainedCommitOids: string[];
+  unprovenCommitOids: string[];
+  missingProofCount: number;
+  invalidProofCount: number;
+}
+
+type ReleaseFixBoundaryValidation =
+  | {
+      valid: true;
+      targetCommitOid: string;
+      predecessorCommitOid: string;
+      targetRelease: AuthorizedReleaseReachabilityRelease;
+      predecessorRelease: AuthorizedReleaseReachabilityRelease;
+      olderReleases: Array<{
+        release: AuthorizedReleaseReachabilityRelease;
+        commitOid: string;
+      }>;
+      catalog: AuthorizedReleaseReachabilityCatalogIdentity;
+      catalogIdentity: ReleaseFixCreditCatalogIdentity;
+    }
+  | {
+      valid: false;
+      reason: string;
+    };
+
+function releaseFixBoundaryValidation(
+  targetTag: string,
+  predecessorTag: string,
+  authorized: AuthorizedReleaseReachabilityData,
+): ReleaseFixBoundaryValidation {
+  const rows = authorized.releases.filter((release) => !release.prerelease);
+  const target = rows.find((row) => row.tag === targetTag);
+  const predecessor = rows.find((row) => row.tag === predecessorTag);
+  if (!target || !predecessor) return { valid: false, reason: 'release_missing' };
+
+  const ranks = rows.map((row) => row.catalogRank);
+  if (
+    ranks.some((rank) => !Number.isInteger(rank) || Number(rank) < 0) ||
+    new Set(ranks).size !== ranks.length
+  ) {
+    return { valid: false, reason: 'invalid_catalog_ranks' };
+  }
+  const catalogOrdered = rows.slice().sort((left, right) =>
+    Number(left.catalogRank) - Number(right.catalogRank) ||
+    Buffer.compare(Buffer.from(left.tag, 'utf8'), Buffer.from(right.tag, 'utf8')) ||
+    Buffer.compare(
+      Buffer.from(left.releaseNodeId, 'utf8'),
+      Buffer.from(right.releaseNodeId, 'utf8'),
+    ));
+  const targetCatalogIndex = catalogOrdered.findIndex((row) => row.tag === targetTag);
+  if (targetCatalogIndex < 0 || catalogOrdered[targetCatalogIndex + 1]?.tag !== predecessorTag) {
+    return { valid: false, reason: 'catalog_predecessor_mismatch' };
+  }
+
+  const resolvedCatalog: Array<{
+    release: AuthorizedReleaseReachabilityRelease;
+    commitOid: string;
+  }> = [];
+  const aliases = new Map<string, string[]>();
+  for (const row of catalogOrdered) {
+    const catalogOid = normalizeReleaseFixOid(row.catalogTagCommitOid);
+    const resolvedOid = normalizeReleaseFixOid(row.resolvedTagCommitOid);
+    if (!catalogOid || !resolvedOid || catalogOid !== resolvedOid) {
+      return { valid: false, reason: 'release_commit_identity_mismatch' };
+    }
+    resolvedCatalog.push({ release: row, commitOid: resolvedOid });
+    const tags = aliases.get(resolvedOid) ?? [];
+    tags.push(row.tag);
+    aliases.set(resolvedOid, tags);
+  }
+  if ([...aliases.values()].some((aliasTags) => aliasTags.length > 1)) {
+    return { valid: false, reason: 'release_commit_alias_conflict' };
+  }
+  const targetAndOlder = resolvedCatalog.slice(targetCatalogIndex);
+  const targetResolved = targetAndOlder[0];
+  const predecessorResolved = targetAndOlder[1];
+  if (
+    !targetResolved ||
+    targetResolved.release !== target ||
+    !predecessorResolved ||
+    predecessorResolved.release !== predecessor
+  ) {
+    return { valid: false, reason: 'catalog_predecessor_mismatch' };
+  }
+  return {
+    valid: true,
+    targetCommitOid: targetResolved.commitOid,
+    predecessorCommitOid: predecessorResolved.commitOid,
+    targetRelease: target,
+    predecessorRelease: predecessor,
+    olderReleases: targetAndOlder
+      .slice(1)
+      .reverse()
+      .map(({ release, commitOid }) => ({ release, commitOid })),
+    catalog: authorized.catalog,
+    catalogIdentity: {
+      catalogDigest: authorized.catalog.digest,
+      catalogReceiptId: authorized.catalog.receiptId,
+      targetReleaseNodeId: target.releaseNodeId,
+      predecessorReleaseNodeId: predecessor.releaseNodeId,
+    },
+  };
+}
+
+const releaseFixCreditCatalogIdentityKeys = [
+  'catalogDigest',
+  'catalogReceiptId',
+  'targetReleaseNodeId',
+  'predecessorReleaseNodeId',
+] as const;
+const reachabilityCatalogProofIdentityKeys = [
+  'catalogDigest',
+  'catalogReceiptId',
+  'releaseNodeId',
+  'checkedReleaseNodeId',
+] as const;
+
+function exactProofIdentity(
+  value: unknown,
+  expected: object,
+  expectedKeys: readonly string[],
+): boolean {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const actual = value as Record<string, unknown>;
+  const canonicalKeys = [...expectedKeys].sort();
+  const actualKeys = Object.keys(actual).sort();
+  if (
+    actualKeys.length !== canonicalKeys.length ||
+    actualKeys.some((key, index) => key !== canonicalKeys[index])
+  ) {
+    return false;
+  }
+  const expectedRecord = expected as unknown as Record<string, unknown>;
+  return expectedKeys.every((key) => actual[key] === expectedRecord[key]);
+}
+
+function directCommitProofIdentities(
+  evidenceJson: string,
+  targetTag: string,
+  predecessorTag: string,
+  boundary: Extract<ReleaseFixBoundaryValidation, { valid: true }>,
+): DirectCommitProofIdentitySummary {
+  let evidence: Record<string, unknown> = {};
+  try {
+    const parsed = JSON.parse(evidenceJson);
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+      evidence = parsed as Record<string, unknown>;
+    }
+  } catch {
+    return {
+      proofs: [],
+      candidateCommitOids: [],
+      declaredCreditedCommitOids: [],
+      creditedCommitOids: [],
+      predecessorContainedCommitOids: [],
+      unprovenCommitOids: [],
+      missingProofCount: 0,
+      invalidProofCount: 1,
+    };
+  }
+
+  const candidateCommitOids = normalizedReleaseFixCommitArray(
+    Array.isArray(evidence.fixCommitProof)
+      ? evidence.fixCommitProof
+        .filter((item) =>
+          item && typeof item === 'object' && !Array.isArray(item) &&
+          (item as Record<string, unknown>).creditEligible !== false)
+        .map((item) => (item as Record<string, unknown>).commitOid)
+      : [],
+  );
+  const declaredCreditedCommitOids = normalizedReleaseFixCommitArray(
+    Array.isArray(evidence.reachableFixCommits) ? evidence.reachableFixCommits : [],
+  );
+  const rawProofs = Array.isArray(evidence.directCommitFirstContainingProofs)
+    ? evidence.directCommitFirstContainingProofs
+    : [];
+  const proofs: ReleaseFixDirectCommitProofIdentity[] = [];
+  const seen = new Set<string>();
+  let invalidProofCount =
+    Array.isArray(evidence.directCommitFirstContainingProofs) || candidateCommitOids.length === 0
+      ? 0
+      : 1;
+  for (const rawProof of rawProofs) {
+    if (!rawProof || typeof rawProof !== 'object' || Array.isArray(rawProof)) {
+      invalidProofCount++;
+      continue;
+    }
+    const raw = rawProof as Record<string, unknown>;
+    const commitOid = normalizeReleaseFixOid(raw.commitOid);
+    if (!commitOid) {
+      invalidProofCount++;
+      continue;
+    }
+    if (seen.has(commitOid)) {
+      invalidProofCount++;
+      continue;
+    }
+    seen.add(commitOid);
+    const proof = directCommitProofIdentity(raw, targetTag, predecessorTag, boundary);
+    proofs.push(proof);
+    if (!proof.strictValid) invalidProofCount++;
+  }
+
+  const missingProofCount = candidateCommitOids.filter((commitOid) => !seen.has(commitOid)).length;
+  invalidProofCount += proofs.filter((proof) =>
+    !candidateCommitOids.includes(proof.commitOid)).length;
+  const creditedCommitOids = proofs
+    .filter((proof) => proof.strictValid && proof.creditEligible)
+    .map((proof) => proof.commitOid)
+    .sort();
+  const predecessorContainedCommitOids = proofs
+    .filter((proof) =>
+      proof.strictValid && proof.reasonCode === 'predecessor_contains_commit')
+    .map((proof) => proof.commitOid)
+    .sort();
+  const unprovenCommitOids = proofs
+    .filter((proof) =>
+      proof.strictValid &&
+      !proof.creditEligible &&
+      proof.reasonCode !== 'predecessor_contains_commit' &&
+      proof.reasonCode !== 'target_commit_not_reachable')
+    .map((proof) => proof.commitOid)
+    .sort();
+  return {
+    proofs: proofs.sort((left, right) => left.commitOid.localeCompare(right.commitOid)),
+    candidateCommitOids,
+    declaredCreditedCommitOids,
+    creditedCommitOids,
+    predecessorContainedCommitOids,
+    unprovenCommitOids,
+    missingProofCount,
+    invalidProofCount,
+  };
+}
+
+function directCommitProofIdentity(
+  raw: Record<string, unknown>,
+  targetTag: string,
+  predecessorTag: string,
+  boundary: Extract<ReleaseFixBoundaryValidation, { valid: true }>,
+): ReleaseFixDirectCommitProofIdentity {
+  const commitOid = normalizeReleaseFixOid(raw.commitOid) ?? String(raw.commitOid ?? '');
+  const repositoryNameWithOwner = String(raw.repositoryNameWithOwner ?? '').trim().toLowerCase();
+  const status = raw.status === 'credited' ? 'credited' : 'withheld';
+  const reasonCode = String(raw.reasonCode ?? '');
+  const creditEligible = raw.creditEligible === true;
+  const targetCatalogProof = reachabilityCatalogProofIdentity(
+    boundary.catalog,
+    boundary.targetRelease,
+  );
+  const predecessorCatalogProof = reachabilityCatalogProofIdentity(
+    boundary.catalog,
+    boundary.predecessorRelease,
+  );
+  const releaseAncestryCatalogProof = reachabilityCatalogProofIdentity(
+    boundary.catalog,
+    boundary.targetRelease,
+    boundary.predecessorRelease,
+  );
+  const target = releaseFixDirectReachabilityProof(raw.target, {
+    releaseNodeId: boundary.targetRelease.releaseNodeId,
+    tag: targetTag,
+    catalogRank: boundary.targetRelease.catalogRank,
+    catalogDigest: boundary.catalog.digest,
+    catalogReleaseCount: boundary.catalog.releaseCount,
+    tagCommitOid: boundary.targetCommitOid,
+    checkedCommitOid: commitOid,
+    kind: 'direct_commit',
+    repositoryNameWithOwner,
+    catalogProof: targetCatalogProof,
+  });
+  const predecessor = releaseFixDirectReachabilityProof(raw.predecessor, {
+    releaseNodeId: boundary.predecessorRelease.releaseNodeId,
+    tag: predecessorTag,
+    catalogRank: boundary.predecessorRelease.catalogRank,
+    catalogDigest: boundary.catalog.digest,
+    catalogReleaseCount: boundary.catalog.releaseCount,
+    tagCommitOid: boundary.predecessorCommitOid,
+    checkedCommitOid: commitOid,
+    kind: 'direct_commit',
+    repositoryNameWithOwner,
+    catalogProof: predecessorCatalogProof,
+  });
+  const rawOlderReleases = Array.isArray(raw.olderReleases)
+    ? raw.olderReleases
+    : [];
+  const olderReleases = boundary.olderReleases.map(({
+    release,
+    commitOid: releaseCommitOid,
+  }, index) =>
+    releaseFixDirectReachabilityProof(rawOlderReleases[index], {
+      releaseNodeId: release.releaseNodeId,
+      tag: release.tag,
+      catalogRank: release.catalogRank,
+      catalogDigest: boundary.catalog.digest,
+      catalogReleaseCount: boundary.catalog.releaseCount,
+      tagCommitOid: releaseCommitOid,
+      checkedCommitOid: commitOid,
+      kind: 'direct_commit',
+      repositoryNameWithOwner,
+      catalogProof: reachabilityCatalogProofIdentity(
+        boundary.catalog,
+        release,
+      ),
+    }));
+  const releaseAncestry = releaseFixDirectReachabilityProof(raw.releaseAncestry, {
+    releaseNodeId: boundary.targetRelease.releaseNodeId,
+    tag: targetTag,
+    catalogRank: boundary.targetRelease.catalogRank,
+    catalogDigest: boundary.catalog.digest,
+    catalogReleaseCount: boundary.catalog.releaseCount,
+    tagCommitOid: boundary.targetCommitOid,
+    checkedCommitOid: boundary.predecessorCommitOid,
+    kind: 'release_boundary',
+    repositoryNameWithOwner,
+    catalogProof: releaseAncestryCatalogProof,
+  });
+  let validationReasonCode: string | null = null;
+  const invalidate = (reason: string) => {
+    validationReasonCode ??= reason;
+  };
+  if (raw.schemaVersion !== 1) invalidate('schema_version_mismatch');
+  if (raw.kind !== 'direct_commit') invalidate('proof_kind_mismatch');
+  if (raw.status !== 'credited' && raw.status !== 'withheld') {
+    invalidate('invalid_status');
+  }
+  if (repositoryNameWithOwner !== defaultPrRepositoryNameWithOwner.toLowerCase()) {
+    invalidate('repository_identity_mismatch');
+  }
+  if (!fullCommitOidRe.test(commitOid)) invalidate('invalid_commit_oid');
+  if (raw.targetTag !== targetTag || raw.predecessorTag !== predecessorTag) {
+    invalidate('release_boundary_mismatch');
+  }
+  if (
+    !Array.isArray(raw.olderReleases) ||
+    rawOlderReleases.length !== boundary.olderReleases.length
+  ) {
+    invalidate('older_release_proof_set_mismatch');
+  }
+  if (
+    !exactProofIdentity(
+      raw.catalogIdentity,
+      boundary.catalogIdentity,
+      releaseFixCreditCatalogIdentityKeys,
+    )
+  ) {
+    invalidate('catalog_identity_mismatch');
+  }
+  if (!directCommitFirstContainingReasonCodes.has(reasonCode)) {
+    invalidate('unknown_reason_code');
+  }
+  if ((status === 'credited') !== creditEligible) {
+    invalidate('status_credit_eligibility_mismatch');
+  }
+  if ((reasonCode === 'first_containing_direct_commit') !== creditEligible) {
+    invalidate('reason_credit_eligibility_mismatch');
+  }
+  for (const proof of [target, predecessor, ...olderReleases, releaseAncestry]) {
+    if (proof && !proof.strictValid) invalidate('reachability_evidence_invalid');
+  }
+  if (olderReleases.some((proof) => proof == null)) {
+    invalidate('older_release_proof_set_mismatch');
+  }
+  if (reasonCode === 'first_containing_direct_commit') {
+    if (
+      target?.strictValid !== true ||
+      target.status !== 'reachable' ||
+      predecessor?.strictValid !== true ||
+      predecessor.status !== 'not_reachable' ||
+      olderReleases.some((proof) =>
+        proof?.strictValid !== true || proof.status !== 'not_reachable') ||
+      releaseAncestry?.strictValid !== true ||
+      releaseAncestry.status !== 'reachable'
+    ) {
+      invalidate('first_containing_outcome_mismatch');
+    }
+  } else if (reasonCode === 'predecessor_contains_commit') {
+    if (
+      target?.strictValid !== true ||
+      target.status !== 'reachable' ||
+      !olderReleases.some((proof) =>
+        proof?.strictValid === true && proof.status === 'reachable') ||
+      releaseAncestry?.strictValid !== true ||
+      releaseAncestry.status !== 'reachable'
+    ) {
+      invalidate('predecessor_containment_outcome_mismatch');
+    }
+  } else if (reasonCode === 'target_commit_not_reachable') {
+    if (
+      target?.strictValid !== true ||
+      target.status !== 'not_reachable' ||
+      releaseAncestry?.strictValid !== true ||
+      releaseAncestry.status !== 'reachable'
+    ) {
+      invalidate('target_non_reachability_outcome_mismatch');
+    }
+  }
+  if (raw.strictValid !== undefined || raw.validationReasonCode !== undefined) {
+    invalidate('unexpected_derived_validation_fields');
+  }
+  return {
+    kind: 'direct_commit',
+    schemaVersion: Number(raw.schemaVersion),
+    repositoryNameWithOwner,
+    commitOid,
+    targetTag: String(raw.targetTag ?? ''),
+    predecessorTag: raw.predecessorTag == null ? null : String(raw.predecessorTag),
+    status,
+    reasonCode,
+    creditEligible,
+    catalogIdentity: boundary.catalogIdentity,
+    target,
+    predecessor,
+    olderReleases: olderReleases.filter(
+      (proof): proof is ReleaseFixCreditDirectReachabilityProof => proof != null,
+    ),
+    releaseAncestry,
+    strictValid: validationReasonCode == null,
+    validationReasonCode,
+  };
+}
+
+function releaseFixDirectReachabilityProof(
+  rawValue: unknown,
+  expected: {
+    releaseNodeId: string;
+    tag: string;
+    catalogRank: number;
+    catalogDigest: string;
+    catalogReleaseCount: number;
+    tagCommitOid: string;
+    checkedCommitOid: string;
+    kind: 'direct_commit' | 'release_boundary';
+    repositoryNameWithOwner: string;
+    catalogProof: ReachabilityCatalogProofIdentity;
+  },
+): ReleaseFixCreditDirectReachabilityProof | null {
+  if (!rawValue || typeof rawValue !== 'object' || Array.isArray(rawValue)) return null;
+  const raw = rawValue as Record<string, unknown>;
+  const status = raw.status === 'reachable' ||
+    raw.status === 'not_reachable' ||
+    raw.status === 'unknown'
+    ? raw.status
+    : 'unknown';
+  const tagCommitOid = normalizeReleaseFixOid(raw.tagCommitOid);
+  const checkedCommitOid = normalizeReleaseFixOid(raw.checkedCommitOid);
+  const method = String(raw.method ?? '');
+  const evidence = raw.evidence && typeof raw.evidence === 'object' && !Array.isArray(raw.evidence)
+    ? raw.evidence as Record<string, unknown>
+    : null;
+  const validation = validateReachabilityEvidence({
+    evidence,
+    method,
+    status,
+    identity: {
+      kind: expected.kind,
+      repositoryNameWithOwner: expected.repositoryNameWithOwner,
+      tagCommitOid: expected.tagCommitOid,
+      checkedCommitOid: expected.checkedCommitOid,
+      catalogProof: expected.catalogProof,
+    },
+  });
+  let validationReasonCode: string | null = validation.valid ? null : validation.reasonCode;
+  if (!validationReasonCode && raw.releaseNodeId !== expected.releaseNodeId) {
+    validationReasonCode = 'release_node_id_mismatch';
+  }
+  if (!validationReasonCode && raw.tag !== expected.tag) {
+    validationReasonCode = 'release_tag_mismatch';
+  }
+  if (!validationReasonCode && raw.catalogRank !== expected.catalogRank) {
+    validationReasonCode = 'catalog_rank_mismatch';
+  }
+  if (!validationReasonCode && raw.catalogDigest !== expected.catalogDigest) {
+    validationReasonCode = 'catalog_digest_mismatch';
+  }
+  if (
+    !validationReasonCode &&
+    raw.catalogReleaseCount !== expected.catalogReleaseCount
+  ) {
+    validationReasonCode = 'catalog_release_count_mismatch';
+  }
+  if (!validationReasonCode && tagCommitOid !== expected.tagCommitOid) {
+    validationReasonCode = 'tag_commit_oid_mismatch';
+  }
+  if (!validationReasonCode && checkedCommitOid !== expected.checkedCommitOid) {
+    validationReasonCode = 'checked_commit_oid_mismatch';
+  }
+  if (
+    !validationReasonCode &&
+    !exactProofIdentity(
+      raw.catalogProof,
+      expected.catalogProof,
+      reachabilityCatalogProofIdentityKeys,
+    )
+  ) {
+    validationReasonCode = 'catalog_proof_identity_mismatch';
+  }
+  if (!validationReasonCode && raw.strictValid !== true) {
+    validationReasonCode = 'persisted_strict_valid_mismatch';
+  }
+  if (!validationReasonCode && raw.validationReasonCode !== null) {
+    validationReasonCode = 'persisted_validation_reason_mismatch';
+  }
+  return {
+    releaseNodeId: expected.releaseNodeId,
+    tag: String(raw.tag ?? ''),
+    catalogRank: expected.catalogRank,
+    catalogDigest: expected.catalogDigest,
+    catalogReleaseCount: expected.catalogReleaseCount,
+    status,
+    tagCommitOid,
+    checkedCommitOid,
+    method,
+    evidence,
+    catalogProof: expected.catalogProof,
+    strictValid: validationReasonCode == null,
+    validationReasonCode,
+  };
+}
+
+function normalizedReleaseFixCommitArray(values: unknown[]): string[] {
+  return [...new Set(values
+    .map((value) => normalizeReleaseFixOid(value))
+    .filter((value): value is string => value != null))]
+    .sort();
+}
+
+function normalizeReleaseFixOid(value: unknown): string | null {
+  const oid = String(value ?? '').trim().toLowerCase();
+  return fullCommitOidRe.test(oid) ? oid : null;
+}
+
+function trustedPullRequestProofIdentities(
+  evidenceJson: string,
+): Array<{
+  repositoryNameWithOwner: string;
+  prNumber: number;
+  sources: string[];
+  merged: boolean;
+}> {
+  let evidence: Record<string, unknown>;
+  try {
+    const parsed = JSON.parse(evidenceJson);
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return [];
+    evidence = parsed as Record<string, unknown>;
+  } catch {
+    return [];
+  }
+  const linkedPrs = Array.isArray(evidence.linkedPrs)
+    ? evidence.linkedPrs as Array<Record<string, unknown>>
+    : [];
+  const identities = new Map<string, {
+    repositoryNameWithOwner: string;
+    prNumber: number;
+    sources: Set<string>;
+    merged: boolean;
+  }>();
+  for (const proof of linkedPrs) {
+    const repositoryNameWithOwner = String(proof.repositoryNameWithOwner ?? '');
+    const prNumber = Number(proof.number);
+    const source = String(proof.source ?? '');
+    if (
+      repositoryNameWithOwner.toLowerCase() !== defaultPrRepositoryNameWithOwner.toLowerCase() ||
+      !Number.isInteger(prNumber) ||
+      prNumber <= 0
+    ) {
+      continue;
+    }
+    const hasExplicitTrustMarker = Object.prototype.hasOwnProperty.call(proof, 'trustedFixProof');
+    const explicitlyTrusted = proof.trustedFixProof === 1 || proof.trustedFixProof === true;
+    const legacyTrustedSource = CREDITED_FIX_LINK_SOURCES.some((candidate) => candidate === source);
+    if (hasExplicitTrustMarker ? !explicitlyTrusted : !legacyTrustedSource) {
+      continue;
+    }
+    const key = `${defaultPrRepositoryNameWithOwner}#${prNumber}`;
+    const identity = identities.get(key) ?? {
+      repositoryNameWithOwner: defaultPrRepositoryNameWithOwner,
+      prNumber,
+      sources: new Set<string>(),
+      merged: false,
+    };
+    if (source) identity.sources.add(source);
+    if (proof.merged == null || Number(proof.merged) === 1) identity.merged = true;
+    identities.set(key, identity);
+  }
+  return [...identities.values()]
+    .sort((left, right) =>
+      left.repositoryNameWithOwner.localeCompare(right.repositoryNameWithOwner) ||
+      left.prNumber - right.prNumber)
+    .map((identity) => ({
+      repositoryNameWithOwner: identity.repositoryNameWithOwner,
+      prNumber: identity.prNumber,
+      sources: [...identity.sources].sort(),
+      merged: identity.merged,
+    }));
+}
+
+function releaseFixPullRequestIdentityKey(
+  repositoryNameWithOwner: string,
+  prNumber: number,
+): string {
+  return `${repositoryNameWithOwner.trim().toLowerCase()}#${prNumber}`;
+}
+
+export function releaseFixCreditDecision(
+  issueNumber: number,
+  targetTag: string,
+  predecessorTag: string | null | undefined,
+): ReleaseFixCreditDecision {
+  if (!predecessorTag) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'missing_predecessor_boundary',
+      targetTag,
+      null,
+    );
+  }
+  const authorized = readAuthorizedReleaseReachabilityData({
+    releaseTags: [targetTag, predecessorTag],
+    integrityExampleLimit: 0,
+  });
+  return releaseFixCreditDecisionRaw(
+    issueNumber,
+    targetTag,
+    predecessorTag,
+    authorized,
+  );
+}
+
+function releaseFixCreditDecisionRaw(
+  issueNumber: number,
+  targetTag: string,
+  predecessorTag: string,
+  authorized: AuthorizedReleaseReachabilityData,
+): ReleaseFixCreditDecision {
+  const requestedByTag = new Map(
+    authorized.requestedReleases.map((requested) => [requested.tag, requested]),
+  );
+  const targetRequested = requestedByTag.get(targetTag);
+  const targetRelease = targetRequested?.release ?? null;
+  if (!targetRelease) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'target_release_missing',
+      targetTag,
+      predecessorTag,
+    );
+  }
+  const predecessorRequested = requestedByTag.get(predecessorTag);
+  const predecessorRelease = predecessorRequested?.release ?? null;
+  if (!predecessorRelease) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'predecessor_release_missing',
+      targetTag,
+      predecessorTag,
+    );
+  }
+  if (
+    targetTag === predecessorTag ||
+    targetRelease.prerelease ||
+    predecessorRelease.prerelease ||
+    !Number.isFinite(Date.parse(targetRelease.publishedAt)) ||
+    !Number.isFinite(Date.parse(predecessorRelease.publishedAt))
+  ) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'invalid_predecessor_boundary',
+      targetTag,
+      predecessorTag,
+    );
+  }
+  const boundary = releaseFixBoundaryValidation(
+    targetTag,
+    predecessorTag,
+    authorized,
+  );
+  if (!boundary.valid) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'invalid_predecessor_boundary',
+      targetTag,
+      predecessorTag,
+    );
+  }
+  const closureProof = issueClosureProofForCreditStmt.get(targetTag, issueNumber) as {
+    status: string;
+    evidence_json: string;
+  } | undefined;
+  if (!closureProof || closureProof.status !== 'fixed_in_release') {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'invalid',
+      'target_closure_proof_missing',
+      targetTag,
+      predecessorTag,
+    );
+  }
+
+  const trustedProofIdentities = trustedPullRequestProofIdentities(closureProof.evidence_json);
+  const candidatesByIdentity = new Map(
+    authorized.pullRequestCandidates.map((candidate) => [
+      releaseFixPullRequestIdentityKey(
+        candidate.pr_repository_name_with_owner,
+        candidate.pr_number,
+      ),
+      candidate,
+    ]),
+  );
+  const targetRowsByIdentity = new Map(
+    (targetRequested?.reachabilityRows ?? []).map((row) => [
+      releaseFixPullRequestIdentityKey(
+        row.pr_repository_name_with_owner,
+        row.pr_number,
+      ),
+      row,
+    ]),
+  );
+  const predecessorRowsByIdentity = new Map(
+    (predecessorRequested?.reachabilityRows ?? []).map((row) => [
+      releaseFixPullRequestIdentityKey(
+        row.pr_repository_name_with_owner,
+        row.pr_number,
+      ),
+      row,
+    ]),
+  );
+  const pullRequestProofs: ReleaseFixCreditPullRequestProofIdentity[] =
+    trustedProofIdentities.map((identity) => {
+      const key = releaseFixPullRequestIdentityKey(
+        identity.repositoryNameWithOwner,
+        identity.prNumber,
+      );
+      const candidate = candidatesByIdentity.get(key) ?? null;
+      const expected = {
+        repositoryNameWithOwner: identity.repositoryNameWithOwner,
+        prNumber: identity.prNumber,
+        mergeCommitOid: candidate?.merge_commit_oid ?? null,
+        baseRefName: candidate?.base_ref_name ?? null,
+      };
+      return {
+        kind: 'trusted_pull_request',
+        repositoryNameWithOwner: identity.repositoryNameWithOwner,
+        prNumber: identity.prNumber,
+        sources: identity.sources,
+        merged: candidate != null,
+        mergeCommitOid: expected.mergeCommitOid,
+        baseRefName: expected.baseRefName,
+        catalogIdentity: boundary.catalogIdentity,
+        target: releaseFixCreditReachabilityProof(
+          targetRowsByIdentity.get(key) ?? null,
+          boundary.targetRelease,
+          boundary.catalog,
+          expected,
+        ),
+        predecessor: releaseFixCreditReachabilityProof(
+          predecessorRowsByIdentity.get(key) ?? null,
+          boundary.predecessorRelease,
+          boundary.catalog,
+          expected,
+        ),
+      };
+    });
+  const directCommitProofSummary = directCommitProofIdentities(
+    closureProof.evidence_json,
+    targetTag,
+    predecessorTag,
+    boundary,
+  );
+  const directCommitProofs = directCommitProofSummary.proofs;
+  const proofIdentities = [...pullRequestProofs, ...directCommitProofs];
+  if (directCommitProofSummary.missingProofCount > 0) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'direct_commit_first_containing_proof_missing',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (
+    directCommitProofSummary.invalidProofCount > 0 ||
+    JSON.stringify(directCommitProofSummary.declaredCreditedCommitOids) !==
+      JSON.stringify(directCommitProofSummary.creditedCommitOids)
+  ) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'direct_commit_first_containing_proof_invalid',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedProofIdentities.some((identity, index) =>
+    identity.merged && pullRequestProofs[index]?.merged !== true)) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_trusted_pr_missing',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  const trustedPullRequests = pullRequestProofs.filter((_, index) =>
+    trustedProofIdentities[index]?.merged === true);
+  if (trustedPullRequests.length === 0) {
+    if (directCommitProofSummary.creditedCommitOids.length > 0) {
+      return releaseFixCreditDecisionResult(
+        issueNumber, 'credited', 'first_containing_direct_commit',
+        targetTag, predecessorTag, proofIdentities,
+      );
+    }
+    if (directCommitProofSummary.predecessorContainedCommitOids.length > 0) {
+      return releaseFixCreditDecisionResult(
+        issueNumber, 'withheld', 'direct_commit_not_first_containing',
+        targetTag, predecessorTag, proofIdentities,
+      );
+    }
+    if (
+      directCommitProofSummary.unprovenCommitOids.length > 0 ||
+      directCommitProofSummary.candidateCommitOids.length > 0
+    ) {
+      return releaseFixCreditDecisionResult(
+        issueNumber, 'withheld', 'direct_commit_first_containment_unproven',
+        targetTag, predecessorTag, proofIdentities,
+      );
+    }
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_trusted_pr_missing',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+
+  if (trustedPullRequests.some((proof) => proof.target == null)) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_reachability_missing',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedPullRequests.some((proof) => proof.target?.strictValid === false)) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_reachability_invalid',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedPullRequests.some((proof) => proof.target?.status === 'unknown')) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_reachability_unknown',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+
+  if (trustedPullRequests.some((proof) => proof.predecessor == null)) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'predecessor_reachability_missing',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedPullRequests.some((proof) => proof.predecessor?.strictValid === false)) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'predecessor_reachability_invalid',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedPullRequests.some((proof) => proof.predecessor?.status === 'unknown')) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'predecessor_reachability_unknown',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+
+  if (trustedPullRequests.some((proof) => proof.target?.status !== 'reachable')) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'target_reachability_not_reachable',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (trustedPullRequests.some((proof) => proof.predecessor?.status === 'reachable')) {
+    return releaseFixCreditDecisionResult(
+      issueNumber, 'withheld', 'predecessor_reachable',
+      targetTag, predecessorTag, proofIdentities,
+    );
+  }
+  if (directCommitProofSummary.creditedCommitOids.length > 0) {
+    return releaseFixCreditDecisionResult(
+      issueNumber,
+      'credited',
+      'first_containing_direct_commit',
+      targetTag,
+      predecessorTag,
+      proofIdentities,
+    );
+  }
+  return releaseFixCreditDecisionResult(
+    issueNumber,
+    'credited',
+    'first_containing_trusted_pr',
+    targetTag,
+    predecessorTag,
+    proofIdentities,
+  );
+}
+
+export function verifiedFixIntroducedInRelease(
+  issueNumber: number,
+  tag: string,
+  predecessorTag?: string | null,
+): boolean {
+  return releaseFixCreditDecision(issueNumber, tag, predecessorTag).status === 'credited';
 }
 
 const unverifiedClosedForReleaseStmt = db.prepare(`
 SELECT DISTINCT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
-       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN releases target ON target.tag = ?
 WHERE
-  target.published_at IS NOT NULL
+  target.catalog_active=1
+  AND target.published_at IS NOT NULL
   AND i.closed_at IS NOT NULL
   AND i.closed_at >= target.published_at
   AND i.closed_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+         WHERE next.published_at > target.published_at
+           AND next.prerelease = 0
+           AND next.catalog_active = 1),
         '9999-12-31T23:59:59Z'
       )
   AND NOT EXISTS (
@@ -3640,7 +23275,9 @@ ORDER BY i.closed_at DESC
 `);
 
 export function unverifiedClosedForRelease(tag: string): JoinedIssue[] {
-  return unverifiedClosedForReleaseStmt.all(tag) as unknown as JoinedIssue[];
+  return withAuthorizedReleaseCatalogRead(
+    () => unverifiedClosedForReleaseStmt.all(tag) as unknown as JoinedIssue[],
+  );
 }
 
 // Issues OPENED during a release's reign — the "regressions introduced" signal.
@@ -3653,23 +23290,56 @@ const openedDuringReignStmt = db.prepare(`
 SELECT i.*,
        c.sentiment, c.severity, c.scope, c.functionality, c.affected_users,
        c.has_workaround, c.workaround_status, c.duplicate_cluster, c.affects_version,
-       c.confidence, c.rationale, c.classified_at, c.classified_updated_at
+       c.confidence, c.rationale, c.classified_at, c.classified_updated_at,
+       c.classified_comments_digest, c.prompt_version,
+       c.source_identity_json, c.source_identity_digest,
+       c.classification_origin, c.raw_model_output, c.provenance_json
 FROM issues i
 JOIN classifications c ON c.issue_number = i.number
 JOIN releases target ON target.tag = ?
 WHERE
-  target.published_at IS NOT NULL
+  target.catalog_active=1
+  AND target.published_at IS NOT NULL
   AND i.created_at >= target.published_at
   AND i.created_at < COALESCE(
         (SELECT MIN(next.published_at) FROM releases next
-         WHERE next.published_at > target.published_at AND next.prerelease = 0),
+         WHERE next.published_at > target.published_at
+           AND next.prerelease = 0
+           AND next.catalog_active = 1),
         '9999-12-31T23:59:59Z'
       )
 ORDER BY i.created_at DESC
 `);
 
 export function openedDuringReign(tag: string): JoinedIssue[] {
-  return openedDuringReignStmt.all(tag) as unknown as JoinedIssue[];
+  return withAuthorizedReleaseCatalogRead(
+    () => openedDuringReignStmt.all(tag) as unknown as JoinedIssue[],
+  );
+}
+
+const publicOpenedDuringReignStmt = db.prepare(`
+SELECT ${compactJoinedIssueColumns.replace('i.body,', 'NULL AS body,')}
+FROM issues i
+JOIN classifications c ON c.issue_number=i.number
+JOIN releases target ON target.tag = ?
+WHERE
+  target.catalog_active=1
+  AND target.published_at IS NOT NULL
+  AND i.created_at >= target.published_at
+  AND i.created_at < COALESCE(
+        (SELECT MIN(next.published_at) FROM releases next
+         WHERE next.published_at > target.published_at
+           AND next.prerelease = 0
+           AND next.catalog_active = 1),
+        '9999-12-31T23:59:59Z'
+      )
+ORDER BY i.created_at DESC
+`);
+
+export function publicOpenedDuringReign(tag: string): JoinedIssue[] {
+  return withAuthorizedReleaseCatalogRead(
+    () => publicOpenedDuringReignStmt.all(tag) as unknown as JoinedIssue[],
+  );
 }
 
 // Count classifications written under a prompt version older than the current one.
@@ -3737,16 +23407,1352 @@ export function upsertAdvisory(a: Omit<AdvisoryRow, 'fetched_at'>): void {
 }
 
 const deleteAdvisoriesStmt = db.prepare(`DELETE FROM advisories`);
+const hasAdvisorySnapshotHistory = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='advisory_snapshot_history'
+`).get() != null;
+const insertAdvisorySnapshotStmt = !dbReadOnly && hasAdvisorySnapshotHistory
+  ? db.prepare(`
+      INSERT INTO advisory_snapshot_history(captured_at, row_count, content_hash)
+      VALUES(?, ?, ?)
+    `)
+  : null;
+const insertAdvisorySnapshotRowStmt = !dbReadOnly && hasAdvisorySnapshotHistory
+  ? db.prepare(`
+      INSERT INTO advisory_snapshot_rows (
+        snapshot_id, advisory_key, ghsa_id, cve_id, summary, severity, html_url,
+        published_at, package_ecosystem, package_name, vulnerable_version_range, patched_versions
+      )
+      VALUES (
+        :snapshot_id, :advisory_key, :ghsa_id, :cve_id, :summary, :severity, :html_url,
+        :published_at, :package_ecosystem, :package_name, :vulnerable_version_range, :patched_versions
+      )
+    `)
+  : null;
+const hasAdvisorySnapshotV2History = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='advisory_snapshot_v2_history'
+`).get() != null;
+const latestAdvisorySnapshotV2HeaderStmt = hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      SELECT *
+      FROM advisory_snapshot_v2_history
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const listAdvisorySnapshotV2HeadersStmt = hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      SELECT *
+      FROM advisory_snapshot_v2_history
+      ORDER BY id
+    `)
+  : null;
+const advisorySnapshotV2HeaderByIdStmt = hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      SELECT *
+      FROM advisory_snapshot_v2_history
+      WHERE id=?
+    `)
+  : null;
+const previousAdvisorySnapshotV2HashStmt = hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      SELECT content_hash
+      FROM advisory_snapshot_v2_history
+      WHERE id < ?
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const listAdvisorySnapshotV2RowsStmt = hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      SELECT *
+      FROM advisory_snapshot_v2_rows
+      WHERE snapshot_id=?
+      ORDER BY range_identity
+    `)
+  : null;
+const insertAdvisorySnapshotV2Stmt = !dbReadOnly && hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      INSERT INTO advisory_snapshot_v2_history (
+        schema_version, captured_at,
+        repository_owner, repository_name, repository_url,
+        target_ecosystem, target_package_name,
+        source_hash, catalog_hash, score_hash, score_ready,
+        row_count, score_row_count, score_content_digest,
+        snapshot_json, previous_content_hash, content_hash
+      )
+      VALUES (
+        :schema_version, :captured_at,
+        :repository_owner, :repository_name, :repository_url,
+        :target_ecosystem, :target_package_name,
+        :source_hash, :catalog_hash, :score_hash, :score_ready,
+        :row_count, :score_row_count, :score_content_digest,
+        :snapshot_json, :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const insertAdvisorySnapshotV2RowStmt = !dbReadOnly && hasAdvisorySnapshotV2History
+  ? db.prepare(`
+      INSERT INTO advisory_snapshot_v2_rows (
+        snapshot_id, range_identity, ghsa_id,
+        package_ecosystem, package_name, vulnerable_version_range,
+        state, target_package, score_eligible, audit_only,
+        row_json, row_hash
+      )
+      VALUES (
+        :snapshot_id, :range_identity, :ghsa_id,
+        :package_ecosystem, :package_name, :vulnerable_version_range,
+        :state, :target_package, :score_eligible, :audit_only,
+        :row_json, :row_hash
+      )
+    `)
+  : null;
+
+function replaceAdvisoryRowsAt(
+  rows: Array<Omit<AdvisoryRow, 'fetched_at'>>,
+  capturedAt: string,
+): void {
+  if (!insertAdvisorySnapshotStmt || !insertAdvisorySnapshotRowStmt) {
+    throw new Error('Advisory snapshot storage is unavailable or read-only');
+  }
+  if (!Number.isFinite(Date.parse(capturedAt))) {
+    throw new Error('Advisory snapshot capturedAt must be a valid timestamp');
+  }
+  const ordered = [...rows].sort((a, b) => a.advisory_key.localeCompare(b.advisory_key));
+  const rowProblems = advisorySnapshotRowProblems(ordered, {
+    ecosystem: 'npm',
+    packageName: config.github.repo,
+  });
+  if (rowProblems.length > 0) {
+    throw new Error(`Invalid advisory snapshot rows: ${JSON.stringify(rowProblems.slice(0, 10))}`);
+  }
+  const contentHash = advisorySnapshotContentHash(ordered);
+  const snapshot = insertAdvisorySnapshotStmt.run(capturedAt, ordered.length, contentHash);
+  const snapshotId = Number(snapshot.lastInsertRowid);
+  for (const row of ordered) {
+    insertAdvisorySnapshotRowStmt.run({
+      snapshot_id: snapshotId,
+      ...row,
+    } as unknown as Record<string, string | number | null>);
+  }
+  deleteAdvisoriesStmt.run();
+  for (const row of ordered) {
+    upsertAdvisoryStmt.run({ ...row, fetched_at: capturedAt });
+  }
+}
+
 export function replaceAdvisories(rows: Array<Omit<AdvisoryRow, 'fetched_at'>>): void {
   runInWriteTransaction(() => {
-    deleteAdvisoriesStmt.run();
-    for (const row of rows) upsertAdvisory(row);
+    replaceAdvisoryRowsAt(rows, new Date().toISOString());
+  });
+}
+
+interface AdvisorySnapshotV2HeaderRow {
+  id: number;
+  schema_version: number;
+  captured_at: string;
+  repository_owner: string;
+  repository_name: string;
+  repository_url: string;
+  target_ecosystem: string;
+  target_package_name: string;
+  source_hash: string;
+  catalog_hash: string;
+  score_hash: string;
+  score_ready: number;
+  row_count: number;
+  score_row_count: number;
+  score_content_digest: string;
+  snapshot_json: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+interface AdvisorySnapshotV2StoredRow {
+  snapshot_id: number;
+  range_identity: string;
+  ghsa_id: string;
+  package_ecosystem: string;
+  package_name: string;
+  vulnerable_version_range: string;
+  state: string;
+  target_package: number;
+  score_eligible: number;
+  audit_only: number;
+  row_json: string;
+  row_hash: string;
+}
+
+export interface PersistedCompoundAdvisorySnapshot {
+  metadata: CompoundAdvisorySnapshotMetadata;
+  snapshot: CompoundAdvisorySnapshot;
+  scoreRows: Array<Omit<AdvisoryRow, 'fetched_at'>>;
+}
+
+function advisorySnapshotV2Metadata(
+  header: AdvisorySnapshotV2HeaderRow,
+): CompoundAdvisorySnapshotMetadata {
+  return {
+    schemaVersion: COMPOUND_ADVISORY_SNAPSHOT_SCHEMA_VERSION,
+    snapshotId: Number(header.id),
+    capturedAt: header.captured_at,
+    repository: {
+      owner: header.repository_owner,
+      name: header.repository_name,
+      url: header.repository_url,
+    },
+    target: {
+      ecosystem: header.target_ecosystem,
+      packageName: header.target_package_name,
+    },
+    sourceHash: header.source_hash,
+    catalogHash: header.catalog_hash,
+    scoreHash: header.score_hash,
+    contentHash: header.content_hash,
+    previousContentHash: header.previous_content_hash,
+    rowCount: Number(header.row_count),
+    scoreRowCount: Number(header.score_row_count),
+    scoreReady: true,
+    scoreContentDigest: header.score_content_digest,
+  };
+}
+
+function parsePersistedCompoundAdvisorySnapshot(
+  header: AdvisorySnapshotV2HeaderRow,
+): PersistedCompoundAdvisorySnapshot {
+  let snapshot: CompoundAdvisorySnapshot;
+  try {
+    snapshot = JSON.parse(header.snapshot_json) as CompoundAdvisorySnapshot;
+  } catch {
+    throw new Error(`Advisory snapshot v2 ${header.id} contains invalid snapshot JSON`);
+  }
+  assertCompoundAdvisorySnapshotScoreable(snapshot);
+  const scoreRows = compoundAdvisoryScoreRows(snapshot);
+  const scoreContentDigest = advisorySnapshotContentHash(scoreRows);
+  const canonicalSnapshotJson = canonicalCompoundAdvisorySnapshotJson(snapshot);
+  const expectedContentHash = compoundAdvisorySnapshotLedgerContentHash({
+    capturedAt: snapshot.capturedAt,
+    repository: snapshot.repository,
+    target: snapshot.target,
+    sourceHash: snapshot.sourceHash,
+    catalogHash: snapshot.catalogHash,
+    scoreHash: snapshot.scoreHash,
+    rowCount: snapshot.rows.length,
+    scoreRowCount: scoreRows.length,
+    scoreContentDigest,
+    snapshotJson: header.snapshot_json,
+    previousContentHash: header.previous_content_hash,
+  });
+  const mismatches = [
+    header.schema_version !== COMPOUND_ADVISORY_SNAPSHOT_SCHEMA_VERSION
+      ? 'schema version'
+      : null,
+    header.captured_at !== snapshot.capturedAt ? 'capturedAt' : null,
+    header.repository_owner !== snapshot.repository.owner ||
+      header.repository_name !== snapshot.repository.name ||
+      header.repository_url !== snapshot.repository.url
+      ? 'repository identity'
+      : null,
+    header.target_ecosystem !== snapshot.target.ecosystem ||
+      header.target_package_name !== snapshot.target.packageName
+      ? 'target package'
+      : null,
+    header.source_hash !== snapshot.sourceHash ? 'source hash' : null,
+    header.catalog_hash !== snapshot.catalogHash ? 'catalog hash' : null,
+    header.score_hash !== snapshot.scoreHash ? 'score hash' : null,
+    header.score_ready !== 1 ? 'score readiness' : null,
+    Number(header.row_count) !== snapshot.rows.length ? 'row count' : null,
+    Number(header.score_row_count) !== scoreRows.length ? 'score row count' : null,
+    header.score_content_digest !== scoreContentDigest ? 'score content digest' : null,
+    header.snapshot_json !== canonicalSnapshotJson ? 'canonical snapshot JSON' : null,
+    header.content_hash !== expectedContentHash ? 'ledger content hash' : null,
+  ].filter((value): value is string => value != null);
+  const expectedPrevious = previousAdvisorySnapshotV2HashStmt?.get(header.id) as
+    | { content_hash?: string }
+    | undefined;
+  if ((header.previous_content_hash ?? null) !== (expectedPrevious?.content_hash ?? null)) {
+    mismatches.push('previous content hash');
+  }
+  const storedRows = (listAdvisorySnapshotV2RowsStmt?.all(header.id) ?? []) as
+    unknown as AdvisorySnapshotV2StoredRow[];
+  if (storedRows.length !== snapshot.rows.length) {
+    mismatches.push('stored row count');
+  } else {
+    for (let index = 0; index < snapshot.rows.length; index++) {
+      const expected = snapshot.rows[index];
+      const stored = storedRows[index];
+      const rowJson = canonicalCompoundAdvisoryRangeRowJson(expected);
+      const rowHash = compoundAdvisorySnapshotRowContentHash(expected);
+      if (
+        stored.snapshot_id !== header.id ||
+        stored.range_identity !== expected.identity ||
+        stored.ghsa_id !== expected.ghsaId ||
+        stored.package_ecosystem !== expected.ecosystem ||
+        stored.package_name !== expected.packageName ||
+        stored.vulnerable_version_range !== expected.vulnerableVersionRange ||
+        stored.state !== expected.state ||
+        stored.target_package !== (expected.targetPackage ? 1 : 0) ||
+        stored.score_eligible !== (expected.scoreEligible ? 1 : 0) ||
+        stored.audit_only !== (expected.auditOnly ? 1 : 0) ||
+        stored.row_json !== rowJson ||
+        stored.row_hash !== rowHash
+      ) {
+        mismatches.push(`stored row ${expected.identity}`);
+      }
+    }
+  }
+  if (mismatches.length > 0) {
+    throw new Error(
+      `Advisory snapshot v2 ${header.id} header mismatch: ${mismatches.join(', ')}`,
+    );
+  }
+  return {
+    metadata: advisorySnapshotV2Metadata(header),
+    snapshot,
+    scoreRows,
+  };
+}
+
+export function currentCompoundAdvisorySnapshot(): PersistedCompoundAdvisorySnapshot | null {
+  const metadataJson = getMeta(ADVISORY_SNAPSHOT_V2_META_KEY);
+  if (metadataJson == null) return null;
+  let metadata: unknown;
+  try {
+    metadata = JSON.parse(metadataJson);
+  } catch {
+    throw new Error('Current advisory snapshot v2 metadata is not valid JSON');
+  }
+  const snapshotId = Number(
+    metadata && typeof metadata === 'object' && !Array.isArray(metadata)
+      ? (metadata as Record<string, unknown>).snapshotId
+      : NaN,
+  );
+  if (!Number.isInteger(snapshotId) || snapshotId <= 0) {
+    throw new Error('Current advisory snapshot v2 metadata has no valid snapshotId');
+  }
+  const header = advisorySnapshotV2HeaderByIdStmt?.get(snapshotId) as
+    | AdvisorySnapshotV2HeaderRow
+    | undefined;
+  if (!header) {
+    throw new Error(
+      `Current advisory snapshot v2 metadata references missing ledger row ${snapshotId}`,
+    );
+  }
+  const persisted = parsePersistedCompoundAdvisorySnapshot(header);
+  if (
+    canonicalOperationJson(metadata) !==
+    canonicalOperationJson(persisted.metadata)
+  ) {
+    throw new Error('Current advisory snapshot v2 metadata does not match selected ledger row');
+  }
+  const activeRows = listAdvisories().map(({ fetched_at: _fetchedAt, ...row }) => row);
+  if (
+    advisorySnapshotContentHash(activeRows) !==
+    persisted.metadata.scoreContentDigest
+  ) {
+    throw new Error('Current advisory score projection does not match advisory snapshot v2');
+  }
+  return persisted;
+}
+
+export function compoundAdvisorySnapshotById(
+  snapshotId: number,
+): PersistedCompoundAdvisorySnapshot | null {
+  if (!Number.isInteger(snapshotId) || snapshotId <= 0) {
+    throw new Error(`Advisory snapshot v2 id must be a positive integer, got ${snapshotId}`);
+  }
+  const header = advisorySnapshotV2HeaderByIdStmt?.get(snapshotId) as
+    | AdvisorySnapshotV2HeaderRow
+    | undefined;
+  return header ? parsePersistedCompoundAdvisorySnapshot(header) : null;
+}
+
+export function listCompoundAdvisorySnapshots(): PersistedCompoundAdvisorySnapshot[] {
+  return listAdvisorySnapshotV2HeadersStmt
+    ? (
+        listAdvisorySnapshotV2HeadersStmt.all() as unknown as
+          AdvisorySnapshotV2HeaderRow[]
+      ).map(parsePersistedCompoundAdvisorySnapshot)
+    : [];
+}
+
+export function currentCompoundAdvisorySnapshotAuditProjection():
+  CompoundAdvisorySnapshotAuditProjection {
+  const integrityProblems: string[] = [];
+  const activeProjectionProblems: string[] = [];
+  let snapshots: PersistedCompoundAdvisorySnapshot[] = [];
+  let active: PersistedCompoundAdvisorySnapshot | null = null;
+  try {
+    snapshots = listCompoundAdvisorySnapshots();
+    for (const { metadata } of snapshots) {
+      if (
+        metadata.repository.owner !== config.github.owner ||
+        metadata.repository.name !== config.github.repo ||
+        metadata.repository.url !==
+          `https://github.com/${config.github.owner}/${config.github.repo}`
+      ) {
+        integrityProblems.push(
+          `snapshot ${metadata.snapshotId}: repository identity does not ` +
+          'match configured repository',
+        );
+      }
+      if (
+        metadata.target.ecosystem !== 'npm' ||
+        metadata.target.packageName !== config.github.repo.toLowerCase()
+      ) {
+        integrityProblems.push(
+          `snapshot ${metadata.snapshotId}: target package identity does not ` +
+          'match configured package',
+        );
+      }
+    }
+  } catch (error) {
+    integrityProblems.push(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  try {
+    active = currentCompoundAdvisorySnapshot();
+  } catch (error) {
+    activeProjectionProblems.push(
+      error instanceof Error ? error.message : String(error),
+    );
+  }
+  const operationLedger = refreshOperationLedgerVerification();
+  return buildCompoundAdvisorySnapshotAuditProjection({
+    snapshots,
+    activeMetadata: active?.metadata ?? null,
+    integrityProblems,
+    activeProjectionProblems,
+    attempts: listRefreshOperationAttempts().map((attempt) => ({
+      runId: attempt.run_id,
+      startedAt: attempt.started_at,
+    })),
+    receipts: listRefreshCaptureReceipts().map((receipt) => ({
+      receiptId: receipt.receipt_id,
+      runId: receipt.run_id,
+      status: receipt.status,
+      finishedAt: receipt.finished_at,
+      durationMs: receipt.duration_ms,
+      stageEventCount: receipt.stage_event_count,
+      stageChainHash: receipt.stage_chain_hash,
+      payloadJson: receipt.payload_json,
+    })),
+    operationLedgerProblems: operationLedger.problems,
+  });
+}
+
+export function listAuthorizedReleaseValidationAdvisorySnapshots():
+  AdvisorySnapshotValidationEvidence[] {
+  const compoundSnapshots = listCompoundAdvisorySnapshots();
+  const ledger = refreshOperationLedgerVerification();
+  const authorization = compoundAdvisorySnapshotPublicationAuthorizations({
+    snapshots: compoundSnapshots,
+    attempts: listRefreshOperationAttempts().map((attempt) => ({
+      runId: attempt.run_id,
+      startedAt: attempt.started_at,
+    })),
+    receipts: listRefreshCaptureReceipts().map((receipt) => ({
+      receiptId: receipt.receipt_id,
+      runId: receipt.run_id,
+      status: receipt.status,
+      finishedAt: receipt.finished_at,
+      durationMs: receipt.duration_ms,
+      stageEventCount: receipt.stage_event_count,
+      stageChainHash: receipt.stage_chain_hash,
+      payloadJson: receipt.payload_json,
+    })),
+    operationLedgerProblems: ledger.problems,
+  });
+  if (authorization.problems.length > 0) {
+    throw new Error(
+      `Advisory snapshot v2 publication authorization failed: ` +
+      authorization.problems.join('; '),
+    );
+  }
+  const legacyHeaders = hasAdvisorySnapshotHistory
+    ? db.prepare(`
+        SELECT id, captured_at, row_count, content_hash
+        FROM advisory_snapshot_history
+        ORDER BY captured_at, id
+      `).all() as Array<{
+        id: unknown;
+        captured_at: unknown;
+        row_count: unknown;
+        content_hash: unknown;
+      }>
+    : [];
+  return [
+    ...buildAdvisorySnapshotValidationEvidence(
+      legacyHeaders,
+      listAdvisorySnapshotRows() as unknown as Array<Record<string, unknown>>,
+    ),
+    ...buildCompoundAdvisorySnapshotValidationEvidence(
+      compoundSnapshots,
+      authorization.authorizations,
+    ),
+  ];
+}
+
+export function stageCompoundAdvisorySnapshot(
+  snapshot: CompoundAdvisorySnapshot,
+  options: { assertCanWrite?: (stage: string) => void } = {},
+): PersistedCompoundAdvisorySnapshot {
+  if (!insertAdvisorySnapshotV2Stmt || !insertAdvisorySnapshotV2RowStmt) {
+    throw new Error('Advisory snapshot v2 storage is unavailable or read-only');
+  }
+  assertCompoundAdvisorySnapshotScoreable(snapshot);
+  const scoreRows = compoundAdvisoryScoreRows(snapshot);
+  const scoreContentDigest = advisorySnapshotContentHash(scoreRows);
+  const snapshotJson = canonicalCompoundAdvisorySnapshotJson(snapshot);
+
+  options.assertCanWrite?.('compound advisory snapshot staging');
+  return runInWriteTransaction(() => {
+    options.assertCanWrite?.('compound advisory snapshot staging transaction');
+    const previous = latestAdvisorySnapshotV2HeaderStmt?.get() as
+      | AdvisorySnapshotV2HeaderRow
+      | undefined;
+    const previousContentHash = previous?.content_hash ?? null;
+    const contentHash = compoundAdvisorySnapshotLedgerContentHash({
+      capturedAt: snapshot.capturedAt,
+      repository: snapshot.repository,
+      target: snapshot.target,
+      sourceHash: snapshot.sourceHash,
+      catalogHash: snapshot.catalogHash,
+      scoreHash: snapshot.scoreHash,
+      rowCount: snapshot.rows.length,
+      scoreRowCount: scoreRows.length,
+      scoreContentDigest,
+      snapshotJson,
+      previousContentHash,
+    });
+    const inserted = insertAdvisorySnapshotV2Stmt.run({
+      schema_version: COMPOUND_ADVISORY_SNAPSHOT_SCHEMA_VERSION,
+      captured_at: snapshot.capturedAt,
+      repository_owner: snapshot.repository.owner,
+      repository_name: snapshot.repository.name,
+      repository_url: snapshot.repository.url,
+      target_ecosystem: snapshot.target.ecosystem,
+      target_package_name: snapshot.target.packageName,
+      source_hash: snapshot.sourceHash,
+      catalog_hash: snapshot.catalogHash,
+      score_hash: snapshot.scoreHash,
+      score_ready: 1,
+      row_count: snapshot.rows.length,
+      score_row_count: scoreRows.length,
+      score_content_digest: scoreContentDigest,
+      snapshot_json: snapshotJson,
+      previous_content_hash: previousContentHash,
+      content_hash: contentHash,
+    });
+    const snapshotId = Number(inserted.lastInsertRowid);
+    for (const row of snapshot.rows) {
+      const rowJson = canonicalCompoundAdvisoryRangeRowJson(row);
+      insertAdvisorySnapshotV2RowStmt.run({
+        snapshot_id: snapshotId,
+        range_identity: row.identity,
+        ghsa_id: row.ghsaId,
+        package_ecosystem: row.ecosystem,
+        package_name: row.packageName,
+        vulnerable_version_range: row.vulnerableVersionRange,
+        state: row.state,
+        target_package: row.targetPackage ? 1 : 0,
+        score_eligible: row.scoreEligible ? 1 : 0,
+        audit_only: row.auditOnly ? 1 : 0,
+        row_json: rowJson,
+        row_hash: compoundAdvisorySnapshotRowContentHash(row),
+      });
+    }
+    const header = latestAdvisorySnapshotV2HeaderStmt?.get() as
+      | AdvisorySnapshotV2HeaderRow
+      | undefined;
+    if (!header || Number(header.id) !== snapshotId) {
+      throw new Error('Advisory snapshot v2 insert did not become the latest ledger row');
+    }
+    const persisted = parsePersistedCompoundAdvisorySnapshot(header);
+    options.assertCanWrite?.('compound advisory snapshot staging commit');
+    return persisted;
+  });
+}
+
+export function activateCompoundAdvisorySnapshot(
+  snapshotId: number,
+  options: { assertCanWrite?: (stage: string) => void } = {},
+): PersistedCompoundAdvisorySnapshot {
+  options.assertCanWrite?.('compound advisory snapshot activation');
+  return runInWriteTransaction(() => {
+    options.assertCanWrite?.('compound advisory snapshot activation transaction');
+    const persisted = compoundAdvisorySnapshotById(snapshotId);
+    if (!persisted) {
+      throw new Error(`Advisory snapshot v2 ${snapshotId} does not exist`);
+    }
+    const { snapshot, scoreRows, metadata } = persisted;
+    replaceAdvisoryRowsAt(scoreRows, snapshot.capturedAt);
+    const legacyMetadata = {
+      schemaVersion: 1,
+      source: 'github-security-vulnerabilities',
+      sourceOrder: 'UPDATED_AT_ASC',
+      ecosystem: snapshot.target.ecosystem,
+      packageName: snapshot.target.packageName,
+      capturedAt: snapshot.capturedAt,
+      exhausted: true,
+      stabilized: true,
+      totalCount: snapshot.sourceObservations.graphql.observation.totalCount,
+      nodeCount: snapshot.sourceObservations.graphql.observation.nodeCount,
+      pageCount: snapshot.sourceObservations.graphql.observation.pageCount,
+      pagesFetched: snapshot.sourceObservations.graphql.observation.pagesFetched,
+      sweepCount: snapshot.sourceObservations.graphql.observation.sweepCount,
+      sourceDigest: snapshot.sourceObservations.graphql.observation.digest,
+      advisoryCount: scoreRows.length,
+      activeAdvisoryCount: scoreRows.length,
+      withdrawnAdvisoryCount: 0,
+      rowCount: scoreRows.length,
+      contentDigest: metadata.scoreContentDigest,
+    };
+    setMeta(ADVISORY_SNAPSHOT_META_KEY, canonicalOperationJson(legacyMetadata));
+    setMeta(ADVISORY_SNAPSHOT_V2_META_KEY, canonicalOperationJson(metadata));
+    const current = currentCompoundAdvisorySnapshot();
+    if (!current || current.metadata.snapshotId !== snapshotId) {
+      throw new Error(`Advisory snapshot v2 ${snapshotId} did not become active`);
+    }
+    options.assertCanWrite?.('compound advisory snapshot activation commit');
+    return current;
+  });
+}
+
+export function persistCompoundAdvisorySnapshot(
+  snapshot: CompoundAdvisorySnapshot,
+  options: { assertCanWrite?: (stage: string) => void } = {},
+): PersistedCompoundAdvisorySnapshot {
+  return runInWriteTransaction(() => {
+    const staged = stageCompoundAdvisorySnapshot(snapshot, options);
+    return activateCompoundAdvisorySnapshot(staged.metadata.snapshotId, options);
   });
 }
 
 const listAdvisoriesStmt = db.prepare(`SELECT * FROM advisories ORDER BY published_at DESC NULLS LAST`);
 export function listAdvisories(): AdvisoryRow[] {
   return listAdvisoriesStmt.all() as unknown as AdvisoryRow[];
+}
+
+export interface AdvisorySnapshotRow extends Omit<AdvisoryRow, 'fetched_at'> {
+  snapshot_id: number;
+  captured_at: string;
+  snapshot_content_hash: string;
+}
+
+const listAdvisorySnapshotRowsStmt = hasAdvisorySnapshotHistory
+  ? db.prepare(`
+      SELECT
+        rows.*,
+        snapshot.captured_at,
+        snapshot.content_hash AS snapshot_content_hash
+      FROM advisory_snapshot_rows rows
+      JOIN advisory_snapshot_history snapshot ON snapshot.id=rows.snapshot_id
+      ORDER BY snapshot.captured_at, rows.advisory_key
+    `)
+  : null;
+
+export function listAdvisorySnapshotRows(): AdvisorySnapshotRow[] {
+  return listAdvisorySnapshotRowsStmt
+    ? listAdvisorySnapshotRowsStmt.all() as unknown as AdvisorySnapshotRow[]
+    : [];
+}
+
+// ---------- exhaustive issue catalog snapshots ----------
+const issueCatalogSnapshotHeaderColumns = [
+  'id',
+  'snapshot_id',
+  'schema_version',
+  'row_schema_version',
+  'repository',
+  'source',
+  'source_order',
+  'captured_at',
+  'boundary_total_count',
+  'observed_total_count',
+  'post_boundary_growth_count',
+  'terminal_node_id',
+  'terminal_issue_number',
+  'terminal_created_at',
+  'fetched_count',
+  'unique_count',
+  'page_count',
+  'pages_fetched',
+  'sweep_count',
+  'membership_digest',
+  'content_digest',
+  'last_request_cursor',
+  'row_count',
+  'row_schema_digest',
+  'rows_content_hash',
+  'previous_content_hash',
+  'content_hash',
+];
+const issueCatalogSnapshotRowColumns = [
+  'snapshot_id',
+  'source_ordinal',
+  'issue_number',
+  'node_id',
+  'issue_json',
+  'content_hash',
+];
+const issueCatalogSnapshotConsumptionColumns = [
+  'id',
+  'schema_version',
+  'snapshot_id',
+  'repository',
+  'run_id',
+  'consumed_at',
+  'processed_row_count',
+  'processed_page_count',
+  'snapshot_content_hash',
+  'previous_content_hash',
+  'content_hash',
+];
+const hasIssueCatalogSnapshotTables =
+  tableHasColumns('issue_catalog_snapshots', issueCatalogSnapshotHeaderColumns) &&
+  tableHasColumns('issue_catalog_snapshot_rows', issueCatalogSnapshotRowColumns);
+const hasIssueCatalogSnapshotConsumptionTable = tableHasColumns(
+  'issue_catalog_snapshot_consumptions',
+  issueCatalogSnapshotConsumptionColumns,
+);
+
+const insertIssueCatalogSnapshotHeaderStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      INSERT INTO issue_catalog_snapshots (
+        snapshot_id, schema_version, row_schema_version, repository, source,
+        source_order, captured_at, boundary_total_count, observed_total_count,
+        post_boundary_growth_count, terminal_node_id, terminal_issue_number,
+        terminal_created_at, fetched_count, unique_count, page_count,
+        pages_fetched, sweep_count, membership_digest, content_digest,
+        last_request_cursor, row_count, row_schema_digest, rows_content_hash,
+        previous_content_hash, content_hash
+      )
+      VALUES (
+        :snapshot_id, :schema_version, :row_schema_version, :repository, :source,
+        :source_order, :captured_at, :boundary_total_count, :observed_total_count,
+        :post_boundary_growth_count, :terminal_node_id, :terminal_issue_number,
+        :terminal_created_at, :fetched_count, :unique_count, :page_count,
+        :pages_fetched, :sweep_count, :membership_digest, :content_digest,
+        :last_request_cursor, :row_count, :row_schema_digest, :rows_content_hash,
+        :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const insertIssueCatalogSnapshotRowStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      INSERT INTO issue_catalog_snapshot_rows (
+        snapshot_id, source_ordinal, issue_number, node_id, issue_json, content_hash
+      )
+      VALUES (
+        :snapshot_id, :source_ordinal, :issue_number, :node_id, :issue_json, :content_hash
+      )
+    `)
+  : null;
+const latestIssueCatalogSnapshotHeaderStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      SELECT *
+      FROM issue_catalog_snapshots
+      WHERE repository=?
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const getIssueCatalogSnapshotHeaderStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`SELECT * FROM issue_catalog_snapshots WHERE snapshot_id=?`)
+  : null;
+const listIssueCatalogSnapshotHeadersStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`SELECT * FROM issue_catalog_snapshots ORDER BY id`)
+  : null;
+const listIssueCatalogSnapshotRowsStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      SELECT *
+      FROM issue_catalog_snapshot_rows
+      WHERE snapshot_id=?
+      ORDER BY source_ordinal
+    `)
+  : null;
+const countIssueCatalogSnapshotRowsStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM issue_catalog_snapshot_rows
+      WHERE snapshot_id=?
+    `)
+  : null;
+const latestIssueCatalogSnapshotContentHashStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      SELECT content_hash
+      FROM issue_catalog_snapshots
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const orphanIssueCatalogSnapshotRowCountStmt = hasIssueCatalogSnapshotTables
+  ? db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM issue_catalog_snapshot_rows row
+      LEFT JOIN issue_catalog_snapshots snapshot ON snapshot.snapshot_id=row.snapshot_id
+      WHERE snapshot.snapshot_id IS NULL
+    `)
+  : null;
+const insertIssueCatalogSnapshotConsumptionStmt = hasIssueCatalogSnapshotConsumptionTable
+  ? db.prepare(`
+      INSERT INTO issue_catalog_snapshot_consumptions (
+        schema_version, snapshot_id, repository, run_id, consumed_at,
+        processed_row_count, processed_page_count, snapshot_content_hash,
+        previous_content_hash, content_hash
+      )
+      VALUES (
+        :schema_version, :snapshot_id, :repository, :run_id, :consumed_at,
+        :processed_row_count, :processed_page_count, :snapshot_content_hash,
+        :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const getIssueCatalogSnapshotConsumptionStmt = hasIssueCatalogSnapshotConsumptionTable
+  ? db.prepare(`
+      SELECT *
+      FROM issue_catalog_snapshot_consumptions
+      WHERE snapshot_id=?
+    `)
+  : null;
+const latestIssueCatalogSnapshotConsumptionContentHashStmt =
+  hasIssueCatalogSnapshotConsumptionTable
+    ? db.prepare(`
+        SELECT content_hash
+        FROM issue_catalog_snapshot_consumptions
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+    : null;
+const listIssueCatalogSnapshotConsumptionsStmt = hasIssueCatalogSnapshotConsumptionTable
+  ? db.prepare(`
+      SELECT *
+      FROM issue_catalog_snapshot_consumptions
+      ORDER BY id
+    `)
+  : null;
+
+function mapIssueCatalogSnapshotHeader(row: Record<string, unknown>): IssueCatalogSnapshotHeader {
+  return {
+    id: Number(row.id),
+    snapshotId: String(row.snapshot_id),
+    schemaVersion: Number(row.schema_version),
+    rowSchemaVersion: Number(row.row_schema_version),
+    repository: String(row.repository),
+    source: String(row.source),
+    sourceOrder: String(row.source_order),
+    capturedAt: String(row.captured_at),
+    boundaryTotalCount: Number(row.boundary_total_count),
+    observedTotalCount: Number(row.observed_total_count),
+    postBoundaryGrowthCount: Number(row.post_boundary_growth_count),
+    terminalNodeId: row.terminal_node_id == null ? null : String(row.terminal_node_id),
+    terminalIssueNumber: row.terminal_issue_number == null ? null : Number(row.terminal_issue_number),
+    terminalCreatedAt: row.terminal_created_at == null ? null : String(row.terminal_created_at),
+    fetchedCount: Number(row.fetched_count),
+    uniqueCount: Number(row.unique_count),
+    pageCount: Number(row.page_count),
+    pagesFetched: Number(row.pages_fetched),
+    sweepCount: Number(row.sweep_count),
+    membershipDigest: String(row.membership_digest),
+    contentDigest: String(row.content_digest),
+    lastRequestCursor: row.last_request_cursor == null ? null : String(row.last_request_cursor),
+    rowCount: Number(row.row_count),
+    rowSchemaDigest: String(row.row_schema_digest),
+    rowsContentHash: String(row.rows_content_hash),
+    previousContentHash: row.previous_content_hash == null ? null : String(row.previous_content_hash),
+    contentHash: String(row.content_hash),
+  };
+}
+
+function mapIssueCatalogSnapshotRow(row: Record<string, unknown>): IssueCatalogSnapshotRow {
+  const issueJson = String(row.issue_json);
+  const issue = parseIssueCatalogIssueJson(issueJson) ?? (() => {
+    try {
+      return JSON.parse(issueJson) as GhIssueCatalogIssue;
+    } catch {
+      return {} as GhIssueCatalogIssue;
+    }
+  })();
+  return {
+    snapshotId: String(row.snapshot_id),
+    sourceOrdinal: Number(row.source_ordinal),
+    issueNumber: Number(row.issue_number),
+    nodeId: String(row.node_id),
+    issueJson,
+    contentHash: String(row.content_hash),
+    issue,
+  };
+}
+
+function issueCatalogSnapshotFromHeaderRow(
+  row: Record<string, unknown> | undefined,
+): IssueCatalogSnapshot | null {
+  if (!row || !listIssueCatalogSnapshotRowsStmt) return null;
+  const header = mapIssueCatalogSnapshotHeader(row);
+  const rows = listIssueCatalogSnapshotRowsStmt
+    .all(header.snapshotId)
+    .map((snapshotRow) =>
+      mapIssueCatalogSnapshotRow(snapshotRow as Record<string, unknown>));
+  return { header, rows };
+}
+
+export function getIssueCatalogSnapshot(snapshotId: string): IssueCatalogSnapshot | null {
+  if (!getIssueCatalogSnapshotHeaderStmt) return null;
+  return issueCatalogSnapshotFromHeaderRow(
+    getIssueCatalogSnapshotHeaderStmt.get(snapshotId) as Record<string, unknown> | undefined,
+  );
+}
+
+export function latestIssueCatalogSnapshot(repository: string): IssueCatalogSnapshot | null {
+  if (!latestIssueCatalogSnapshotHeaderStmt) return null;
+  return issueCatalogSnapshotFromHeaderRow(
+    latestIssueCatalogSnapshotHeaderStmt.get(repository) as Record<string, unknown> | undefined,
+  );
+}
+
+export function insertIssueCatalogSnapshot(input: {
+  repository: string;
+  capturedAt: string;
+  catalog: GhIssueCatalog;
+}): IssueCatalogSnapshotHeader {
+  if (
+    dbReadOnly ||
+    !insertIssueCatalogSnapshotHeaderStmt ||
+    !insertIssueCatalogSnapshotRowStmt ||
+    !latestIssueCatalogSnapshotContentHashStmt ||
+    !getIssueCatalogSnapshotHeaderStmt ||
+    !countIssueCatalogSnapshotRowsStmt
+  ) {
+    throw new Error('Cannot persist an issue catalog snapshot in this database');
+  }
+  return runInWriteTransaction(() => {
+    const previous = latestIssueCatalogSnapshotContentHashStmt.get() as
+      | { content_hash?: string | null }
+      | undefined;
+    const staged = stageIssueCatalogSnapshot({
+      ...input,
+      previousContentHash: previous?.content_hash ?? null,
+    });
+    const header = staged.header;
+    const stagedProblems = issueCatalogSnapshotProblems({
+      header: { id: 0, ...header },
+      rows: staged.rows,
+    }, {
+      repository: input.repository,
+      expectedPreviousContentHash: header.previousContentHash,
+    });
+    if (stagedProblems.length > 0) {
+      throw new Error(`Staged issue catalog snapshot failed verification: ${stagedProblems.join('; ')}`);
+    }
+    const inserted = insertIssueCatalogSnapshotHeaderStmt.run({
+      snapshot_id: header.snapshotId,
+      schema_version: header.schemaVersion,
+      row_schema_version: header.rowSchemaVersion,
+      repository: header.repository,
+      source: header.source,
+      source_order: header.sourceOrder,
+      captured_at: header.capturedAt,
+      boundary_total_count: header.boundaryTotalCount,
+      observed_total_count: header.observedTotalCount,
+      post_boundary_growth_count: header.postBoundaryGrowthCount,
+      terminal_node_id: header.terminalNodeId,
+      terminal_issue_number: header.terminalIssueNumber,
+      terminal_created_at: header.terminalCreatedAt,
+      fetched_count: header.fetchedCount,
+      unique_count: header.uniqueCount,
+      page_count: header.pageCount,
+      pages_fetched: header.pagesFetched,
+      sweep_count: header.sweepCount,
+      membership_digest: header.membershipDigest,
+      content_digest: header.contentDigest,
+      last_request_cursor: header.lastRequestCursor,
+      row_count: header.rowCount,
+      row_schema_digest: header.rowSchemaDigest,
+      rows_content_hash: header.rowsContentHash,
+      previous_content_hash: header.previousContentHash,
+      content_hash: header.contentHash,
+    });
+    for (const row of staged.rows) {
+      insertIssueCatalogSnapshotRowStmt.run({
+        snapshot_id: row.snapshotId,
+        source_ordinal: row.sourceOrdinal,
+        issue_number: row.issueNumber,
+        node_id: row.nodeId,
+        issue_json: row.issueJson,
+        content_hash: row.contentHash,
+      });
+    }
+    const storedRow = getIssueCatalogSnapshotHeaderStmt.get(header.snapshotId) as
+      | Record<string, unknown>
+      | undefined;
+    if (!storedRow) throw new Error('Persisted issue catalog snapshot header could not be reloaded');
+    const storedHeader = mapIssueCatalogSnapshotHeader(storedRow);
+    const storedRowCount = Number(
+      (countIssueCatalogSnapshotRowsStmt.get(header.snapshotId) as { count?: number } | undefined)
+        ?.count ?? -1,
+    );
+    if (
+      storedHeader.id !== Number(inserted.lastInsertRowid) ||
+      storedHeader.contentHash !== header.contentHash ||
+      storedHeader.rowsContentHash !== header.rowsContentHash ||
+      storedHeader.rowCount !== header.rowCount ||
+      storedRowCount !== header.rowCount
+    ) {
+      throw new Error('Persisted issue catalog snapshot header or row count did not match staging');
+    }
+    return storedHeader;
+  });
+}
+
+export const ISSUE_CATALOG_SNAPSHOT_CONSUMPTION_SCHEMA_VERSION = 1;
+
+export interface IssueCatalogSnapshotConsumptionRow {
+  id: number;
+  schemaVersion: number;
+  snapshotId: string;
+  repository: string;
+  runId: string;
+  consumedAt: string;
+  processedRowCount: number;
+  processedPageCount: number;
+  snapshotContentHash: string;
+  previousContentHash: string | null;
+  contentHash: string;
+}
+
+function issueCatalogSnapshotConsumptionContentHash(input: Omit<
+  IssueCatalogSnapshotConsumptionRow,
+  'id' | 'contentHash'
+>): string {
+  return createHash('sha256')
+    .update(canonicalOperationJson([
+      'issue-catalog-snapshot-consumption-v1',
+      input.schemaVersion,
+      input.snapshotId,
+      input.repository,
+      input.runId,
+      input.consumedAt,
+      input.processedRowCount,
+      input.processedPageCount,
+      input.snapshotContentHash,
+      input.previousContentHash,
+    ]))
+    .digest('hex');
+}
+
+function mapIssueCatalogSnapshotConsumption(
+  row: Record<string, unknown>,
+): IssueCatalogSnapshotConsumptionRow {
+  return {
+    id: Number(row.id),
+    schemaVersion: Number(row.schema_version),
+    snapshotId: String(row.snapshot_id),
+    repository: String(row.repository),
+    runId: String(row.run_id),
+    consumedAt: String(row.consumed_at),
+    processedRowCount: Number(row.processed_row_count),
+    processedPageCount: Number(row.processed_page_count),
+    snapshotContentHash: String(row.snapshot_content_hash),
+    previousContentHash: row.previous_content_hash == null
+      ? null
+      : String(row.previous_content_hash),
+    contentHash: String(row.content_hash),
+  };
+}
+
+function issueCatalogSnapshotConsumptionProblems(
+  row: IssueCatalogSnapshotConsumptionRow,
+  snapshot: IssueCatalogSnapshot | null,
+  expectedPreviousContentHash?: string | null,
+): string[] {
+  const problems: string[] = [];
+  if (row.schemaVersion !== ISSUE_CATALOG_SNAPSHOT_CONSUMPTION_SCHEMA_VERSION) {
+    problems.push(
+      `schemaVersion must equal ${ISSUE_CATALOG_SNAPSHOT_CONSUMPTION_SCHEMA_VERSION}`,
+    );
+  }
+  if (!row.snapshotId) problems.push('snapshotId must be non-empty');
+  if (!row.repository) problems.push('repository must be non-empty');
+  if (!row.runId) problems.push('runId must be non-empty');
+  if (!Number.isFinite(Date.parse(row.consumedAt))) {
+    problems.push('consumedAt must be a valid timestamp');
+  }
+  if (!Number.isInteger(row.processedRowCount) || row.processedRowCount < 0) {
+    problems.push('processedRowCount must be a non-negative integer');
+  }
+  if (!Number.isInteger(row.processedPageCount) || row.processedPageCount < 0) {
+    problems.push('processedPageCount must be a non-negative integer');
+  }
+  if (!/^[0-9a-f]{64}$/.test(row.snapshotContentHash)) {
+    problems.push('snapshotContentHash must be SHA-256');
+  }
+  if (
+    row.previousContentHash != null &&
+    !/^[0-9a-f]{64}$/.test(row.previousContentHash)
+  ) {
+    problems.push('previousContentHash must be SHA-256 or null');
+  }
+  if (
+    arguments.length >= 3 &&
+    row.previousContentHash !== expectedPreviousContentHash
+  ) {
+    problems.push('previousContentHash does not match the preceding consumption');
+  }
+  if (!snapshot) {
+    problems.push('referenced snapshot is missing');
+  } else {
+    if (snapshot.header.snapshotId !== row.snapshotId) {
+      problems.push('snapshotId does not match the referenced snapshot');
+    }
+    if (snapshot.header.repository !== row.repository) {
+      problems.push('repository does not match the referenced snapshot');
+    }
+    if (snapshot.header.contentHash !== row.snapshotContentHash) {
+      problems.push('snapshotContentHash does not match the referenced snapshot');
+    }
+    if (snapshot.header.rowCount !== row.processedRowCount) {
+      problems.push('processedRowCount does not match the referenced snapshot');
+    }
+    if (snapshot.header.pageCount !== row.processedPageCount) {
+      problems.push('processedPageCount does not match the referenced snapshot');
+    }
+  }
+  const expectedContentHash = issueCatalogSnapshotConsumptionContentHash({
+    schemaVersion: row.schemaVersion,
+    snapshotId: row.snapshotId,
+    repository: row.repository,
+    runId: row.runId,
+    consumedAt: row.consumedAt,
+    processedRowCount: row.processedRowCount,
+    processedPageCount: row.processedPageCount,
+    snapshotContentHash: row.snapshotContentHash,
+    previousContentHash: row.previousContentHash,
+  });
+  if (row.contentHash !== expectedContentHash) {
+    problems.push('contentHash does not match the canonical consumption payload');
+  }
+  return [...new Set(problems)];
+}
+
+export function getIssueCatalogSnapshotConsumption(
+  snapshotId: string,
+): IssueCatalogSnapshotConsumptionRow | null {
+  if (!getIssueCatalogSnapshotConsumptionStmt) return null;
+  const row = getIssueCatalogSnapshotConsumptionStmt.get(snapshotId) as
+    | Record<string, unknown>
+    | undefined;
+  return row ? mapIssueCatalogSnapshotConsumption(row) : null;
+}
+
+export function listIssueCatalogSnapshotConsumptions(): IssueCatalogSnapshotConsumptionRow[] {
+  if (!listIssueCatalogSnapshotConsumptionsStmt) return [];
+  return listIssueCatalogSnapshotConsumptionsStmt
+    .all()
+    .map((row) => mapIssueCatalogSnapshotConsumption(row as Record<string, unknown>));
+}
+
+export function consumeIssueCatalogSnapshot(input: {
+  snapshotId: string;
+  repository: string;
+  runId: string;
+  consumedAt: string;
+  processedRowCount: number;
+  processedPageCount: number;
+  assertCanWrite?: (stage: string) => void;
+}): IssueCatalogSnapshotConsumptionRow {
+  if (
+    dbReadOnly ||
+    !insertIssueCatalogSnapshotConsumptionStmt ||
+    !getIssueCatalogSnapshotConsumptionStmt ||
+    !latestIssueCatalogSnapshotConsumptionContentHashStmt
+  ) {
+    throw new Error('Cannot consume an issue catalog snapshot in this database');
+  }
+  input.assertCanWrite?.('issue catalog snapshot consumption persistence');
+  return runInWriteTransaction(() => {
+    input.assertCanWrite?.('issue catalog snapshot consumption transaction');
+    const snapshot = getIssueCatalogSnapshot(input.snapshotId);
+    if (!snapshot) {
+      throw new Error(`Issue catalog snapshot ${input.snapshotId} does not exist`);
+    }
+    const existing = getIssueCatalogSnapshotConsumption(input.snapshotId);
+    if (existing) {
+      if (
+        existing.repository === input.repository &&
+        existing.runId === input.runId &&
+        existing.consumedAt === input.consumedAt &&
+        existing.processedRowCount === input.processedRowCount &&
+        existing.processedPageCount === input.processedPageCount
+      ) {
+        const problems = issueCatalogSnapshotConsumptionProblems(existing, snapshot);
+        if (problems.length === 0) return existing;
+      }
+      throw new Error(
+        `Issue catalog snapshot ${input.snapshotId} was already consumed by ${existing.runId}`,
+      );
+    }
+    const previous = latestIssueCatalogSnapshotConsumptionContentHashStmt.get() as
+      | { content_hash?: string | null }
+      | undefined;
+    const candidateWithoutHash = {
+      schemaVersion: ISSUE_CATALOG_SNAPSHOT_CONSUMPTION_SCHEMA_VERSION,
+      snapshotId: input.snapshotId,
+      repository: input.repository,
+      runId: input.runId,
+      consumedAt: input.consumedAt,
+      processedRowCount: input.processedRowCount,
+      processedPageCount: input.processedPageCount,
+      snapshotContentHash: snapshot.header.contentHash,
+      previousContentHash: previous?.content_hash ?? null,
+    };
+    const candidate: IssueCatalogSnapshotConsumptionRow = {
+      id: 0,
+      ...candidateWithoutHash,
+      contentHash: issueCatalogSnapshotConsumptionContentHash(candidateWithoutHash),
+    };
+    const problems = issueCatalogSnapshotConsumptionProblems(
+      candidate,
+      snapshot,
+      candidate.previousContentHash,
+    );
+    if (problems.length > 0) {
+      throw new Error(`Issue catalog snapshot consumption is invalid: ${problems.join('; ')}`);
+    }
+    const inserted = insertIssueCatalogSnapshotConsumptionStmt.run({
+      schema_version: candidate.schemaVersion,
+      snapshot_id: candidate.snapshotId,
+      repository: candidate.repository,
+      run_id: candidate.runId,
+      consumed_at: candidate.consumedAt,
+      processed_row_count: candidate.processedRowCount,
+      processed_page_count: candidate.processedPageCount,
+      snapshot_content_hash: candidate.snapshotContentHash,
+      previous_content_hash: candidate.previousContentHash,
+      content_hash: candidate.contentHash,
+    });
+    const stored = getIssueCatalogSnapshotConsumption(input.snapshotId);
+    if (!stored || stored.id !== Number(inserted.lastInsertRowid)) {
+      throw new Error('Persisted issue catalog snapshot consumption could not be verified');
+    }
+    const storedProblems = issueCatalogSnapshotConsumptionProblems(
+      stored,
+      snapshot,
+      candidate.previousContentHash,
+    );
+    if (storedProblems.length > 0) {
+      throw new Error(
+        `Persisted issue catalog snapshot consumption failed verification: ` +
+        storedProblems.join('; '),
+      );
+    }
+    input.assertCanWrite?.('issue catalog snapshot consumption commit');
+    return stored;
+  });
+}
+
+export type ResumableIssueCatalogSnapshotResult =
+  | { status: 'missing'; snapshot: null; problems: [] }
+  | { status: 'invalid'; snapshot: IssueCatalogSnapshot; problems: string[] }
+  | { status: 'stale'; snapshot: IssueCatalogSnapshot; problems: string[] }
+  | {
+      status: 'consumed';
+      snapshot: IssueCatalogSnapshot;
+      consumption: IssueCatalogSnapshotConsumptionRow;
+      problems: [];
+    }
+  | { status: 'resumable'; snapshot: IssueCatalogSnapshot; problems: [] };
+
+export function findResumableIssueCatalogSnapshot(input: {
+  repository: string;
+  now?: Date;
+  maxAgeMs?: number;
+}): ResumableIssueCatalogSnapshotResult {
+  const snapshot = latestIssueCatalogSnapshot(input.repository);
+  if (!snapshot) return { status: 'missing', snapshot: null, problems: [] };
+  const integrityProblems = issueCatalogSnapshotProblems(snapshot, {
+    repository: input.repository,
+  });
+  if (integrityProblems.length > 0) {
+    return { status: 'invalid', snapshot, problems: integrityProblems };
+  }
+  const consumption = getIssueCatalogSnapshotConsumption(snapshot.header.snapshotId);
+  if (consumption) {
+    const consumptionProblems = issueCatalogSnapshotConsumptionProblems(
+      consumption,
+      snapshot,
+    );
+    if (consumptionProblems.length > 0) {
+      return { status: 'invalid', snapshot, problems: consumptionProblems };
+    }
+    return { status: 'consumed', snapshot, consumption, problems: [] };
+  }
+  const resumeProblems = issueCatalogSnapshotResumeProblems(snapshot, {
+    repository: input.repository,
+    now: input.now ?? new Date(),
+    maxAgeMs: input.maxAgeMs ?? ISSUE_CATALOG_SNAPSHOT_DEFAULT_MAX_AGE_MS,
+  });
+  if (resumeProblems.length > 0) {
+    return { status: 'stale', snapshot, problems: resumeProblems };
+  }
+  return { status: 'resumable', snapshot, problems: [] };
+}
+
+export function issueCatalogSnapshotLedgerIntegrity(): {
+  snapshotCount: number;
+  rowCount: number;
+  consumptionCount: number;
+  orphanRowCount: number;
+  problems: IssueCatalogSnapshotLedgerProblem[];
+} {
+  if (
+    !listIssueCatalogSnapshotHeadersStmt ||
+    !listIssueCatalogSnapshotRowsStmt ||
+    !orphanIssueCatalogSnapshotRowCountStmt
+  ) {
+    return {
+      snapshotCount: 0,
+      rowCount: 0,
+      consumptionCount: 0,
+      orphanRowCount: 0,
+      problems: [{ snapshotId: null, detail: 'issue catalog snapshot tables are missing' }],
+    };
+  }
+  const snapshots = listIssueCatalogSnapshotHeadersStmt
+    .all()
+    .map((row) => issueCatalogSnapshotFromHeaderRow(row as Record<string, unknown>)!)
+    .filter(Boolean);
+  const orphanRowCount = Number(
+    (orphanIssueCatalogSnapshotRowCountStmt.get() as { count?: number } | undefined)?.count ?? 0,
+  );
+  const consumptions = listIssueCatalogSnapshotConsumptions();
+  const consumptionProblems: IssueCatalogSnapshotLedgerProblem[] = [];
+  let previousConsumptionContentHash: string | null = null;
+  for (const consumption of consumptions) {
+    const snapshot = getIssueCatalogSnapshot(consumption.snapshotId);
+    for (const detail of issueCatalogSnapshotConsumptionProblems(
+      consumption,
+      snapshot,
+      previousConsumptionContentHash,
+    )) {
+      consumptionProblems.push({ snapshotId: consumption.snapshotId, detail });
+    }
+    previousConsumptionContentHash = consumption.contentHash;
+  }
+  return {
+    snapshotCount: snapshots.length,
+    rowCount: snapshots.reduce((sum, snapshot) => sum + snapshot.rows.length, 0),
+    consumptionCount: consumptions.length,
+    orphanRowCount,
+    problems: [
+      ...issueCatalogSnapshotLedgerProblems(snapshots, orphanRowCount),
+      ...consumptionProblems,
+    ],
+  };
 }
 
 // ---------- meta ----------
@@ -3763,6 +24769,2730 @@ export function getMeta(key: string): string | null {
 
 export function setMeta(key: string, value: string): void {
   setMetaStmt.run(key, value);
+}
+
+export interface RefreshOperationAttemptInput {
+  run_id: string;
+  operation: string;
+  trigger: string;
+  started_at: string;
+  lease_name: string;
+  lease_holder_id: string;
+  lease_expires_at: string;
+  code_revision: string;
+  effective_config: Record<string, unknown>;
+}
+
+export interface RefreshOperationAttemptRow extends OperationAttemptLedgerRow {}
+
+export interface RefreshOperationStageEventInput {
+  event_id?: string;
+  run_id: string;
+  lease_name: string;
+  lease_holder_id: string;
+  stage: string;
+  status: OperationStageStatus;
+  occurred_at: string;
+  duration_ms?: number | null;
+  counts?: Record<string, unknown> | null;
+  details?: Record<string, unknown> | null;
+}
+
+export interface RefreshOperationStageEventRow extends OperationStageEventLedgerRow {
+  id: number;
+}
+
+export interface RefreshCaptureReceiptInput {
+  receipt_id?: string;
+  run_id: string;
+  lease_name: string;
+  lease_holder_id: string;
+  status: OperationTerminalStatus;
+  finished_at: string;
+  duration_ms: number;
+  payload: Record<string, unknown>;
+}
+
+export interface RefreshCaptureReceiptRow extends OperationCaptureReceiptLedgerRow {
+  id: number;
+}
+
+type AppendResult<T> = {
+  inserted: boolean;
+  equivalent: boolean;
+  row: T;
+};
+
+const hasRefreshOperationAttempts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='refresh_operation_attempts'
+`).get() != null;
+const hasRefreshOperationStageEvents = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='refresh_operation_stage_events'
+`).get() != null;
+const hasRefreshCaptureReceipts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='refresh_capture_receipts'
+`).get() != null;
+
+const refreshOperationAttemptByRunStmt = hasRefreshOperationAttempts
+  ? db.prepare(`SELECT * FROM refresh_operation_attempts WHERE run_id=?`)
+  : null;
+const insertRefreshOperationAttemptStmt = !dbReadOnly && hasRefreshOperationAttempts
+  ? db.prepare(`
+      INSERT INTO refresh_operation_attempts (
+        run_id, operation, trigger, started_at, lease_name, lease_holder_id,
+        lease_expires_at, code_revision, effective_config_json,
+        effective_config_hash, content_hash
+      )
+      VALUES (
+        :run_id, :operation, :trigger, :started_at, :lease_name, :lease_holder_id,
+        :lease_expires_at, :code_revision, :effective_config_json,
+        :effective_config_hash, :content_hash
+      )
+    `)
+  : null;
+const listRefreshOperationAttemptsStmt = hasRefreshOperationAttempts
+  ? db.prepare(`SELECT * FROM refresh_operation_attempts ORDER BY started_at, run_id`)
+  : null;
+const unterminatedRefreshOperationAttemptsStmt =
+  hasRefreshOperationAttempts && hasRefreshCaptureReceipts
+    ? db.prepare(`
+        SELECT attempts.*
+        FROM refresh_operation_attempts attempts
+        LEFT JOIN refresh_capture_receipts receipts ON receipts.run_id=attempts.run_id
+        WHERE attempts.lease_name=?
+          AND attempts.lease_holder_id<>?
+          AND receipts.run_id IS NULL
+          AND attempts.started_at<?
+        ORDER BY attempts.started_at, attempts.run_id
+      `)
+    : null;
+
+const refreshOperationStageEventByIdStmt = hasRefreshOperationStageEvents
+  ? db.prepare(`SELECT * FROM refresh_operation_stage_events WHERE event_id=?`)
+  : null;
+const latestRefreshOperationStageEventStmt = hasRefreshOperationStageEvents
+  ? db.prepare(`
+      SELECT *
+      FROM refresh_operation_stage_events
+      WHERE run_id=?
+      ORDER BY sequence DESC
+      LIMIT 1
+    `)
+  : null;
+const insertRefreshOperationStageEventStmt = !dbReadOnly && hasRefreshOperationStageEvents
+  ? db.prepare(`
+      INSERT INTO refresh_operation_stage_events (
+        event_id, run_id, sequence, stage, status, occurred_at, duration_ms,
+        counts_json, details_json, previous_content_hash, content_hash
+      )
+      VALUES (
+        :event_id, :run_id, :sequence, :stage, :status, :occurred_at, :duration_ms,
+        :counts_json, :details_json, :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const listRefreshOperationStageEventsStmt = hasRefreshOperationStageEvents
+  ? db.prepare(`SELECT * FROM refresh_operation_stage_events ORDER BY run_id, sequence`)
+  : null;
+const listRefreshOperationStageEventsForRunStmt = hasRefreshOperationStageEvents
+  ? db.prepare(`SELECT * FROM refresh_operation_stage_events WHERE run_id=? ORDER BY sequence`)
+  : null;
+
+const refreshCaptureReceiptByRunStmt = hasRefreshCaptureReceipts
+  ? db.prepare(`SELECT * FROM refresh_capture_receipts WHERE run_id=?`)
+  : null;
+const refreshCaptureReceiptByIdStmt = hasRefreshCaptureReceipts
+  ? db.prepare(`SELECT * FROM refresh_capture_receipts WHERE receipt_id=?`)
+  : null;
+const latestRefreshCaptureReceiptStmt = hasRefreshCaptureReceipts
+  ? db.prepare(`SELECT * FROM refresh_capture_receipts ORDER BY id DESC LIMIT 1`)
+  : null;
+const insertRefreshCaptureReceiptStmt = !dbReadOnly && hasRefreshCaptureReceipts
+  ? db.prepare(`
+      INSERT INTO refresh_capture_receipts (
+        receipt_id, run_id, status, finished_at, duration_ms, stage_event_count,
+        stage_chain_hash, payload_json, previous_content_hash, content_hash
+      )
+      VALUES (
+        :receipt_id, :run_id, :status, :finished_at, :duration_ms, :stage_event_count,
+        :stage_chain_hash, :payload_json, :previous_content_hash, :content_hash
+      )
+    `)
+  : null;
+const listRefreshCaptureReceiptsStmt = hasRefreshCaptureReceipts
+  ? db.prepare(`SELECT * FROM refresh_capture_receipts ORDER BY id`)
+  : null;
+const clearCurrentReleaseScoresForAbandonedRunStmt = !dbReadOnly
+  ? db.prepare(`
+      UPDATE releases
+      SET final_score=NULL,
+          negative_issues=NULL,
+          positive_issues=NULL,
+          scored_at=NULL,
+          state=NULL,
+          closed_serious_fixed=0,
+          opened_serious_during_reign=0,
+          recommended=0,
+          score_reason=NULL,
+          broken_surfaces=NULL
+      WHERE final_score IS NOT NULL
+         OR scored_at IS NOT NULL
+         OR state IS NOT NULL
+         OR recommended != 0
+         OR score_reason IS NOT NULL
+    `)
+  : null;
+const deleteCurrentReleaseScoreAuditsForAbandonedRunStmt = !dbReadOnly
+  ? db.prepare(`DELETE FROM release_score_audits`)
+  : null;
+const currentScoredReleaseTagsStmt = db.prepare(`
+  SELECT tag
+  FROM releases
+  WHERE final_score IS NOT NULL
+     OR scored_at IS NOT NULL
+     OR state IS NOT NULL
+     OR recommended != 0
+     OR score_reason IS NOT NULL
+  ORDER BY tag
+`);
+const listCurrentReleaseScoreAuditsStmt = db.prepare(`
+  SELECT *
+  FROM release_score_audits
+  ORDER BY release_tag
+`);
+const deleteMetaStmt = !dbReadOnly ? db.prepare(`DELETE FROM meta WHERE key=?`) : null;
+
+export function insertRefreshOperationAttempt(
+  input: RefreshOperationAttemptInput,
+): AppendResult<RefreshOperationAttemptRow> {
+  if (!refreshOperationAttemptByRunStmt || !insertRefreshOperationAttemptStmt) {
+    throw new Error('Refresh operation attempt storage is unavailable or read-only');
+  }
+  const normalized = normalizeRefreshOperationAttemptInput(input);
+  const existing = refreshOperationAttemptByRunStmt.get(
+    normalized.run_id,
+  ) as unknown as RefreshOperationAttemptRow | undefined;
+  if (existing) {
+    if (refreshOperationAttemptRowsEqual(existing, normalized)) {
+      return { inserted: false, equivalent: true, row: existing };
+    }
+    throw new Error(`Refresh operation attempt conflict for run ${JSON.stringify(normalized.run_id)}`);
+  }
+  insertRefreshOperationAttemptStmt.run(
+    normalized as unknown as Record<string, string | number | null>,
+  );
+  const row = refreshOperationAttemptByRunStmt.get(
+    normalized.run_id,
+  ) as unknown as RefreshOperationAttemptRow | undefined;
+  if (!row) throw new Error(`Refresh operation attempt ${JSON.stringify(normalized.run_id)} was not persisted`);
+  return { inserted: true, equivalent: false, row };
+}
+
+export function beginRefreshOperationAttempt(
+  input: RefreshOperationAttemptInput,
+): {
+  attempt: AppendResult<RefreshOperationAttemptRow>;
+  abandonedReceipts: RefreshCaptureReceiptRow[];
+  scoreRecovery: RefreshScorePublicationRecoveryResult | null;
+} {
+  if (!unterminatedRefreshOperationAttemptsStmt) {
+    throw new Error('Refresh operation abandonment storage is unavailable or read-only');
+  }
+  return runInWriteTransaction(() => {
+    const observedAt = new Date().toISOString();
+    const successorLease = assertActiveRefreshLeaseFence({
+      leaseName: input.lease_name,
+      leaseHolderId: input.lease_holder_id,
+      observedAt,
+      context: `begin refresh operation ${JSON.stringify(input.run_id)}`,
+    });
+    const abandonedReceipts: RefreshCaptureReceiptRow[] = [];
+    let scoreRecovery: RefreshScorePublicationRecoveryResult | null = null;
+    const currentScoreMeta = parseJsonRecord(getMeta('score_persistence_last_run'));
+    const currentScoreOperationRunId =
+      currentScoreMeta?.source === 'refresh' &&
+      typeof currentScoreMeta.operationRunId === 'string'
+        ? currentScoreMeta.operationRunId
+        : null;
+    const currentScoreReceipt = currentScoreOperationRunId
+      ? refreshCaptureReceiptByRunStmt?.get(
+          currentScoreOperationRunId,
+        ) as unknown as RefreshCaptureReceiptRow | undefined
+      : undefined;
+    if (
+      currentScoreOperationRunId &&
+      currentScoreOperationRunId !== input.run_id &&
+      currentScoreReceipt &&
+      currentScoreReceipt.status !== 'success'
+    ) {
+      scoreRecovery = recoverUnsuccessfulRefreshScoreTip(currentScoreOperationRunId);
+    }
+    const expired = unterminatedRefreshOperationAttemptsStmt.all(
+      input.lease_name,
+      input.lease_holder_id,
+      successorLease.acquired_at,
+    ) as unknown as RefreshOperationAttemptRow[];
+    for (const attempt of expired) {
+      const result = appendRefreshCaptureReceipt({
+        run_id: attempt.run_id,
+        lease_name: input.lease_name,
+        lease_holder_id: input.lease_holder_id,
+        status: 'abandoned',
+        finished_at: observedAt,
+        duration_ms: Math.max(
+          0,
+          Date.parse(observedAt) - Date.parse(attempt.started_at),
+        ),
+        payload: {
+          schemaVersion: 1,
+          reason: 'lease_expired',
+          successorRunId: input.run_id,
+          lease: {
+            name: attempt.lease_name,
+            holderId: attempt.lease_holder_id,
+            expiredAt: attempt.lease_expires_at,
+          },
+        },
+      });
+      abandonedReceipts.push(result.row);
+      const recovered = recoverUnsuccessfulRefreshScoreTip(attempt.run_id);
+      if (recovered.cleaned) scoreRecovery = recovered;
+    }
+    return {
+      attempt: insertRefreshOperationAttempt(input),
+      abandonedReceipts,
+      scoreRecovery,
+    };
+  });
+}
+
+export function appendRefreshOperationStageEvent(
+  input: RefreshOperationStageEventInput,
+): AppendResult<RefreshOperationStageEventRow> {
+  if (
+    !refreshOperationAttemptByRunStmt ||
+    !refreshOperationStageEventByIdStmt ||
+    !latestRefreshOperationStageEventStmt ||
+    !insertRefreshOperationStageEventStmt ||
+    !refreshCaptureReceiptByRunStmt
+  ) {
+    throw new Error('Refresh operation stage event storage is unavailable or read-only');
+  }
+  return runInWriteTransaction(() => {
+    const attempt = refreshOperationAttemptByRunStmt.get(input.run_id) as unknown as
+      RefreshOperationAttemptRow | undefined;
+    if (!attempt) {
+      throw new Error(`Refresh operation stage event references unknown run ${JSON.stringify(input.run_id)}`);
+    }
+    assertActiveRefreshLeaseFence({
+      leaseName: input.lease_name,
+      leaseHolderId: input.lease_holder_id,
+      observedAt: new Date().toISOString(),
+      attempt,
+      context: `append stage event for ${JSON.stringify(input.run_id)}`,
+    });
+    const normalizedInput = normalizeRefreshOperationStageEventInput(input);
+    const existing = normalizedInput.event_id
+      ? refreshOperationStageEventByIdStmt.get(
+        normalizedInput.event_id,
+      ) as unknown as RefreshOperationStageEventRow | undefined
+      : undefined;
+    if (existing) {
+      if (refreshOperationStageEventRowsEqual(existing, normalizedInput)) {
+        return { inserted: false, equivalent: true, row: existing };
+      }
+      throw new Error(
+        `Refresh operation stage event conflict for ${JSON.stringify(normalizedInput.event_id)}`,
+      );
+    }
+    if (refreshCaptureReceiptByRunStmt.get(normalizedInput.run_id)) {
+      throw new Error(
+        `Refresh operation stage event cannot be appended after terminal receipt for ` +
+        `${JSON.stringify(normalizedInput.run_id)}`,
+      );
+    }
+    const previous = latestRefreshOperationStageEventStmt.get(
+      normalizedInput.run_id,
+    ) as unknown as RefreshOperationStageEventRow | undefined;
+    const stageEvents = listRefreshOperationStageEventsForRunStmt?.all(
+      normalizedInput.run_id,
+    ) as unknown as RefreshOperationStageEventRow[] | undefined ?? [];
+    const activeStages = activeRefreshOperationStages(stageEvents);
+    if (normalizedInput.status === 'started') {
+      if (activeStages.has(normalizedInput.stage)) {
+        throw new Error(
+          `Refresh operation stage ${JSON.stringify(normalizedInput.stage)} is already active`,
+        );
+      }
+    } else if (!activeStages.has(normalizedInput.stage)) {
+      throw new Error(
+        `Refresh operation stage ${JSON.stringify(normalizedInput.stage)} cannot ` +
+        `${normalizedInput.status} without an active started stage`,
+      );
+    }
+    const sequence = (previous?.sequence ?? 0) + 1;
+    const eventId = normalizedInput.event_id ?? `stage:${randomUUID()}`;
+    const rowInput = {
+      ...normalizedInput,
+      event_id: eventId,
+      sequence,
+      previous_content_hash: previous?.content_hash ?? null,
+      content_hash: '',
+    };
+    rowInput.content_hash = operationStageEventContentHash({
+      eventId,
+      runId: rowInput.run_id,
+      sequence,
+      stage: rowInput.stage,
+      status: rowInput.status,
+      occurredAt: rowInput.occurred_at,
+      durationMs: rowInput.duration_ms,
+      countsJson: rowInput.counts_json,
+      detailsJson: rowInput.details_json,
+      previousContentHash: rowInput.previous_content_hash,
+    });
+    assertOperationReceiptStagePrefix({
+      attempt,
+      stageEvents: [...stageEvents, rowInput],
+    });
+    insertRefreshOperationStageEventStmt.run(rowInput);
+    const row = refreshOperationStageEventByIdStmt.get(
+      eventId,
+    ) as unknown as RefreshOperationStageEventRow | undefined;
+    if (!row) throw new Error(`Refresh operation stage event ${JSON.stringify(eventId)} was not persisted`);
+    return { inserted: true, equivalent: false, row };
+  });
+}
+
+export function appendRefreshCaptureReceipt(
+  input: RefreshCaptureReceiptInput,
+): AppendResult<RefreshCaptureReceiptRow> {
+  if (
+    !refreshOperationAttemptByRunStmt ||
+    !refreshCaptureReceiptByRunStmt ||
+    !refreshCaptureReceiptByIdStmt ||
+    !latestRefreshCaptureReceiptStmt ||
+    !insertRefreshCaptureReceiptStmt ||
+    !listRefreshOperationStageEventsForRunStmt
+  ) {
+    throw new Error('Refresh capture receipt storage is unavailable or read-only');
+  }
+  return runInWriteTransaction(() => {
+    const attempt = refreshOperationAttemptByRunStmt.get(input.run_id) as unknown as
+      RefreshOperationAttemptRow | undefined;
+    if (!attempt) {
+      throw new Error(`Refresh capture receipt references unknown run ${JSON.stringify(input.run_id)}`);
+    }
+    const observedAt = new Date().toISOString();
+    assertActiveRefreshLeaseFence({
+      leaseName: input.lease_name,
+      leaseHolderId: input.lease_holder_id,
+      observedAt,
+      attempt,
+      allowSuccessor: input.status === 'abandoned',
+      context: `append ${input.status} receipt for ${JSON.stringify(input.run_id)}`,
+    });
+    const normalizedInput = normalizeRefreshCaptureReceiptInput(input);
+    const existingByRun = refreshCaptureReceiptByRunStmt.get(
+      normalizedInput.run_id,
+    ) as unknown as RefreshCaptureReceiptRow | undefined;
+    const existingById = refreshCaptureReceiptByIdStmt.get(
+      normalizedInput.receipt_id,
+    ) as unknown as RefreshCaptureReceiptRow | undefined;
+    const existing = existingByRun ?? existingById;
+    if (existing) {
+      if (refreshCaptureReceiptRowsEqual(existing, normalizedInput)) {
+        return { inserted: false, equivalent: true, row: existing };
+      }
+      throw new Error(`Refresh capture receipt conflict for run ${JSON.stringify(normalizedInput.run_id)}`);
+    }
+    const stageEvents = listRefreshOperationStageEventsForRunStmt.all(
+      normalizedInput.run_id,
+    ) as unknown as RefreshOperationStageEventRow[];
+    const activeStages = activeRefreshOperationStages(stageEvents);
+    if (normalizedInput.status !== 'abandoned' && activeStages.size > 0) {
+      throw new Error(
+        `Refresh capture receipt cannot terminate run ${JSON.stringify(normalizedInput.run_id)} ` +
+        `with active stages: ${[...activeStages].sort().join(', ')}`,
+      );
+    }
+    if (Date.parse(normalizedInput.finished_at) < Date.parse(attempt.started_at)) {
+      throw new Error('Refresh capture receipt cannot finish before its operation attempt starts');
+    }
+    const postTerminalStage = stageEvents.find((event) =>
+      Date.parse(event.occurred_at) > Date.parse(normalizedInput.finished_at));
+    if (postTerminalStage) {
+      throw new Error(
+        `Refresh capture receipt cannot precede stage event ${JSON.stringify(postTerminalStage.event_id)}`,
+      );
+    }
+    const previous = latestRefreshCaptureReceiptStmt.get() as unknown as
+      RefreshCaptureReceiptRow | undefined;
+    const rowInput = {
+      ...normalizedInput,
+      stage_event_count: stageEvents.length,
+      stage_chain_hash: stageEvents.at(-1)?.content_hash ?? null,
+      previous_content_hash: previous?.content_hash ?? null,
+      content_hash: '',
+    };
+    const artifactPublicationLedger =
+      normalizedInput.status === 'success'
+        ? releaseArtifactPublicationSemanticLedgerForRun(normalizedInput.run_id)
+        : null;
+    const terminalSemanticProblems = operationReceiptTerminalSemanticProblems({
+      attempt,
+      stageEvents,
+      receipt: rowInput,
+      artifactReceipts: artifactPublicationLedger?.receipts,
+      artifactObservations: artifactPublicationLedger?.observations,
+    });
+    if (terminalSemanticProblems.length > 0) {
+      throw new Error(
+        `Refresh capture receipt semantic validation failed: ` +
+        [...new Set(terminalSemanticProblems)].join('; '),
+      );
+    }
+    rowInput.content_hash = operationCaptureReceiptContentHash({
+      receiptId: rowInput.receipt_id,
+      runId: rowInput.run_id,
+      status: rowInput.status,
+      finishedAt: rowInput.finished_at,
+      durationMs: rowInput.duration_ms,
+      stageEventCount: rowInput.stage_event_count,
+      stageChainHash: rowInput.stage_chain_hash,
+      payloadJson: rowInput.payload_json,
+      previousContentHash: rowInput.previous_content_hash,
+    });
+    insertRefreshCaptureReceiptStmt.run(rowInput);
+    const row = refreshCaptureReceiptByRunStmt.get(
+      normalizedInput.run_id,
+    ) as unknown as RefreshCaptureReceiptRow | undefined;
+    if (!row) {
+      throw new Error(
+        `Refresh capture receipt for run ${JSON.stringify(normalizedInput.run_id)} was not persisted`,
+      );
+    }
+    return { inserted: true, equivalent: false, row };
+  });
+}
+
+export function getRefreshOperationAttempt(runId: string): RefreshOperationAttemptRow | null {
+  return refreshOperationAttemptByRunStmt?.get(runId) as unknown as RefreshOperationAttemptRow ?? null;
+}
+
+export function getRefreshCaptureReceipt(runId: string): RefreshCaptureReceiptRow | null {
+  return refreshCaptureReceiptByRunStmt?.get(runId) as unknown as RefreshCaptureReceiptRow ?? null;
+}
+
+export function listRefreshOperationAttempts(): RefreshOperationAttemptRow[] {
+  return listRefreshOperationAttemptsStmt
+    ? listRefreshOperationAttemptsStmt.all() as unknown as RefreshOperationAttemptRow[]
+    : [];
+}
+
+export function listRefreshOperationStageEvents(
+  runId?: string,
+): RefreshOperationStageEventRow[] {
+  if (!listRefreshOperationStageEventsStmt || !listRefreshOperationStageEventsForRunStmt) return [];
+  return runId
+    ? listRefreshOperationStageEventsForRunStmt.all(runId) as unknown as RefreshOperationStageEventRow[]
+    : listRefreshOperationStageEventsStmt.all() as unknown as RefreshOperationStageEventRow[];
+}
+
+export function listRefreshCaptureReceipts(): RefreshCaptureReceiptRow[] {
+  return listRefreshCaptureReceiptsStmt
+    ? listRefreshCaptureReceiptsStmt.all() as unknown as RefreshCaptureReceiptRow[]
+    : [];
+}
+
+interface ReleaseArtifactReceiptStorageRow {
+  id: number;
+  receipt_id: string;
+  schema_version: number;
+  release_repository: string;
+  release_tag: string;
+  release_node_id: string;
+  release_tag_commit_oid: string;
+  release_published_at: string;
+  evidence_identity: string;
+  canonical_receipt_json: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+interface ReleaseArtifactObservationStorageRow {
+  id: number;
+  observation_id: string;
+  schema_version: number;
+  run_id: string;
+  observed_at: string;
+  release_repository: string;
+  release_tag: string;
+  release_node_id: string;
+  release_tag_commit_oid: string;
+  release_published_at: string;
+  receipt_id: string;
+  receipt_content_hash: string;
+  canonical_observation_json: string;
+  previous_content_hash: string | null;
+  content_hash: string;
+}
+
+export interface ReleaseArtifactVerificationAppendResult<T> {
+  inserted: boolean;
+  equivalent: boolean;
+  row: T;
+}
+
+export interface ReleaseArtifactVerificationPersistenceResult {
+  receipt: ReleaseArtifactVerificationAppendResult<ReleaseArtifactReceipt>;
+  observation: ReleaseArtifactVerificationAppendResult<ReleaseArtifactObservation>;
+}
+
+export interface ReleaseArtifactVerificationLedgerIntegrity {
+  receiptCount: number;
+  observationCount: number;
+  receiptChainProblems: string[];
+  observationChainProblems: string[];
+  semanticProblems: string[];
+  problems: string[];
+}
+
+const hasReleaseArtifactVerificationReceipts = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_artifact_verification_receipts'
+`).get() != null;
+const hasReleaseArtifactVerificationObservations = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='release_artifact_verification_observations'
+`).get() != null;
+
+const releaseArtifactReceiptByIdStmt = hasReleaseArtifactVerificationReceipts
+  ? db.prepare(`
+      SELECT *
+      FROM release_artifact_verification_receipts
+      WHERE receipt_id=?
+    `)
+  : null;
+const latestReleaseArtifactReceiptStmt = hasReleaseArtifactVerificationReceipts
+  ? db.prepare(`
+      SELECT *
+      FROM release_artifact_verification_receipts
+      ORDER BY id DESC
+      LIMIT 1
+    `)
+  : null;
+const listReleaseArtifactReceiptRowsStmt = hasReleaseArtifactVerificationReceipts
+  ? db.prepare(`
+      SELECT *
+      FROM release_artifact_verification_receipts
+      ORDER BY id
+    `)
+  : null;
+const insertReleaseArtifactReceiptStmt =
+  !dbReadOnly && hasReleaseArtifactVerificationReceipts
+    ? db.prepare(`
+        INSERT INTO release_artifact_verification_receipts (
+          receipt_id,
+          schema_version,
+          release_repository,
+          release_tag,
+          release_node_id,
+          release_tag_commit_oid,
+          release_published_at,
+          evidence_identity,
+          canonical_receipt_json,
+          previous_content_hash,
+          content_hash
+        )
+        VALUES (
+          :receipt_id,
+          :schema_version,
+          :release_repository,
+          :release_tag,
+          :release_node_id,
+          :release_tag_commit_oid,
+          :release_published_at,
+          :evidence_identity,
+          :canonical_receipt_json,
+          :previous_content_hash,
+          :content_hash
+        )
+      `)
+    : null;
+
+const releaseArtifactObservationByIdStmt =
+  hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        SELECT *
+        FROM release_artifact_verification_observations
+        WHERE observation_id=?
+      `)
+    : null;
+const latestReleaseArtifactObservationStmt =
+  hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        SELECT *
+        FROM release_artifact_verification_observations
+        ORDER BY id DESC
+        LIMIT 1
+      `)
+    : null;
+const listReleaseArtifactObservationRowsStmt =
+  hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        SELECT *
+        FROM release_artifact_verification_observations
+        ORDER BY id
+      `)
+    : null;
+const listReleaseArtifactObservationRowsForRunStmt =
+  hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        SELECT *
+        FROM release_artifact_verification_observations
+        WHERE run_id=?
+        ORDER BY id
+      `)
+    : null;
+const releaseArtifactObservationForRunAndReleaseStmt =
+  hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        SELECT *
+        FROM release_artifact_verification_observations
+        WHERE run_id=?
+          AND release_repository=?
+          AND release_tag=?
+          AND release_node_id=?
+          AND release_tag_commit_oid=?
+          AND release_published_at=?
+        LIMIT 1
+      `)
+    : null;
+const insertReleaseArtifactObservationStmt =
+  !dbReadOnly && hasReleaseArtifactVerificationObservations
+    ? db.prepare(`
+        INSERT INTO release_artifact_verification_observations (
+          observation_id,
+          schema_version,
+          run_id,
+          observed_at,
+          release_repository,
+          release_tag,
+          release_node_id,
+          release_tag_commit_oid,
+          release_published_at,
+          receipt_id,
+          receipt_content_hash,
+          canonical_observation_json,
+          previous_content_hash,
+          content_hash
+        )
+        VALUES (
+          :observation_id,
+          :schema_version,
+          :run_id,
+          :observed_at,
+          :release_repository,
+          :release_tag,
+          :release_node_id,
+          :release_tag_commit_oid,
+          :release_published_at,
+          :receipt_id,
+          :receipt_content_hash,
+          :canonical_observation_json,
+          :previous_content_hash,
+          :content_hash
+        )
+      `)
+    : null;
+
+function releaseArtifactReceiptFromStorage(
+  row: ReleaseArtifactReceiptStorageRow,
+): ReleaseArtifactReceipt {
+  return releaseArtifactReceiptFromStorageRecord(row);
+}
+
+function releaseArtifactObservationFromStorage(
+  row: ReleaseArtifactObservationStorageRow,
+): ReleaseArtifactObservation {
+  return releaseArtifactObservationFromStorageRecord(row);
+}
+
+function releaseArtifactPublicationSemanticLedgerForRun(runId: string): {
+  receipts: ReleaseArtifactReceipt[];
+  observations: ReleaseArtifactObservation[];
+} {
+  if (
+    !releaseArtifactReceiptByIdStmt ||
+    !listReleaseArtifactObservationRowsForRunStmt
+  ) {
+    throw new Error('Release artifact verification storage is unavailable');
+  }
+  const observationRows = listReleaseArtifactObservationRowsForRunStmt.all(
+    runId,
+  ) as unknown as ReleaseArtifactObservationStorageRow[];
+  const observations = observationRows.map(releaseArtifactObservationFromStorage);
+  const receipts: ReleaseArtifactReceipt[] = [];
+  for (const receiptId of new Set(
+    observations.map((observation) => observation.receiptId),
+  )) {
+    const row = releaseArtifactReceiptByIdStmt.get(receiptId) as
+      | ReleaseArtifactReceiptStorageRow
+      | undefined;
+    if (row) receipts.push(releaseArtifactReceiptFromStorage(row));
+  }
+  return {
+    receipts,
+    observations,
+  };
+}
+
+function sameReleaseArtifactIdentity(
+  left: ReleaseArtifactIdentity,
+  right: ReleaseArtifactIdentity,
+): boolean {
+  return (
+    left.repository === right.repository &&
+    left.tag === right.tag &&
+    left.releaseNodeId === right.releaseNodeId &&
+    left.catalogTagCommitOid === right.catalogTagCommitOid &&
+    left.publishedAt === right.publishedAt
+  );
+}
+
+function assertReleaseArtifactVerificationStorageAvailable(): void {
+  if (
+    !releaseArtifactReceiptByIdStmt ||
+    !latestReleaseArtifactReceiptStmt ||
+    !listReleaseArtifactReceiptRowsStmt ||
+    !releaseArtifactObservationByIdStmt ||
+    !latestReleaseArtifactObservationStmt ||
+    !listReleaseArtifactObservationRowsStmt ||
+    !listReleaseArtifactObservationRowsForRunStmt ||
+    !releaseArtifactObservationForRunAndReleaseStmt
+  ) {
+    throw new Error('Release artifact verification storage is unavailable');
+  }
+}
+
+function assertReleaseArtifactVerificationStorageWritable(): void {
+  assertReleaseArtifactVerificationStorageAvailable();
+  if (
+    !insertReleaseArtifactReceiptStmt ||
+    !insertReleaseArtifactObservationStmt ||
+    !refreshOperationAttemptByRunStmt ||
+    !refreshCaptureReceiptByRunStmt
+  ) {
+    throw new Error(
+      'Release artifact verification storage is unavailable or read-only',
+    );
+  }
+}
+
+function releaseArtifactVerificationIntegrityOrThrow(
+  stage: string,
+): ReleaseArtifactVerificationLedgerIntegrity {
+  const integrity = releaseArtifactVerificationLedgerIntegrity();
+  if (integrity.problems.length > 0) {
+    throw new Error(
+      `Release artifact verification ledger failed ${stage}: ` +
+      integrity.problems.join('; '),
+    );
+  }
+  return integrity;
+}
+
+function refreshOperationLedgerVerification() {
+  return verifyOperationReceiptLedger({
+    attempts: listRefreshOperationAttempts(),
+    stageEvents: listRefreshOperationStageEvents(),
+    receipts: listRefreshCaptureReceipts(),
+    leases: listRefreshLeases(),
+    artifactReceipts: listReleaseArtifactVerificationReceipts(),
+    artifactObservations: listReleaseArtifactVerificationObservations(),
+    artifactMembershipPolicy: 'strict',
+    observedAt: new Date().toISOString(),
+  });
+}
+
+function assertSuccessfullyTerminatedRefreshRun(runId: string): void {
+  const ledger = refreshOperationLedgerVerification();
+  if (ledger.problems.length > 0) {
+    throw new Error(
+      `Refresh operation ledger is invalid: ${ledger.problems.join('; ')}`,
+    );
+  }
+  const attempt = getRefreshOperationAttempt(runId);
+  const receipt = getRefreshCaptureReceipt(runId);
+  if (!attempt || !receipt || receipt.status !== 'success') {
+    throw new Error(
+      `Artifact observation run ${JSON.stringify(runId)} is not a ` +
+      'successfully terminated refresh operation',
+    );
+  }
+}
+
+export function persistReleaseArtifactVerification(input: {
+  runId: string;
+  observedAt: string;
+  release: ReleaseArtifactIdentity;
+  releaseMetadata: ReleaseArtifactMetadata;
+  artifact: ArtifactVerificationEvidence;
+  evidenceReport: EvidenceReportVerification;
+  assertCanWrite?: (stage: string) => void;
+}): ReleaseArtifactVerificationPersistenceResult {
+  assertReleaseArtifactVerificationStorageWritable();
+  input.assertCanWrite?.('release artifact verification persistence');
+  return runInWriteTransaction(() => {
+    input.assertCanWrite?.('release artifact verification transaction');
+    releaseArtifactVerificationIntegrityOrThrow('before append');
+
+    const attempt = refreshOperationAttemptByRunStmt!.get(input.runId) as unknown as
+      RefreshOperationAttemptRow | undefined;
+    if (!attempt) {
+      throw new Error(
+        `Release artifact observation references unknown refresh run ` +
+        JSON.stringify(input.runId),
+      );
+    }
+    const persistenceObservedAt = new Date().toISOString();
+    assertActiveRefreshLeaseFence({
+      leaseName: attempt.lease_name,
+      leaseHolderId: attempt.lease_holder_id,
+      observedAt: persistenceObservedAt,
+      attempt,
+      context: `persist release artifact verification for ${JSON.stringify(input.runId)}`,
+    });
+    const observedAtMs = Date.parse(input.observedAt);
+    if (
+      !Number.isFinite(observedAtMs) ||
+      observedAtMs < Date.parse(attempt.started_at) ||
+      observedAtMs > Date.parse(persistenceObservedAt)
+    ) {
+      throw new Error(
+        `Release artifact observation for ${JSON.stringify(input.runId)} ` +
+        'must occur during the active refresh attempt',
+      );
+    }
+
+    const semanticCandidate = buildReleaseArtifactReceipt({
+      release: input.release,
+      releaseMetadata: input.releaseMetadata,
+      artifact: input.artifact,
+      evidenceReport: input.evidenceReport,
+      previousContentHash: null,
+    });
+    const existingReceiptRow = releaseArtifactReceiptByIdStmt!.get(
+      semanticCandidate.receiptId,
+    ) as ReleaseArtifactReceiptStorageRow | undefined;
+    let receiptResult: ReleaseArtifactVerificationAppendResult<ReleaseArtifactReceipt>;
+    if (existingReceiptRow) {
+      const existingReceipt = releaseArtifactReceiptFromStorage(existingReceiptRow);
+      if (
+        existingReceipt.canonicalReceiptJson !==
+          semanticCandidate.canonicalReceiptJson ||
+        existingReceipt.evidenceIdentity !== semanticCandidate.evidenceIdentity
+      ) {
+        throw new Error(
+          `Release artifact receipt conflict for ` +
+          JSON.stringify(semanticCandidate.receiptId),
+        );
+      }
+      receiptResult = {
+        inserted: false,
+        equivalent: true,
+        row: existingReceipt,
+      };
+    } else {
+      const previousRow = latestReleaseArtifactReceiptStmt!.get() as
+        | ReleaseArtifactReceiptStorageRow
+        | undefined;
+      const receipt = buildReleaseArtifactReceipt({
+        release: input.release,
+        releaseMetadata: input.releaseMetadata,
+        artifact: input.artifact,
+        evidenceReport: input.evidenceReport,
+        previousContentHash: previousRow?.content_hash ?? null,
+      });
+      insertReleaseArtifactReceiptStmt!.run({
+        receipt_id: receipt.receiptId,
+        schema_version: receipt.schemaVersion,
+        release_repository: receipt.release.repository,
+        release_tag: receipt.release.tag,
+        release_node_id: receipt.release.releaseNodeId,
+        release_tag_commit_oid: receipt.release.catalogTagCommitOid,
+        release_published_at: receipt.release.publishedAt,
+        evidence_identity: receipt.evidenceIdentity,
+        canonical_receipt_json: receipt.canonicalReceiptJson,
+        previous_content_hash: receipt.previousContentHash,
+        content_hash: receipt.contentHash,
+      });
+      const storedRow = releaseArtifactReceiptByIdStmt!.get(receipt.receiptId) as
+        | ReleaseArtifactReceiptStorageRow
+        | undefined;
+      if (!storedRow) {
+        throw new Error(
+          `Release artifact receipt ${JSON.stringify(receipt.receiptId)} ` +
+          'was not persisted',
+        );
+      }
+      const storedReceipt = releaseArtifactReceiptFromStorage(storedRow);
+      if (canonicalOperationJson(storedReceipt) !== canonicalOperationJson(receipt)) {
+        throw new Error(
+          `Persisted release artifact receipt ` +
+          `${JSON.stringify(receipt.receiptId)} did not match staging`,
+        );
+      }
+      receiptResult = {
+        inserted: true,
+        equivalent: false,
+        row: storedReceipt,
+      };
+    }
+
+    const unchainedObservation = buildReleaseArtifactObservation({
+      runId: input.runId,
+      observedAt: input.observedAt,
+      release: input.release,
+      receipt: receiptResult.row,
+      previousContentHash: null,
+    });
+    const existingObservationRow = releaseArtifactObservationByIdStmt!.get(
+      unchainedObservation.observationId,
+    ) as ReleaseArtifactObservationStorageRow | undefined;
+    let observationResult:
+      ReleaseArtifactVerificationAppendResult<ReleaseArtifactObservation>;
+    if (existingObservationRow) {
+      const existingObservation = releaseArtifactObservationFromStorage(
+        existingObservationRow,
+      );
+      const expected = buildReleaseArtifactObservation({
+        runId: input.runId,
+        observedAt: input.observedAt,
+        release: input.release,
+        receipt: receiptResult.row,
+        previousContentHash: existingObservation.previousContentHash,
+      });
+      if (
+        canonicalOperationJson(existingObservation) !==
+        canonicalOperationJson(expected)
+      ) {
+        throw new Error(
+          `Release artifact observation conflict for ` +
+          JSON.stringify(unchainedObservation.observationId),
+        );
+      }
+      observationResult = {
+        inserted: false,
+        equivalent: true,
+        row: existingObservation,
+      };
+    } else {
+      const terminalReceipt = refreshCaptureReceiptByRunStmt!.get(
+        input.runId,
+      ) as unknown as RefreshCaptureReceiptRow | undefined;
+      if (terminalReceipt) {
+        throw new Error(
+          `Release artifact observation cannot be appended after terminal ` +
+          `receipt for ${JSON.stringify(input.runId)}`,
+        );
+      }
+      const previousRow = latestReleaseArtifactObservationStmt!.get() as
+        | ReleaseArtifactObservationStorageRow
+        | undefined;
+      const observation = buildReleaseArtifactObservation({
+        runId: input.runId,
+        observedAt: input.observedAt,
+        release: input.release,
+        receipt: receiptResult.row,
+        previousContentHash: previousRow?.content_hash ?? null,
+      });
+      insertReleaseArtifactObservationStmt!.run({
+        observation_id: observation.observationId,
+        schema_version: observation.schemaVersion,
+        run_id: observation.runId,
+        observed_at: observation.observedAt,
+        release_repository: observation.release.repository,
+        release_tag: observation.release.tag,
+        release_node_id: observation.release.releaseNodeId,
+        release_tag_commit_oid: observation.release.catalogTagCommitOid,
+        release_published_at: observation.release.publishedAt,
+        receipt_id: observation.receiptId,
+        receipt_content_hash: observation.receiptContentHash,
+        canonical_observation_json: observation.canonicalObservationJson,
+        previous_content_hash: observation.previousContentHash,
+        content_hash: observation.contentHash,
+      });
+      const storedRow = releaseArtifactObservationByIdStmt!.get(
+        observation.observationId,
+      ) as ReleaseArtifactObservationStorageRow | undefined;
+      if (!storedRow) {
+        throw new Error(
+          `Release artifact observation ` +
+          `${JSON.stringify(observation.observationId)} was not persisted`,
+        );
+      }
+      const storedObservation = releaseArtifactObservationFromStorage(storedRow);
+      if (
+        canonicalOperationJson(storedObservation) !==
+        canonicalOperationJson(observation)
+      ) {
+        throw new Error(
+          `Persisted release artifact observation ` +
+          `${JSON.stringify(observation.observationId)} did not match staging`,
+        );
+      }
+      observationResult = {
+        inserted: true,
+        equivalent: false,
+        row: storedObservation,
+      };
+    }
+
+    releaseArtifactVerificationIntegrityOrThrow('after append');
+    input.assertCanWrite?.('release artifact verification commit');
+    return {
+      receipt: receiptResult,
+      observation: observationResult,
+    };
+  });
+}
+
+export function getReleaseArtifactVerificationReceipt(
+  receiptId: string,
+): ReleaseArtifactReceipt | null {
+  assertReleaseArtifactVerificationStorageAvailable();
+  const row = releaseArtifactReceiptByIdStmt!.get(receiptId) as
+    | ReleaseArtifactReceiptStorageRow
+    | undefined;
+  return row ? releaseArtifactReceiptFromStorage(row) : null;
+}
+
+export function listReleaseArtifactVerificationReceipts():
+  ReleaseArtifactReceipt[] {
+  assertReleaseArtifactVerificationStorageAvailable();
+  return (
+    listReleaseArtifactReceiptRowsStmt!.all() as unknown as
+      ReleaseArtifactReceiptStorageRow[]
+  ).map(releaseArtifactReceiptFromStorage);
+}
+
+export function getReleaseArtifactVerificationObservation(
+  observationId: string,
+): ReleaseArtifactObservation | null {
+  assertReleaseArtifactVerificationStorageAvailable();
+  const row = releaseArtifactObservationByIdStmt!.get(observationId) as
+    | ReleaseArtifactObservationStorageRow
+    | undefined;
+  return row ? releaseArtifactObservationFromStorage(row) : null;
+}
+
+export function listReleaseArtifactVerificationObservations(
+  runId?: string,
+): ReleaseArtifactObservation[] {
+  assertReleaseArtifactVerificationStorageAvailable();
+  const rows = runId
+    ? listReleaseArtifactObservationRowsForRunStmt!.all(runId)
+    : listReleaseArtifactObservationRowsStmt!.all();
+  return (rows as unknown as ReleaseArtifactObservationStorageRow[])
+    .map(releaseArtifactObservationFromStorage);
+}
+
+export function getCurrentReleaseArtifactVerificationObservation(
+  release: ReleaseArtifactIdentity,
+): ReleaseArtifactObservation | null {
+  return getReleaseArtifactVerificationForScoring(release)?.observation ?? null;
+}
+
+export interface ReleaseArtifactVerificationSelection {
+  observation: ReleaseArtifactObservation;
+  receipt: ReleaseArtifactReceipt;
+}
+
+export function getReleaseArtifactVerificationForScoring(
+  release: ReleaseArtifactIdentity,
+  options: { runId?: string | null } = {},
+): ReleaseArtifactVerificationSelection | null {
+  assertReleaseArtifactVerificationStorageAvailable();
+  releaseArtifactVerificationIntegrityOrThrow('during current selection');
+  const runId = options.runId == null
+    ? currentReleaseArtifactPublicationRunId()
+    : canonicalArtifactRunId(options.runId);
+  if (!runId) return null;
+  const attempt = getRefreshOperationAttempt(runId);
+  if (!attempt) {
+    throw new Error(
+      `Artifact observation run ${JSON.stringify(runId)} has no operation attempt`,
+    );
+  }
+  const terminalReceipt = getRefreshCaptureReceipt(runId);
+  let publication: ReleaseArtifactPublication | null = null;
+  if (terminalReceipt) {
+    if (terminalReceipt.status !== 'success') {
+      if (options.runId != null) {
+        throw new Error(
+          `Artifact observation run ${JSON.stringify(runId)} terminated as ` +
+          `${JSON.stringify(terminalReceipt.status)}`,
+        );
+      }
+      return null;
+    }
+    publication = validatedReleaseArtifactPublicationForReceipt(terminalReceipt);
+    if (!publication) return null;
+  } else {
+    if (options.runId == null) return null;
+    assertActiveRefreshLeaseFence({
+      leaseName: attempt.lease_name,
+      leaseHolderId: attempt.lease_holder_id,
+      observedAt: new Date().toISOString(),
+      attempt,
+      context: `select staged artifact verification for ${JSON.stringify(runId)}`,
+    });
+  }
+
+  const row = releaseArtifactObservationForRunAndReleaseStmt!.get(
+    runId,
+    release.repository,
+    release.tag,
+    release.releaseNodeId,
+    release.catalogTagCommitOid,
+    release.publishedAt,
+  ) as ReleaseArtifactObservationStorageRow | undefined;
+  if (!row) return null;
+  const observation = releaseArtifactObservationFromStorage(row);
+  if (!sameReleaseArtifactIdentity(observation.release, release)) {
+    throw new Error('Current release artifact observation identity mismatch');
+  }
+  const receipt = getReleaseArtifactVerificationReceipt(observation.receiptId);
+  if (!receipt) {
+    throw new Error(
+      `Artifact observation ${observation.observationId} references a missing receipt`,
+    );
+  }
+  const link = releaseArtifactPublicationLink(observation, receipt);
+  if (
+    publication &&
+    !publication.links.some((candidate) =>
+      canonicalOperationJson(candidate) === canonicalOperationJson(link))
+  ) {
+    throw new Error(
+      `Artifact publication for ${JSON.stringify(runId)} does not link ` +
+      `${JSON.stringify(observation.observationId)}`,
+    );
+  }
+  return { observation, receipt };
+}
+
+export function releaseArtifactPublicationForRun(
+  runId: string,
+): ReleaseArtifactPublication {
+  assertReleaseArtifactVerificationStorageAvailable();
+  const canonicalRun = canonicalArtifactRunId(runId);
+  const observations = listReleaseArtifactVerificationObservations(canonicalRun);
+  const links = observations.map((observation) => {
+    const receipt = getReleaseArtifactVerificationReceipt(observation.receiptId);
+    if (!receipt) {
+      throw new Error(
+        `Artifact observation ${observation.observationId} references a missing receipt`,
+      );
+    }
+    return releaseArtifactPublicationLink(observation, receipt);
+  });
+  return buildReleaseArtifactPublication(links);
+}
+
+function currentReleaseArtifactPublicationRunId(): string | null {
+  const meta = parseJsonRecord(getMeta('score_persistence_last_run'));
+  if (
+    meta?.source === 'refresh' &&
+    meta.operationReceiptRequired === true &&
+    typeof meta.operationRunId === 'string' &&
+    meta.operationRunId
+  ) {
+    return meta.operationRunId;
+  }
+  const candidates = listRefreshCaptureReceipts()
+    .filter((receipt) => receipt.status === 'success')
+    .slice()
+    .reverse();
+  for (const candidate of candidates) {
+    const payload = parseJsonRecord(candidate.payload_json);
+    if (
+      (
+        payload?.schemaVersion !== 2 &&
+        payload?.schemaVersion !== 3
+      ) ||
+      payload.releaseArtifacts == null
+    ) continue;
+    return candidate.run_id;
+  }
+  return null;
+}
+
+function validatedReleaseArtifactPublicationForReceipt(
+  receipt: RefreshCaptureReceiptRow,
+): ReleaseArtifactPublication | null {
+  const payload = parseJsonRecord(receipt.payload_json);
+  if (payload?.schemaVersion !== 2 && payload?.schemaVersion !== 3) return null;
+  const publication = parseReleaseArtifactPublication(payload.releaseArtifacts);
+  const expected = releaseArtifactPublicationForRun(receipt.run_id);
+  if (canonicalOperationJson(publication) !== canonicalOperationJson(expected)) {
+    throw new Error(
+      `Refresh success receipt ${JSON.stringify(receipt.receipt_id)} does not ` +
+      'bind the exact artifact observation set',
+    );
+  }
+  const releaseTags = Array.isArray(payload.releaseTags)
+    ? payload.releaseTags.filter((tag): tag is string => typeof tag === 'string')
+    : [];
+  const linkedTags = publication.links.map((link) => link.release.tag);
+  if (payload.schemaVersion === 2 && (
+    releaseTags.length !== linkedTags.length ||
+    canonicalOperationJson([...releaseTags].sort()) !==
+      canonicalOperationJson([...linkedTags].sort())
+  )) {
+    throw new Error(
+      `Refresh success receipt ${JSON.stringify(receipt.receipt_id)} artifact ` +
+      'links do not match its score release tags',
+    );
+  }
+  if (payload.schemaVersion === 3) {
+    const scoreMetadata = parseJsonRecord(payload.scoreMetadata);
+    const predecessorByReleaseTag = parseJsonRecord(
+      scoreMetadata?.predecessorByReleaseTag,
+    );
+    const metadataReleaseTags = Array.isArray(scoreMetadata?.releaseTags)
+      ? scoreMetadata.releaseTags.filter(
+        (tag): tag is string => typeof tag === 'string',
+      )
+      : [];
+    const problems = [
+      ...releaseArtifactPublicationScopeLinkProblems(
+        publication,
+        payload.releaseArtifactScope,
+      ),
+    ];
+    if (
+      !predecessorByReleaseTag ||
+      canonicalOperationJson([...metadataReleaseTags].sort()) !==
+        canonicalOperationJson([...releaseTags].sort())
+    ) {
+      problems.push(
+        'release artifact scope has no matching durable score metadata',
+      );
+    } else {
+      problems.push(...releaseArtifactPublicationScopeScoreProblems(
+        payload.releaseArtifactScope,
+        {
+          scoredReleaseTags: releaseTags,
+          predecessorByReleaseTag:
+            predecessorByReleaseTag as Record<string, string | null>,
+        },
+      ));
+    }
+    if (problems.length > 0) {
+      throw new Error(
+        `Refresh success receipt ${JSON.stringify(receipt.receipt_id)} ` +
+        `artifact scope is invalid: ${[...new Set(problems)].join('; ')}`,
+      );
+    }
+  }
+  return publication;
+}
+
+function canonicalArtifactRunId(runId: string): string {
+  if (!runId || runId.trim() !== runId) {
+    throw new Error('Artifact observation run ID must be canonical');
+  }
+  return runId;
+}
+
+export function releaseArtifactVerificationLedgerIntegrity():
+  ReleaseArtifactVerificationLedgerIntegrity {
+  if (
+    !listReleaseArtifactReceiptRowsStmt ||
+    !listReleaseArtifactObservationRowsStmt
+  ) {
+    const problems = ['release artifact verification tables are missing'];
+    return {
+      receiptCount: 0,
+      observationCount: 0,
+      receiptChainProblems: problems,
+      observationChainProblems: [],
+      semanticProblems: [],
+      problems,
+    };
+  }
+  const receiptRows = listReleaseArtifactReceiptRowsStmt.all() as unknown as
+    ReleaseArtifactReceiptStorageRow[];
+  const observationRows = listReleaseArtifactObservationRowsStmt.all() as unknown as
+    ReleaseArtifactObservationStorageRow[];
+  const receiptChainProblems: string[] = [];
+  const observationChainProblems: string[] = [];
+  const semanticProblems: string[] = [];
+  const receiptsById = new Map<string, ReleaseArtifactReceipt>();
+  let previousReceiptContentHash: string | null = null;
+  for (const row of receiptRows) {
+    const prefix = `receipt ${JSON.stringify(row.receipt_id)}`;
+    if (row.previous_content_hash !== previousReceiptContentHash) {
+      receiptChainProblems.push(`${prefix} previous content hash mismatch`);
+    }
+    try {
+      const receipt = releaseArtifactReceiptFromStorage(row);
+      receiptsById.set(receipt.receiptId, receipt);
+    } catch (error) {
+      semanticProblems.push(
+        `${prefix}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    previousReceiptContentHash = row.content_hash;
+  }
+
+  const attemptsByRun = new Map(
+    listRefreshOperationAttempts().map((attempt) => [attempt.run_id, attempt]),
+  );
+  const terminalReceiptsByRun = new Map(
+    listRefreshCaptureReceipts().map((receipt) => [receipt.run_id, receipt]),
+  );
+  let previousObservationContentHash: string | null = null;
+  for (const row of observationRows) {
+    const prefix = `observation ${JSON.stringify(row.observation_id)}`;
+    if (row.previous_content_hash !== previousObservationContentHash) {
+      observationChainProblems.push(`${prefix} previous content hash mismatch`);
+    }
+    try {
+      const observation = releaseArtifactObservationFromStorage(row);
+      const receipt = receiptsById.get(observation.receiptId);
+      if (!receipt) {
+        semanticProblems.push(`${prefix} references a missing receipt`);
+      } else {
+        if (observation.receiptContentHash !== receipt.contentHash) {
+          semanticProblems.push(`${prefix} receipt content hash mismatch`);
+        }
+        if (!sameReleaseArtifactIdentity(observation.release, receipt.release)) {
+          semanticProblems.push(`${prefix} release identity does not match receipt`);
+        }
+      }
+      const attempt = attemptsByRun.get(observation.runId);
+      if (!attempt) {
+        semanticProblems.push(`${prefix} references a missing refresh attempt`);
+      } else if (
+        Date.parse(observation.observedAt) < Date.parse(attempt.started_at)
+      ) {
+        semanticProblems.push(`${prefix} predates its refresh attempt`);
+      }
+      const terminalReceipt = terminalReceiptsByRun.get(observation.runId);
+      if (
+        terminalReceipt &&
+        Date.parse(observation.observedAt) > Date.parse(terminalReceipt.finished_at)
+      ) {
+        semanticProblems.push(`${prefix} occurs after its terminal receipt`);
+      }
+    } catch (error) {
+      semanticProblems.push(
+        `${prefix}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+    previousObservationContentHash = row.content_hash;
+  }
+  for (const terminalReceipt of terminalReceiptsByRun.values()) {
+    if (terminalReceipt.status !== 'success') continue;
+    const payload = parseJsonRecord(terminalReceipt.payload_json);
+    if (payload?.schemaVersion !== 2 && payload?.schemaVersion !== 3) continue;
+    try {
+      validatedReleaseArtifactPublicationForReceipt(terminalReceipt);
+    } catch (error) {
+      semanticProblems.push(
+        `success receipt ${JSON.stringify(terminalReceipt.receipt_id)}: ` +
+        `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+  const problems = [
+    ...receiptChainProblems,
+    ...observationChainProblems,
+    ...semanticProblems,
+  ];
+  return {
+    receiptCount: receiptRows.length,
+    observationCount: observationRows.length,
+    receiptChainProblems: [...new Set(receiptChainProblems)],
+    observationChainProblems: [...new Set(observationChainProblems)],
+    semanticProblems: [...new Set(semanticProblems)],
+    problems: [...new Set(problems)],
+  };
+}
+
+function normalizeRefreshOperationAttemptInput(
+  input: RefreshOperationAttemptInput,
+): RefreshOperationAttemptRow {
+  const runId = input.run_id.trim();
+  const operation = input.operation.trim();
+  const trigger = input.trigger.trim();
+  const leaseName = input.lease_name.trim();
+  const leaseHolderId = input.lease_holder_id.trim();
+  const codeRevision = normalizeCodeRevision(input.code_revision);
+  if (!runId || !operation || !trigger || !leaseName || !leaseHolderId || !codeRevision) {
+    throw new Error('Refresh operation attempt requires run, operation, trigger, lease, holder, and code revision');
+  }
+  if (
+    !Number.isFinite(Date.parse(input.started_at)) ||
+    !Number.isFinite(Date.parse(input.lease_expires_at)) ||
+    Date.parse(input.lease_expires_at) <= Date.parse(input.started_at)
+  ) {
+    throw new Error('Refresh operation attempt requires valid start and lease-expiry timestamps');
+  }
+  const effectiveConfigJson = canonicalOperationJson(input.effective_config);
+  const effectiveConfigHash = operationAttemptConfigHash(effectiveConfigJson);
+  const normalized = {
+    run_id: runId,
+    operation,
+    trigger,
+    started_at: input.started_at,
+    lease_name: leaseName,
+    lease_holder_id: leaseHolderId,
+    lease_expires_at: input.lease_expires_at,
+    code_revision: codeRevision,
+    effective_config_json: effectiveConfigJson,
+    effective_config_hash: effectiveConfigHash,
+    content_hash: '',
+  };
+  normalized.content_hash = operationAttemptContentHash({
+    runId,
+    operation,
+    trigger,
+    startedAt: normalized.started_at,
+    leaseName,
+    leaseHolderId,
+    leaseExpiresAt: normalized.lease_expires_at,
+    codeRevision,
+    effectiveConfigJson,
+  });
+  return normalized;
+}
+
+function normalizeRefreshOperationStageEventInput(
+  input: RefreshOperationStageEventInput,
+): Omit<RefreshOperationStageEventRow, 'id' | 'sequence' | 'previous_content_hash' | 'content_hash'> {
+  const runId = input.run_id.trim();
+  const stage = input.stage.trim();
+  const eventId = input.event_id?.trim() || undefined;
+  const durationMs = input.duration_ms ?? null;
+  if (!runId || !stage || !Number.isFinite(Date.parse(input.occurred_at))) {
+    throw new Error('Refresh operation stage event requires a run, stage, and valid timestamp');
+  }
+  if (!['started', 'completed', 'failed'].includes(input.status)) {
+    throw new Error(`Unsupported refresh operation stage status ${JSON.stringify(input.status)}`);
+  }
+  if (
+    (input.status === 'started' && durationMs != null) ||
+    (input.status !== 'started' &&
+      (durationMs == null || !Number.isInteger(durationMs) || durationMs < 0))
+  ) {
+    throw new Error('Started stage events omit duration; completed and failed events require non-negative integer duration');
+  }
+  return {
+    event_id: eventId as string,
+    run_id: runId,
+    stage,
+    status: input.status,
+    occurred_at: input.occurred_at,
+    duration_ms: durationMs,
+    counts_json: input.counts == null ? null : canonicalOperationJson(input.counts),
+    details_json: input.details == null ? null : canonicalOperationJson(input.details),
+  };
+}
+
+function normalizeRefreshCaptureReceiptInput(
+  input: RefreshCaptureReceiptInput,
+): Omit<
+  RefreshCaptureReceiptRow,
+  'id' | 'stage_event_count' | 'stage_chain_hash' | 'previous_content_hash' | 'content_hash'
+> {
+  const runId = input.run_id.trim();
+  const receiptId = input.receipt_id?.trim() || operationCaptureReceiptId(runId);
+  if (!runId || !receiptId || !Number.isFinite(Date.parse(input.finished_at))) {
+    throw new Error('Refresh capture receipt requires a run, receipt ID, and valid finish timestamp');
+  }
+  if (!['success', 'failure', 'abandoned'].includes(input.status)) {
+    throw new Error(`Unsupported refresh capture receipt status ${JSON.stringify(input.status)}`);
+  }
+  if (!Number.isInteger(input.duration_ms) || input.duration_ms < 0) {
+    throw new Error('Refresh capture receipt duration must be a non-negative integer');
+  }
+  return {
+    receipt_id: receiptId,
+    run_id: runId,
+    status: input.status,
+    finished_at: input.finished_at,
+    duration_ms: input.duration_ms,
+    payload_json: canonicalOperationJson(input.payload),
+  };
+}
+
+function activeRefreshOperationStages(
+  stageEvents: RefreshOperationStageEventRow[],
+): Set<string> {
+  const active = new Set<string>();
+  for (const event of stageEvents.slice().sort((left, right) => left.sequence - right.sequence)) {
+    if (event.status === 'started') active.add(event.stage);
+    else active.delete(event.stage);
+  }
+  return active;
+}
+
+interface RefreshScorePublicationRecoveryResult {
+  cleaned: boolean;
+  restored: boolean;
+  releaseRows: number;
+  auditRows: number;
+  historyRunId: string | null;
+  restoredHistoryRunId: string | null;
+  restoredOperationRunId: string | null;
+}
+
+interface RestorableReleaseScoreRow {
+  tag: string;
+  finalScore: number | null;
+  negativeIssues: number;
+  positiveIssues: number;
+  state: string;
+  recommended: boolean;
+  scoreReason: string;
+  brokenSurfaces: string;
+  closedSeriousFixed: number;
+  openedSeriousDuringReign: number;
+  scoredAt: string;
+}
+
+interface DisplacedRefreshPublicationBinding {
+  operationRunId: string;
+  historyRunId: string;
+  historyRunContentHash: string;
+  authorityRunId: string;
+  authorityRunContentHash: string;
+  historyV2SealContentHash: string;
+  receiptId: string;
+  receiptStatus: Extract<OperationTerminalStatus, 'failure' | 'abandoned'>;
+  receiptContentHash: string;
+}
+
+function refreshOperationRunIdForHistoryRunId(historyRunId: string): string | null {
+  const prefix = 'refresh:';
+  if (!historyRunId.startsWith(prefix)) return null;
+  const operationRunId = historyRunId.slice(prefix.length);
+  return operationRunId || null;
+}
+
+function displacedRefreshPublicationBindingsDigest(
+  bindings: DisplacedRefreshPublicationBinding[],
+): string {
+  return createHash('sha256')
+    .update(
+      `score-publication-recovery-bindings-v1\0${canonicalOperationJson(bindings)}`,
+    )
+    .digest('hex');
+}
+
+function displacedRefreshPublicationBindingsAfter(
+  restoredRunSeal: ReleaseScoreAuditHistoryRunSeal,
+): {
+  bindings: DisplacedRefreshPublicationBinding[];
+  problems: string[];
+} {
+  const problems: string[] = [];
+  const historySeals = listReleaseScoreAuditHistoryRunSealsStmt
+    ? listReleaseScoreAuditHistoryRunSealsStmt.all() as unknown as
+      ReleaseScoreAuditHistoryRunSeal[]
+    : [];
+  const laterHistorySeals = historySeals.filter(
+    (seal) => seal.id > restoredRunSeal.id,
+  );
+  const restoredHistoryV2Seal = getReleaseScoreAuditHistoryV2Seal(
+    restoredRunSeal.run_id,
+  );
+  const historyV2Seals = listReleaseScoreAuditHistoryV2Seals();
+  const laterHistoryV2Seals = restoredHistoryV2Seal
+    ? historyV2Seals.filter((seal) => seal.id > restoredHistoryV2Seal.id)
+    : [];
+  const authorityRuns = listScoreAuthorityResolutionRuns();
+  const authorityRunById = new Map(
+    authorityRuns.map((run) => [run.authorityRunId, run]),
+  );
+  const authorityRunIndexById = new Map(
+    authorityRuns.map((run, index) => [run.authorityRunId, index]),
+  );
+  const restoredAuthorityIndex = restoredHistoryV2Seal
+    ? authorityRunIndexById.get(restoredHistoryV2Seal.authorityRunId) ?? -1
+    : -1;
+
+  if (!restoredHistoryV2Seal) {
+    problems.push('restored history v2 seal is missing');
+  }
+  if (restoredAuthorityIndex < 0) {
+    problems.push('restored authority run is missing from the authority chain');
+  }
+  if (laterHistorySeals.length !== laterHistoryV2Seals.length) {
+    problems.push(
+      'history and history v2 successor counts do not match',
+    );
+  }
+
+  const bindings: DisplacedRefreshPublicationBinding[] = [];
+  const seenOperationRunIds = new Set<string>();
+  const seenAuthorityRunIds = new Set<string>();
+  let previousAuthorityIndex = restoredAuthorityIndex;
+  for (const [index, historySeal] of laterHistorySeals.entries()) {
+    const historyV2Seal = laterHistoryV2Seals[index] ?? null;
+    const authorityRun = historyV2Seal
+      ? authorityRunById.get(historyV2Seal.authorityRunId) ?? null
+      : null;
+    const authorityRunIndex = authorityRun
+      ? authorityRunIndexById.get(authorityRun.authorityRunId) ?? -1
+      : -1;
+    const operationRunId = refreshOperationRunIdForHistoryRunId(
+      historySeal.run_id,
+    );
+    const attempt = operationRunId
+      ? refreshOperationAttemptByRunStmt?.get(operationRunId) as unknown as
+        RefreshOperationAttemptRow | undefined
+      : undefined;
+    const receipt = operationRunId
+      ? refreshCaptureReceiptByRunStmt?.get(operationRunId) as unknown as
+        RefreshCaptureReceiptRow | undefined
+      : undefined;
+    const prefix = `history ${JSON.stringify(historySeal.run_id)}`;
+    let valid = true;
+    const fail = (problem: string) => {
+      valid = false;
+      problems.push(`${prefix}: ${problem}`);
+    };
+
+    if (!operationRunId) {
+      fail('is not a refresh operation history run');
+    } else if (seenOperationRunIds.has(operationRunId)) {
+      fail(`duplicates refresh operation ${JSON.stringify(operationRunId)}`);
+    } else {
+      seenOperationRunIds.add(operationRunId);
+    }
+    if (
+      !historyV2Seal ||
+      historyV2Seal.historyRunId !== historySeal.run_id
+    ) {
+      fail('does not align with the history v2 successor chain');
+    }
+    if (
+      !authorityRun ||
+      !historyV2Seal ||
+      authorityRun.authorityRunId !== historyV2Seal.authorityRunId
+    ) {
+      fail('does not align with the authority successor chain');
+    } else if (seenAuthorityRunIds.has(authorityRun.authorityRunId)) {
+      fail(
+        `duplicates authority run ${JSON.stringify(authorityRun.authorityRunId)}`,
+      );
+    } else if (
+      authorityRunIndex <= restoredAuthorityIndex ||
+      authorityRunIndex <= previousAuthorityIndex
+    ) {
+      fail('does not preserve authority chain publication order');
+    } else {
+      seenAuthorityRunIds.add(authorityRun.authorityRunId);
+      previousAuthorityIndex = authorityRunIndex;
+    }
+    if (
+      historyV2Seal &&
+      (
+        historyV2Seal.sealedAt !== historySeal.recorded_at ||
+        authorityRun?.recordedAt !== historySeal.recorded_at
+      )
+    ) {
+      fail('history, authority, and v2 timestamps do not match');
+    }
+    if (!attempt || attempt.operation !== 'refresh') {
+      fail('has no matching refresh operation attempt');
+    }
+    if (!receipt) {
+      fail('has no terminal refresh receipt');
+    } else if (receipt.status === 'success') {
+      fail('cannot be skipped because its refresh receipt is successful');
+    } else if (
+      receipt.status !== 'failure' &&
+      receipt.status !== 'abandoned'
+    ) {
+      fail(`has unsupported terminal receipt status ${JSON.stringify(receipt.status)}`);
+    }
+
+    if (
+      valid &&
+      operationRunId &&
+      historyV2Seal &&
+      authorityRun &&
+      receipt &&
+      (receipt.status === 'failure' || receipt.status === 'abandoned')
+    ) {
+      bindings.push({
+        operationRunId,
+        historyRunId: historySeal.run_id,
+        historyRunContentHash: historySeal.content_hash,
+        authorityRunId: authorityRun.authorityRunId,
+        authorityRunContentHash: authorityRun.contentHash,
+        historyV2SealContentHash: historyV2Seal.contentHash,
+        receiptId: receipt.receipt_id,
+        receiptStatus: receipt.status,
+        receiptContentHash: receipt.content_hash,
+      });
+    }
+  }
+  return { bindings, problems };
+}
+
+function recoverUnsuccessfulRefreshScoreTip(
+  runId: string,
+): RefreshScorePublicationRecoveryResult {
+  if (
+    !clearCurrentReleaseScoresForAbandonedRunStmt ||
+    !deleteCurrentReleaseScoreAuditsForAbandonedRunStmt ||
+    !deleteMetaStmt
+  ) {
+    throw new Error('Receiptless refresh score cleanup is unavailable or read-only');
+  }
+  const meta = parseJsonRecord(getMeta('score_persistence_last_run'));
+  if (
+    !meta ||
+    meta.source !== 'refresh' ||
+    meta.operationReceiptRequired !== true ||
+    meta.operationRunId !== runId
+  ) {
+    return {
+      cleaned: false,
+      restored: false,
+      releaseRows: 0,
+      auditRows: 0,
+      historyRunId: null,
+      restoredHistoryRunId: null,
+      restoredOperationRunId: null,
+    };
+  }
+  const terminalReceipt = refreshCaptureReceiptByRunStmt?.get(
+    runId,
+  ) as unknown as RefreshCaptureReceiptRow | undefined;
+  if (terminalReceipt?.status === 'success') {
+    throw new Error(
+      `Cannot recover successful refresh score tip ${JSON.stringify(runId)}`,
+    );
+  }
+  const historyRunId = typeof meta.historyRunId === 'string' && meta.historyRunId
+    ? meta.historyRunId
+    : null;
+  const historyRunContentHash = typeof meta.historyRunContentHash === 'string'
+    ? meta.historyRunContentHash
+    : null;
+  const authorityRunId = typeof meta.authorityRunId === 'string' &&
+      meta.authorityRunId
+    ? meta.authorityRunId
+    : null;
+  const authorityRunContentHash =
+    typeof meta.authorityRunContentHash === 'string'
+      ? meta.authorityRunContentHash
+      : null;
+  const historyV2SealContentHash =
+    typeof meta.historyV2SealContentHash === 'string'
+      ? meta.historyV2SealContentHash
+      : null;
+  const historySeal = historyRunId ? getReleaseScoreAuditHistoryRunSeal(historyRunId) : null;
+  const historyRows = historyRunId ? listReleaseScoreAuditHistoryForRun(historyRunId) : [];
+  const authorityRun = authorityRunId
+    ? getScoreAuthorityResolutionRun(authorityRunId)
+    : null;
+  const historyV2Seal = historyRunId
+    ? getReleaseScoreAuditHistoryV2Seal(historyRunId)
+    : null;
+  if (
+    !historyRunId ||
+    !historyRunContentHash ||
+    !historySeal ||
+    historySeal.content_hash !== historyRunContentHash ||
+    historyRows.length === 0 ||
+    !authorityRunId ||
+    !authorityRunContentHash ||
+    !authorityRun ||
+    authorityRun.contentHash !== authorityRunContentHash ||
+    !historyV2SealContentHash ||
+    !historyV2Seal ||
+    historyV2Seal.authorityRunId !== authorityRunId ||
+    historyV2Seal.contentHash !== historyV2SealContentHash ||
+    historyRows.some((row) => row.authority_run_id !== authorityRunId)
+  ) {
+    throw new Error(
+      `Cannot clean receiptless refresh score ${JSON.stringify(runId)} without its ` +
+      `sealed history and authority tips`,
+    );
+  }
+  const currentAudits = listCurrentReleaseScoreAuditsStmt.all() as unknown as ReleaseScoreAuditRow[];
+  const currentScoredTags = (currentScoredReleaseTagsStmt.all() as Array<{ tag: string }>)
+    .map((row) => row.tag);
+  const historyTags = historyRows.map((row) => row.release_tag).sort();
+  if (
+    currentAudits.length !== historyRows.length ||
+    canonicalOperationJson(currentScoredTags) !== canonicalOperationJson(historyTags) ||
+    currentAudits.some((audit) => {
+      const history = historyRows.find((row) => row.release_tag === audit.release_tag);
+      return !history ||
+        releaseScoreAuditHistoryContent(audit) !== releaseScoreAuditHistoryContent(history);
+    })
+  ) {
+    throw new Error(
+      `Cannot clean receiptless refresh score ${JSON.stringify(runId)} because current scores ` +
+      `no longer match its sealed history tip`,
+    );
+  }
+  const releaseResult = clearCurrentReleaseScoresForAbandonedRunStmt.run();
+  const auditResult = deleteCurrentReleaseScoreAuditsForAbandonedRunStmt.run();
+  const restored = restoreLatestActionableRefreshScorePublication({
+    displacedOperationRunId: runId,
+    displacedHistoryRunId: historyRunId,
+    displacedHistoryRunContentHash: historyRunContentHash,
+    displacedHistoryRunSealId: historySeal.id,
+    displacedAuthorityRunId: authorityRunId,
+    displacedAuthorityRunContentHash: authorityRunContentHash,
+    displacedHistoryV2SealContentHash: historyV2SealContentHash,
+  });
+  if (restored) {
+    return {
+      cleaned: true,
+      restored: true,
+      releaseRows: Number(releaseResult.changes ?? 0),
+      auditRows: Number(auditResult.changes ?? 0),
+      historyRunId,
+      restoredHistoryRunId: restored.historyRunId,
+      restoredOperationRunId: restored.operationRunId,
+    };
+  }
+  deleteMetaStmt.run('score_persistence_last_run');
+  if (typeof meta.maxScoredAt === 'string' && getMeta('last_scored_at') === meta.maxScoredAt) {
+    deleteMetaStmt.run('last_scored_at');
+  }
+  const issueCrawl = parseJsonRecord(getMeta('issue_crawl_last_run'));
+  if (issueCrawl?.scorePersisted === true) {
+    setMeta('issue_crawl_last_run', JSON.stringify({
+      ...issueCrawl,
+      scorePersisted: false,
+      scorePersistedAt: null,
+      scorePublicationCleanup: {
+        reason: 'receiptless_operation_abandoned',
+        operationRunId: runId,
+        historyRunId,
+      },
+    }));
+  }
+  return {
+    cleaned: true,
+    restored: false,
+    releaseRows: Number(releaseResult.changes ?? 0),
+    auditRows: Number(auditResult.changes ?? 0),
+    historyRunId,
+    restoredHistoryRunId: null,
+    restoredOperationRunId: null,
+  };
+}
+
+function restoreLatestActionableRefreshScorePublication(displaced: {
+  displacedOperationRunId: string;
+  displacedHistoryRunId: string;
+  displacedHistoryRunContentHash: string;
+  displacedHistoryRunSealId: number;
+  displacedAuthorityRunId: string;
+  displacedAuthorityRunContentHash: string;
+  displacedHistoryV2SealContentHash: string;
+}): { historyRunId: string; operationRunId: string } | null {
+  const failures: string[] = [];
+  const candidates = (listRefreshCaptureReceiptsStmt?.all() as unknown as
+    RefreshCaptureReceiptRow[] | undefined ?? [])
+    .filter((receipt) => receipt.status === 'success')
+    .map((receipt) => {
+      const payload = parseJsonRecord(receipt.payload_json);
+      const history = parseJsonRecord(payload?.scoreHistory);
+      const historyRunId = typeof history?.runId === 'string' ? history.runId : '';
+      const historyRunContentHash = typeof history?.contentHash === 'string'
+        ? history.contentHash
+        : '';
+      const seal = historyRunId ? getReleaseScoreAuditHistoryRunSeal(historyRunId) : null;
+      return {
+        receipt,
+        payload,
+        historyRunId,
+        historyRunContentHash,
+        seal,
+      };
+    })
+    .filter((candidate) =>
+      (
+        candidate.payload?.schemaVersion === 1 ||
+        candidate.payload?.schemaVersion === 2 ||
+        candidate.payload?.schemaVersion === 3
+      ) &&
+      candidate.historyRunId &&
+      candidate.seal &&
+      candidate.seal.id < displaced.displacedHistoryRunSealId &&
+      candidate.seal.content_hash === candidate.historyRunContentHash)
+    .sort((left, right) => right.seal!.id - left.seal!.id);
+
+  for (const candidate of candidates) {
+    try {
+      return runInWriteTransaction(() => {
+        if (
+          candidate.payload?.schemaVersion === 2 ||
+          candidate.payload?.schemaVersion === 3
+        ) {
+          validatedReleaseArtifactPublicationForReceipt(candidate.receipt);
+        }
+        restoreRefreshScorePublicationCandidate({
+          receipt: candidate.receipt,
+          payload: candidate.payload!,
+          historyRunId: candidate.historyRunId,
+          historyRunContentHash: candidate.historyRunContentHash,
+          displaced,
+        });
+        return {
+          historyRunId: candidate.historyRunId,
+          operationRunId: candidate.receipt.run_id,
+        };
+      });
+    } catch (error) {
+      failures.push(
+        `${candidate.historyRunId}: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      // Try the next earlier independently sealed and receipted publication.
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(
+      `Unable to restore any prior actionable refresh score publication: ${failures.join('; ')}`,
+    );
+  }
+  return null;
+}
+
+function restoreRefreshScorePublicationCandidate(input: {
+  receipt: RefreshCaptureReceiptRow;
+  payload: Record<string, unknown>;
+  historyRunId: string;
+  historyRunContentHash: string;
+  displaced: {
+    displacedOperationRunId: string;
+    displacedHistoryRunId: string;
+    displacedHistoryRunContentHash: string;
+    displacedAuthorityRunId: string;
+    displacedAuthorityRunContentHash: string;
+    displacedHistoryV2SealContentHash: string;
+  };
+}): void {
+  const historyRows = listReleaseScoreAuditHistoryForRun(input.historyRunId);
+  const historySeal = getReleaseScoreAuditHistoryRunSeal(input.historyRunId);
+  if (
+    !historySeal ||
+    historySeal.content_hash !== input.historyRunContentHash ||
+    historyRows.length === 0
+  ) {
+    throw new Error('Prior refresh publication history is unavailable');
+  }
+  const authorityRunIds = new Set(
+    historyRows.map((row) => row.authority_run_id),
+  );
+  const authorityRunId = authorityRunIds.size === 1
+    ? [...authorityRunIds][0]
+    : null;
+  const authorityRun = authorityRunId
+    ? getScoreAuthorityResolutionRun(authorityRunId)
+    : null;
+  const historyV2Seal = getReleaseScoreAuditHistoryV2Seal(input.historyRunId);
+  const receiptAuthority = parseJsonRecord(input.payload.scoreAuthority);
+  const receiptScoreMetadata = parseJsonRecord(input.payload.scoreMetadata);
+  const receiptScoreCommit = parseJsonRecord(input.payload.scoreCommit);
+  if (
+    !authorityRunId ||
+    !authorityRun ||
+    !historyV2Seal ||
+    historyV2Seal.authorityRunId !== authorityRunId ||
+    receiptAuthority?.runId !== authorityRunId ||
+    receiptAuthority.contentHash !== authorityRun.contentHash ||
+    receiptAuthority.historyV2SealContentHash !== historyV2Seal.contentHash ||
+    receiptScoreMetadata?.authorityRunId !== authorityRunId ||
+    receiptScoreMetadata.authorityRunContentHash !== authorityRun.contentHash ||
+    receiptScoreMetadata.historyV2SealContentHash !== historyV2Seal.contentHash ||
+    receiptScoreCommit?.authorityRunId !== authorityRunId ||
+    receiptScoreCommit.authorityRunContentHash !== authorityRun.contentHash ||
+    receiptScoreCommit.historyV2SealContentHash !== historyV2Seal.contentHash
+  ) {
+    throw new Error('Prior refresh publication authority evidence is unavailable');
+  }
+  const scoreRows = restorableScoreRows(input.payload, historyRows);
+  for (const historyRow of historyRows) {
+    upsertReleaseScoreAudit({
+      release_tag: historyRow.release_tag,
+      scored_at: historyRow.scored_at,
+      score_model_version: historyRow.score_model_version,
+      prompt_version: historyRow.prompt_version,
+      final_score: historyRow.final_score,
+      status: historyRow.status,
+      band: historyRow.band,
+      recommended: historyRow.recommended,
+      input_json: historyRow.input_json,
+      components_json: historyRow.components_json,
+      issue_evidence_json: historyRow.issue_evidence_json,
+      gate_evidence_json: historyRow.gate_evidence_json,
+      source_identity_json: historyRow.source_identity_json,
+      authority_run_id: historyRow.authority_run_id,
+    });
+  }
+  for (const scoreRow of scoreRows) {
+    if (!getRelease(scoreRow.tag)) {
+      throw new Error(`Prior refresh publication release ${scoreRow.tag} is unavailable`);
+    }
+    updateReleaseScore({
+      tag: scoreRow.tag,
+      final_score: scoreRow.finalScore,
+      negative_issues: scoreRow.negativeIssues,
+      positive_issues: scoreRow.positiveIssues,
+      state: scoreRow.state,
+      recommended: scoreRow.recommended ? 1 : 0,
+      score_reason: scoreRow.scoreReason,
+      broken_surfaces: scoreRow.brokenSurfaces,
+      closed_serious_fixed: scoreRow.closedSeriousFixed,
+      opened_serious_during_reign: scoreRow.openedSeriousDuringReign,
+      scored_at: scoreRow.scoredAt,
+    });
+  }
+
+  const issueCrawl = parseJsonRecord(
+    parseJsonRecord(input.payload.issueCrawl)?.metadata,
+  );
+  if (!issueCrawl) {
+    throw new Error('Prior refresh publication issue crawl metadata is unavailable');
+  }
+  setMeta('issue_crawl_last_run', JSON.stringify(issueCrawl));
+  const scoreMeta = restorableScoreMetadata({
+    receipt: input.receipt,
+    payload: input.payload,
+    historyRows,
+    historySeal,
+    issueCrawl,
+    displaced: input.displaced,
+  });
+  setMeta('score_persistence_last_run', JSON.stringify(scoreMeta));
+  const maxScoredAt = historyRows
+    .map((row) => row.scored_at)
+    .filter((value) => Number.isFinite(Date.parse(value)))
+    .sort()
+    .at(-1) ?? null;
+  if (maxScoredAt) setMeta('last_scored_at', maxScoredAt);
+  else deleteMetaStmt?.run('last_scored_at');
+
+  const publicationProblems = historyRows.flatMap((row) => {
+    const publication = getSealedReleaseScoreAuditPublication(row.release_tag);
+    return publication.valid
+      ? []
+      : publication.problems.map((problem) => `${row.release_tag}: ${problem}`);
+  });
+  if (publicationProblems.length > 0) {
+    throw new Error(
+      `Prior refresh publication is no longer actionable: ${publicationProblems.join('; ')}`,
+    );
+  }
+}
+
+function restorableScoreRows(
+  payload: Record<string, unknown>,
+  historyRows: Array<ReleaseScoreAuditRow & { run_id: string; recorded_at: string }>,
+): RestorableReleaseScoreRow[] {
+  const historyByTag = new Map(historyRows.map((row) => [row.release_tag, row]));
+  const projected = Array.isArray(payload.scoreRows)
+    ? payload.scoreRows.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  if (projected.length > 0) {
+    const rows = projected.map((row) => {
+      const tag = typeof row.tag === 'string' ? row.tag : '';
+      const history = historyByTag.get(tag);
+      const finalScore = row.finalScore == null ? null : Number(row.finalScore);
+      const negativeIssues = Number(row.negativeIssues);
+      const positiveIssues = Number(row.positiveIssues);
+      const closedSeriousFixed = Number(row.closedSeriousFixed);
+      const openedSeriousDuringReign = Number(row.openedSeriousDuringReign);
+      const scoredAt = typeof row.scoredAt === 'string' ? row.scoredAt : '';
+      if (
+        !history ||
+        (finalScore != null && !Number.isFinite(finalScore)) ||
+        !Number.isInteger(negativeIssues) ||
+        negativeIssues < 0 ||
+        !Number.isInteger(positiveIssues) ||
+        positiveIssues < 0 ||
+        !Number.isInteger(closedSeriousFixed) ||
+        closedSeriousFixed < 0 ||
+        !Number.isInteger(openedSeriousDuringReign) ||
+        openedSeriousDuringReign < 0 ||
+        typeof row.state !== 'string' ||
+        typeof row.recommended !== 'boolean' ||
+        typeof row.scoreReason !== 'string' ||
+        typeof row.brokenSurfaces !== 'string' ||
+        !Number.isFinite(Date.parse(scoredAt)) ||
+        history.final_score !== finalScore ||
+        history.status !== row.state ||
+        history.recommended !== (row.recommended ? 1 : 0) ||
+        history.scored_at !== scoredAt
+      ) {
+        throw new Error(`Prior refresh publication score projection is invalid for ${tag || '<missing>'}`);
+      }
+      return {
+        tag,
+        finalScore,
+        negativeIssues,
+        positiveIssues,
+        state: row.state,
+        recommended: row.recommended,
+        scoreReason: row.scoreReason,
+        brokenSurfaces: row.brokenSurfaces,
+        closedSeriousFixed,
+        openedSeriousDuringReign,
+        scoredAt,
+      };
+    });
+    if (
+      rows.length !== historyRows.length ||
+      rows.some((row) => !historyByTag.has(row.tag)) ||
+      new Set(rows.map((row) => row.tag)).size !== historyRows.length
+    ) {
+      throw new Error('Prior refresh publication score projection does not match sealed history');
+    }
+    return rows;
+  }
+
+  return historyRows.map((history) => {
+    const components = parseJsonRecord(history.components_json);
+    return {
+      tag: history.release_tag,
+      finalScore: history.final_score,
+      negativeIssues: 0,
+      positiveIssues: 0,
+      state: history.status,
+      recommended: history.recommended === 1,
+      scoreReason: typeof components?.reason === 'string' ? components.reason : history.status,
+      brokenSurfaces: '[]',
+      closedSeriousFixed: 0,
+      openedSeriousDuringReign: 0,
+      scoredAt: history.scored_at,
+    };
+  });
+}
+
+function restorableScoreMetadata(input: {
+  receipt: RefreshCaptureReceiptRow;
+  payload: Record<string, unknown>;
+  historyRows: Array<ReleaseScoreAuditRow & { run_id: string; recorded_at: string }>;
+  historySeal: ReleaseScoreAuditHistoryRunSeal;
+  issueCrawl: Record<string, unknown>;
+  displaced: {
+    displacedOperationRunId: string;
+    displacedHistoryRunId: string;
+    displacedHistoryRunContentHash: string;
+    displacedAuthorityRunId: string;
+    displacedAuthorityRunContentHash: string;
+    displacedHistoryV2SealContentHash: string;
+  };
+}): Record<string, unknown> {
+  const receiptMetadata = parseJsonRecord(input.payload.scoreMetadata);
+  const scoreCommit = parseJsonRecord(input.payload.scoreCommit);
+  const releaseCatalog = parseJsonRecord(input.payload.releaseCatalog);
+  const catalogAttestation = parseJsonRecord(releaseCatalog?.attestation);
+  const recommendation = parseJsonRecord(input.payload.recommendation);
+  const sourceIdentity = parseJsonRecord(input.historyRows[0].source_identity_json);
+  const authorityRunIds = new Set(
+    input.historyRows.map((row) => row.authority_run_id),
+  );
+  const authorityRunId = authorityRunIds.size === 1 &&
+      typeof [...authorityRunIds][0] === 'string'
+    ? [...authorityRunIds][0] as string
+    : null;
+  const authorityRun = authorityRunId
+    ? getScoreAuthorityResolutionRun(authorityRunId)
+    : null;
+  const historyV2Seal = getReleaseScoreAuditHistoryV2Seal(
+    input.historySeal.run_id,
+  );
+  if (
+    !scoreCommit ||
+    !catalogAttestation ||
+    !sourceIdentity ||
+    !authorityRunId ||
+    !authorityRun ||
+    !historyV2Seal ||
+    historyV2Seal.authorityRunId !== authorityRunId
+  ) {
+    throw new Error('Prior refresh publication metadata is incomplete');
+  }
+  const displacedPublications = displacedRefreshPublicationBindingsAfter(
+    input.historySeal,
+  );
+  if (
+    displacedPublications.problems.length > 0 ||
+    displacedPublications.bindings.length === 0
+  ) {
+    throw new Error(
+      `Prior refresh publication displaced suffix is invalid: ` +
+      (
+        displacedPublications.problems.join('; ') ||
+        'no unsuccessful displaced publication was found'
+      ),
+    );
+  }
+  const latestDisplaced = displacedPublications.bindings.at(-1)!;
+  if (
+    latestDisplaced.operationRunId !== input.displaced.displacedOperationRunId ||
+    latestDisplaced.historyRunId !== input.displaced.displacedHistoryRunId ||
+    latestDisplaced.historyRunContentHash !==
+      input.displaced.displacedHistoryRunContentHash ||
+    latestDisplaced.authorityRunId !==
+      input.displaced.displacedAuthorityRunId ||
+    latestDisplaced.authorityRunContentHash !==
+      input.displaced.displacedAuthorityRunContentHash ||
+    latestDisplaced.historyV2SealContentHash !==
+      input.displaced.displacedHistoryV2SealContentHash
+  ) {
+    throw new Error(
+      'Prior refresh publication displaced suffix does not end at the current failed tip',
+    );
+  }
+  const scoredAts = input.historyRows.map((row) => row.scored_at).sort();
+  const recommendedTags = input.historyRows
+    .filter((row) => row.recommended === 1)
+    .map((row) => row.release_tag);
+  const recommendationDecisions = Array.isArray(recommendation?.decisions)
+    ? recommendation.decisions.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  const recommendationPolicyCode = recommendationDecisions
+    .map((row) => parseJsonRecord(row.decision)?.policyCode)
+    .find((value): value is string => typeof value === 'string' && value.length > 0) ??
+    'highest_confidence_with_recency_tolerance';
+  const base = receiptMetadata ?? {
+    schemaVersion: 2,
+    source: 'refresh',
+    scope: null,
+    persistedAt: input.historySeal.recorded_at,
+    codeRevision: input.payload.codeRevision,
+    catalogAttestation,
+    scoreModelVersion: input.historyRows[0].score_model_version,
+    promptVersion: input.historyRows[0].prompt_version,
+    scoredReleaseCount: input.historyRows.length,
+    recommendedTag: recommendedTags[0] ?? null,
+    recommendationPolicyCode,
+    releaseTags: input.historyRows.map((row) => row.release_tag),
+    minScoredAt: scoredAts[0] ?? null,
+    maxScoredAt: scoredAts.at(-1) ?? null,
+    issueCrawlStartedAt: input.issueCrawl.startedAt ?? null,
+    issueCrawlFinishedAt: input.issueCrawl.finishedAt ?? null,
+    issueCrawlStopReason: input.issueCrawl.stopReason ?? null,
+    issueCrawlScorePersistedAt: input.issueCrawl.scorePersistedAt ?? null,
+    issueCrawlMetadataDigest: createHash('sha256')
+      .update(canonicalOperationJson(input.issueCrawl))
+      .digest('hex'),
+    sourceIdentitySchemaVersion: sourceIdentity.schemaVersion,
+    sourceIdentityDigest: sourceIdentity.digest,
+    sourceIdentityRowCount: sourceIdentity.rowCount,
+    sourceIdentitySourceCount: sourceIdentity.sourceCount,
+    authorityRunId,
+    authorityRunContentHash: authorityRun.contentHash,
+    historyV2SealContentHash: historyV2Seal.contentHash,
+    commitTiming: scoreCommit,
+    forecastPlan: restorableForecastPlan({
+      payload: input.payload,
+      scoreCommit,
+      catalogAttestation,
+      scoreModelVersion: input.historyRows[0].score_model_version,
+      promptVersion: input.historyRows[0].prompt_version,
+      recommendationPolicyCode,
+    }),
+  };
+  return {
+    ...base,
+    schemaVersion: 2,
+    source: 'refresh',
+    operationRunId: input.receipt.run_id,
+    operationReceiptRequired: true,
+    persistedAt: input.historySeal.recorded_at,
+    historyRunId: input.historySeal.run_id,
+    historyRunContentHash: input.historySeal.content_hash,
+    authorityRunId,
+    authorityRunContentHash: authorityRun.contentHash,
+    historyV2SealContentHash: historyV2Seal.contentHash,
+    publicationRecovery: {
+      schemaVersion: 3,
+      recoveredAt: new Date().toISOString(),
+      restoredOperationRunId: input.receipt.run_id,
+      restoredHistoryRunId: input.historySeal.run_id,
+      restoredHistoryRunContentHash: input.historySeal.content_hash,
+      restoredAuthorityRunId: authorityRunId,
+      restoredAuthorityRunContentHash: authorityRun.contentHash,
+      restoredHistoryV2SealContentHash: historyV2Seal.contentHash,
+      displacedOperationRunId: input.displaced.displacedOperationRunId,
+      displacedHistoryRunId: input.displaced.displacedHistoryRunId,
+      displacedHistoryRunContentHash: input.displaced.displacedHistoryRunContentHash,
+      displacedAuthorityRunId: input.displaced.displacedAuthorityRunId,
+      displacedAuthorityRunContentHash:
+        input.displaced.displacedAuthorityRunContentHash,
+      displacedHistoryV2SealContentHash:
+        input.displaced.displacedHistoryV2SealContentHash,
+      displacedPublicationCount: displacedPublications.bindings.length,
+      displacedPublicationDigest: displacedRefreshPublicationBindingsDigest(
+        displacedPublications.bindings,
+      ),
+      displacedPublications: displacedPublications.bindings,
+    },
+  };
+}
+
+function restorableForecastPlan(input: {
+  payload: Record<string, unknown>;
+  scoreCommit: Record<string, unknown>;
+  catalogAttestation: Record<string, unknown>;
+  scoreModelVersion: string;
+  promptVersion: number;
+  recommendationPolicyCode: string;
+}): Record<string, unknown> {
+  const latestStable = parseJsonRecord(input.catalogAttestation.latestStable);
+  const recommendation = parseJsonRecord(input.payload.recommendation);
+  const forecast = parseJsonRecord(input.payload.forecast);
+  const captures = Array.isArray(forecast?.captures)
+    ? forecast.captures.map(parseJsonRecord).filter(
+        (row): row is Record<string, unknown> => row != null,
+      )
+    : [];
+  const preflightAt = typeof input.scoreCommit.commitNotBefore === 'string'
+    ? input.scoreCommit.commitNotBefore
+    : '';
+  const latestReleasePublishedAt = typeof latestStable?.publishedAt === 'string'
+    ? latestStable.publishedAt
+    : '';
+  const preflightAtMs = Date.parse(preflightAt);
+  const latestPublishedAtMs = Date.parse(latestReleasePublishedAt);
+  const slots = Object.entries(RELEASE_VALIDATION_OPPORTUNITIES)
+    .filter(([, opportunity]) =>
+      Number.isFinite(preflightAtMs) &&
+      Number.isFinite(latestPublishedAtMs) &&
+      preflightAtMs < latestPublishedAtMs + opportunity.maxAgeHours * 3_600_000)
+    .map(([opportunityCode]) => {
+      const capture = captures.find((row) => row.opportunityCode === opportunityCode);
+      const existingDecisionId = capture?.status === 'already_captured' &&
+        typeof capture.decisionId === 'string'
+        ? capture.decisionId
+        : null;
+      const existing = existingDecisionId
+        ? db.prepare(`SELECT content_hash FROM release_validation_forecasts WHERE decision_id=?`)
+          .get(existingDecisionId) as { content_hash?: string } | undefined
+        : undefined;
+      return {
+        opportunityCode,
+        existingDecisionId,
+        existingContentHash: existing?.content_hash ?? null,
+      };
+    });
+  return {
+    schemaVersion: 1,
+    preflightAt,
+    latestReleaseTag: latestStable?.tag ?? '',
+    latestReleasePublishedAt,
+    selectedTag: recommendation?.selectedTag ?? null,
+    scoreModelVersion: input.scoreModelVersion,
+    promptVersion: input.promptVersion,
+    policyCode: input.recommendationPolicyCode,
+    codeRevision: input.payload.codeRevision,
+    slots,
+  };
+}
+
+function refreshOperationAttemptRowsEqual(
+  existing: RefreshOperationAttemptRow,
+  candidate: RefreshOperationAttemptRow,
+): boolean {
+  return canonicalOperationJson(existing) === canonicalOperationJson(candidate);
+}
+
+function refreshOperationStageEventRowsEqual(
+  existing: RefreshOperationStageEventRow,
+  candidate: ReturnType<typeof normalizeRefreshOperationStageEventInput>,
+): boolean {
+  return existing.event_id === candidate.event_id &&
+    existing.run_id === candidate.run_id &&
+    existing.stage === candidate.stage &&
+    existing.status === candidate.status &&
+    existing.occurred_at === candidate.occurred_at &&
+    existing.duration_ms === candidate.duration_ms &&
+    existing.counts_json === candidate.counts_json &&
+    existing.details_json === candidate.details_json;
+}
+
+function refreshCaptureReceiptRowsEqual(
+  existing: RefreshCaptureReceiptRow,
+  candidate: ReturnType<typeof normalizeRefreshCaptureReceiptInput>,
+): boolean {
+  return existing.receipt_id === candidate.receipt_id &&
+    existing.run_id === candidate.run_id &&
+    existing.status === candidate.status &&
+    existing.finished_at === candidate.finished_at &&
+    existing.duration_ms === candidate.duration_ms &&
+    existing.payload_json === candidate.payload_json;
+}
+
+export const REFRESH_WRITE_LEASE_NAME = 'github-refresh';
+export const REFRESH_WRITE_LEASE_TTL_MS = 5 * 60 * 1000;
+export const REFRESH_WRITE_LEASE_HEARTBEAT_MS = 60 * 1000;
+
+export interface RefreshLeaseRow {
+  name: string;
+  holder_id: string;
+  acquired_at: string;
+  expires_at: string;
+}
+
+const hasRefreshLeases = db.prepare(`
+  SELECT 1 AS present
+  FROM sqlite_master
+  WHERE type='table' AND name='refresh_leases'
+`).get() != null;
+const listRefreshLeasesStmt = hasRefreshLeases
+  ? db.prepare(`SELECT * FROM refresh_leases ORDER BY name`)
+  : null;
+const getRefreshLeaseStmt = hasRefreshLeases
+  ? db.prepare(`SELECT * FROM refresh_leases WHERE name=?`)
+  : null;
+const acquireRefreshLeaseStmt = !dbReadOnly && hasRefreshLeases
+  ? db.prepare(`
+      INSERT INTO refresh_leases(name, holder_id, acquired_at, expires_at)
+      VALUES(:name, :holder_id, :acquired_at, :expires_at)
+      ON CONFLICT(name) DO UPDATE SET
+        holder_id=excluded.holder_id,
+        acquired_at=excluded.acquired_at,
+        expires_at=excluded.expires_at
+      WHERE refresh_leases.expires_at <= excluded.acquired_at
+         OR refresh_leases.holder_id=excluded.holder_id
+    `)
+  : null;
+const renewRefreshLeaseStmt = !dbReadOnly && hasRefreshLeases
+  ? db.prepare(`
+      UPDATE refresh_leases
+      SET expires_at=max(expires_at, :expires_at)
+      WHERE name=:name
+        AND holder_id=:holder_id
+        AND expires_at>:renewed_at
+    `)
+  : null;
+const releaseRefreshLeaseStmt = !dbReadOnly && hasRefreshLeases
+  ? db.prepare(`DELETE FROM refresh_leases WHERE name=? AND holder_id=?`)
+  : null;
+
+export function listRefreshLeases(): RefreshLeaseRow[] {
+  return listRefreshLeasesStmt
+    ? listRefreshLeasesStmt.all() as unknown as RefreshLeaseRow[]
+    : [];
+}
+
+export function isRefreshLeaseHeld(
+  name: string,
+  holderId: string,
+  observedAt: string,
+): boolean {
+  if (!getRefreshLeaseStmt) return false;
+  if (!name.trim() || !holderId.trim() || !Number.isFinite(Date.parse(observedAt))) {
+    return false;
+  }
+  const row = getRefreshLeaseStmt.get(name) as RefreshLeaseRow | undefined;
+  return !!row &&
+    row.holder_id === holderId &&
+    Date.parse(row.expires_at) > Date.parse(observedAt);
+}
+
+function assertActiveRefreshLeaseFence(input: {
+  leaseName: string;
+  leaseHolderId: string;
+  observedAt: string;
+  context: string;
+  attempt?: RefreshOperationAttemptRow;
+  allowSuccessor?: boolean;
+}): RefreshLeaseRow {
+  if (!getRefreshLeaseStmt) {
+    throw new Error('Refresh lease storage is unavailable');
+  }
+  const leaseName = input.leaseName?.trim() ?? '';
+  const leaseHolderId = input.leaseHolderId?.trim() ?? '';
+  const observedAtMs = Date.parse(input.observedAt);
+  if (!leaseName || !leaseHolderId || !Number.isFinite(observedAtMs)) {
+    throw new Error(`Cannot ${input.context} with an invalid lease fence`);
+  }
+  if (input.attempt && leaseName !== input.attempt.lease_name) {
+    throw new Error(
+      `Cannot ${input.context}: lease name does not match the operation attempt`,
+    );
+  }
+  if (
+    input.attempt &&
+    !input.allowSuccessor &&
+    leaseHolderId !== input.attempt.lease_holder_id
+  ) {
+    throw new Error(
+      `Cannot ${input.context}: lease holder does not match the operation fencing identity`,
+    );
+  }
+  const lease = getRefreshLeaseStmt.get(leaseName) as RefreshLeaseRow | undefined;
+  if (
+    !lease ||
+    lease.holder_id !== leaseHolderId ||
+    !Number.isFinite(Date.parse(lease.expires_at)) ||
+    Date.parse(lease.expires_at) <= observedAtMs
+  ) {
+    throw new Error(
+      `Cannot ${input.context}: current unexpired lease holder/fencing identity is not active`,
+    );
+  }
+  if (
+    input.attempt &&
+    input.allowSuccessor &&
+    (
+      leaseHolderId === input.attempt.lease_holder_id ||
+      Date.parse(lease.acquired_at) <= Date.parse(input.attempt.started_at)
+    )
+  ) {
+    throw new Error(
+      `Cannot ${input.context}: abandoned receipt requires a successor lease ` +
+      `acquired after the prior attempt started`,
+    );
+  }
+  return lease;
+}
+
+export function acquireRefreshLease(
+  name: string,
+  holderId: string,
+  acquiredAt: string,
+  ttlMs: number,
+): boolean {
+  if (!acquireRefreshLeaseStmt) throw new Error('Refresh lease storage is unavailable or read-only');
+  if (!name.trim() || !holderId.trim() || !Number.isFinite(Date.parse(acquiredAt)) || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new Error('Refresh lease requires a name, holder, valid acquisition time, and positive TTL');
+  }
+  const expiresAt = new Date(Date.parse(acquiredAt) + ttlMs).toISOString();
+  return Number(acquireRefreshLeaseStmt.run({
+    name,
+    holder_id: holderId,
+    acquired_at: acquiredAt,
+    expires_at: expiresAt,
+  }).changes) === 1;
+}
+
+export function renewRefreshLease(name: string, holderId: string, now: string, ttlMs: number): boolean {
+  if (!renewRefreshLeaseStmt) throw new Error('Refresh lease storage is unavailable or read-only');
+  if (!Number.isFinite(Date.parse(now)) || !Number.isFinite(ttlMs) || ttlMs <= 0) {
+    throw new Error('Refresh lease renewal requires a valid time and positive TTL');
+  }
+  const expiresAt = new Date(Date.parse(now) + ttlMs).toISOString();
+  return Number(renewRefreshLeaseStmt.run({
+    expires_at: expiresAt,
+    name,
+    holder_id: holderId,
+    renewed_at: now,
+  }).changes) === 1;
+}
+
+export function releaseRefreshLease(name: string, holderId: string): boolean {
+  if (!releaseRefreshLeaseStmt) throw new Error('Refresh lease storage is unavailable or read-only');
+  return Number(releaseRefreshLeaseStmt.run(name, holderId).changes) === 1;
+}
+
+export function acquireRenewableRefreshLease(
+  holderLabel = 'manual',
+  options: {
+    name?: string;
+    ttlMs?: number;
+    heartbeatMs?: number;
+    now?: () => string;
+  } = {},
+): {
+  name: string;
+  holderId: string;
+  assertHeld: (stage: string) => void;
+  renew: (stage: string) => void;
+  release: () => boolean;
+} {
+  const name = options.name ?? REFRESH_WRITE_LEASE_NAME;
+  const ttlMs = options.ttlMs ?? REFRESH_WRITE_LEASE_TTL_MS;
+  const heartbeatMs = options.heartbeatMs ?? REFRESH_WRITE_LEASE_HEARTBEAT_MS;
+  const now = options.now ?? (() => new Date().toISOString());
+  const holderId = `${holderLabel}:${process.pid}:${randomUUID()}`;
+  let released = false;
+  let leaseFailure: Error | null = null;
+  if (!acquireRefreshLease(name, holderId, now(), ttlMs)) {
+    throw new Error(`refresh already running in another process: lease "${name}" is held`);
+  }
+  const rememberFailure = (error: unknown): Error => {
+    const normalized = error instanceof Error ? error : new Error(String(error));
+    leaseFailure ??= normalized;
+    return leaseFailure;
+  };
+  const assertHeld = (stage: string): void => {
+    if (released) throw new Error(`refresh lease "${name}" was released before ${stage}`);
+    if (leaseFailure) {
+      throw new Error(
+        `refresh lease "${name}" failed before ${stage}: ${leaseFailure.message}`,
+        { cause: leaseFailure },
+      );
+    }
+    try {
+      if (!renewRefreshLease(name, holderId, now(), ttlMs)) {
+        throw new Error(`refresh lease "${name}" was lost before ${stage}`);
+      }
+    } catch (error) {
+      throw rememberFailure(error);
+    }
+  };
+  const renew = (stage: string): void => {
+    assertHeld(stage);
+  };
+  if (!Number.isFinite(heartbeatMs) || heartbeatMs <= 0) {
+    releaseRefreshLease(name, holderId);
+    throw new Error(`Refresh lease heartbeat must be positive, got ${heartbeatMs}`);
+  }
+  const heartbeat = setInterval(() => {
+    if (released || leaseFailure) return;
+    try {
+      renew('periodic heartbeat');
+    } catch {
+      // The next guarded write reports the latched lease failure.
+    }
+  }, heartbeatMs);
+  heartbeat.unref();
+  return {
+    name,
+    holderId,
+    assertHeld,
+    renew,
+    release(): boolean {
+      if (released) return false;
+      released = true;
+      clearInterval(heartbeat);
+      return releaseRefreshLease(name, holderId);
+    },
+  };
 }
 
 // ---------- upstream comparison snapshots ----------
@@ -3917,6 +27647,18 @@ function nullableTimestamp(value: unknown, label: string): string | null {
   return text;
 }
 
+function canonicalTimestampIdentity(value: string, label: string): string {
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp)) {
+    throw new Error(`${label} must be a valid timestamp`);
+  }
+  return new Date(timestamp).toISOString();
+}
+
+function compareBinaryIdentity(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
 function nullableFiniteNumber(value: unknown, label: string): number | null {
   if (value == null) return null;
   if (typeof value !== 'number' || !Number.isFinite(value)) throw new Error(`${label} must be null or finite number`);
@@ -3969,3 +27711,21 @@ export function comparisonReleases(snapshotId?: number): Array<Record<string, un
     ORDER BY published_at DESC, tag DESC
   `).all() as Array<Record<string, unknown>>;
 }
+
+assertInheritedWriterAuthority(true);
+captureBootstrapCreatedSqliteFamily();
+const databaseInitializationReleaseErrors =
+  releaseDatabaseInitializationResources({ preserveDatabase: true });
+if (databaseInitializationReleaseErrors.length > 0) {
+  const failureCleanupErrors = releaseDatabaseInitializationResources();
+  throw new AggregateError(
+    [...databaseInitializationReleaseErrors, ...failureCleanupErrors],
+    'Database initialization lock release failed',
+  );
+}
+databaseInitializationComplete = true;
+if (deferredInitializationCleanup) {
+  clearImmediate(deferredInitializationCleanup);
+  deferredInitializationCleanup = null;
+}
+startInheritedWriterGuardian();

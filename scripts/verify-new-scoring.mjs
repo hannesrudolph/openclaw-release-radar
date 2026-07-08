@@ -1,16 +1,24 @@
 // Offline validation of the real scoring path against the real DB. This reads
 // existing classifications/evidence only; it does not call GitHub or the LLM.
 import { DatabaseSync } from 'node:sqlite';
-import { verifyScoreAuditPayloadContracts } from './lib/score-audit-contracts.mjs';
+import { existsSync } from 'node:fs';
+import { verifyScoreAuditPayloadContracts } from '../src/lib/scoreAuditContracts.ts';
 
 const args = parseArgs(process.argv.slice(2));
 const check = args.check !== false && args['print-only'] !== true;
+const requestedLimit = args.limit == null ? 10 : positiveIntegerLimit(args.limit);
 const dbPath = process.env.DB_PATH ?? './data/radar.db';
 process.env.RADAR_DB_READ_ONLY = '1';
+if (!existsSync(dbPath)) {
+  throw new Error(`Database not found: ${dbPath}`);
+}
+const { scoreRunWindowOptions } = await import('./lib/score-run-window.mjs');
+const { ReleaseAuditReader } = await import('./lib/release-audit-reader.mjs');
 const db = new DatabaseSync(dbPath, { readOnly: true });
 db.exec('PRAGMA query_only = ON');
 const {
   buildReleaseScoreRun,
+  currentScoreCompletenessDiagnostic,
   GATE_EVIDENCE_SCHEMA_VERSION,
   ISSUE_EVIDENCE_SCHEMA_VERSION,
   PROMPT_VERSION,
@@ -26,34 +34,44 @@ const {
 } = await import('../src/lib/db.ts');
 
 const auditStmt = db.prepare(`SELECT * FROM release_score_audits WHERE release_tag=?`);
-const auditedStableRows = db.prepare(`
+const activeStableRows = db.prepare(`
   SELECT r.*
   FROM releases r
-  LEFT JOIN release_score_audits a ON a.release_tag=r.tag
   WHERE r.prerelease=0
-    AND (
-      r.final_score IS NOT NULL
-      OR r.scored_at IS NOT NULL
-      OR a.release_tag IS NOT NULL
-    )
-  ORDER BY r.published_at IS NULL, r.published_at DESC
+    AND r.catalog_active=1
+  ORDER BY r.catalog_rank IS NULL, r.catalog_rank, r.published_at IS NULL, r.published_at DESC
 `).all();
-const scoredStableCount = Number((db.prepare(`
-  SELECT COUNT(*) AS count
-  FROM releases
-  WHERE prerelease=0 AND final_score IS NOT NULL
-`).get()).count ?? 0);
-const limit = args.all ? scoredStableCount : Number(args.limit ?? 10);
-const releasesToVerify = args.all ? auditedStableRows : undefined;
-const effectiveLimit = args.all ? undefined : limit;
+const scorePersistence = parseJson(
+  db.prepare(`SELECT value FROM meta WHERE key='score_persistence_last_run'`).get()?.value,
+  null,
+);
+const persistedReleaseTagsPresent =
+  scorePersistence != null &&
+  typeof scorePersistence === 'object' &&
+  !Array.isArray(scorePersistence) &&
+  Object.prototype.hasOwnProperty.call(scorePersistence, 'releaseTags');
+const persistedReleaseTags = persistedReleaseTagsPresent && Array.isArray(scorePersistence.releaseTags)
+  ? scorePersistence.releaseTags
+  : null;
+const activeStableTags = activeStableRows.map((row) => row.tag);
+const releasesToVerify = args.all
+  ? activeStableRows
+  : activeStableRows.slice(0, requestedLimit);
 
 const failures = [];
-verifyScoredReleaseCoverage(failures);
-const { scored, recommendedTag, sourceIdentity } = buildReleaseScoreRun({
-  releases: releasesToVerify,
-  releaseLimit: effectiveLimit,
+verifyScoredReleaseCoverage(failures, releasesToVerify);
+if (args.all) verifyScorePublicationIntegrity(failures);
+const {
+  scored: allScored,
+  recommendedTag,
+  sourceIdentity,
+} = buildReleaseScoreRun({
+  ...scoreRunWindowOptions(activeStableRows),
   nowForRelease: (rel) => scoredAtMillis(rel, auditStmt.get(rel.tag), failures),
 });
+verifyGlobalRecommendation(failures, recommendedTag);
+const releaseTagsToVerify = new Set(releasesToVerify.map((release) => release.tag));
+const scored = allScored.filter((result) => releaseTagsToVerify.has(result.rel.tag));
 const rows = scored.map((s) => {
   const audit = auditStmt.get(s.rel.tag);
   const recommended = s.rel.tag === recommendedTag;
@@ -75,43 +93,187 @@ console.log(`\nRecommended: ${recommendedTag}`);
 if (check && failures.length > 0) {
   console.error(`\nScore verification failed with ${failures.length} drift(s):`);
   for (const failure of failures) console.error(`- ${failure}`);
-  process.exit(1);
+  process.exitCode = 1;
+} else if (check) {
+  console.log(`Score verification passed for ${scored.length} release(s).`);
 }
 
-if (check) console.log(`Score verification passed for ${scored.length} release(s).`);
+function verifyScoredReleaseCoverage(failures, releases) {
+  if (args.all) verifyActiveCatalogEquality(failures);
+  if (activeStableRows.length === 0) {
+    failures.push('score verification requires at least one active monitored stable release');
+  }
 
-function verifyScoredReleaseCoverage(failures) {
-  const missingAudits = db.prepare(`
-    SELECT r.tag
-    FROM releases r
-    LEFT JOIN release_score_audits a ON a.release_tag=r.tag
-    WHERE r.prerelease=0
-      AND (r.final_score IS NOT NULL OR r.scored_at IS NOT NULL)
-      AND a.release_tag IS NULL
-    ORDER BY r.published_at DESC
-  `).all();
-  for (const row of missingAudits) failures.push(`${row.tag}: audited stable release is missing release_score_audits row`);
+  for (const release of releases) {
+    const tag = release.tag;
+    const audit = auditStmt.get(tag);
+    if (!audit) {
+      failures.push(`${tag}: audited stable release is missing release_score_audits row`);
+      continue;
+    }
+    if (!isTimestamp(release.scored_at)) {
+      failures.push(`${tag}: active monitored stable release is missing valid scored_at`);
+    }
+    if (!isTimestamp(audit.scored_at)) {
+      failures.push(`${tag}: score audit is missing valid scored_at`);
+    }
+    if (release.scored_at !== audit.scored_at) {
+      failures.push(
+        `${tag}: release scored_at (${release.scored_at}) must match audit scored_at (${audit.scored_at})`,
+      );
+    }
+    if (!['wait', 'skip-cve', 'skip-hotfix', 'eligible'].includes(release.state)) {
+      failures.push(`${tag}: active monitored stable release has invalid disposition ${format(release.state)}`);
+    }
+    if (release.state !== audit.status) {
+      failures.push(
+        `${tag}: release disposition (${release.state}) must match audit status (${audit.status})`,
+      );
+    }
+    if (release.final_score == null && release.state !== 'wait') {
+      failures.push(
+        `${tag}: null final_score is only valid for an audited wait disposition`,
+      );
+    }
+    if (release.final_score != null && release.state === 'wait') {
+      failures.push(`${tag}: wait disposition must persist a null final_score`);
+    }
+    if (!sameValue(release.final_score, audit.final_score)) {
+      failures.push(
+        `${tag}: release final_score (${format(release.final_score)}) must match ` +
+        `audit final_score (${format(audit.final_score)})`,
+      );
+    }
+    const input = parseJson(audit.input_json, null);
+    if (
+      !Number.isInteger(input?.rawIssueCount) ||
+      input.rawIssueCount < 0 ||
+      !Number.isInteger(input?.classifiedIssueCount) ||
+      input.classifiedIssueCount < 0 ||
+      input.classifiedIssueCount !== input.rawIssueCount
+    ) {
+      failures.push(
+        `${tag}: scored release requires complete classification coverage ` +
+        `(${input?.classifiedIssueCount ?? 'missing'}/${input?.rawIssueCount ?? 'missing'})`,
+      );
+    }
+  }
 
+  if (!args.all) return;
   const orphanAudits = db.prepare(`
     SELECT a.release_tag
     FROM release_score_audits a
     LEFT JOIN releases r ON r.tag=a.release_tag
-    WHERE r.tag IS NULL OR r.prerelease != 0
+    WHERE r.tag IS NULL
+      OR (r.catalog_active=1 AND r.prerelease != 0)
     ORDER BY a.release_tag
   `).all();
   for (const row of orphanAudits) failures.push(`${row.release_tag}: score audit points at missing or non-stable release`);
+}
 
-  const recommended = db.prepare(`
+function verifyActiveCatalogEquality(failures) {
+  if (!persistedReleaseTagsPresent) {
+    failures.push('score persistence releaseTags must be present for --all verification');
+  } else if (!Array.isArray(scorePersistence?.releaseTags)) {
+    failures.push('score persistence releaseTags must be an array when present');
+  } else if (
+    persistedReleaseTags.some((tag) => typeof tag !== 'string' || tag.length === 0) ||
+    new Set(persistedReleaseTags).size !== persistedReleaseTags.length
+  ) {
+    failures.push('score persistence releaseTags must contain unique non-empty strings');
+  } else {
+    expectExactTagSet(
+      failures,
+      'score persistence releaseTags',
+      persistedReleaseTags,
+      activeStableTags,
+    );
+  }
+
+  const currentAuditTags = db.prepare(`
+    SELECT release_tag
+    FROM release_score_audits
+    ORDER BY release_tag
+  `).all().map((row) => row.release_tag);
+  expectExactTagSet(
+    failures,
+    'current score audits',
+    currentAuditTags,
+    activeStableTags,
+  );
+}
+
+function verifyScorePublicationIntegrity(failures) {
+  try {
+    const publication = new ReleaseAuditReader(db).scorePublicationIntegrity();
+    for (const failure of publication.failures.filter(isScoreAuditLineageFailure)) {
+      failures.push(`score publication: ${failure}`);
+    }
+  } catch (error) {
+    failures.push(
+      `score publication: sealed audit verification failed: ` +
+      `${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+}
+
+function isScoreAuditLineageFailure(failure) {
+  return /^(?:score history|score authority|score persistence|current audit|current history)\b/.test(
+    failure,
+  );
+}
+
+function verifyGlobalRecommendation(failures, recommendedTag) {
+  const persistedRecommendedTags = db.prepare(`
     SELECT tag
     FROM releases
     WHERE prerelease=0
-      AND final_score IS NOT NULL
+      AND catalog_active=1
       AND recommended=1
-    ORDER BY published_at DESC
-  `).all();
-  if (scoredStableCount > 0 && recommended.length !== 1) {
-    failures.push(`expected exactly one recommended scored stable release, found ${recommended.length}`);
+    ORDER BY tag
+  `).all().map((row) => row.tag);
+  const expectedRecommendedTags = recommendedTag == null ? [] : [recommendedTag];
+  if (!sameTagSet(persistedRecommendedTags, expectedRecommendedTags)) {
+    failures.push(
+      `persisted global recommendation (${formatTagList(persistedRecommendedTags)}) must match ` +
+      `the full active-catalog recommendation (${formatTagList(expectedRecommendedTags)})`,
+    );
   }
+  if (
+    scorePersistence &&
+    typeof scorePersistence === 'object' &&
+    !Array.isArray(scorePersistence) &&
+    Object.prototype.hasOwnProperty.call(scorePersistence, 'recommendedTag') &&
+    scorePersistence.recommendedTag !== recommendedTag
+  ) {
+    failures.push(
+      `score persistence recommendedTag (${format(scorePersistence.recommendedTag)}) must match ` +
+      `the full active-catalog recommendation (${format(recommendedTag)})`,
+    );
+  }
+}
+
+function expectExactTagSet(failures, label, actual, expected) {
+  if (sameTagSet(actual, expected)) return;
+  const actualTags = new Set(actual);
+  const expectedTags = new Set(expected);
+  const missing = expected.filter((tag) => !actualTags.has(tag));
+  const extra = actual.filter((tag) => !expectedTags.has(tag));
+  failures.push(
+    `${label} must exactly match the active stable catalog ` +
+    `(missing: ${formatTagList(missing)}; extra: ${formatTagList(extra)})`,
+  );
+}
+
+function sameTagSet(actual, expected) {
+  return actual.length === expected.length &&
+    new Set(actual).size === actual.length &&
+    new Set(expected).size === expected.length &&
+    actual.every((tag) => expected.includes(tag));
+}
+
+function formatTagList(tags) {
+  return tags.length > 0 ? tags.join(', ') : 'none';
 }
 
 function comparePersisted({ failures, result, audit, recommended, sourceIdentity }) {
@@ -139,6 +301,10 @@ function comparePersisted({ failures, result, audit, recommended, sourceIdentity
   if (input.rawIssueCount !== input.classifiedIssueCount) {
     failures.push(`${tag}: scored release requires complete classification coverage (${input.classifiedIssueCount}/${input.rawIssueCount})`);
   }
+  failures.push(...currentScoreCompletenessDiagnostic({
+    tag,
+    analysisCompleteness: result.analysisCompleteness,
+  }).problems);
   const closureProofFailure = formatReleaseClosureProofIntegrityFailure(releaseClosureProofIntegrity(tag, 3));
   if (closureProofFailure) failures.push(closureProofFailure);
   const reachabilityFailure = formatReleasePrReachabilityIntegrityFailure(releasePrReachabilityIntegrity(tag, 3));
@@ -157,6 +323,7 @@ function comparePersisted({ failures, result, audit, recommended, sourceIdentity
   const components = parseJson(audit.components_json, null);
   failures.push(...verifyScoreAuditPayloadContracts({
     tag,
+    scoredAt: audit.scored_at,
     input: persistedInput,
     components,
     issueEvidence: persistedIssueEvidence,
@@ -244,6 +411,10 @@ function parseJson(value, fallback) {
   }
 }
 
+function isTimestamp(value) {
+  return typeof value === 'string' && Number.isFinite(Date.parse(value));
+}
+
 function normalizeJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -256,6 +427,14 @@ function format(value) {
   return typeof value === 'string' ? JSON.stringify(value) : JSON.stringify(value);
 }
 
+function positiveIntegerLimit(value) {
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed <= 0) {
+    throw new Error(`--limit must be a positive integer, received ${format(value)}`);
+  }
+  return parsed;
+}
+
 function parseArgs(argv) {
   const parsed = {};
   for (let i = 0; i < argv.length; i++) {
@@ -264,7 +443,13 @@ function parseArgs(argv) {
     else if (arg === '--no-check') parsed.check = false;
     else if (arg === '--print-only') parsed['print-only'] = true;
     else if (arg === '--all') parsed.all = true;
-    else if (arg === '--limit') parsed.limit = argv[++i];
+    else if (arg === '--limit') {
+      const value = argv[++i];
+      if (value == null || value.startsWith('--')) {
+        throw new Error('--limit must be followed by a positive integer');
+      }
+      parsed.limit = value;
+    }
     else if (arg.startsWith('--limit=')) parsed.limit = arg.slice('--limit='.length);
   }
   return parsed;

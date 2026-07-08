@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodically reconcile Release Radar deployment transactions
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=5min
+Persistent=true
+AccuracySec=30s
+Unit=openclaw-release-radar-reconcile.service
+
+[Install]
+WantedBy=timers.target

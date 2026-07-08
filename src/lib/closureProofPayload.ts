@@ -10,7 +10,8 @@ import {
   issueLabelEventCount,
   issueLabelSnapshotCountAt,
   labelsForIssueAt,
-  updateReleaseScoreAuditClosureProofGateEvidence,
+  releaseFixCreditDecision,
+  type ReleaseFixCreditDecision,
 } from './db';
 import { releaseLabelCutoff } from './labelCutoff';
 import {
@@ -28,9 +29,34 @@ import {
   type ClosureRiskDisposition,
 } from './closureProofTaxonomy';
 import type { IssueClassification } from './llm';
+import { aggregateClosureRisk } from './closureRiskAggregation';
+import { scoringLabelInfoAtCutoff } from './scoringLabelAuthority';
 export { CLOSURE_RISK_DISPOSITIONS, closureRiskDisposition } from './closureProofTaxonomy';
 export const CLOSURE_PROOF_SCHEMA_VERSION = 1;
 export const RELEASE_FIX_CREDIT_SCHEMA_VERSION = 1;
+export const AFFIRMATIVE_CLOSURE_RISK_DISPOSITIONS = [
+  'known_not_in_release',
+  'open_canonical_risk',
+  'unsupported_closure_claim',
+] as const;
+
+export interface ClosureProofPayloadOptions {
+  predecessorTag: string | null;
+  fixCreditDecisions?: ReleaseFixCreditDecision[];
+  riskDispositionOverrides?: ReadonlyMap<number, ClosureRiskDisposition>;
+}
+
+export interface MissingClosureEvidenceDiagnostic {
+  issueNumber: number;
+  status: string;
+  title: string;
+  sentiment: string;
+  severity: string;
+  functionality: string;
+  scope: string;
+  affectedUsers: string;
+  potentialRiskWeight: number;
+}
 
 const SEVERITY_RISK_WEIGHT: Record<string, number> = {
   critical: 4,
@@ -59,27 +85,57 @@ const USERS_RISK_WEIGHT: Record<string, number> = {
   unknown: 0.65,
 };
 
-export function closureProofPayload(tag: string, labelCutoffOverride?: string | null) {
+export function closureProofPayload(
+  tag: string,
+  labelCutoffOverride?: string | null,
+  options?: ClosureProofPayloadOptions,
+) {
   const summaryRows = closureProofSummary(tag);
-  if (!summaryRows.length) return emptyClosureProofPayload();
+  if (!summaryRows.length) return emptyClosureProofPayload(tag, options);
   const release = getRelease(tag);
   const audit = getReleaseScoreAudit(tag);
   const labelCutoff = labelCutoffOverride !== undefined
     ? labelCutoffOverride
     : release ? releaseLabelCutoff(release, audit?.scored_at ?? null) : null;
   const byStatus = Object.fromEntries(summaryRows.map((row) => [row.status, row.count]));
-  const byRiskDisposition = countByRiskDisposition(summaryRows);
+  const closureRows = closureProofRows(tag);
+  const byRiskDisposition = countByRiskDisposition(
+    closureRows,
+    options?.riskDispositionOverrides,
+  );
   const riskRows = closureProofRiskRows(tag);
-  const weightedRisk = weightedRiskForRows(riskRows, labelCutoff);
-  const neutralAuditSignals = neutralAuditSignalsForRows(riskRows, labelCutoff);
-  const notCreditedCount = summaryRows
-    .filter((row) => row.status !== 'fixed_in_release')
-    .reduce((sum, row) => sum + row.count, 0);
-  const creditedCount = byStatus.fixed_in_release ?? 0;
-  const analyzedClosedCount = creditedCount + notCreditedCount;
+  const weightedRisk = weightedRiskForRows(
+    riskRows,
+    labelCutoff,
+    options?.riskDispositionOverrides,
+  );
+  const neutralAuditSignals = neutralAuditSignalsForRows(
+    riskRows,
+    labelCutoff,
+    options?.riskDispositionOverrides,
+  );
+  const containedFixedCount = byStatus.fixed_in_release ?? 0;
+  const fixedRows = closureRows
+    .filter((row) => row.status === 'fixed_in_release')
+    .sort((left, right) => left.issue_number - right.issue_number);
+  const fixCreditDecisions = options?.fixCreditDecisions ??
+    fixedRows.map((row) => releaseFixCreditDecision(
+      row.issue_number,
+      tag,
+      options?.predecessorTag,
+    ));
+  const fixCreditDecisionCounts = countFixCreditDecisions(fixCreditDecisions);
+  const creditedCount = fixCreditDecisionCounts.credited;
+  const analyzedClosedCount = summaryRows.reduce((sum, row) => sum + row.count, 0);
+  const notCreditedCount = analyzedClosedCount - creditedCount;
+  const containedNotCreditedCount = containedFixedCount - creditedCount;
   const exampleCandidateLimit = Math.max(30, analyzedClosedCount);
   const allExamples = closureProofExamples(tag, exampleCandidateLimit)
-    .map((row) => closureProofAuditItemFromRow(row, labelCutoff))
+    .map((row) => closureProofAuditItemFromRow(
+      row,
+      labelCutoff,
+      options?.riskDispositionOverrides?.get(row.issue_number),
+    ))
     .sort(compareClosureProofExamples);
   const neutralAuditExamples = allExamples
     .filter((example) => isNeutralAuditExample(example))
@@ -88,7 +144,9 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
   const examples = allExamples.slice(0, 30);
   const examplesByStatus = representativeExamplesByStatus(allExamples, summaryRows);
   const riskSummary = {
-    creditedReleaseFixCount: byRiskDisposition.credited_release_fix ?? 0,
+    creditedReleaseFixCount: creditedCount,
+    containedReleaseFixCount: containedFixedCount,
+    containedWithoutFirstCreditCount: containedNotCreditedCount,
     resolvedByCanonicalReleaseFixCount: byRiskDisposition.resolved_by_canonical_release_fix ?? 0,
     resolvedByReleaseFixProofCount: byRiskDisposition.resolved_by_release_fix_proof ?? 0,
     knownNotInReleaseCount: byRiskDisposition.known_not_in_release ?? 0,
@@ -99,20 +157,22 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
     neutralBugShapedCount: neutralAuditSignals.bugShaped,
     missingEvidenceCount: byRiskDisposition.missing_evidence ?? 0,
   };
-  const unresolvedForReleaseCount = riskSummary.knownNotInReleaseCount +
-    riskSummary.openCanonicalRiskCount +
-    riskSummary.unsupportedClosureClaimCount +
-    riskSummary.missingEvidenceCount;
   return {
     schemaVersion: CLOSURE_PROOF_SCHEMA_VERSION,
     creditedCount,
     notCreditedCount,
     analyzedClosedCount,
+    containedFixedCount,
+    containedNotCreditedCount,
+    targetTag: tag,
+    predecessorTag: options?.predecessorTag ?? null,
+    fixCreditDecisionCounts,
+    fixCreditDecisions,
     byStatus,
     byRiskDisposition,
     riskSummary: {
       ...riskSummary,
-      unresolvedForReleaseCount,
+      unresolvedForReleaseCount: weightedRisk.unresolvedForReleaseCount,
       unresolvedWeightedRisk: roundMetric(weightedRisk.unresolvedWeightedRisk),
       weightedRiskByDisposition: roundRiskMap(weightedRisk.byDisposition),
     },
@@ -122,8 +182,11 @@ export function closureProofPayload(tag: string, labelCutoffOverride?: string | 
   };
 }
 
-export function emptyClosureProofPayload() {
-  return {
+export function emptyClosureProofPayload(
+  tag?: string,
+  options?: ClosureProofPayloadOptions,
+) {
+  const payload = {
     schemaVersion: CLOSURE_PROOF_SCHEMA_VERSION,
     creditedCount: 0,
     notCreditedCount: 0,
@@ -149,6 +212,32 @@ export function emptyClosureProofPayload() {
     examplesByStatus: {},
     examples: [],
   };
+  if (tag === undefined || !options?.predecessorTag) return payload;
+  return {
+    ...payload,
+    containedFixedCount: 0,
+    containedNotCreditedCount: 0,
+    targetTag: tag ?? null,
+    predecessorTag: options?.predecessorTag ?? null,
+    fixCreditDecisionCounts: { credited: 0, withheld: 0, invalid: 0 },
+    fixCreditDecisions: [],
+    riskSummary: {
+      ...payload.riskSummary,
+      containedReleaseFixCount: 0,
+      containedWithoutFirstCreditCount: 0,
+    },
+  };
+}
+
+function countFixCreditDecisions(decisions: ReleaseFixCreditDecision[]): {
+  credited: number;
+  withheld: number;
+  invalid: number;
+} {
+  return decisions.reduce((counts, decision) => {
+    counts[decision.status]++;
+    return counts;
+  }, { credited: 0, withheld: 0, invalid: 0 });
 }
 
 export function closureProofAuditRows(tag: string, labelCutoffOverride?: string | null) {
@@ -162,7 +251,11 @@ export function closureProofAuditRows(tag: string, labelCutoffOverride?: string 
     .sort(compareClosureProofExamples);
 }
 
-function closureProofAuditItemFromRow(row: ClosureProofJoinedRow, labelCutoff: string | null) {
+function closureProofAuditItemFromRow(
+  row: ClosureProofJoinedRow,
+  labelCutoff: string | null,
+  dispositionOverride?: ClosureRiskDisposition,
+) {
   const classification = effectiveClosureClassification(row, labelCutoff);
   const effectiveRiskRow = classification
     ? {
@@ -191,8 +284,10 @@ function closureProofAuditItemFromRow(row: ClosureProofJoinedRow, labelCutoff: s
     rawClassification: classification?.rawClassification ?? null,
     classification: classification?.classification ?? null,
     classificationDiff: classification?.classificationDiff ?? {},
-    riskWeight: roundMetric(closureRiskWeightForRow(effectiveRiskRow)),
-    riskDisposition: closureRiskDisposition(row.status),
+    riskWeight: roundMetric(
+      closureRiskWeightForRow(effectiveRiskRow, dispositionOverride),
+    ),
+    riskDisposition: dispositionOverride ?? closureRiskDisposition(row.status),
     evidence: parseJson(row.evidence_json, {}),
   };
 }
@@ -343,29 +438,38 @@ function neutralAuditSeverityRank(severity: unknown): number {
 
 export function enrichGateEvidenceWithClosureProof(tag: string, gateEvidence: any, closureProof = closureProofPayload(tag)) {
   if (gateEvidence) {
-    const payload = closureProof ?? emptyClosureProofPayload();
+    const payload: any = closureProof ?? emptyClosureProofPayload();
     gateEvidence.fixProvenance ??= {};
     gateEvidence.fixProvenance.closureProof = payload;
-    gateEvidence.fixProvenance.releaseFixCredit = {
+    const releaseFixCredit: Record<string, unknown> = {
       schemaVersion: RELEASE_FIX_CREDIT_SCHEMA_VERSION,
       countedClosedCount: payload.creditedCount,
       notCountedClosedCount: payload.notCreditedCount,
       analyzedClosedCount: payload.analyzedClosedCount,
     };
+    if (Array.isArray(payload.fixCreditDecisions)) {
+      Object.assign(releaseFixCredit, {
+        targetTag: payload.targetTag ?? tag,
+        predecessorTag: payload.predecessorTag ?? null,
+        containedFixedCount: payload.containedFixedCount ?? 0,
+        containedNotCreditedCount: payload.containedNotCreditedCount ?? 0,
+        decisionCounts: payload.fixCreditDecisionCounts ?? {
+          credited: 0,
+          withheld: 0,
+          invalid: 0,
+        },
+        decisions: payload.fixCreditDecisions,
+      });
+    }
+    gateEvidence.fixProvenance.releaseFixCredit = releaseFixCredit;
   }
   return gateEvidence;
 }
 
-export function persistClosureProofInScoreAudit(tag: string): boolean {
-  const audit = getReleaseScoreAudit(tag);
-  if (!audit) return false;
-  const gateEvidence = parseJson(audit.gate_evidence_json, null);
-  if (!gateEvidence) throw new Error(`Release ${tag} score audit gate_evidence_json is malformed; refusing to persist closure proof payload`);
-  const release = getRelease(tag);
-  const labelCutoff = release ? releaseLabelCutoff(release, audit.scored_at) : null;
-  const enriched = enrichGateEvidenceWithClosureProof(tag, gateEvidence, closureProofPayload(tag, labelCutoff));
-  updateReleaseScoreAuditClosureProofGateEvidence(tag, JSON.stringify(enriched));
-  return true;
+export function persistClosureProofInScoreAudit(tag: string): never {
+  throw new Error(
+    `Direct closure-proof patching is disabled for ${tag}; rebuild and seal the full score run instead`,
+  );
 }
 
 function parseJson<T>(json: string | null | undefined, fallback: T): T {
@@ -378,12 +482,14 @@ function parseJson<T>(json: string | null | undefined, fallback: T): T {
 }
 
 function countByRiskDisposition(
-  rows: Array<{ status: string; count: number }>,
+  rows: Array<{ issue_number: number; status: string }>,
+  overrides?: ReadonlyMap<number, ClosureRiskDisposition>,
 ): Partial<Record<ClosureRiskDisposition, number>> {
   const counts: Partial<Record<ClosureRiskDisposition, number>> = {};
   for (const row of rows) {
-    const disposition = closureRiskDisposition(row.status);
-    counts[disposition] = (counts[disposition] ?? 0) + row.count;
+    const disposition =
+      overrides?.get(row.issue_number) ?? closureRiskDisposition(row.status);
+    counts[disposition] = (counts[disposition] ?? 0) + 1;
   }
   return counts;
 }
@@ -392,7 +498,7 @@ type ClosureRiskWeightRow = Pick<ClosureProofRiskRow,
   'status' | 'sentiment' | 'severity' | 'scope' | 'functionality' | 'affected_users'
 >;
 
-type ClosureRiskSourceRow = ClosureRiskWeightRow & {
+export type ClosureRiskSourceRow = ClosureRiskWeightRow & {
   issue_number: number;
   title: string;
   labels: string;
@@ -404,49 +510,123 @@ type ClosureRiskSourceRow = ClosureRiskWeightRow & {
   rationale: string | null;
 };
 
-export function closureRiskWeightForRow(row: ClosureRiskWeightRow): number {
-  const disposition = closureRiskDisposition(row.status);
+export function closureRiskWeightForRow(
+  row: ClosureRiskWeightRow,
+  dispositionOverride?: ClosureRiskDisposition,
+): number {
+  const disposition = dispositionOverride ?? closureRiskDisposition(row.status);
+  if (!isAffirmativeClosureRiskDisposition(disposition)) return 0;
   const dispositionWeight = CLOSURE_RISK_DISPOSITION_WEIGHT[disposition] ?? 0;
   if (dispositionWeight <= 0) return 0;
+  return dispositionWeight * closureRiskClassificationWeightForRow(row);
+}
+
+export function isAffirmativeClosureRiskDisposition(
+  disposition: string,
+): disposition is typeof AFFIRMATIVE_CLOSURE_RISK_DISPOSITIONS[number] {
+  return (AFFIRMATIVE_CLOSURE_RISK_DISPOSITIONS as readonly string[]).includes(disposition);
+}
+
+export function closureRiskClassificationWeightForRow(row: ClosureRiskWeightRow): number {
   if (row.sentiment !== 'negative') return 0;
   const severity = SEVERITY_RISK_WEIGHT[row.severity ?? ''] ?? 0;
   const functionality = FUNCTIONALITY_RISK_WEIGHT[row.functionality ?? ''] ?? 0;
   if (severity <= 0 || functionality <= 0) return 0;
-  return dispositionWeight *
-    severity *
+  return severity *
     functionality *
     (SCOPE_RISK_WEIGHT[row.scope ?? ''] ?? 1) *
     (USERS_RISK_WEIGHT[row.affected_users ?? 'unknown'] ?? USERS_RISK_WEIGHT.unknown);
 }
 
-function weightedRiskForRows(rows: ClosureProofRiskRow[], labelCutoff: string | null): {
+export function scoreAffectingMissingEvidenceClosureRows(
+  tag: string,
+  labelCutoffOverride?: string | null,
+): MissingClosureEvidenceDiagnostic[] {
+  const release = getRelease(tag);
+  const audit = getReleaseScoreAudit(tag);
+  const labelCutoff = labelCutoffOverride !== undefined
+    ? labelCutoffOverride
+    : release ? releaseLabelCutoff(release, audit?.scored_at ?? null) : null;
+  return closureProofRiskRows(tag)
+    .filter((row) => closureRiskDisposition(row.status) === 'missing_evidence')
+    .map((row) => {
+      const effective = effectiveClosureRiskRow(row, labelCutoff);
+      return {
+        issueNumber: row.issue_number,
+        status: row.status,
+        title: row.title,
+        sentiment: effective.sentiment ?? '',
+        severity: effective.severity ?? '',
+        functionality: effective.functionality ?? '',
+        scope: effective.scope ?? '',
+        affectedUsers: effective.affected_users ?? '',
+        potentialRiskWeight:
+          closureRiskClassificationWeightForRow(effective) * Number(row.count ?? 0),
+      };
+    })
+    .filter((row) => row.potentialRiskWeight > 0)
+    .map((row) => ({
+      ...row,
+      potentialRiskWeight: roundMetric(row.potentialRiskWeight),
+    }))
+    .sort((left, right) =>
+      left.issueNumber - right.issueNumber ||
+      left.status.localeCompare(right.status)
+    );
+}
+
+function weightedRiskForRows(
+  rows: ClosureProofRiskRow[],
+  labelCutoff: string | null,
+  overrides?: ReadonlyMap<number, ClosureRiskDisposition>,
+): {
+  unresolvedForReleaseCount: number;
   unresolvedWeightedRisk: number;
   byDisposition: Partial<Record<ClosureRiskDisposition, number>>;
 } {
-  const byDisposition: Partial<Record<ClosureRiskDisposition, number>> = {};
-  for (const row of rows) {
-    const disposition = closureRiskDisposition(row.status);
+  const aggregated = aggregateClosureRisk(rows.map((row) => {
+    const disposition =
+      overrides?.get(row.issue_number) ?? closureRiskDisposition(row.status);
     const effective = effectiveClosureRiskRow(row, labelCutoff);
-    const weight = closureRiskWeightForRow(effective) * Number(row.count ?? 0);
-    if (weight <= 0) continue;
-    byDisposition[disposition] = (byDisposition[disposition] ?? 0) + weight;
-  }
+    return {
+      issueNumber: row.issue_number,
+      disposition,
+      weight:
+        closureRiskWeightForRow(effective, disposition) *
+        Number(row.count ?? 0),
+      duplicateCluster: row.duplicate_cluster,
+      canonicalIssueNumber: canonicalIssueNumberForRisk(row.evidence_json),
+    };
+  }));
   return {
-    unresolvedWeightedRisk: Object.values(byDisposition).reduce((sum, value) => sum + Number(value ?? 0), 0),
-    byDisposition,
+    unresolvedForReleaseCount: aggregated.unresolvedForReleaseCount,
+    unresolvedWeightedRisk: aggregated.unresolvedWeightedRisk,
+    byDisposition: aggregated.weightedRiskByDisposition as Partial<Record<ClosureRiskDisposition, number>>,
   };
+}
+
+function canonicalIssueNumberForRisk(evidenceJson: string | null | undefined): number | null {
+  const evidence = parseJson<Record<string, any>>(evidenceJson, {});
+  const number = Number(evidence?.canonicalResolution?.terminalIssue?.number);
+  return Number.isInteger(number) && number > 0 ? number : null;
 }
 
 const BUG_SHAPED_TITLE_RE = /\b(bug|fail(?:s|ed|ure)?|error|crash|stuck|regression|broken|lost|timeout|leak|silently|dropped|corrupt|deadlock|stall)\b/i;
 
-function neutralAuditSignalsForRows(rows: ClosureProofRiskRow[], labelCutoff: string | null): {
+function neutralAuditSignalsForRows(
+  rows: ClosureProofRiskRow[],
+  labelCutoff: string | null,
+  overrides?: ReadonlyMap<number, ClosureRiskDisposition>,
+): {
   highImpact: number;
   bugShaped: number;
 } {
   let highImpact = 0;
   let bugShaped = 0;
   for (const row of rows) {
-    if (closureRiskDisposition(row.status) !== 'neutral_or_non_actionable') continue;
+    const disposition =
+      overrides?.get(row.issue_number) ?? closureRiskDisposition(row.status);
+    if (disposition !== 'neutral_or_non_actionable') continue;
     const effective = effectiveClosureRiskRow(row, labelCutoff);
     if (effective.sentiment !== 'neutral') continue;
     if (effective.severity === 'high' || effective.severity === 'critical') {
@@ -472,7 +652,11 @@ function effectiveClosureRiskRow(row: ClosureRiskSourceRow, labelCutoff: string 
   };
 }
 
-function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: string | null): {
+export function effectiveClosureClassification(
+  row: ClosureRiskSourceRow,
+  labelCutoff: string | null,
+  labelsAtCutoffOverride?: string[],
+): {
   labels: string[];
   rawClassification: IssueClassification;
   classification: IssueClassification;
@@ -482,11 +666,21 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
   if (!row.sentiment || !row.severity || !row.scope || !row.functionality || !row.affected_users) {
     return null;
   }
-  const currentLabels = parseJson<string[]>(row.labels, []);
-  const labels = labelsForIssueAt(row.issue_number, currentLabels, labelCutoff, {
-    useFallbackWhenNoEvents: labelCutoff == null,
-    useSnapshotWhenNoEvents: labelCutoff != null,
-  });
+  const labelsAtCutoff = labelsAtCutoffOverride ?? labelsForIssueAt(
+    row.issue_number,
+    parseJson<string[]>(row.labels, []),
+    labelCutoff,
+    {
+      useFallbackWhenNoEvents: labelCutoff == null,
+      useSnapshotWhenNoEvents: labelCutoff != null,
+    },
+  );
+  const labelInfo = scoringLabelInfoAtCutoff(
+    row.issue_number,
+    labelsAtCutoff,
+    labelCutoff,
+  );
+  const labels = labelInfo.labels;
   const timelineEventCount = issueLabelEventCount(row.issue_number);
   const snapshotCount = issueLabelSnapshotCountAt(row.issue_number, labelCutoff);
   const rawClassification = rowToClassification(row);
@@ -495,12 +689,15 @@ function effectiveClosureClassification(row: ClosureRiskSourceRow, labelCutoff: 
       applyLabelOverrides(
         applyTitleFunctionalityHint(rawClassification, row.title ?? ''),
         labels,
+        labelInfo,
       ),
       row.title ?? '',
       labels,
+      labelInfo,
     ),
     row.title ?? '',
     labels,
+    labelInfo,
   );
   return {
     labels,

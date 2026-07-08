@@ -5,12 +5,18 @@ import { db, listReleasesDb } from '../src/lib/db.ts';
 import { computeHoursToNextStable } from '../src/lib/releaseNotes.ts';
 import { buildReleaseScoreRun, persistReleaseScoreRun } from '../src/lib/releaseScoring.ts';
 import { assertCleanIngestionMetadataBeforeScore } from './lib/score-ingestion-guard.mjs';
+import { scoreRunWindowOptions } from './lib/score-run-window.mjs';
 
 const initialMonitored = listReleasesDb(10);
 assertCleanIngestionMetadataBeforeScore(initialMonitored);
 
 const setStableGap = db.prepare(`UPDATE releases SET hours_to_next_stable=? WHERE tag=?`);
-const allReleases = db.prepare(`SELECT tag, published_at, prerelease FROM releases ORDER BY published_at DESC`)
+const allReleases = db.prepare(`
+  SELECT tag, published_at, prerelease
+  FROM releases
+  WHERE catalog_active=1
+  ORDER BY published_at DESC, tag
+`)
   .all()
   .map((row) => ({
     tag: row.tag,
@@ -25,9 +31,7 @@ for (const release of allReleases) {
 }
 
 const monitored = listReleasesDb(10);
-const scoreRun = buildReleaseScoreRun({
-  releases: monitored,
-});
+const scoreRun = buildReleaseScoreRun(scoreRunWindowOptions(monitored));
 persistReleaseScoreRun(scoreRun, { source: 'populate-db' });
 
 console.table(scoreRun.scored.map((result) => ({

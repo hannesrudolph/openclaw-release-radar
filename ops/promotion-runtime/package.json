@@ -1,0 +1,12 @@
+{
+  "name": "openclaw-release-radar-promotion-runtime",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "promote:quality-db": "sh scripts/run-promote-quality-db.sh"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5",
+    "tsx": "^4.19.1"
+  }
+}

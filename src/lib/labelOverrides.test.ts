@@ -1,7 +1,16 @@
 import { describe, it } from 'node:test';
 import { strict as assert } from 'node:assert';
 import { applyClosureRiskSentimentHint, applyLabelOverrides, applyTitleIssueShapeHint } from './labelOverrides.ts';
+import {
+  LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+  repositoryPermissionObservationRowHash,
+  type RepositoryPermissionObservation,
+} from './labelAuthority.ts';
 import type { IssueClassification } from './llm.ts';
+import {
+  buildScoreAuthorityReference,
+  buildScoreAuthorityResolution,
+} from './scoreAuthorityResolution.ts';
 
 // Baseline classification — represents typical LLM output: "medium, moderate, integration".
 function mk(overrides: Partial<IssueClassification> = {}): IssueClassification {
@@ -19,6 +28,67 @@ function mk(overrides: Partial<IssueClassification> = {}): IssueClassification {
     ...overrides,
   };
 }
+
+function labelAuthorityReference(label: string, index: number) {
+  const eventId = `label-event-${index}-${label}`;
+  const eventTime = '2026-06-11T12:00:00Z';
+  const actorNodeId = 'U_human-maintainer';
+  const repositoryNodeId = 'R_label-overrides-test';
+  const permissionBase: RepositoryPermissionObservation = {
+    kind: 'repository_permission_observation',
+    evidenceId: `permission-${eventId}`,
+    sourceIdentity: `permission:${eventId}`,
+    repositoryNodeId,
+    repository: 'owner/repo',
+    actorNodeId,
+    actorLogin: 'human-maintainer',
+    actorType: 'User',
+    actorAssociation: 'MEMBER',
+    permission: 'maintain',
+    observedAt: '2026-06-11T11:00:00Z',
+    runHash: 'a'.repeat(64),
+  };
+  const permission = {
+    ...permissionBase,
+    rowHash: repositoryPermissionObservationRowHash(permissionBase),
+  };
+  const resolution = buildScoreAuthorityResolution({
+    schemaVersion: LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
+    event: {
+      sourceIdentity: `label-event:${eventId}`,
+      repositoryNodeId,
+      repository: 'owner/repo',
+      issueNumber: index + 1,
+      eventId,
+      action: 'labeled',
+      label,
+      eventTime,
+      actor: {
+        nodeId: actorNodeId,
+        login: 'human-maintainer',
+        type: 'User',
+        association: 'MEMBER',
+      },
+    },
+    permissionObservations: [permission],
+    approvedRosterEntries: [],
+  });
+  return buildScoreAuthorityReference('label_event', eventId, resolution);
+}
+
+const authorizedLabelAuthority = (...labels: string[]) => ({
+  labelActors: Object.fromEntries(labels.map((label) => [label, 'human-maintainer'])),
+  authorizedScoringLabels: labels,
+  authorityReferences: Object.fromEntries(
+    labels.map((label, index) => [label, labelAuthorityReference(label, index)]),
+  ),
+});
+
+const applyAuthorizedLabelOverrides = (
+  classification: IssueClassification,
+  labels: string[],
+): IssueClassification =>
+  applyLabelOverrides(classification, labels, authorizedLabelAuthority(...labels));
 
 describe('applyLabelOverrides', () => {
   // ── Identity / noise ───────────────────────────────────────────────────
@@ -48,48 +118,51 @@ describe('applyLabelOverrides', () => {
 
   // ── Sentiment overrides (factual state) ────────────────────────────────
   it('enhancement → sentiment neutral', () => {
-    const out = applyLabelOverrides(mk(), ['enhancement']);
+    const out = applyAuthorizedLabelOverrides(mk(), ['enhancement']);
     assert.equal(out.sentiment, 'neutral');
   });
 
   it('stale → sentiment neutral + confidence ≤ 0.5', () => {
-    const out = applyLabelOverrides(mk({ confidence: 0.9 }), ['stale']);
+    const out = applyAuthorizedLabelOverrides(mk({ confidence: 0.9 }), ['stale']);
     assert.equal(out.sentiment, 'neutral');
     assert.ok(out.confidence <= 0.5);
   });
 
   it('clawsweeper:not-repro-on-main → sentiment neutral + confidence ≤ 0.6', () => {
-    const out = applyLabelOverrides(mk({ confidence: 1.0 }), ['clawsweeper:not-repro-on-main']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ confidence: 1.0 }),
+      ['clawsweeper:not-repro-on-main'],
+    );
     assert.equal(out.sentiment, 'neutral');
     assert.ok(out.confidence <= 0.6);
   });
 
   // ── Severity: event-based + human-prioritization ───────────────────────
   it('impact:data-loss → severity critical (event-based)', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['impact:data-loss']);
+    const out = applyAuthorizedLabelOverrides(mk({ severity: 'medium' }), ['impact:data-loss']);
     assert.equal(out.severity, 'critical');
   });
 
   it('impact:data-loss does NOT downgrade existing critical', () => {
-    const out = applyLabelOverrides(mk({ severity: 'critical' }), ['impact:data-loss']);
+    const out = applyAuthorizedLabelOverrides(mk({ severity: 'critical' }), ['impact:data-loss']);
     assert.equal(out.severity, 'critical');
   });
 
   it('P0 → severity critical', () => {
-    const out = applyLabelOverrides(mk({ severity: 'low' }), ['P0']);
+    const out = applyAuthorizedLabelOverrides(mk({ severity: 'low' }), ['P0']);
     assert.equal(out.severity, 'critical');
   });
 
   it('beta-blocker → severity critical', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['beta-blocker']);
+    const out = applyAuthorizedLabelOverrides(mk({ severity: 'medium' }), ['beta-blocker']);
     assert.equal(out.severity, 'critical');
   });
 
   it('regression bumps severity one rung', () => {
-    assert.equal(applyLabelOverrides(mk({ severity: 'low' }), ['regression']).severity, 'medium');
-    assert.equal(applyLabelOverrides(mk({ severity: 'medium' }), ['regression']).severity, 'high');
-    assert.equal(applyLabelOverrides(mk({ severity: 'high' }), ['regression']).severity, 'critical');
-    assert.equal(applyLabelOverrides(mk({ severity: 'critical' }), ['regression']).severity, 'critical');
+    assert.equal(applyAuthorizedLabelOverrides(mk({ severity: 'low' }), ['regression']).severity, 'medium');
+    assert.equal(applyAuthorizedLabelOverrides(mk({ severity: 'medium' }), ['regression']).severity, 'high');
+    assert.equal(applyAuthorizedLabelOverrides(mk({ severity: 'high' }), ['regression']).severity, 'critical');
+    assert.equal(applyAuthorizedLabelOverrides(mk({ severity: 'critical' }), ['regression']).severity, 'critical');
   });
 
   // ── impact:* are NOT severity floors anymore (the big shift) ───────────
@@ -171,23 +244,96 @@ describe('applyLabelOverrides', () => {
 
   // ── Confidence overrides (verification status) ──────────────────────────
   it('clawsweeper:source-repro → confidence ≥ 0.9', () => {
-    const out = applyLabelOverrides(mk({ confidence: 0.5 }), ['clawsweeper:source-repro']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ confidence: 0.5 }),
+      ['clawsweeper:source-repro'],
+    );
     assert.ok(out.confidence >= 0.9);
   });
 
   it('clawsweeper:current-main-repro → confidence ≥ 0.9', () => {
-    const out = applyLabelOverrides(mk({ confidence: 0.3 }), ['clawsweeper:current-main-repro']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ confidence: 0.3 }),
+      ['clawsweeper:current-main-repro'],
+    );
     assert.ok(out.confidence >= 0.9);
   });
 
   it('clawsweeper:needs-info → confidence ≤ 0.5', () => {
-    const out = applyLabelOverrides(mk({ confidence: 0.9 }), ['clawsweeper:needs-info']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ confidence: 0.9 }),
+      ['clawsweeper:needs-info'],
+    );
     assert.ok(out.confidence <= 0.5);
   });
 
   it('clawsweeper:needs-live-repro → confidence ≤ 0.5', () => {
-    const out = applyLabelOverrides(mk({ confidence: 0.95 }), ['clawsweeper:needs-live-repro']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ confidence: 0.95 }),
+      ['clawsweeper:needs-live-repro'],
+    );
     assert.ok(out.confidence <= 0.5);
+  });
+
+  it('automation and actorless labels cannot force sentiment, severity, or confidence', () => {
+    const base = mk({ sentiment: 'negative', severity: 'low', confidence: 0.73 });
+    const labels = [
+      'stale',
+      'P0',
+      'regression',
+      'impact:data-loss',
+      'clawsweeper:source-repro',
+      'clawsweeper:needs-live-repro',
+    ];
+    const actorless = applyLabelOverrides(base, labels);
+    const automated = applyLabelOverrides(base, labels, {
+      labelActors: Object.fromEntries(labels.map((label) => [label, 'openclaw-barnacle'])),
+    });
+
+    for (const out of [actorless, automated]) {
+      assert.equal(out.sentiment, base.sentiment);
+      assert.equal(out.severity, base.severity);
+      assert.equal(out.confidence, base.confidence);
+    }
+  });
+
+  it('human-looking label actors cannot grant authority without immutable authorization', () => {
+    const base = mk({ sentiment: 'negative', severity: 'low', confidence: 0.73 });
+    const labels = ['stale', 'P0', 'clawsweeper:source-repro'];
+    const out = applyLabelOverrides(base, labels, {
+      labelActors: Object.fromEntries(
+        labels.map((label) => [label, 'human-looking-maintainer']),
+      ),
+    });
+
+    assert.equal(out.sentiment, base.sentiment);
+    assert.equal(out.severity, base.severity);
+    assert.equal(out.confidence, base.confidence);
+  });
+
+  it('labels listed without canonical authority references fail closed', () => {
+    const base = mk({ sentiment: 'negative', severity: 'low', confidence: 0.73 });
+    const labels = ['stale', 'P0', 'clawsweeper:source-repro'];
+    const out = applyLabelOverrides(base, labels, {
+      labelActors: Object.fromEntries(
+        labels.map((label) => [label, 'human-maintainer']),
+      ),
+      authorizedScoringLabels: labels,
+    });
+
+    assert.equal(out.sentiment, base.sentiment);
+    assert.equal(out.severity, base.severity);
+    assert.equal(out.confidence, base.confidence);
+  });
+
+  it('immutable authorized label events retain override authority', () => {
+    const out = applyAuthorizedLabelOverrides(
+      mk({ sentiment: 'negative', severity: 'low', confidence: 0.4 }),
+      ['stale', 'P0', 'clawsweeper:source-repro'],
+    );
+    assert.equal(out.sentiment, 'neutral');
+    assert.equal(out.severity, 'critical');
+    assert.equal(out.confidence, 0.9);
   });
 
   // ── Passthrough & compound ──────────────────────────────────────────────
@@ -208,13 +354,16 @@ describe('applyLabelOverrides', () => {
   });
 
   it('enhancement + impact:data-loss → neutral + critical (mistagged feature request)', () => {
-    const out = applyLabelOverrides(mk(), ['enhancement', 'impact:data-loss']);
+    const out = applyAuthorizedLabelOverrides(mk(), ['enhancement', 'impact:data-loss']);
     assert.equal(out.sentiment, 'neutral');
     assert.equal(out.severity, 'critical');
   });
 
   it('regression + impact:data-loss → critical (regression bump caps at critical)', () => {
-    const out = applyLabelOverrides(mk({ severity: 'medium' }), ['regression', 'impact:data-loss']);
+    const out = applyAuthorizedLabelOverrides(
+      mk({ severity: 'medium' }),
+      ['regression', 'impact:data-loss'],
+    );
     assert.equal(out.severity, 'critical');
   });
 });
@@ -237,8 +386,20 @@ describe('applyTitleIssueShapeHint', () => {
       base,
       '[Feature]: login flow regression',
       ['regression'],
+      authorizedLabelAuthority('regression'),
     );
     assert.deepEqual(out, base);
+  });
+
+  it('does not let actorless regression labels protect feature-shaped model output', () => {
+    const out = applyTitleIssueShapeHint(
+      mk({ sentiment: 'negative', severity: 'high', confidence: 0.9 }),
+      '[Feature]: login flow regression',
+      ['regression'],
+    );
+    assert.equal(out.sentiment, 'neutral');
+    assert.equal(out.severity, 'medium');
+    assert.equal(out.confidence, 0.65);
   });
 });
 
@@ -256,12 +417,14 @@ describe('applyClosureRiskSentimentHint', () => {
     const neutral = applyLabelOverrides(
       mk({ sentiment: 'negative', severity: 'medium', affectsVersion: null }),
       ['stale', 'clawsweeper:source-repro', 'impact:message-loss'],
+      authorizedLabelAuthority('stale', 'clawsweeper:source-repro', 'impact:message-loss'),
     );
     assert.equal(neutral.sentiment, 'neutral');
     const out = applyClosureRiskSentimentHint(
       neutral,
       'Cron announce delivery reports success but message never arrives',
       ['stale', 'clawsweeper:source-repro', 'impact:message-loss'],
+      authorizedLabelAuthority('stale', 'clawsweeper:source-repro', 'impact:message-loss'),
     );
     assert.equal(out.sentiment, 'negative');
   });
@@ -271,6 +434,7 @@ describe('applyClosureRiskSentimentHint', () => {
       mk({ sentiment: 'neutral', severity: 'critical', functionality: 'core' }),
       'feishu_create_doc: LaTeX backslashes eaten in complex block formulas',
       ['stale', 'impact:data-loss'],
+      authorizedLabelAuthority('stale', 'impact:data-loss'),
     );
     assert.equal(out.sentiment, 'negative');
   });
@@ -282,5 +446,34 @@ describe('applyClosureRiskSentimentHint', () => {
       ['enhancement', 'impact:security'],
     );
     assert.equal(out.sentiment, 'neutral');
+  });
+
+  it('does not promote feature requests solely because they name a release or impact area', () => {
+    const out = applyClosureRiskSentimentHint(
+      mk({ sentiment: 'neutral', severity: 'medium', affectsVersion: 'v2026.6.8' }),
+      '[Feature Request] simplify the apply flow',
+      ['impact:session-state'],
+    );
+    assert.equal(out.sentiment, 'neutral');
+  });
+
+  it('does not promote neutral output from automation-only validation labels', () => {
+    const labels = ['bug', 'clawsweeper:source-repro', 'impact:message-loss'];
+    const base = mk({ sentiment: 'neutral', severity: 'high', confidence: 0.99 });
+    const actorless = applyClosureRiskSentimentHint(
+      base,
+      'Cron announce delivery reports success but message never arrives',
+      labels,
+    );
+    const automated = applyClosureRiskSentimentHint(
+      base,
+      'Cron announce delivery reports success but message never arrives',
+      labels,
+      {
+        labelActors: Object.fromEntries(labels.map((label) => [label, 'clawsweeper'])),
+      },
+    );
+    assert.equal(actorless.sentiment, 'neutral');
+    assert.equal(automated.sentiment, 'neutral');
   });
 });

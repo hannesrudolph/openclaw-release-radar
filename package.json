@@ -7,13 +7,19 @@
   "scripts": {
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
-    "start": "node dist/index.js",
+    "start": "NODE_ENV=production node dist/index.js",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test 'src/lib/*.test.ts'",
-    "verify:scripts": "for f in scripts/*.mjs scripts/lib/*.mjs; do node --check \"$f\"; done",
-    "verify:ci": "npm run typecheck && npm test && npm run verify:scripts && npm run build",
+    "test:safety": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths test/run-database-guard.mjs",
+    "test:preflight": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths --no-warnings test/run-installer-preflight.mjs",
+    "test:focus": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths --no-warnings test/run-focused-test.mjs",
+    "test": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths test/run-tests.mjs",
+    "test:baseline": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths test/generate-test-baseline.mjs",
+    "test:baseline:accept": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event node --no-global-search-paths test/accept-test-baseline.mjs",
+    "verify:scripts": "for f in scripts/*.mjs scripts/lib/*.mjs scripts/validation/*.mjs test/*.mjs test/*.cjs; do node --check \"$f\" || exit 1; done",
+    "verify:authoritative-ci": "/usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event npm run test:safety && /usr/bin/env -u NODE_OPTIONS -u NODE_PATH -u npm_lifecycle_event npm run test:baseline -- --full --rerun",
+    "verify:ci": "npm run typecheck && npm run verify:scripts && npm run build",
     "verify:local": "npm run doctor -- --fail-on-warnings && npm run verify:score -- --all && npm run verify:release-audit -- --all",
-    "verify:live": "npm run doctor -- --fail-on-warnings --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke",
+    "verify:live": "tsx scripts/verify-live.mjs --api-base http://127.0.0.1:8787 && npm run doctor -- --fail-on-warnings --api-base http://127.0.0.1:8787 && npm run verify:score -- --all && npm run verify:release-audit -- --all --api-base http://127.0.0.1:8787 && npm run ui:smoke",
     "doctor": "tsx scripts/doctor.mjs",
     "scrape:upstream": "tsx scripts/scrape-upstream-webui.mjs",
     "ingest:fix-provenance": "tsx scripts/ingest-fix-provenance.mjs",
@@ -25,10 +31,15 @@
     "backfill:issue-comment-snapshots": "tsx scripts/backfill-issue-comment-snapshots.mjs",
     "backfill:closed-windows": "tsx scripts/backfill-closed-windows.mjs",
     "backfill:issue-state-events": "tsx scripts/backfill-issue-state-events.mjs",
-    "import:public-snapshot": "tsx scripts/import-public-snapshot.mjs"
+    "refresh:quality": "tsx scripts/refresh-quality-db.mjs",
+    "validation:snapshot": "tsx scripts/validation/snapshot-forecast.mjs",
+    "validation:opportunities": "tsx scripts/validation/forecast-opportunity-status.mjs",
+    "validation:observe": "tsx scripts/validation/observe-outcomes.mjs",
+    "validation:evaluate": "tsx scripts/validation/evaluate-score-quality.mjs",
+    "promote:quality-db": "tsx scripts/promote-quality-db.mjs"
   },
   "engines": {
-    "node": ">=22.5.0"
+    "node": ">=22.16.0"
   },
   "dependencies": {
     "dotenv": "^16.4.5",

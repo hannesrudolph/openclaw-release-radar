@@ -79,6 +79,48 @@ describe('classifyClosureProof', () => {
     assert.deepEqual(result.evidence.canonicalIssues, [95750]);
   });
 
+  it('resolves duplicate semantics before completed reachable PR credit', () => {
+    const result = classifyClosureProof(input({
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: true,
+      comments: [{
+        author: 'maintainer',
+        body: 'Closing as duplicate of the open canonical tracker #95751.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [95751]);
+  });
+
+  it('resolves duplicate semantics before completed reachable commit credit', () => {
+    const result = classifyClosureProof(input({
+      hasReachableFixCommit: true,
+      reachableFixCommits: ['cfeaf6897fd89201b71ff7d5285e48c5a382ac9a'],
+      comments: [{
+        author: 'maintainer',
+        body: 'Closing as superseded by canonical issue #95752.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [95752]);
+  });
+
+  it('preserves duplicate semantics for non-negative items with reachable proof', () => {
+    const result = classifyClosureProof(input({
+      sentiment: 'neutral',
+      hasClosingLink: true,
+      hasMergedClosingPr: true,
+      hasReachableClosingPr: true,
+      comments: [{
+        author: 'maintainer',
+        body: 'Closing as duplicate of #95753.',
+      }],
+    }));
+    assert.equal(result.status, 'non_bug_duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [95753]);
+  });
+
   it('recognizes duplicate or superseded closure comments', () => {
     const result = classifyClosureProof(input({
       stateReasons: ['NOT_PLANNED'],
@@ -218,6 +260,30 @@ describe('classifyClosureProof', () => {
     assert.equal(result.status, 'not_planned');
   });
 
+  it('lets negated duplicate language override a canonical issue reference', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'maintainer',
+        body: 'This is not a duplicate. Canonical tracker #95754 covers a separate request. Closing as expected behavior.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.deepEqual(result.evidence.canonicalIssues, [95754]);
+  });
+
+  it('still recognizes affirmative duplicate rationale with a canonical reference', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      comments: [{
+        author: 'maintainer',
+        body: 'This is a duplicate, not a release fix. Continue in canonical tracker #95755.',
+      }],
+    }));
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.deepEqual(result.evidence.canonicalIssues, [95755]);
+  });
+
   it('recognizes reporter-refiled issues as replacement context, not missing fix proof', () => {
     const result = classifyClosureProof(input({
       issueAuthor: 'reporter',
@@ -226,6 +292,52 @@ describe('classifyClosureProof', () => {
     }));
     assert.equal(result.status, 'reporter_replaced');
     assert.equal(result.evidence.reporterSelfClosed, true);
+  });
+
+  it('recognizes #99252 reporter supersession as duplicate canonical context', () => {
+    const result = classifyClosureProof(input({
+      issueNumber: 99252,
+      issueAuthor: 'Kaze310',
+      closureActors: ['Kaze310'],
+      stateReasons: ['DUPLICATE'],
+      closedAt: '2026-07-02T22:35:11Z',
+      comments: [{
+        author: 'Kaze310',
+        createdAt: '2026-07-02T22:35:03Z',
+        updatedAt: '2026-07-02T22:35:03Z',
+        body: [
+          'Superseded by a clearer safety-focused report: #99253',
+          'The original framing underweighted the more serious failure mode.',
+        ].join('\n\n'),
+      }],
+    }));
+
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.deepEqual(result.evidence.canonicalIssues, [99253]);
+  });
+
+  it('recognizes #84490 consolidating rationale and canonical target', () => {
+    const result = classifyClosureProof(input({
+      issueNumber: 84490,
+      issueAuthor: 'rrtt217',
+      closureActors: ['vincentkoc'],
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T07:07:48Z',
+      comments: [{
+        author: 'vincentkoc',
+        createdAt: '2026-07-02T07:07:46Z',
+        updatedAt: '2026-07-02T07:07:46Z',
+        body: [
+          'Consolidating this into #96463.',
+          'Please continue USTC/live-endpoint evidence and the generic-default decision on #96463.',
+        ].join('\n\n'),
+      }],
+    }));
+
+    assert.equal(result.status, 'duplicate_or_superseded');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.deepEqual(result.evidence.canonicalIssues, [96463]);
   });
 
   it('recognizes reporter withdrawals as non-fix closure context', () => {
@@ -413,6 +525,70 @@ describe('classifyClosureProof', () => {
     assert.equal(result.evidence.closureContextCommentCount, 1);
   });
 
+  it('accepts #99730 explicit close rationale when separate issues remain open', () => {
+    const result = classifyClosureProof(input({
+      issueNumber: 99730,
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-04T02:25:29Z',
+      comments: [{
+        author: 'clawsweeper',
+        createdAt: '2026-07-04T00:53:24Z',
+        updatedAt: '2026-07-04T02:25:28Z',
+        body: 'Thanks for the report. I gave this a fresh shell check against current `main`, and I could not reproduce it anymore.\n\nClose: the exact npm version-mismatch report no longer reproduces because the current registry tarball identifies OpenClaw 2026.6.11; distinct 6.11 dist-parity and local update-prefix reports remain open separately.',
+      }],
+    }));
+
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('accepts equivalent close rationale without relying on a Close colon directive', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-04T02:25:29Z',
+      comments: [{
+        author: 'clawsweeper',
+        createdAt: '2026-07-04T00:53:24Z',
+        updatedAt: '2026-07-04T02:25:28Z',
+        body: 'Closing because the exact npm version mismatch no longer reproduces. Distinct package-parity reports remain open separately.',
+      }],
+    }));
+
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+  });
+
+  it('does not let a Close directive override a request to keep this issue open', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-04T02:25:29Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-04T02:20:00Z',
+        body: 'Close: this may be related, but keep this issue open until the reporter verifies the fix.',
+      }],
+    }));
+
+    assert.equal(result.status, 'admin_not_planned_no_context');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
+  it('keeps this report open even when the same line mentions distinct open reports', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-04T02:25:29Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-04T02:20:00Z',
+        body: 'Close: a related PR exists, but keep this report open while distinct package-parity reports remain open separately.',
+      }],
+    }));
+
+    assert.equal(result.status, 'admin_not_planned_no_context');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
   it('uses edited close-time comments by updated time without losing created time', () => {
     const result = classifyClosureProof(input({
       closedAt: '2026-06-19T16:03:19Z',
@@ -482,6 +658,210 @@ describe('classifyClosureProof', () => {
     }));
     assert.equal(result.status, 'not_planned');
     assert.equal(result.evidence.closureContextCommentCount, 1);
+  });
+
+  it('recognizes verified dependency behavior and supported paths as close-time non-actionable rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: [
+          'Closing after dependency-source and live-device verification showed the reported permission belongs to Google Play services, not OpenClaw.',
+          'Google Code Scanner is intentionally permissionless for the calling app and delegates camera access to Google Play services.',
+          'Supported path: use the scanner permission UI or paste/enter the setup code.',
+        ].join('\n\n'),
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('recognizes official unaffiliated-service scope statements without closing boilerplate', () => {
+    const result = classifyClosureProof(input({
+      closedAt: '2026-07-01T18:35:55Z',
+      comments: [{
+        author: 'openclaw-barnacle',
+        createdAt: '2026-07-01T18:35:54Z',
+        body: 'OpenClaw is not affiliated with Moltbook, and issues related to Moltbook should not be submitted here.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('recognizes concrete repository scope rationale without closing boilerplate', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-01T18:35:55Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-01T18:35:54Z',
+        body: 'This lives outside the OpenClaw source repository and belongs to an external plugin; please file it upstream.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('does not use audited dependency rationale outside the bounded close window', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-05T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Closing after live-device verification showed the reported permission belongs to Google Play services, not OpenClaw.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_no_context');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
+  });
+
+  it('does not turn generic close-time dependency discussion into non-actionable rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Closing after dependency review. Google Play services and OpenClaw have different camera permission behavior, and possible supported paths still need investigation.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 0);
+  });
+
+  it('does not treat uncertain expected-behavior discussion as a concrete close rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Closing after review, but we still need to determine whether this is expected behavior or belongs to an external plugin.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 0);
+  });
+
+  it('accepts a later decisive conclusion after historical uncertainty', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'At first it was unclear whether this was expected behavior, but source verification confirmed it is outside the OpenClaw source repository and should be filed upstream.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('lets later uncertainty invalidate an earlier non-actionable theory', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Initial review called this expected behavior. However, we still need to verify whether an external plugin owns the failing path.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 0);
+  });
+
+  it('lets explicit ongoing failure veto non-actionable rationale', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Closing as not reproducible, but the reporter confirms it still fails on latest.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_unverified');
+    assert.equal(result.evidence.closureContextCommentCount, 1);
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 0);
+  });
+
+  it('resolves non-actionable and ongoing-failure comments chronologically', () => {
+    const laterFailure = {
+      author: 'reporter',
+      createdAt: '2026-07-02T13:47:31Z',
+      body: 'Confirmed again: it still fails on the latest release.',
+    };
+    const earlierRationale = {
+      author: 'maintainer',
+      createdAt: '2026-07-02T13:47:30Z',
+      body: 'Closing because this could not be reproduced.',
+    };
+    const vetoed = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [laterFailure, earlierRationale],
+    }));
+    assert.equal(vetoed.status, 'admin_not_planned_unverified');
+    assert.equal(vetoed.evidence.closureContextCommentCount, 2);
+    assert.equal((vetoed.evidence.nonActionableRationaleComments as any[]).length, 0);
+    assert.equal(
+      (vetoed.evidence.matchingComments as any[]).some((comment) =>
+        comment.snippet.includes('still fails on the latest release')),
+      true,
+    );
+
+    const laterRationale = {
+      ...earlierRationale,
+      createdAt: '2026-07-02T13:47:32Z',
+      body: 'Closing after fresh testing confirmed this no longer reproduces on latest.',
+    };
+    const restored = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [laterRationale, laterFailure],
+    }));
+    assert.equal(restored.status, 'not_planned');
+    assert.equal((restored.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('does not treat conditional ongoing-failure language as a veto', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Closing as expected behavior. If it still fails on latest, attach fresh logs.',
+      }],
+    }));
+    assert.equal(result.status, 'not_planned');
+    assert.equal((result.evidence.nonActionableRationaleComments as any[]).length, 1);
+  });
+
+  it('preserves keep-open negation around decisive dependency wording', () => {
+    const result = classifyClosureProof(input({
+      stateReasons: ['NOT_PLANNED'],
+      closedAt: '2026-07-02T13:47:35Z',
+      comments: [{
+        author: 'maintainer',
+        createdAt: '2026-07-02T13:47:30Z',
+        body: 'Keep this open: early evidence suggests the reported permission belongs to Google Play services, not OpenClaw, but we still need controlled verification.',
+      }],
+    }));
+    assert.equal(result.status, 'admin_not_planned_no_context');
+    assert.equal(result.evidence.closureContextCommentCount, 0);
   });
 
   it('treats stale closures requesting fresh current-build reports as repro requests', () => {

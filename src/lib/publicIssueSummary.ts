@@ -1,5 +1,6 @@
 import { labelsForIssueAt, type JoinedIssue } from './db';
 import { classifyIssueRowWithLabels } from './releaseScoring';
+import { scoringLabelInfoAtCutoff } from './scoringLabelAuthority';
 import { surfaceOf } from './surfaces';
 import { isFeltSignal } from './score';
 
@@ -50,12 +51,25 @@ export function publicIssueSummariesForRelease({
   return { topIssues, watchIssues };
 }
 
-function classifyPublicIssue(issue: JoinedIssue, labelCutoff: string | null, labelResolver: typeof labelsForIssueAt) {
-  const labels = labelResolver(issue.number, parseJson(issue.labels, [] as string[]), labelCutoff, {
+function classifyPublicIssue(
+  issue: JoinedIssue,
+  labelCutoff: string | null,
+  labelResolver: typeof labelsForIssueAt,
+) {
+  const labelsAtCutoff = labelResolver(issue.number, parseJson(issue.labels, [] as string[]), labelCutoff, {
     useFallbackWhenNoEvents: labelCutoff == null,
     useSnapshotWhenNoEvents: labelCutoff != null,
   });
-  return { issue, classification: classifyIssueRowWithLabels(issue, labels), labels };
+  const labelInfo = scoringLabelInfoAtCutoff(
+    issue.number,
+    labelsAtCutoff,
+    labelCutoff,
+  );
+  return {
+    issue,
+    classification: classifyIssueRowWithLabels(issue, labelInfo.labels, labelInfo),
+    labels: labelInfo.labels,
+  };
 }
 
 function comparePublicIssueSignal(
@@ -68,7 +82,10 @@ function comparePublicIssueSignal(
   if (severity !== 0) return severity;
   const scope = (SCOPE_RANK[a.classification.scope] ?? 9) - (SCOPE_RANK[b.classification.scope] ?? 9);
   if (scope !== 0) return scope;
-  return (USERS_RANK[a.classification.affectedUsers] ?? 9) - (USERS_RANK[b.classification.affectedUsers] ?? 9);
+  const affectedUsers = (USERS_RANK[a.classification.affectedUsers] ?? 9) -
+    (USERS_RANK[b.classification.affectedUsers] ?? 9);
+  if (affectedUsers !== 0) return affectedUsers;
+  return b.issue.number - a.issue.number;
 }
 
 function issueSummary({ issue, classification }: ReturnType<typeof classifyPublicIssue>) {

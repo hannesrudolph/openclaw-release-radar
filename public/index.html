@@ -9,6 +9,12 @@
 <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16x16.png" />
 <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
 <title>Release Radar — openclaw</title>
+<script>
+(() => {
+  const onOpenclaw = location.hash === '#/openclaw';
+  document.documentElement.classList.add(onOpenclaw ? 'route-openclaw' : 'route-home');
+})();
+</script>
 <style>
 /* ── design tokens ────────────────────────────────────────────────────── */
 :root {
@@ -23,7 +29,7 @@
   --bg:#f9f9f9; --surface:#fff; --surface-2:#f4f4f4;
   --border:#e4e4e7; --border-soft:rgba(0,0,0,.09);
   --text:#18181b; --muted:#71717a;
-  --ok:#16a34a; --warn:#c47a00; --danger:#dc2626;
+  --ok:#16a34a; --warn:#9a5a00; --danger:#dc2626;
   --link:#2962ff; --link-hover:#1e54e5;
 }
 @media (prefers-color-scheme:dark) {
@@ -75,6 +81,7 @@ a:hover{color:var(--link-hover)}
 .topbar__updated{
   font-size:var(--text-xs);color:var(--muted);
   display:flex;align-items:center;gap:var(--space-3);
+  min-width:0;line-height:1.3;overflow-wrap:anywhere;
 }
 .topbar__updated{color:var(--warn)}
 
@@ -255,7 +262,7 @@ main.main-home{max-width:880px}
 .help-head{display:flex;align-items:center;gap:var(--space-3);margin-bottom:var(--space-3)}
 .help-head .score-history__title{margin-bottom:0}
 .help-button{
-  width:20px;height:20px;border-radius:999px;border:1px solid var(--border);
+  width:24px;height:24px;border-radius:999px;border:1px solid var(--border);
   background:transparent;color:var(--muted);font:inherit;font-size:12px;font-weight:700;
   line-height:1;display:inline-flex;align-items:center;justify-content:center;cursor:pointer;
 }
@@ -271,7 +278,7 @@ main.main-home{max-width:880px}
 }
 .score-explain[hidden]{display:none}
 .help-popover .score-explain{margin:var(--space-3) 0 0}
-/* Inside the compact "My install" card the explainer must float, not push the
+/* Inside the compact setup card the explainer must float, not push the
    flex row apart. Pin it as a dropdown anchored to the ? button. */
 .install-summary .help-popover .score-explain{
   position:absolute;top:calc(100% + 8px);left:0;z-index:30;
@@ -377,12 +384,18 @@ main.main-home{max-width:880px}
 }
 
 .release{
-  display:flex;align-items:center;justify-content:space-between;
-  padding:var(--space-7) var(--space-8);
+  display:block;
   border-bottom:1px solid color-mix(in srgb,var(--border) 55%,transparent);
-  cursor:pointer;gap:var(--space-6);
   transition:background .15s ease;
 }
+.release__toggle{
+  width:100%;display:flex;align-items:center;justify-content:space-between;
+  padding:var(--space-7) var(--space-8);gap:var(--space-6);
+  border:0;background:transparent;color:inherit;font:inherit;text-align:left;cursor:pointer;
+}
+.release__toggle:focus-visible{outline:2px solid var(--link);outline-offset:-2px}
+.release__surface-slot{padding:0 var(--space-8) var(--space-7)}
+.release__surface-slot:empty{display:none}
 .release:last-of-type{border-bottom:none}
 .release:hover{background:color-mix(in srgb,var(--text) 3.5%,transparent)}
 .release.open{background:color-mix(in srgb,var(--text) 2%,transparent)}
@@ -391,6 +404,7 @@ main.main-home{max-width:880px}
 }
 .release--recommended:hover{background:color-mix(in srgb,var(--ok) 10%,transparent)}
 .release--skip .release__tag{color:var(--muted)}
+.release--stale .release__reason{color:var(--warn)}
 
 .release__left{display:flex;flex-direction:column;gap:var(--space-3);min-width:0}
 .release__head{display:flex;align-items:center;gap:var(--space-5);min-width:0;flex-wrap:wrap;row-gap:var(--space-3)}
@@ -419,8 +433,9 @@ main.main-home{max-width:880px}
 .surf-rest{display:flex;flex-direction:column;gap:4px}
 .surf-rest-items{display:flex;flex-direction:column;gap:4px}
 .surf-more{
+  min-height:24px;display:inline-flex;align-items:center;
   font-size:var(--text-sm);color:var(--muted);cursor:pointer;
-  list-style:none;padding-left:19px;width:fit-content;
+  list-style:none;padding:2px 0 2px 19px;width:fit-content;
   border-bottom:1px dotted var(--border);
 }
 .surf-more:hover{color:var(--text)}
@@ -433,7 +448,7 @@ details[open] > .surf-more{display:none}
   width:13px;height:13px;flex-shrink:0;background:var(--muted);opacity:.85;
   -webkit-mask:var(--m) center/contain no-repeat;mask:var(--m) center/contain no-repeat;
 }
-/* ── My install: multi-step setup wizard ────────────────────────────────── */
+/* ── Install setup: multi-step evidence filter ─────────────────────────── */
 .install-setup{margin-bottom:var(--space-7)}
 .install-setup[hidden]{display:none}
 
@@ -442,6 +457,7 @@ details[open] > .surf-more{display:none}
   display:flex;align-items:center;gap:var(--space-5) var(--space-6);flex-wrap:wrap;
   padding:var(--space-6) var(--space-7);
   border:1px solid var(--border);border-radius:var(--radius-lg);background:var(--surface);
+  position:relative;
 }
 .install-summary__head{display:flex;flex-direction:column;gap:2px;margin-right:auto;min-width:11rem}
 .install-summary__title-row{display:flex;align-items:center;gap:var(--space-3)}
@@ -512,7 +528,11 @@ details[open] > .surf-more{display:none}
 .install-wizard__foot .spacer{margin-left:auto}
 @media(max-width:520px){
   .install-summary,.install-wizard{padding:var(--space-6)}
-  .install-summary__head{margin-right:0}
+  .install-summary__head{margin-right:0;min-width:0;width:100%}
+  .install-summary .help-popover{position:static}
+  .install-summary .help-popover .score-explain{
+    top:calc(100% + 8px);left:var(--space-6);right:var(--space-6);width:auto;
+  }
 }
 .rec-pill{
   font-size:var(--text-xs);font-weight:600;white-space:nowrap;
@@ -649,6 +669,19 @@ details[open] > .surf-more{display:none}
 }
 .install-state__title{font-weight:650;color:var(--text)}
 .install-state__meta{font-size:var(--text-xs);line-height:1.5}
+.install-state--stale{
+  border-color:color-mix(in srgb,var(--warn) 38%,var(--border));
+  background:color-mix(in srgb,var(--warn) 7%,var(--surface));
+}
+.review-state{
+  display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;
+  margin-top:var(--space-6);padding:var(--space-4) var(--space-5);
+  border:1px solid var(--border-soft);border-radius:var(--radius-md);
+  color:var(--muted);font-size:var(--text-sm);
+}
+[data-release-retry],[data-public-retry]{
+  min-width:24px;min-height:24px;
+}
 
 .evidence{
   margin-top:var(--space-7);display:flex;flex-direction:column;gap:var(--space-4);
@@ -663,12 +696,16 @@ details[open] > .surf-more{display:none}
 .evidence__item a{color:var(--text);text-decoration:none}
 .evidence__item a:hover{color:var(--link)}
 .evidence__meta{font-size:var(--text-xs);color:var(--muted)}
-.evidence__more{align-self:flex-start;border:0;background:transparent;color:var(--link);font:inherit;font-size:var(--text-xs);padding:0;cursor:pointer}
+.evidence__more{
+  min-height:24px;align-self:flex-start;border:0;background:transparent;
+  color:var(--link);font:inherit;font-size:var(--text-xs);padding:2px 0;cursor:pointer;
+}
 .evidence__more:hover{text-decoration:underline}
 /* collapsed evidence disclosure — keep the panel quiet by default */
 .evidence-toggle{margin-top:var(--space-6)}
 .evidence-toggle__summary{
-  display:inline-flex;align-items:center;gap:var(--space-3);cursor:pointer;list-style:none;
+  min-height:24px;display:inline-flex;align-items:center;gap:var(--space-3);
+  padding:2px 0;cursor:pointer;list-style:none;
   font-size:var(--text-sm);font-weight:600;color:var(--link);
 }
 .evidence-toggle__summary::-webkit-details-marker{display:none}
@@ -680,6 +717,30 @@ details[open] > .surf-more{display:none}
 .state{
   padding:var(--space-10) var(--space-8);
   text-align:center;color:var(--muted);font-size:var(--text-sm);
+}
+.load-state{
+  display:flex;align-items:center;justify-content:center;gap:var(--space-5);flex-wrap:wrap;
+  min-height:72px;margin-bottom:var(--space-7);padding:var(--space-7) var(--space-8);
+  border:1px solid var(--border-soft);border-radius:var(--radius-md);
+  background:var(--surface);color:var(--muted);font-size:var(--text-sm);text-align:center;
+}
+.load-state[hidden]{display:none}
+.load-state--error{
+  border-color:color-mix(in srgb,var(--danger) 32%,var(--border));
+  background:color-mix(in srgb,var(--danger) 5%,var(--surface));
+}
+.public-state{
+  display:flex;align-items:center;gap:var(--space-4);flex-wrap:wrap;
+  margin-top:var(--space-6);padding:var(--space-4) var(--space-5);
+  border:1px solid var(--border-soft);border-radius:var(--radius-md);
+  color:var(--muted);font-size:var(--text-sm);
+}
+.public-state--error{
+  border-color:color-mix(in srgb,var(--danger) 32%,var(--border));
+  background:color-mix(in srgb,var(--danger) 5%,var(--surface));
+}
+.public-state .btn-ghost,.load-state .btn-ghost{
+  padding:var(--space-2) var(--space-5);font-size:var(--text-xs);
 }
 
 /* ── recommendation block (main view) ───────────────────────────────── */
@@ -756,19 +817,33 @@ footer a:hover{color:var(--text)}
   padding:var(--space-4) var(--space-5);border-radius:var(--radius-md);
 }
 .topbar__nav a:hover{color:var(--text);background:color-mix(in srgb,var(--text) 5%,var(--bg))}
+@media(max-width:520px){
+  .topbar{
+    height:auto;min-height:52px;padding:6px var(--space-4);
+    flex-wrap:wrap;gap:var(--space-2) var(--space-3);
+  }
+  .topbar__brand > span:last-child{display:none}
+  .topbar__updated{order:3;flex:1 0 100%;padding:0 var(--space-2) var(--space-2)}
+  .topbar__nav{gap:var(--space-2)}
+  .topbar__nav a{padding:var(--space-4)}
+}
 .view[hidden]{display:none!important}
+html.route-openclaw #viewHome{display:none!important}
+html.route-openclaw #viewPackage{display:block!important}
+html.route-home #viewHome{display:block!important}
+html.route-home #viewPackage{display:none!important}
 
 </style>
 </head>
 <body>
 
 <nav class="topbar">
-  <a class="topbar__brand" href="#/">
+  <a class="topbar__brand" href="#/" aria-label="Release Radar">
     <span aria-hidden="true">🔍</span>
     <span><span class="page-hero__brand" style="font-weight:700">Release Radar</span></span>
   </a>
   <div class="topbar__spacer"></div>
-  <div class="topbar__updated" id="topbarUpdated" hidden>
+  <div class="topbar__updated" id="topbarUpdated" role="status" aria-live="polite" aria-atomic="true" hidden>
     <span id="updatedLabel"></span>
   </div>
   <div class="topbar__nav">
@@ -816,19 +891,24 @@ footer a:hover{color:var(--text)}
     <h1 class="detail-title">openclaw</h1>
     <p class="page-sub">
       Source: <a href="https://github.com/openclaw/openclaw" target="_blank" rel="noopener">openclaw/openclaw</a>
-      · Install Confidence 0–10
+      · Policy/stability assessment 0–10
     </p>
+
+    <div class="load-state" id="packageLoadState" data-release-state="loading" role="status" aria-live="polite" aria-busy="true">
+      Loading releases...
+    </div>
 
     <section class="score-history" id="scoreHistory" hidden aria-labelledby="scoreHistoryTitle">
       <div class="help-head">
-        <h2 class="score-history__title" id="scoreHistoryTitle">Score history</h2>
+        <h2 class="score-history__title" id="scoreHistoryTitle">Assessment history</h2>
         <details class="help-popover" id="scoreHelp">
-          <summary class="help-button" title="Explain the score" aria-label="Explain the score">?</summary>
+          <summary class="help-button" title="Explain the assessment" aria-label="Explain the assessment">?</summary>
           <div class="score-explain">
-            <div class="score-explain__title">What this score means</div>
-            <p><strong>Global score</strong> estimates whether this stable release is a recommended install candidate under the current audit and recommendation gates. It combines install gates such as known CVEs, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
-            <p><strong>My install</strong> appears after you select a meaningful profile. It is a capped local estimate layered on the global audited score: global/core issues still count, selected surfaces stay visible, and unrelated surfaced issues are filtered out of the personal view.</p>
-            <p>The score is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
+            <div class="score-explain__title">What this assessment means</div>
+            <p><strong>Global assessment</strong> is an ordinal 0–10 policy/stability ranking, not a probability or percentage. Higher values mean stronger evidence under the current audit and recommendation policy; the top of the scale does not imply certainty or an absence of issues.</p>
+            <p>It combines install gates such as medium-or-higher security advisories, wait/hotfix status, release age, beta shake-out, breaking changes, and the balance of serious issues opened vs fixed during the release window.</p>
+            <p><strong>My setup</strong> filters affected areas and related issue evidence. It never changes the audited assessment or the globally recommended update target.</p>
+            <p>The assessment is a triage aid, not a guarantee. Expand a release to see the evidence issues behind the number.</p>
           </div>
         </details>
       </div>
@@ -880,10 +960,14 @@ function timeAgo(iso) {
   return `${Math.floor(d / 365)}y ago`;
 }
 
-// Install Confidence band → colour + label. The number and the label always
+// Policy/stability assessment band → colour + label. The number and label always
 // agree (band is derived from the rounded score server-side, see lib/score.ts).
+function finiteScore(value) {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
 function scoreInfo(r) {
-  const s = r.finalScore;
+  const s = finiteScore(r?.finalScore);
   const M = {
     solid:   { color: 'var(--ok)',     label: 'Solid'   },
     ok:      { color: 'var(--ok)',     label: 'OK'      },
@@ -892,21 +976,23 @@ function scoreInfo(r) {
     skip:    { color: 'var(--danger)', label: 'Skip'    },
     wait:    { color: 'var(--muted)',  label: 'Wait'    },
   };
-  const m = M[r.band] || M.wait;
+  const invalidScore = r?.finalScore != null && s == null;
+  const m = invalidScore ? M.wait : (M[r?.band] || M.wait);
   return { color: m.color, label: m.label, num: (s == null ? '—' : s.toFixed(1)) };
 }
 
 function cssId(s) { return String(s).replace(/[^a-zA-Z0-9_-]/g, '_'); }
 
 function formatScore10(s) {
-  if (s == null || Number.isNaN(Number(s))) return null;
-  return Number(s).toFixed(1);
+  const score = finiteScore(s);
+  return score == null ? null : score.toFixed(1);
 }
 
 function scoreColor10(s, band = null) {
-  if (band) return scoreInfo({ finalScore: s, band }).color;
-  if (s == null || Number.isNaN(Number(s))) return 'var(--muted)';
-  const n = Number(s);
+  if (s == null) return band ? scoreInfo({ finalScore: s, band }).color : 'var(--muted)';
+  const n = finiteScore(s);
+  if (n == null) return 'var(--muted)';
+  if (band) return scoreInfo({ finalScore: n, band }).color;
   if (n >= 7) return 'var(--ok)';
   if (n >= 5.5) return 'var(--warn)';
   return 'var(--danger)';
@@ -973,11 +1059,6 @@ const INSTALL_PROFILE_SURFACES = INSTALL_PROFILE_TAXONOMY.flatMap((group) =>
 const INSTALL_PROFILE_ITEMS = INSTALL_PROFILE_TAXONOMY.flatMap((group) =>
   group.items.map((item) => ({ ...item, groupKey: group.key, groupTitle: group.title })),
 );
-const INSTALL_PROFILE_REQUIREMENTS = [
-  { key: 'os', label: 'your computer' },
-  { key: 'channels', label: 'a chat app' },
-  { key: 'runtime', label: 'an AI', groups: ['local-models', 'cloud-models', 'agent-runtime'] },
-];
 const INSTALL_PROFILE_ITEM_BY_LABEL = new Map(INSTALL_PROFILE_ITEMS.map((item) => [item.label, item]));
 
 function escapeRegExp(value) {
@@ -1004,15 +1085,24 @@ function enrichIssue(issue) {
 }
 
 function evidenceIssuesForRelease(detail) {
-  if (Array.isArray(detail?.watchIssues) && detail.watchIssues.length) return detail.watchIssues.map(enrichIssue);
-  if (Array.isArray(detail?.issues)) return detail.issues.map(enrichIssue);
-  return [];
+  const combined = [
+    ...(Array.isArray(detail?.watchIssues) ? detail.watchIssues : []),
+    ...(Array.isArray(detail?.issues) ? detail.issues : []),
+  ];
+  const seen = new Set();
+  return combined.map(enrichIssue).filter((issue) => {
+    const key = issue?.number != null ? `number:${issue.number}` : issue?.url ? `url:${issue.url}` : null;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 let selectedProfileSurfaces = new Set(readInstallProfile());
 let profileFilterBound = false;
 let profileWizardOpen = false;
 let profileWizardStep = 0;
 let profileObservedLabels = [];
+let pendingInstallSetupFocus = null;
 
 function normalizeSurfaceLabel(label) {
   return String(label ?? '').trim();
@@ -1097,9 +1187,7 @@ function installChipsHtml(max = 8) {
 
 function installSummarySubText() {
   if (selectedProfileSurfaces.size === 0) return "Tell us what you use, and we'll check each update for your setup.";
-  const missing = missingInstallProfileRequirements();
-  if (!missing.length) return 'Each update now shows a profile-adjusted estimate beside the audited global score.';
-  return `Also pick ${missing.join(' and ')} to finish.`;
+  return 'Related evidence is filtered for your setup; the audited assessment and recommendation stay global.';
 }
 
 function installSummaryHtml() {
@@ -1112,7 +1200,7 @@ function installSummaryHtml() {
         + `<details class="help-popover"><summary class="help-button" title="How this works" aria-label="How this works">?</summary>`
           + `<div class="score-explain"><div class="score-explain__title">How does this work?</div><ul>`
             + `<li>Tell us your computer, the apps you chat through, and the AI you use.</li>`
-            + `<li>We show a capped local estimate beside the audited global score.</li>`
+            + `<li>The audited global assessment and recommended update target do not change.</li>`
             + `<li>We de-emphasize issues not mapped to your selected surfaces; core/security issues still stay visible.</li>`
           + `</ul></div></details></div>`
       + `<span class="install-summary__sub">${esc(installSummarySubText())}</span>`
@@ -1172,10 +1260,38 @@ function installWizardHtml() {
   + `</div>`;
 }
 
-function renderInstallSetup() {
+function installSetupFocusToken(element) {
+  if (!(element instanceof Element)) return null;
+  const control = element.closest('[data-action]');
+  if (!control) return null;
+  return {
+    action: control.dataset.action ?? '',
+    label: control.dataset.label ?? '',
+  };
+}
+
+function focusInstallSetupControl(filter, token) {
+  if (!token) return;
+  const controls = [...filter.querySelectorAll('[data-action]')];
+  const target = controls.find((control) =>
+    control.dataset.action === token.action
+      && (!token.label || control.dataset.label === token.label))
+    ?? (profileWizardOpen
+      ? filter.querySelector('[data-action="close"], [data-action="toggle"], [data-action="next"]')
+      : filter.querySelector('[data-action="open"]'));
+  if (target instanceof HTMLElement && !target.hidden) target.focus();
+}
+
+function renderInstallSetup(requestedFocus = null) {
   const filter = document.getElementById('profileFilter');
   if (!filter) return;
+  const activeWasInside = filter.contains(document.activeElement);
+  const focusToken = requestedFocus
+    ?? pendingInstallSetupFocus
+    ?? (activeWasInside ? installSetupFocusToken(document.activeElement) : null);
+  pendingInstallSetupFocus = null;
   filter.innerHTML = profileWizardOpen ? installWizardHtml() : installSummaryHtml();
+  if (focusToken) queueMicrotask(() => focusInstallSetupControl(filter, focusToken));
 }
 
 function renderProfileFilter(rows) {
@@ -1200,23 +1316,37 @@ function renderProfileFilter(rows) {
       if (!el) return;
       const action = el.dataset.action;
       if (action === 'open') {
-        profileWizardOpen = true; profileWizardStep = 0; renderInstallSetup();
+        profileWizardOpen = true;
+        profileWizardStep = 0;
+        renderInstallSetup({ action: 'close', label: '' });
       } else if (action === 'close' || action === 'done') {
-        profileWizardOpen = false; renderReleases();
+        profileWizardOpen = false;
+        pendingInstallSetupFocus = { action: 'open', label: '' };
+        renderReleases();
       } else if (action === 'back') {
-        profileWizardStep = Math.max(0, profileWizardStep - 1); renderInstallSetup();
+        profileWizardStep = Math.max(0, profileWizardStep - 1);
+        renderInstallSetup({ action: 'back', label: '' });
       } else if (action === 'next') {
         const total = installWizardSteps().length;
-        if (profileWizardStep >= total - 1) { profileWizardOpen = false; renderReleases(); }
-        else { profileWizardStep += 1; renderInstallSetup(); }
+        if (profileWizardStep >= total - 1) {
+          profileWizardOpen = false;
+          pendingInstallSetupFocus = { action: 'open', label: '' };
+          renderReleases();
+        } else {
+          profileWizardStep += 1;
+          renderInstallSetup({ action: 'next', label: '' });
+        }
       } else if (action === 'toggle') {
         const label = normalizeSurfaceLabel(el.dataset.label);
         if (selectedProfileSurfaces.has(label)) selectedProfileSurfaces.delete(label);
         else selectedProfileSurfaces.add(label);
         writeInstallProfile();
-        renderInstallSetup();
+        renderInstallSetup({ action: 'toggle', label });
       } else if (action === 'clear') {
-        selectedProfileSurfaces = new Set(); writeInstallProfile(); renderReleases();
+        selectedProfileSurfaces = new Set();
+        writeInstallProfile();
+        pendingInstallSetupFocus = { action: 'open', label: '' };
+        renderReleases();
       }
     });
     // Close any open "?" explainer when clicking outside it (native <details>
@@ -1308,127 +1438,36 @@ function issueMatchesSelectedProfile(issue) {
   return selectedProfileSurfaces.has(issueSurfaceLabel(issue));
 }
 
-function profileEvidenceSurfaces(detail) {
-  const surfaces = detail?.profileEvidence?.surfaces;
-  return Array.isArray(surfaces)
-    ? surfaces
-        .map((surface) => ({
-          label: normalizeSurfaceLabel(surface?.label),
-          weight: Math.max(0, Number(surface?.weight ?? 0)),
-        }))
-        .filter((surface) => surface.label && surface.weight > 0)
-    : [];
-}
-
-function selectedProfileGroups() {
-  const groups = new Set();
-  for (const label of selectedProfileSurfaces) {
-    const item = INSTALL_PROFILE_ITEM_BY_LABEL.get(label);
-    if (item?.groupKey) groups.add(item.groupKey);
-  }
-  return groups;
-}
-
-function missingInstallProfileRequirements() {
-  const groups = selectedProfileGroups();
-  return INSTALL_PROFILE_REQUIREMENTS
-    .filter((req) => !(req.groups ?? [req.key]).some((key) => groups.has(key)))
-    .map((req) => req.label);
-}
-
-function hasMeaningfulInstallProfile() {
-  return missingInstallProfileRequirements().length === 0;
-}
-
-function installProfileStatusText() {
-  if (selectedProfileSurfaces.size === 0) return '';
-  const missing = missingInstallProfileRequirements();
-  if (!missing.length) return 'Profile estimate is active. Issue evidence and trend are filtered for this profile; the audited global score remains the baseline.';
-  return `Filtering issue evidence only. Select ${missing.join(' + ')} to show a profile-adjusted estimate.`;
-}
-
-function renderInstallProfileStatus() {
-  const el = document.getElementById('profileFilterStatus');
-  if (!el) return;
-  const text = installProfileStatusText();
-  el.hidden = !text;
-  el.textContent = text;
-}
-
-// How many points the install profile can shift the global score, in either
-// direction. Bounded and symmetric on purpose: dodging issues gives a capped
-// bonus (never an auto-10), and breakage on YOUR surfaces pulls you below global.
-const MY_INSTALL_MAX_TILT = 2;
-
-function myInstallScore(r) {
-  if (!hasMeaningfulInstallProfile() || r.finalScore == null || r.status !== 'eligible') return null;
-  const detail = publicReleaseDetails.get(r.tag);
-  const surfaces = profileEvidenceSurfaces(detail);
-  if (!surfaces.length) return null;
-
-  const yoursLoad = surfaces
-    .filter((surface) => selectedProfileSurfaces.has(surface.label))
-    .reduce((sum, surface) => sum + surface.weight, 0);
-  const othersLoad = surfaces
-    .filter((surface) => !selectedProfileSurfaces.has(surface.label))
-    .reduce((sum, surface) => sum + surface.weight, 0);
-  const surfaceLoad = yoursLoad + othersLoad;
-  if (!surfaceLoad) return null; // nothing surface-specific in audit evidence → show global only
-
-  // Of the surface-specific breakage, how much lands on YOUR setup? High share →
-  // you eat most of it → tilt below global. Low share → you dodge it → tilt above,
-  // but capped at +MY_INSTALL_MAX_TILT (a Discord bug can no longer pile points on
-  // a Telegram user — it only shifts the balance, and only so far).
-  const yourShare = yoursLoad / surfaceLoad;          // 0..1
-  const tilt = (1 - 2 * yourShare) * MY_INSTALL_MAX_TILT;
-  const score = Math.max(0, Math.min(10, Number(r.finalScore) + tilt));
-  return Math.round(score * 10) / 10;
-}
-
 function displayScoreInfo(r) {
-  const mine = myInstallScore(r);
-  if (mine == null) return { main: scoreInfo(r), sub: '' };
-  return {
-    main: { color: scoreColor10(mine), label: 'My install', num: formatScore10(mine) ?? '—' },
-    sub: `global ${formatScore10(r.finalScore) ?? '—'}`,
-  };
+  return { main: scoreInfo(r), sub: '' };
 }
 
 function releaseForChartPoint(r) {
   const row = allReleases.find((candidate) => candidate.tag === r.tag);
-  const detail = publicReleaseDetails.get(r.tag);
   return {
-    ...(row ?? {}),
     ...r,
-    ...(detail ? {
-      status: detail.status ?? row?.status ?? r.status,
-      finalScore: detail.score ?? row?.finalScore ?? r.finalScore,
-      publishedAt: detail.publishedAt ?? row?.publishedAt ?? r.publishedAt,
-    } : {}),
+    ...(row ?? {}),
   };
 }
 
 function chartScoreInfo(r) {
   const release = releaseForChartPoint(r);
-  const mine = myInstallScore(release);
-  if (mine != null) {
-    return { score: mine, label: 'My install', global: release.finalScore };
-  }
-  if (release.finalScore == null || Number.isNaN(Number(release.finalScore))) return null;
-  return { score: Number(release.finalScore), label: 'Global', global: null };
+  const score = finiteScore(release.finalScore);
+  if (score == null) return null;
+  return { score, label: 'Global', global: null };
 }
 
 function scoreHistoryMode() {
-  return hasMeaningfulInstallProfile() ? 'My install score history' : 'Global score history';
+  return 'Global assessment history';
 }
 
 function scoreHistoryPoints() {
   const scored = chartReleases
     .map((r) => ({ release: releaseForChartPoint(r), info: chartScoreInfo(r) }))
-    .filter(({ info }) => info && info.score != null && !Number.isNaN(Number(info.score)))
+    .filter(({ info }) => info && finiteScore(info.score) != null)
     .map(({ release, info }) => ({
       tag: release.tag,
-      score: Number(info.score),
+      score: info.score,
       label: info.label,
       global: info.global,
     }));
@@ -1474,7 +1513,7 @@ function scoreHistoryChartSvg(points) {
 
   const nodes = coords.map((c) =>
     `<g class="score-history__dot" data-tag="${esc(c.tag)}" role="button" tabindex="0" `
-    + `aria-label="${esc(c.tag)} score ${esc(c.label)}">`
+    + `aria-label="${esc(c.tag)} assessment ${esc(c.label)}">`
     + `<title>${esc(c.tag)} — ${esc(c.label)}/10${c.global != null ? ` · global ${formatScore10(c.global)}/10` : ''}</title>`
     + `<text class="score-history__score-label" x="${c.x.toFixed(1)}" y="${(c.y - 14).toFixed(1)}" `
     + `text-anchor="middle" fill="${c.color}">${esc(c.label)}</text>`
@@ -1495,6 +1534,11 @@ function renderScoreHistory() {
   const section = document.getElementById('scoreHistory');
   const chart = document.getElementById('scoreHistoryChart');
   if (!section || !chart) return;
+  if (!releaseSnapshotAuthorityVerified()) {
+    section.hidden = true;
+    chart.innerHTML = '';
+    return;
+  }
 
   const points = scoreHistoryPoints();
   if (points.length < 2) {
@@ -1534,14 +1578,15 @@ function focusReleaseTag(tag) {
   if (!row) return;
   document.querySelectorAll('.release.open').forEach((r) => {
     r.classList.remove('open');
-    r.setAttribute('aria-expanded', 'false');
+    r.querySelector('[data-release-toggle]')?.setAttribute('aria-expanded', 'false');
     const d = r.nextElementSibling;
     if (d?.classList.contains('details')) d.hidden = true;
   });
   row.classList.add('open');
-  row.setAttribute('aria-expanded', 'true');
+  row.querySelector('[data-release-toggle]')?.setAttribute('aria-expanded', 'true');
   const details = row.nextElementSibling;
   if (details?.classList.contains('details')) details.hidden = false;
+  loadReviewForRelease(tag);
   row.scrollIntoView({ behavior: 'smooth', block: 'center' });
 }
 
@@ -1551,6 +1596,300 @@ function npmVersionFromTag(tag) {
 
 function installCommand(tag) {
   return `openclaw update --tag ${npmVersionFromTag(tag)}`;
+}
+
+const STALE_ANALYSIS_PREFIX = 'Analysis is stale.';
+const ACTIVE_ANALYSIS_REFRESH_LABEL = 'Analysis refresh in progress';
+const ACTIVE_ANALYSIS_REFRESH_MESSAGE =
+  'A new analysis snapshot is being prepared. Existing authorized scores may remain visible, but install actions remain unavailable until it completes.';
+
+function isStaleAnalysis(r) {
+  return r?.status === 'stale'
+    || r?.staleAudit?.state === 'stale'
+    || (typeof r?.reason === 'string' && r.reason.startsWith(STALE_ANALYSIS_PREFIX));
+}
+
+function analysisRefreshInProgress(status = latestStatus) {
+  return status?.refreshing === true;
+}
+
+function statusBelongsToReleaseSnapshot(status = latestStatus) {
+  return isExplicitSnapshotId(releaseSnapshot)
+    && status?.publicationSnapshotId === releaseSnapshot
+    && status?.snapshotId === releaseSnapshot;
+}
+
+function scoreAuthorizationAllowsActions(status = latestStatus) {
+  const authorization = status?.currentScoreAuthorizationStatus;
+  // `not_required` is valid only when the API has identified a non-refresh
+  // publication that has no refresh receipt to authorize.
+  return statusBelongsToReleaseSnapshot(status)
+    && status?.currentScoreAuthorizationSnapshotId === releaseSnapshot
+    && (authorization === 'authorized' || authorization === 'not_required');
+}
+
+function scoreAuthorizationAllowsRatings(
+  status = latestStatus,
+  available = statusAvailable,
+) {
+  if (!available || !status || analysisRefreshInProgress(status)) return true;
+  return scoreAuthorizationAllowsActions(status);
+}
+
+function statusActionabilityProblem(
+  status = latestStatus,
+  available = statusAvailable,
+  now = Date.now(),
+) {
+  if (!available || !status) {
+    return {
+      label: 'Verifying analysis status',
+      detail: 'Install actions remain unavailable until the current analysis status is confirmed.',
+    };
+  }
+  if (!statusBelongsToReleaseSnapshot(status)) {
+    return {
+      label: 'Verifying publication snapshot',
+      detail: 'Install actions remain unavailable until analysis authorization and release rows share one publication snapshot.',
+    };
+  }
+  if (!scoreAuthorizationAllowsActions(status)) {
+    const authorization = status.currentScoreAuthorizationStatus;
+    return ({
+      unauthorized: {
+        label: 'Analysis authorization failed',
+        detail: 'Install actions remain unavailable because the current score publication was not authorized by a successful refresh receipt.',
+      },
+      missing: {
+        label: 'Analysis authorization is missing',
+        detail: 'Install actions remain unavailable because the current score publication has no matching refresh receipt.',
+      },
+      unavailable: {
+        label: 'Analysis authorization unavailable',
+        detail: 'Install actions remain unavailable until score publication authorization can be verified.',
+      },
+    })[authorization] ?? {
+      label: 'Analysis authorization unavailable',
+      detail: 'Install actions remain unavailable until score publication authorization can be verified.',
+    };
+  }
+  if (status.lastError) {
+    return {
+      label: 'Latest refresh failed',
+      detail: 'Install actions remain unavailable until a successful refresh confirms current source data.',
+    };
+  }
+  const issueLag = Number(status.dataFreshness?.issueUpdatedAgeHoursAtScore);
+  if (Number.isFinite(issueLag) && issueLag > SOURCE_STALE_AFTER_HOURS) {
+    return {
+      label: 'Source data is stale',
+      detail: `Issue evidence lagged the assessment by ${metricValue(issueLag)} hours. Refresh before installing.`,
+    };
+  }
+  const lastScoredAt = status.lastScoredAt ? Date.parse(status.lastScoredAt) : NaN;
+  if (!Number.isFinite(lastScoredAt) || now - lastScoredAt > STALE_AFTER_MS) {
+    return {
+      label: 'Analysis is stale',
+      detail: 'Install actions remain unavailable until the release analysis is refreshed.',
+    };
+  }
+  return null;
+}
+
+function releaseSnapshotIdentityVerified() {
+  return releaseLoadState.status === 'ready'
+    && releaseSnapshotAuthorityVerified()
+    && publicLoadState.status === 'ready'
+    && publicLoadState.snapshot === releaseSnapshot;
+}
+
+function releaseSnapshotRowsVerified() {
+  return isExplicitSnapshotId(releaseSnapshot)
+    && rowsBelongToExplicitSnapshot(allReleases, releaseSnapshot);
+}
+
+function releaseSnapshotAuthorityVerified() {
+  return releaseSnapshotRowsVerified()
+    && scoreAuthorizationAllowsRatings();
+}
+
+function releaseSnapshotPublicationVerified() {
+  return !analysisRefreshInProgress()
+    && !actionabilityHold
+    && scoreAuthorizationAllowsActions()
+    && releaseSnapshotIdentityVerified();
+}
+
+function releaseSnapshotActionabilityVerified() {
+  return releaseSnapshotPublicationVerified()
+    && !statusActionabilityProblem();
+}
+
+function reviewForRender(tag) {
+  return releaseSnapshotActionabilityVerified()
+    ? reviewByTag.get(tag) ?? null
+    : null;
+}
+
+function actionabilityHoldCopy() {
+  if (analysisRefreshInProgress()) {
+    return {
+      label: ACTIVE_ANALYSIS_REFRESH_LABEL,
+      detail: ACTIVE_ANALYSIS_REFRESH_MESSAGE,
+    };
+  }
+  if (actionabilityHold) return actionabilityHold;
+  const statusProblem = statusActionabilityProblem();
+  if (statusProblem) return statusProblem;
+  return {
+    label: 'Verifying release snapshot',
+    detail: 'Install actions remain unavailable until release and issue evidence are verified together.',
+  };
+}
+
+function actionabilityUiState(
+  status = latestStatus,
+  available = statusAvailable,
+  now = Date.now(),
+) {
+  if (analysisRefreshInProgress(status)) return { mode: 'refreshing' };
+  if (actionabilityHold) return { mode: 'blocked', ...actionabilityHold };
+  const problem = statusActionabilityProblem(status, available, now);
+  if (problem) return { mode: 'blocked', ...problem };
+  return releaseSnapshotIdentityVerified()
+    ? { mode: 'verified' }
+    : { mode: 'verifying-release-snapshot' };
+}
+
+function actionabilityUiStateKey(
+  status = latestStatus,
+  available = statusAvailable,
+  now = Date.now(),
+) {
+  return JSON.stringify({
+    actionability: actionabilityUiState(status, available, now),
+    ratingsVisible:
+      releaseSnapshotRowsVerified()
+      && scoreAuthorizationAllowsRatings(status, available),
+  });
+}
+
+function staleAnalysisBannerCopy(rows = allReleases) {
+  const recomputeCauses = new Set([
+    'score_model_changed',
+    'prompt_changed',
+    'evidence_source_changed',
+    'audit_payload_incompatible',
+    'recommendation_policy_incompatible',
+  ]);
+  const needsRecompute = rows.some((release) =>
+    Array.isArray(release?.staleAudit?.causes)
+      && release.staleAudit.causes.some((cause) => recomputeCauses.has(cause)));
+  return {
+    needsRecompute,
+    label: 'Analysis is stale',
+    detail: needsRecompute
+      ? 'The stored analysis was produced by older scoring code or evidence and must be recomputed before install guidance is available.'
+      : 'Refresh the analysis before installing. Existing gate and advisory evidence remains visible below.',
+  };
+}
+
+function staleAuditCauseLabel(cause) {
+  return ({
+    audit_missing: 'no current score audit exists',
+    audit_publication_invalid: 'the audit is not sealed for publication',
+    score_model_changed: 'the scoring model changed',
+    prompt_changed: 'the scoring prompt changed',
+    release_score_record_mismatch: 'the stored release score no longer matches its audit',
+    audit_payload_incompatible: 'the audit payload no longer matches current contracts',
+    recommendation_policy_incompatible: 'the recommendation policy changed',
+    score_ledger_incompatible: 'the score ledger is incompatible',
+    evidence_source_changed: 'the evidence source changed after scoring',
+    audit_incompatible: 'the score audit is incompatible',
+    release_load_failed: 'the release snapshot could not be refreshed',
+    public_load_failed: 'the public evidence snapshot could not be loaded',
+    public_snapshot_stale: 'the public evidence endpoint returned retained or stale data',
+    public_payload_retained: 'the public evidence endpoint retained an older diagnostic payload',
+    review_load_failed: 'the assessment details could not be loaded',
+    snapshot_mismatch: 'the API responses came from different database snapshots',
+    refresh_in_progress: 'a new analysis snapshot is being prepared',
+    closure_proof_integrity_stale: 'closed-issue proof integrity must be refreshed',
+    score_blocking_ingestion_failure: 'a required evidence ingestion step failed',
+    current_score_missing: 'no current score publication exists',
+  })[cause] ?? '';
+}
+
+function staleAuditDiagnosticsText(r) {
+  const diagnostic = r?.staleAudit;
+  const message = humanizeUiText(
+    diagnostic?.message || r?.reason || 'Refresh before installing.',
+  );
+  const causes = Array.isArray(diagnostic?.causes)
+    ? diagnostic.causes.map(staleAuditCauseLabel).filter(Boolean)
+    : [];
+  return causes.length ? `${message} Cause: ${causes.join('; ')}.` : message;
+}
+
+function humanizeUiText(value) {
+  return String(value ?? '')
+    .replace(/\bknown medium-or-higher CVE exposure\b/gi, 'medium-or-higher security advisory exposure')
+    .replace(/\bCVE install gate\b/gi, 'security advisory install gate')
+    .replace(/\bknown CVEs?\b/gi, 'medium-or-higher security advisories')
+    .replace(/\bskip-cve\b/gi, 'blocked by security advisory')
+    .replace(/\bskip-hotfix\b/gi, 'superseded by hotfix')
+    .replace(/\bnot_required\b/gi, 'not required')
+    .replace(/\bscore_blocking_ingestion_failure\b/gi, 'required evidence ingestion failure')
+    .replace(/\bclosure_proof_integrity_stale\b/gi, 'stale closed-issue proof integrity');
+}
+
+function recommendationDecisionFor(value) {
+  if (value?.decisionCode) return value;
+  return value?.explanation?.recommendationDecision
+    || value?.components?.recommendationDecision
+    || value?.components?.explanation?.recommendationDecision
+    || null;
+}
+
+function recommendationDecisionCopy(value) {
+  const decision = recommendationDecisionFor(value);
+  if (!decision) return '';
+  const selectedTag = decision.selectedTag || '';
+  const score = formatScore10(decision.releaseScore);
+  const threshold = formatScore10(decision.threshold);
+  const tolerance = formatScore10(decision.recencyTolerance);
+  switch (decision.decisionCode) {
+    case 'highest_confidence':
+      return 'Recommended at the highest audited score; the newest release wins when scores are equal.';
+    case 'newest_within_confidence_tolerance':
+      return `Recommended as the newest qualifying release within ${tolerance ?? 'the allowed margin'} points of the highest audited score.`;
+    case 'higher_confidence_release_selected':
+      return `Not selected: ${selectedTag || 'the recommended release'} has a higher audited policy/stability assessment.`;
+    case 'newer_release_within_tolerance_selected':
+      return `Not selected: ${selectedTag || 'the recommended release'} is newer and remains within ${tolerance ?? 'the allowed margin'} points of this score.`;
+    case 'below_recommendation_threshold':
+      return `Not selected: ${score ? `score ${score} is` : 'the score is'} below the ${threshold ?? 'required'} recommendation threshold.`;
+    case 'install_gate_active':
+      return value?.status === 'skip-cve'
+        ? 'Not selected: a medium-or-higher security advisory blocks this version.'
+        : 'Not selected: an install gate is active.';
+    default:
+      return decision.selected
+        ? 'Recommended under the current audited release policy.'
+        : 'Not selected under the current audited release policy.';
+  }
+}
+
+function isMachineDecisionText(value) {
+  return /^Decision [a-z_]+:/i.test(String(value ?? '').trim());
+}
+
+function installStatusLabel(status) {
+  return ({
+    eligible: 'eligible',
+    wait: 'waiting for more release age',
+    'skip-cve': 'blocked by security advisory',
+    'skip-hotfix': 'superseded by hotfix',
+  })[status] ?? String(status ?? 'unknown').replace(/[-_]/g, ' ');
 }
 
 function updateCommandBlockHtml(tag, opts = {}) {
@@ -1566,11 +1905,33 @@ function updateCommandBlockHtml(tag, opts = {}) {
     + `</div></div>`;
 }
 
+function staleAnalysisStateHtml(r) {
+  const refresh = analysisRefreshInProgress();
+  const staleCopy = staleAnalysisBannerCopy([r]);
+  return `<div class="install-state install-state--stale">`
+    + `<span class="install-state__title">${refresh ? ACTIVE_ANALYSIS_REFRESH_LABEL : staleCopy.label}</span>`
+    + `<span class="install-state__meta">${esc(refresh
+        ? ACTIVE_ANALYSIS_REFRESH_MESSAGE
+        : staleCopy.needsRecompute
+          ? staleCopy.detail
+          : humanizeUiText(r?.reason || staleCopy.detail))}</span>`
+    + `</div>`;
+}
+
+function heldInstallStateHtml() {
+  const copy = actionabilityHoldCopy();
+  return `<div class="install-state install-state--stale">`
+    + `<span class="install-state__title">${esc(copy.label)}</span>`
+    + `<span class="install-state__meta">${esc(copy.detail)}</span>`
+    + `</div>`;
+}
+
 function nonRecommendedInstallStateHtml(r) {
   const status = r?.status ?? 'unknown';
+  const decisionSummary = recommendationDecisionCopy(r);
   const meta = status === 'eligible'
-    ? 'Passed install eligibility checks, but the audit does not support treating it as the recommended install target.'
-    : 'Open the evidence below before using this release; no copyable update command is shown for non-recommended targets.';
+    ? `Passed install eligibility checks. ${decisionSummary || 'A higher-confidence release is recommended.'}`
+    : `${decisionSummary || 'Open the evidence below before using this release.'} No copyable update command is shown for non-recommended targets.`;
   return `<div class="install-state install-state--not-recommended">`
     + `<span class="install-state__title">Not the recommended install target</span>`
     + `<span class="install-state__meta">${esc(meta)}</span>`
@@ -1578,7 +1939,11 @@ function nonRecommendedInstallStateHtml(r) {
 }
 
 function installActionHtml(r) {
-  return r?.recommended ? updateCommandBlockHtml(r.tag) : nonRecommendedInstallStateHtml(r);
+  if (isStaleAnalysis(r)) return staleAnalysisStateHtml(r);
+  if (!releaseSnapshotActionabilityVerified()) return heldInstallStateHtml();
+  return r?.recommended && finiteScore(r?.finalScore) != null
+    ? updateCommandBlockHtml(r.tag)
+    : nonRecommendedInstallStateHtml(r);
 }
 
 function evidenceSectionHtml(title, itemsHtml, note = '') {
@@ -1626,8 +1991,8 @@ function advisoryEvidenceHtml(r) {
   }).join('');
   const rest = items.length - shown.length;
   const note = rest > 0
-    ? `Version-level. Showing ${shown.length} of ${items.length} — see GitHub for the rest.`
-    : 'Version-level; not filtered by install profile.';
+    ? `Version-level. Showing ${shown.length} of ${items.length}; all matching ranges are retained.`
+    : 'Version-level; all matching ranges are retained and not filtered by age or install profile.';
   return evidenceSectionHtml(
     items.length === 1 ? 'Known advisory' : 'Known advisories',
     rows,
@@ -1652,7 +2017,7 @@ function issueStateLabel(issue) {
 }
 
 function issueEvidenceRowsForRelease(tag) {
-  const review = reviewByTag.get(tag);
+  const review = reviewForRender(tag);
   const evidence = review?.local?.issueEvidence ?? {};
   return [
     ...(evidence.verifiedDebt ?? []),
@@ -1673,7 +2038,7 @@ function issueEvidenceRowForIssue(tag, issueNumber) {
 function closureProofForIssue(tag, issueNumber) {
   const number = Number(issueNumber);
   if (!Number.isInteger(number) || number <= 0) return null;
-  const proof = reviewByTag.get(tag)?.local?.gateEvidence?.fixProvenance?.closureProof;
+  const proof = reviewForRender(tag)?.local?.gateEvidence?.fixProvenance?.closureProof;
   const examplesByStatus = proof?.examplesByStatus && typeof proof.examplesByStatus === 'object'
     ? Object.values(proof.examplesByStatus).flatMap((rows) => Array.isArray(rows) ? rows : [])
     : [];
@@ -1684,18 +2049,26 @@ function closureProofForIssue(tag, issueNumber) {
   ].find((row) => Number(row?.number) === number) ?? null;
 }
 
-function issueEvidenceTierLabel(tier) {
+function sourceOnlyIssueEvidence(issue, evidenceRow) {
+  const labels = evidenceRow?.issue?.labels ?? issue?.labels ?? [];
+  return Array.isArray(labels) && labels.some((label) =>
+    label === 'clawsweeper:source-repro' || label === 'clawsweeper:current-main-repro'
+  );
+}
+
+function issueEvidenceTierLabel(tier, issue = null, evidenceRow = null) {
   const labels = {
-    verifiedDebt: 'Field-confirmed blocker evidence',
-    verified: 'Field-confirmed blocker evidence',
-    carryoverDebt: 'Open unconfirmed issue risk',
-    carryover: 'Open unconfirmed issue risk',
+    verifiedDebt: 'Policy-qualified blocker evidence',
+    verified: 'Policy-qualified blocker evidence',
     staleDebt: 'Weak/stale evidence',
     stale: 'Weak/stale evidence',
-    openedFeltSerious: 'Field-visible opened issue',
+    openedFeltSerious: 'High-impact opened issue',
     verifiedFixed: 'Verified release fix',
     unverifiedClosed: 'Closed issue without release-fix credit',
   };
+  if (tier === 'carryoverDebt' || tier === 'carryover') {
+    return 'Inherited issue context (zero assessment impact)';
+  }
   if (labels[tier]) return labels[tier];
   if (typeof tier !== 'string' || !tier.trim()) return 'Issue evidence';
   return tier.replace(/_/g, ' ').replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase();
@@ -1704,7 +2077,7 @@ function issueEvidenceTierLabel(tier) {
 function issueScoringMetaHtml(issue, evidenceRow, proofRow, releaseTag = null) {
   const classification = evidenceRow?.debtClassification ?? evidenceRow?.issue?.classification ?? issue;
   const tier = evidenceRow?.tier ?? proofRow?.status ?? 'public issue';
-  const tierLabel = evidenceRow?.tierLabel ?? issueEvidenceTierLabel(tier);
+  const tierLabel = issueEvidenceTierLabel(tier, issue, evidenceRow);
   const severity = classification?.severity ?? issue?.severity;
   const functionality = classification?.functionality ?? null;
   const scope = classification?.scope ?? issue?.scope;
@@ -1716,8 +2089,8 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow, releaseTag = null) {
   ].filter(Boolean);
   const metrics = [];
   if (Number.isFinite(evidenceRow?.weight)) metrics.push(`w ${metricValue(evidenceRow.weight)}`);
-  if (evidenceRow?.fieldConfirmed === true) metrics.push('field-confirmed');
-  else if (evidenceRow?.fieldConfirmed === false) metrics.push('not field-confirmed');
+  if (evidenceRow?.fieldConfirmed === true) metrics.push('policy-qualified blocker evidence');
+  else if (evidenceRow?.fieldConfirmed === false) metrics.push('not policy-qualified');
   if (evidenceRow?.installImpactClass) {
     metrics.push(`${String(evidenceRow.installImpactClass).replace(/_/g, ' ')} x${metricValue(evidenceRow.installImpactMultiplier ?? 1)}`);
   }
@@ -1748,31 +2121,29 @@ function issueScoringMetaHtml(issue, evidenceRow, proofRow, releaseTag = null) {
 function issueBucketReason(issue, evidenceRow) {
   const tier = evidenceRow?.tier;
   if (tier === 'verifiedDebt' || tier === 'verified') {
-    return 'Why this is hard blocker debt: release-local field/community-confirmed blocker evidence.';
+    return 'Why this is hard blocker debt: release-local evidence met the scoring policy. Maintainer or label signals are policy evidence, not independent reproduction.';
   }
-  if (tier === 'staleDebt' || tier === 'stale') {
-    return 'Why this is capped weak/stale evidence: stale, low-confidence, needs-info, low-severity, docs, or otherwise weak evidence.';
+  if (tier === 'carryoverDebt' || tier === 'carryover') {
+    const releaseLocal = typeof evidenceRow?.clusterReleaseLocal === 'boolean' ? evidenceRow.clusterReleaseLocal : null;
+    const fieldConfirmed = typeof evidenceRow?.fieldConfirmed === 'boolean' ? evidenceRow.fieldConfirmed : null;
+    if (releaseLocal === false && fieldConfirmed === true) {
+      return 'Why this is context only: it met the policy signal threshold, but it is inherited from before this release window and has zero assessment impact.';
+    }
+    if (releaseLocal === false) {
+      return 'Why this is context only: it is inherited from before this release window and has zero assessment impact.';
+    }
+    return 'Why this is context only: it remains linked for audit, but does not lower or limit the assessment.';
   }
-  if (tier !== 'carryoverDebt' && tier !== 'carryover') return '';
-  const releaseLocal = typeof evidenceRow?.clusterReleaseLocal === 'boolean' ? evidenceRow.clusterReleaseLocal : null;
-  const fieldConfirmed = typeof evidenceRow?.fieldConfirmed === 'boolean' ? evidenceRow.fieldConfirmed : null;
-  const labels = evidenceRow?.issue?.labels ?? issue?.labels ?? [];
-  const sourceOnly = Array.isArray(labels) && labels.some((label) =>
-    label === 'clawsweeper:source-repro' || label === 'clawsweeper:current-main-repro'
-  );
-  if (releaseLocal === false && fieldConfirmed === true) {
-    return 'Why this is open unconfirmed risk: it has field/community discussion, but it is inherited from before this release window rather than proven as a release-local blocker.';
+  const sourceOnly = sourceOnlyIssueEvidence(issue, evidenceRow);
+  if (
+    tier === 'staleDebt' ||
+    tier === 'stale'
+  ) {
+    return sourceOnly
+      ? 'Why this is capped weak/stale evidence: it has source/static policy evidence only, not independently confirmed installed-release breakage.'
+      : 'Why this is capped weak/stale evidence: it is stale, low-confidence, needs-info, low-severity, docs-related, or otherwise unconfirmed.';
   }
-  if (releaseLocal === false) {
-    return 'Why this is open unconfirmed risk: it is inherited from before this release window and is not proven as a release-local blocker.';
-  }
-  if (sourceOnly && fieldConfirmed !== true) {
-    return 'Why this is open unconfirmed risk: it has source/static reproduction only, not field-confirmed installed-release breakage.';
-  }
-  if (fieldConfirmed === false) {
-    return 'Why this is open unconfirmed risk: it is open negative evidence, but not field-confirmed installed-release breakage.';
-  }
-  return 'Why this is open unconfirmed risk: it overlaps the release, but does not have enough release-local blocker proof to become hard blocker debt.';
+  return '';
 }
 
 function issueRowHtml(issue, extra = false, releaseTag = null) {
@@ -1790,17 +2161,35 @@ function issueRowHtml(issue, extra = false, releaseTag = null) {
     + `</li>`;
 }
 
-function selectedWatchAreaSummaryHtml(r) {
-  const selectedRows = (Array.isArray(r.brokenSurfaces) ? r.brokenSurfaces : [])
-    .filter((s) => selectedProfileSurfaces.has(normalizeSurfaceLabel(s.label)));
-  if (!selectedRows.length) {
-    return '<li class="evidence__item"><span class="evidence__meta">No watch-area reports found for selected areas.</span></li>';
+function selectedProfileEvidenceRows(r, detail) {
+  const fullRows = Array.isArray(detail?.profileEvidence?.surfaces)
+    ? detail.profileEvidence.surfaces
+    : [];
+  const fallbackRows = Array.isArray(r?.brokenSurfaces) ? r.brokenSurfaces : [];
+  return (fullRows.length ? fullRows : fallbackRows)
+    .map((surface) => ({
+      ...surface,
+      label: normalizeSurfaceLabel(surface?.label),
+      count: Math.max(0, Number(surface?.count ?? 0)),
+    }))
+    .filter((surface) =>
+      surface.label
+      && surface.count > 0
+      && selectedProfileSurfaces.has(surface.label));
+}
+
+function selectedWatchAreaSummaryHtml(r, detail, displayedIssueCount = 0) {
+  const selectedRows = selectedProfileEvidenceRows(r, detail);
+  const fullIssueCount = selectedRows.reduce((sum, surface) => sum + surface.count, 0);
+  if (!fullIssueCount) {
+    return '<li class="evidence__item"><span class="evidence__meta">This public summary does not include issue details for the selected areas.</span></li>';
   }
-  return selectedRows.map((s) =>
-    '<li class="evidence__item"><span>' + esc(s.label) + '</span><span class="evidence__meta">'
-      + esc(s.count) + (s.count === 1 ? ' watch-area report' : ' watch-area reports')
-      + '; issue details need a refreshed API payload.</span></li>'
-  ).join('');
+  const areaList = selectedRows.map((surface) => surface.label).join(', ');
+  const detailText = displayedIssueCount > 0
+    ? `Showing ${displayedIssueCount} of ${fullIssueCount} matching watch-area ${fullIssueCount === 1 ? 'issue' : 'issues'} from the full analysis.`
+    : `The full analysis contains ${fullIssueCount} matching watch-area ${fullIssueCount === 1 ? 'issue' : 'issues'}, but this 25-item public summary does not include their details.`;
+  return '<li class="evidence__item"><span>' + esc(areaList) + '</span>'
+    + '<span class="evidence__meta">' + esc(detailText) + '</span></li>';
 }
 
 function issueRowsHtml(issues, visibleCount = 8, releaseTag = null) {
@@ -1816,7 +2205,7 @@ function issueEvidenceHtml(r) {
   const title = selected.size ? 'Related issues for selected areas' : 'Related issues';
   const issues = evidenceIssuesForRelease(detail);
   if (selected.size && !issues.length) {
-    return evidenceSectionHtml(title, selectedWatchAreaSummaryHtml(r));
+    return evidenceSectionHtml(title, selectedWatchAreaSummaryHtml(r, detail));
   }
   if (!issues.length) return '';
 
@@ -1826,9 +2215,14 @@ function issueEvidenceHtml(r) {
 
   const selectedIssues = issues.filter(issueMatchesSelectedProfile);
   const generalIssues = issues.filter((i) => !issueHasInstallSurface(i));
+  const selectedEvidenceCount = selectedProfileEvidenceRows(r, detail)
+    .reduce((sum, surface) => sum + surface.count, 0);
+  const incompleteSummaryHtml = selectedEvidenceCount > selectedIssues.length
+    ? selectedWatchAreaSummaryHtml(r, detail, selectedIssues.length)
+    : '';
   const selectedHtml = selectedIssues.length
-    ? issueRowsHtml(selectedIssues, 8, r.tag)
-    : '<li class="evidence__item"><span class="evidence__meta">No watch-area issues found for selected areas.</span></li>';
+    ? issueRowsHtml(selectedIssues, 8, r.tag) + incompleteSummaryHtml
+    : selectedWatchAreaSummaryHtml(r, detail);
   return evidenceSectionHtml(title, selectedHtml)
     + evidenceSectionHtml(
       'General issues',
@@ -1854,7 +2248,7 @@ function scoreSignalSummary(local) {
   const truncated = rows.some((row) => row.commenterScanTruncated || row.issue?.commenterScanTruncated);
   const fieldConfirmed = rows.filter((row) => row.fieldConfirmed).length;
   const parts = [];
-  if (fieldConfirmed) parts.push(`${fieldConfirmed} field-confirmed`);
+  if (fieldConfirmed) parts.push(`${fieldConfirmed} policy-qualified evidence rows`);
   if (maxReporters) parts.push(`up to ${maxReporters} reporters`);
   if (maxHumanCommenters) parts.push(`up to ${maxHumanCommenters} human commenters`);
   if (maxPositiveReactions) parts.push(`up to ${maxPositiveReactions} positive reactions`);
@@ -1862,18 +2256,34 @@ function scoreSignalSummary(local) {
   return parts.join(' · ');
 }
 
+function appendAuditLinkQuery(base, params) {
+  if (!base) return '';
+  const url = new URL(base, location.origin);
+  Object.entries(params).forEach(([key, value]) => {
+    if (value != null) url.searchParams.set(key, String(value));
+  });
+  return `${url.pathname}${url.search}`;
+}
+
+function reviewRawRowLinks(tag) {
+  return reviewForRender(tag)?.local?.sourceProvenance?.rawRows
+    ?? allReleases.find((release) => release.tag === tag)?.auditLinks
+    ?? {};
+}
+
 function issueEvidenceApiLinksHtml(tag) {
-  const base = `/api/releases/${encodeURIComponent(tag)}/review/issues`;
+  const base = reviewRawRowLinks(tag).issues;
+  if (!base) return '';
   const links = [
     ['Open issue evidence rows', base],
-    ['open unconfirmed issue risk', `${base}?tier=openUnconfirmedRisk&sort=weight&direction=desc`],
-    ['field-discussed open risk', `${base}?tier=openUnconfirmedRisk&fieldConfirmed=true&minWeight=5&sort=weight&direction=desc`],
-    ['critical core contextual risk', `${base}?tier=openUnconfirmedRisk&sentiment=negative&severity=critical&functionality=core&sort=weight&direction=desc`],
-    ['weak or stale issue evidence', `${base}?tier=weakOrStaleEvidence&sort=weight&direction=desc`],
-    ['high-weight weak/stale evidence', `${base}?tier=weakOrStaleEvidence&minWeight=5&sort=weight&direction=desc`],
-    ['opened reports', `${base}?tier=openedFeltSerious`],
-    ['verified fixes', `${base}?tier=verifiedFixed`],
-    ['unverified closures', `${base}?tier=unverifiedClosed`],
+    ['inherited issue context (zero assessment impact)', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', sort: 'weight', direction: 'desc' })],
+    ['field-discussed inherited context', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', fieldConfirmed: true, minWeight: 5, sort: 'weight', direction: 'desc' })],
+    ['critical core inherited context', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', sentiment: 'negative', severity: 'critical', functionality: 'core', sort: 'weight', direction: 'desc' })],
+    ['weak or stale issue evidence', appendAuditLinkQuery(base, { tier: 'weakOrStaleEvidence', sort: 'weight', direction: 'desc' })],
+    ['high-weight weak/stale evidence', appendAuditLinkQuery(base, { tier: 'weakOrStaleEvidence', minWeight: 5, sort: 'weight', direction: 'desc' })],
+    ['opened reports', appendAuditLinkQuery(base, { tier: 'openedFeltSerious' })],
+    ['verified fixes', appendAuditLinkQuery(base, { tier: 'verifiedFixed' })],
+    ['unverified closures', appendAuditLinkQuery(base, { tier: 'unverifiedClosed' })],
   ];
   return links
     .map(([label, href]) => `<a href="${href}" target="_blank" rel="noopener">${esc(label)}</a>`)
@@ -1882,8 +2292,18 @@ function issueEvidenceApiLinksHtml(tag) {
 
 function shortIssueTitle(issue) {
   const rawTitle = String(issue?.title ?? '').trim();
-  const title = rawTitle.replace(/^\[bug\]:?\s*/i, '').trim() || rawTitle || 'untitled report';
+  if (isPlaceholderIssueTitle(issue)) return 'untitled report';
+  const title = rawTitle.replace(/^\[bug\]:?\s*/i, '').replace(/^bug:?\s*/i, '').trim() || rawTitle;
   return truncateAtWordBoundary(title, 110);
+}
+
+function isPlaceholderIssueTitle(issue) {
+  const rawTitle = String(issue?.title ?? '').trim();
+  const content = rawTitle
+    .replace(/^\[bug\]:?\s*/i, '')
+    .replace(/^bug:?\s*/i, '')
+    .replace(/[\s:;,.!?()[\]{}_-]+/g, '');
+  return content.length === 0;
 }
 
 function truncateAtWordBoundary(text, maxLength) {
@@ -1903,6 +2323,7 @@ function issueRef(issue) {
 
 function issueListText(issues, limit = 2) {
   return issues
+    .filter((issue) => !isPlaceholderIssueTitle(issue))
     .slice(0, limit)
     .map(issueRef)
     .filter(Boolean)
@@ -1918,19 +2339,31 @@ function metricLabel(key) {
   return ({
     analyzedClosedCount: 'analyzed',
     cappedPenalty: 'penalty',
+    capApplied: 'cap reached',
     classifiedIssueCount: 'classified',
-    countedClosedCount: 'counted fixes',
+    countedClosedCount: 'direct fixes credited',
+    cveAffected: 'advisory affected',
+    cveLoad: 'advisory weight',
     evidenceCoverage: 'coverage',
     knownNotInReleaseCount: 'not in tag',
+    maxPenalty: 'maximum penalty',
     missingClassificationCount: 'missing classes',
     missingEvidenceCount: 'missing proof',
     neutralOrNonActionableCount: 'not scored',
     notCountedClosedCount: 'not direct fixes',
     openCanonicalRiskCount: 'open canonical',
     openedCount: 'opened',
+    rawAnalyzedClosedIssueCount: 'raw closed issues analyzed',
     rawIssueCount: 'raw issues',
-    rawWeight: 'raw weight',
+    rawNotCountedClosedIssueCount: 'raw issues without direct fix credit',
+    rawUnresolvedRiskGroupCount: 'raw unresolved proof groups',
+    rawWeight: 'evidence weight',
     resolvedByReleaseFixProofCount: 'release proof',
+    scoredUnresolvedRiskGroupCount: 'scored risk groups',
+    scoredUnresolvedRiskWeight: 'scored risk weight',
+    scoreCeiling: 'score ceiling',
+    storedExampleCount: 'examples shown',
+    storedExampleWeight: 'shown example weight',
     stillOpenCount: 'still open',
     unverifiedClosedCount: 'unverified',
     unresolvedClosureRiskWeight: 'closure weight',
@@ -1957,6 +2390,31 @@ function metricValue(value) {
   return String(value);
 }
 
+function roundedPointValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  return String(Math.round(number * 100) / 100);
+}
+
+function humanWeightValue(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '—';
+  if (Math.abs(number) >= 100) return String(Math.round(number));
+  return roundedPointValue(number);
+}
+
+function scoreMetricValue(key, value) {
+  return /penalty|score|ceiling/i.test(key) && typeof value === 'number'
+    ? roundedPointValue(value)
+    : /weight/i.test(key) && typeof value === 'number'
+      ? humanWeightValue(value)
+    : key === 'status'
+      ? installStatusLabel(value)
+      : typeof value === 'string'
+        ? humanizeUiText(value)
+        : metricValue(value);
+}
+
 function scoreDetailMetricsHtml(metrics) {
   if (!metrics || typeof metrics !== 'object') return '';
   const entries = Object.entries(metrics)
@@ -1964,7 +2422,7 @@ function scoreDetailMetricsHtml(metrics) {
     .slice(0, 14);
   if (!entries.length) return '';
   return `<div class="score-explain__metrics">${entries.map(([key, value]) =>
-    `<span class="score-explain__metric">${esc(metricLabel(key))}: ${esc(metricValue(value))}</span>`
+    `<span class="score-explain__metric">${esc(metricLabel(key))}: ${esc(scoreMetricValue(key, value))}</span>`
   ).join('')}</div>`;
 }
 
@@ -1981,7 +2439,10 @@ function scoreDetailBucketsHtml(detail) {
     });
   }
   if (!entries.length) return '';
-  return `<div class="score-explain__metrics">${entries.slice(0, 14).map(([key, value]) =>
+  const prefix = detail?.code === 'closed_issues_not_counted_as_release_fixes'
+    ? '<span class="score-explain__metric">Raw proof audit</span>'
+    : '';
+  return `<div class="score-explain__metrics">${prefix}${entries.slice(0, 14).map(([key, value]) =>
     `<span class="score-explain__metric">${esc(key)}: ${esc(metricValue(value))}</span>`
   ).join('')}</div>`;
 }
@@ -1993,7 +2454,7 @@ function scoreDetailIssueRefsHtml(issueRefs, releaseTag = null) {
     const impact = issue.installImpactClass
       ? ` · ${String(issue.installImpactClass).replace(/_/g, ' ')} x${metricValue(issue.installImpactMultiplier ?? 1)}`
       : '';
-    const weight = Number.isFinite(issue.weight) ? ` · w ${metricValue(issue.weight)}` : '';
+    const weight = Number.isFinite(issue.weight) ? ` · weight ${humanWeightValue(issue.weight)}` : '';
     const label = `#${issue.number} ${shortIssueTitle(issue)}${impact}${weight}`;
     const href = safeExternalUrl(issue.url);
     return href
@@ -2034,12 +2495,17 @@ function githubEvidenceLink(url, label) {
 
 function issueAuditLinksHtml(releaseTag, issueNumber, { closureProof = false } = {}) {
   if (!releaseTag || !Number.isInteger(Number(issueNumber)) || Number(issueNumber) <= 0) return '';
-  const tag = encodeURIComponent(releaseTag);
   const issue = encodeURIComponent(Number(issueNumber));
+  const rawRows = reviewRawRowLinks(releaseTag);
   const links = [
-    evidenceLink(`/api/releases/${tag}/review/issues?issue=${issue}`, 'issue evidence row'),
+    evidenceLink(appendAuditLinkQuery(rawRows.issues, { issue }), 'issue evidence row'),
   ];
-  if (closureProof) links.push(evidenceLink(`/api/releases/${tag}/review/closure-proofs?issue=${issue}`, 'closure proof row'));
+  if (closureProof) {
+    links.push(evidenceLink(
+      appendAuditLinkQuery(rawRows.closureProofs, { issue }),
+      'closure proof row',
+    ));
+  }
   return `<div class="score-explain__refs">${links.filter(Boolean).join('')}</div>`;
 }
 
@@ -2071,16 +2537,71 @@ function scoreEvidenceLinksHtml(releaseChecks, artifact) {
     : '';
 }
 
+function reviewAuditNavigationHtml(r) {
+  const links = r?.auditLinks ?? {};
+  const items = [
+    evidenceLink(links.review, 'Open review JSON'),
+    issueEvidenceApiLinksHtml(r?.tag),
+    evidenceLink(links.closureProofs, 'Open closure proof rows'),
+    evidenceLink(links.reachability, 'Open PR reachability rows'),
+  ].filter(Boolean);
+  return items.length
+    ? `<div class="evidence__meta">${items.join(' · ')}</div>`
+    : '';
+}
+
+function scoreRowLabel(row) {
+  const labels = {
+    cveGate: 'Security advisory install gate',
+    closureRisk: 'Unresolved closed-issue evidence',
+    precisionAdjustment: 'Final score rounding',
+    regression: 'High-impact report balance',
+    shakeout: 'Prerelease testing',
+    survival: 'Time without a replacement release',
+  };
+  return labels[row?.key] ?? humanizeUiText(row?.label ?? componentLabel(row?.key));
+}
+
+function scoreLedgerMetricText(row) {
+  const value = row?.metric;
+  if (value == null || value === '') return '';
+  if (['verifiedDebt', 'carryoverDebt', 'staleDebt'].includes(row.key)) {
+    return `${humanWeightValue(value)} evidence weight`;
+  }
+  if (row.key === 'closureRisk') return `${humanWeightValue(value)} scored risk weight`;
+  if (row.key === 'survival' && Number.isFinite(Number(value))) {
+    const hours = Number(value);
+    return hours >= 48
+      ? `${roundedPointValue(hours / 24)} days`
+      : `${Math.round(hours)} hours`;
+  }
+  if (row.key === 'shakeout') {
+    const count = Number(value);
+    return `${metricValue(value)} prerelease${count === 1 ? '' : 's'}`;
+  }
+  return metricValue(value);
+}
+
+function scoreLedgerPointText(row) {
+  const value = Number(row?.points);
+  if (!Number.isFinite(value)) return '—';
+  if (row?.key === 'precisionAdjustment' && value !== 0 && Math.abs(value) < 0.01) {
+    return `${value > 0 ? '+' : '-'}<0.01`;
+  }
+  return signedPoints(value);
+}
+
 function scoreLedgerHtml(ledger) {
   if (!ledger || typeof ledger !== 'object' || !Array.isArray(ledger.rows)) return '';
   const rows = ledger.rows
     .filter((row) => row && typeof row === 'object')
     .map((row) => {
       const kind = row.kind === 'bonus' || row.kind === 'penalty' ? row.kind : 'neutral';
-      const metric = row.metric != null && row.metric !== '' ? ` · ${metricValue(row.metric)}` : '';
+      const metricText = scoreLedgerMetricText(row);
+      const metric = metricText ? ` · ${metricText}` : '';
       return '<div class="score-ledger__row">'
-        + `<span class="score-ledger__label">${esc(row.label ?? row.key)}${esc(metric)}</span>`
-        + `<span class="score-ledger__points score-ledger__points--${esc(kind)}">${esc(signedPoints(row.points))}</span>`
+        + `<span class="score-ledger__label">${esc(scoreRowLabel(row))}${esc(metric)}</span>`
+        + `<span class="score-ledger__points score-ledger__points--${esc(kind)}">${esc(scoreLedgerPointText(row))}</span>`
         + '</div>';
     }).join('');
   const caps = Array.isArray(ledger.caps)
@@ -2094,7 +2615,7 @@ function scoreLedgerHtml(ledger) {
     : '';
   return '<div class="score-ledger">'
     + '<div class="score-ledger__head">'
-    + '<span>Score math</span>'
+    + '<span>Assessment calculation</span>'
     + `<span>${esc(metricValue(ledger.subtotalBeforeCaps))} -> ${esc(metricValue(ledger.finalScore))}</span>`
     + '</div>'
     + `<div class="score-ledger__rows">${rows}</div>`
@@ -2103,9 +2624,21 @@ function scoreLedgerHtml(ledger) {
 }
 
 function scoreDriversHtml(release) {
-  const rows = release?.explanation?.scoreLedger?.rows;
-  if (!Array.isArray(rows)) return '';
-  const usefulRows = rows.filter((row) => row && typeof row === 'object' && row.key !== 'base');
+  const ledger = release?.explanation?.scoreLedger;
+  if (!ledger || typeof ledger !== 'object') return '';
+  const rows = Array.isArray(ledger.rows) ? ledger.rows : [];
+  const caps = Array.isArray(ledger.caps) ? ledger.caps : [];
+  const capParts = caps
+    .filter((cap) => cap && typeof cap === 'object' && cap.applied === true)
+    .map((cap) => {
+      const label = humanizeUiText(cap.label ?? componentLabel(cap.key));
+      const beforeAfter = cap.before != null && cap.after != null
+        ? `, ${metricValue(cap.before)} -> ${metricValue(cap.after)}`
+        : '';
+      return `${label}: ceiling ${metricValue(cap.ceiling)}${beforeAfter}`;
+    });
+  const usefulRows = rows.filter((row) =>
+    row && typeof row === 'object' && row.key !== 'base' && row.key !== 'precisionAdjustment');
   const penalties = usefulRows
     .filter((row) => Number(row.points) < 0)
     .sort((a, b) => Number(a.points) - Number(b.points))
@@ -2114,24 +2647,26 @@ function scoreDriversHtml(release) {
     .filter((row) => Number(row.points) > 0)
     .sort((a, b) => Number(b.points) - Number(a.points))
     .slice(0, 1);
-  const parts = [...penalties, ...positives]
-    .map((row) => `${row.label ?? row.key} ${signedPoints(Number(row.points))}`)
+  const rowParts = [...penalties, ...positives]
+    .map((row) => `${scoreRowLabel(row)} ${signedPoints(Number(row.points))}`)
     .filter(Boolean);
+  const parts = [...capParts, ...rowParts];
   if (!parts.length) return '';
-  return `<span class="release__drivers"><strong>Score drivers:</strong> ${esc(parts.join(' · '))}</span>`;
+  return `<span class="release__drivers"><strong>Assessment drivers:</strong> ${esc(parts.join(' · '))}</span>`;
 }
 
 function componentLabel(key) {
   const labels = {
     base: 'Base',
-    verifiedDebt: 'Field blocker debt',
-    carryoverDebt: 'Open unconfirmed issue risk',
+    cveGate: 'Security advisory install gate',
+    verifiedDebt: 'Policy-qualified blocker debt',
+    carryoverDebt: 'Inherited issue context (zero assessment impact)',
     staleDebt: 'Weak or stale evidence',
     closureRisk: 'Closed-issue proof gap',
     coverage: 'Classification coverage',
     survival: 'Release survival',
     shakeout: 'Prerelease bake time',
-    regression: 'Field-visible regression balance',
+    regression: 'High-impact report balance',
     breaking: 'Breaking-change signal',
     releaseVerification: 'Release check verification',
     artifactVerification: 'Artifact verification',
@@ -2142,8 +2677,8 @@ function componentLabel(key) {
 
 function signedPoints(value) {
   if (!Number.isFinite(value)) return '—';
-  if (value > 0) return `+${metricValue(value)}`;
-  return metricValue(value);
+  if (value > 0) return `+${roundedPointValue(value)}`;
+  return roundedPointValue(value);
 }
 
 function scoreDetailIssueProofHtml(issue) {
@@ -2211,17 +2746,54 @@ function scoreProofRefLinks(groupLabel, refs) {
   return links;
 }
 
-function scoreExplanationDetailsHtml(details, fallbackText, releaseTag = null) {
+function scoreExplanationDetailsHtml(details, fallbackText, releaseTag = null, decisionCopy = '') {
   if (Array.isArray(details) && details.length) {
-    return details.map((detail) =>
-      `<li class="score-explain__detail">${detail.label ? `<strong>${esc(detail.label)}:</strong> ` : ''}<span>${esc(detail.text ?? '')}</span>`
-      + scoreDetailMetricsHtml(detail.metrics)
-      + scoreDetailBucketsHtml(detail)
-      + scoreDetailIssueRefsHtml(detail.issueRefs, releaseTag)
-      + '</li>'
-    ).join('');
+    return details.map((detail) => {
+      const text = isMachineDecisionText(detail.text) && decisionCopy
+        ? decisionCopy
+        : humanizeUiText(detail.text);
+      return `<li class="score-explain__detail">${detail.label ? `<strong>${esc(humanizeUiText(detail.label))}:</strong> ` : ''}<span>${esc(text)}</span>`
+        + scoreDetailMetricsHtml(detail.metrics)
+        + scoreDetailBucketsHtml(detail)
+        + scoreDetailIssueRefsHtml(detail.issueRefs, releaseTag)
+        + '</li>';
+    }).join('');
   }
-  return (fallbackText ?? []).map((line) => `<li>${esc(line)}</li>`).join('');
+  return (fallbackText ?? []).map((line) => {
+    const text = isMachineDecisionText(line) && decisionCopy ? decisionCopy : humanizeUiText(line);
+    return `<li>${esc(text)}</li>`;
+  }).join('');
+}
+
+function isContextOnlyDetail(detail) {
+  if (detail?.metrics?.scoreAffecting === false) return true;
+  const code = String(detail?.code ?? '').toLowerCase();
+  if (
+    code === 'open_unconfirmed_issue_risk'
+    || code.includes('carryover')
+    || code.includes('inherited')
+  ) {
+    return true;
+  }
+  const copy = `${detail?.label ?? ''} ${detail?.text ?? ''}`;
+  return /\b(?:inherited|carryover)\b/i.test(copy)
+    && /(?:zero|0)\s+(?:assessment impact|score points?)|does not lower|cannot apply a score ceiling|audit and follow-up/i.test(copy);
+}
+
+function isScoreLimitingDetail(detail) {
+  if (isContextOnlyDetail(detail)) return false;
+  if (
+    detail?.code === 'open_unconfirmed_issue_risk' &&
+    Number(detail?.metrics?.cappedPenalty ?? 0) === 0
+  ) {
+    return false;
+  }
+  return Number(detail?.metrics?.scoredPenalty ?? 1) !== 0;
+}
+
+function isLegacyContextOnlyLimitText(value) {
+  const text = String(value ?? '');
+  return /(?:contribute|have) (?:0 score points|zero assessment impact)|cannot apply (?:a score|an assessment) ceiling|visible for audit and follow-up/i.test(text);
 }
 
 function closureStatusLabel(status) {
@@ -2342,15 +2914,10 @@ function closureRiskDispositionLabel(disposition) {
 function closureRiskSummaryText(closureProof) {
   const risk = closureProof?.riskSummary ?? {};
   const parts = [
-    [risk.resolvedByCanonicalReleaseFixCount, 'resolved by canonical release fix'],
-    [risk.resolvedByReleaseFixProofCount, 'resolved by release fix proof'],
     [risk.knownNotInReleaseCount, 'known not in this tag'],
-    [risk.openCanonicalRiskCount, 'still-open canonical/PR risk'],
-    [risk.unsupportedClosureClaimCount, 'unsupported closure claim/admin triage'],
+    [risk.openCanonicalRiskCount, 'open canonical issue or pull-request risk'],
+    [risk.unsupportedClosureClaimCount, 'closure claims without enough proof'],
     [risk.missingEvidenceCount, 'missing proof evidence'],
-    [risk.neutralOrNonActionableCount, 'not-scored/non-actionable closure'],
-    [risk.neutralHighImpactCount, 'high-impact not-scored audit flag'],
-    [risk.neutralBugShapedCount, 'bug-shaped not-scored audit flag'],
   ];
   return parts
     .filter(([count]) => Number(count ?? 0) > 0)
@@ -2464,13 +3031,13 @@ function closureProofHtml(closureProof) {
   return evidenceSectionHtml(
     'Release fix credit',
     rows,
-    'Closed issues get score credit only when a merged linked PR or named fix/source commit is reachable from this release tag.',
+    'Closed issues get assessment credit only when a merged linked PR or named fix/source commit is reachable from this release tag.',
   );
 }
 
 function closurePrEvidenceHtml(prs) {
   if (!Array.isArray(prs) || !prs.length) return '';
-  const refs = prs.slice(0, 5).map((pr) => {
+  const renderRefs = (rows) => rows.slice(0, 5).map((pr) => {
     const identity = pr.repositoryNameWithOwner ? `${pr.repositoryNameWithOwner}#${pr.number}` : `#${pr.number}`;
     const state = pr.state ? ` ${String(pr.state).toLowerCase()}` : '';
     const reachability = pr.reachabilityStatus ? ` ${String(pr.reachabilityStatus).replace(/_/g, ' ')}` : '';
@@ -2479,7 +3046,16 @@ function closurePrEvidenceHtml(prs) {
     const source = pr.sourceCommentUrl ? githubEvidenceLink(pr.sourceCommentUrl, 'source comment') : '';
     return source ? `${link} ${source}` : link;
   });
-  return `PR evidence: ${refs.join(', ')}`;
+  const ambient = prs.filter((pr) =>
+    pr?.source === 'CrossReferencedEvent' &&
+    pr?.willCloseTarget !== true &&
+    pr?.willCloseTarget !== 1
+  );
+  const evidence = prs.filter((pr) => !ambient.includes(pr));
+  return [
+    evidence.length ? `PR evidence: ${renderRefs(evidence).join(', ')}` : '',
+    ambient.length ? `Ambient cross-reference: ${renderRefs(ambient).join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
 }
 
 function closureCommitEvidenceHtml(proofs) {
@@ -2522,35 +3098,137 @@ function canonicalPathHtml(path, issueDetails, terminal) {
 }
 
 function installVerdictText(local) {
+  if (isStaleAnalysis(local)) return local.reason;
+  const decisionCopy = recommendationDecisionCopy(local);
+  if (decisionCopy) return decisionCopy;
   if (local?.recommended) {
-    return 'This means the release is the current recommended install target under the audit and recommendation gates, but field reports, open unconfirmed issue risk, or closed issues not tied to this release tag keep it below a perfect score.';
+    return 'This release is the current recommended install target under the audit and recommendation gates. The ordinal assessment still reflects field reports and unresolved release proof; it does not imply certainty.';
   }
   if (local?.status === 'eligible') {
     return 'This means the release passed install eligibility checks, but the audit does not support treating it as the recommended install target.';
   }
   if (local?.status === 'wait') {
-    return 'This release is not scored yet because it has not had enough time to settle.';
+    return 'This release is not assessed yet because it has not had enough time to settle.';
   }
   return 'This release is not recommended to install because an install or recommendation gate is active.';
 }
 
+function releaseCheckSummaryText(checks) {
+  const total = Number(checks?.total ?? 0);
+  const passed = Number(checks?.success ?? 0);
+  const failed = Number(checks?.failure ?? 0);
+  const pending = Number(checks?.pending ?? 0);
+  const skipped = Number(checks?.skipped ?? Math.max(0, total - passed - failed - pending));
+  if (failed === 0 && pending === 0 && passed > 0) {
+    return `${passed} of ${total} passed · none failed or pending${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
+  }
+  return `${passed} of ${total} passed · ${failed} failed · ${pending} pending${skipped > 0 ? ` · ${skipped} skipped` : ''}`;
+}
+
+function artifactVerifiedCopy(artifact) {
+  if (!artifact?.verified) return 'Artifact bytes and release binding are not fully verified.';
+  return artifact.releaseShaMatches === true
+    ? 'The downloaded npm tarball bytes match the registry SRI digest, the release metadata identifies that exact tarball, and the retained release binding matches the release tag commit.'
+    : 'The downloaded npm tarball bytes match the registry SRI digest and the release metadata identifies that exact tarball.';
+}
+
+function artifactIncompleteCopy(artifact) {
+  const evidence = artifact?.artifact;
+  if (!artifact?.receiptId) {
+    return 'No immutable artifact observation is bound to this assessment, so npm tarball bytes, registry SRI, release metadata, and the release tag binding are not independently verified.';
+  }
+  if (artifact.releaseShaMatches !== true) {
+    return 'The retained artifact receipt is not proven to describe the same release commit currently being assessed.';
+  }
+  if (evidence?.state === 'mismatch' || evidence?.registryState === 'mismatch') {
+    return `Artifact verification found a mismatch: ${evidence.mismatch || evidence.reason || artifact.mismatch || 'details unavailable'}.`;
+  }
+  if (evidence?.registryState === 'unavailable') {
+    return `The npm artifact was unavailable for byte-level verification${evidence.reason ? `: ${evidence.reason}` : ''}.`;
+  }
+  if (evidence?.registryState === 'unknown' || evidence?.registryAvailability === 'unknown') {
+    return `The npm artifact state is unknown${evidence.reason ? `: ${evidence.reason}` : ''}.`;
+  }
+  if (evidence?.registryVerified && evidence?.releaseBindingState !== 'release_bound') {
+    return `The npm tarball bytes match the registry SRI digest, but they are not fully bound to the release metadata and tag commit${evidence.reason ? `: ${evidence.reason}` : ''}.`;
+  }
+  return artifact?.verified ? '' : `Artifact verification is incomplete${evidence?.reason || artifact?.mismatch ? `: ${evidence?.reason || artifact?.mismatch}` : ''}.`;
+}
+
+function artifactSummaryText(artifact) {
+  if (!artifact) return '';
+  const evidence = artifact.artifact;
+  const parts = [];
+  if (!artifact.receiptId) {
+    parts.push('no immutable artifact observation');
+  } else if (evidence?.registryVerified) {
+    parts.push('npm tarball bytes match registry SRI');
+  } else {
+    parts.push(`registry verification ${evidence?.registryState || 'incomplete'}`);
+  }
+  if (evidence?.releaseBound && artifact.releaseShaMatches === true) {
+    parts.push('release metadata and tag commit bound');
+  } else if (artifact.receiptId) {
+    parts.push(`release binding ${evidence?.releaseBindingState || 'incomplete'}`);
+  }
+  if (artifact.releaseValidationVerified) parts.push('validation run verified');
+  const failures = [...new Set([
+    evidence?.mismatch,
+    evidence?.reason,
+    artifact.mismatch,
+    artifact.ciReportMismatch,
+    artifact.releaseValidationMismatch,
+  ].filter((value) => typeof value === 'string' && value.trim()))];
+  parts.push(...failures);
+  return parts.join(' · ');
+}
+
 function whyNotTenHtml(local, releaseTag = null) {
+  if (isStaleAnalysis(local)) {
+    return '<div class="score-explain">'
+      + '<div class="score-explain__title">Analysis is stale</div>'
+      + `<p>${esc(local.reason || 'Refresh before installing.')}</p>`
+      + '<p>Gate and advisory evidence remains available below.</p>'
+      + '</div>';
+  }
   const structured = local?.components?.explanation;
   if (structured && Array.isArray(structured.limits)) {
-    const positives = Array.isArray(structured.positives) ? structured.positives : [];
+    const decisionCopy = recommendationDecisionCopy(local);
+    const positives = (Array.isArray(structured.positives) ? structured.positives : [])
+      .map((line) => isMachineDecisionText(line) && decisionCopy ? decisionCopy : humanizeUiText(line));
     const positiveDetails = Array.isArray(structured.positiveDetails) ? structured.positiveDetails : [];
-    const limitDetails = Array.isArray(structured.limitDetails) ? structured.limitDetails : [];
-    const limits = structured.limits.length ? structured.limits : ['No specific limiting evidence was provided for this score.'];
-    const verdict = structured.verdict || installVerdictText(local);
+    const allLimitDetails = Array.isArray(structured.limitDetails) ? structured.limitDetails : [];
+    const limitDetails = allLimitDetails.filter(isScoreLimitingDetail);
+    const contextDetails = allLimitDetails.filter((detail) =>
+      !isScoreLimitingDetail(detail));
+    const legacyLimits = structured.limits.map(humanizeUiText);
+    const limits = allLimitDetails.length
+      ? limitDetails.map((detail) => humanizeUiText(detail.text))
+      : legacyLimits.filter((line) => !isLegacyContextOnlyLimitText(line));
+    const contexts = allLimitDetails.length
+      ? contextDetails.map((detail) => humanizeUiText(detail.text))
+      : legacyLimits.filter(isLegacyContextOnlyLimitText);
+    const verdict = isMachineDecisionText(structured.verdict)
+      ? decisionCopy || installVerdictText(local)
+      : humanizeUiText(structured.verdict || installVerdictText(local));
     return '<div class="score-explain">'
-      + `<div class="score-explain__title">${esc(structured.title || 'Why not 10?')}</div>`
+      + '<div class="score-explain__title">How this 0–10 assessment was formed</div>'
       + scoreLedgerHtml(structured.scoreLedger)
       + (positives.length
         ? '<p><strong>What looks good:</strong></p>'
-          + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives, releaseTag) + '</ul>'
+          + '<ul>' + scoreExplanationDetailsHtml(positiveDetails, positives, releaseTag, decisionCopy) + '</ul>'
         : '')
-      + '<p><strong>What keeps it below perfect:</strong></p>'
-      + '<ul>' + scoreExplanationDetailsHtml(limitDetails, limits, releaseTag) + '</ul>'
+      + '<p><strong>What lowers or limits this assessment:</strong></p>'
+      + '<ul>' + scoreExplanationDetailsHtml(
+        limitDetails,
+        limits.length ? limits : ['No additional assessment-lowering evidence was provided beyond the calculation above.'],
+        releaseTag,
+        decisionCopy,
+      ) + '</ul>'
+      + (contexts.length
+        ? '<p><strong>Context that does not lower the assessment:</strong></p>'
+          + '<ul>' + scoreExplanationDetailsHtml(contextDetails, contexts, releaseTag, decisionCopy) + '</ul>'
+        : '')
       + `<p>${esc(verdict)}</p>`
       + '</div>';
   }
@@ -2568,26 +3246,27 @@ function whyNotTenHtml(local, releaseTag = null) {
   const stale = evidence.staleDebt ?? [];
   const verified = evidence.verifiedDebt ?? [];
   const reasons = [];
+  const contexts = [];
 
   if (opened.length) {
     const example = issueListText(openedStillOpen.length ? openedStillOpen : opened);
     reasons.push(
-      `${opened.length} field-visible bug reports were opened in this release window; ${openedStillOpen.length} are still open.`
+      `${opened.length} high-impact negative reports were opened in this release window; ${openedStillOpen.length} are still open.`
       + sentenceSuffix('Examples', example)
     );
   }
 
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
-    reasons.push(
-      `There is open unconfirmed issue risk: open negative issues overlapping this release are inherited, source-only/static, or otherwise not proven release-local blockers. This is context, not confirmed release-local breakage; field-discussed items can still stay here when they predate this release window or lack release-tag proof. Provider/security/product-debt issues stay visible but are damped unless they directly affect install/runtime stability. This contributes ${esc(components.carryoverDebt ?? 0)} points.`
+    contexts.push(
+      'Inherited issue groups remain linked for audit and follow-up, but they have zero assessment impact and cannot apply an assessment ceiling.'
       + sentenceSuffix('Top examples', example)
     );
   }
 
   if ((input.staleDebtWeight ?? 0) > 0) {
     reasons.push(
-      `${stale.length} low-confidence/stale evidence items are still tracked. This contributes ${esc(components.staleDebt ?? 0)} points.`
+      `${stale.length} low-confidence/stale evidence items are still tracked. This contributes ${roundedPointValue(components.staleDebt ?? 0)} points.`
     );
   }
 
@@ -2596,50 +3275,69 @@ function whyNotTenHtml(local, releaseTag = null) {
   if (closureProof?.notCreditedCount > 0) {
     const bucketText = closureProofSummaryText(closureProof);
     const riskText = closureRiskSummaryText(closureProof);
+    const scoredGroups = Number(input.unresolvedClosureIssueCount ?? 0);
+    const scoredWeight = Number(input.unresolvedClosureRiskWeight ?? 0);
+    const rawGroups = Number(closureProof.riskSummary?.unresolvedForReleaseCount ?? 0);
     reasons.push(
-      `${closureProof.notCreditedCount} closed issues in this release window are not counted as release fixes.`
-      + ` This contributes a ${esc(Math.abs(Number(components.closureRisk ?? 0)))} point penalty.`
-      + (riskText ? ` Risk split: ${riskText}.` : '')
-      + (bucketText ? ` Breakdown: ${bucketText}.` : '')
+      `${scoredGroups} deduplicated closed-issue risk groups lower the assessment with weight ${humanWeightValue(scoredWeight)}.`
+      + ` The raw proof audit has ${rawGroups} unresolved groups across ${closureProof.notCreditedCount} closed issues without direct release-fix credit.`
+      + ` This contributes a ${roundedPointValue(Math.abs(Number(components.closureRisk ?? 0)))} point penalty.`
+      + (riskText ? ` Raw unresolved proof categories: ${riskText}.` : '')
+      + (bucketText ? ` Raw proof statuses: ${bucketText}.` : '')
     );
   } else if ((fix.unverifiedClosedCount ?? 0) > 0) {
     reasons.push(`${fix.unverifiedClosedCount} closed issues are not counted as fixes yet because release-tag reachability has not been analyzed for them.`);
   }
 
   const artifact = gate.artifactVerification;
-  if (artifact?.ciReportMismatch) {
-    reasons.push(`The npm package is verified, but the linked full release evidence report is missing: ${artifact.ciReportMismatch}.`);
+  const artifactIncomplete = artifactIncompleteCopy(artifact);
+  if (local?.score !== 10 && artifactIncomplete) {
+    reasons.push(artifactIncomplete);
+  }
+  if (local?.score !== 10 && artifact?.ciReportVerified !== true) {
+    reasons.push(
+      `The full release evidence report is not verified: ${
+        artifact?.ciReportMismatch ||
+        artifact?.evidenceReport?.mismatch ||
+        'no verified report is bound to this assessment'
+      }.`
+    );
   }
 
   if (!reasons.length && !verified.length) {
-    reasons.push('No field-blocker evidence is currently holding this release down; the remaining gap comes from the model ceiling and capped confidence signals.');
+    reasons.push('No additional assessment-lowering evidence was provided for this assessment.');
   }
 
   const positives = [];
-  if (!verified.length) positives.push('No verified field-blocker debt is currently scoring against this release.');
+  if (!verified.length) positives.push('No policy-qualified blocker debt is currently scoring against this release.');
   const checks = gate.releaseChecks;
-  if (checks?.failure === 0 && checks?.pending === 0 && checks?.success > 0) positives.push(`${checks.success} release checks passed with no failed or pending checks.`);
-  if (artifact?.verified) positives.push(artifact.releaseShaMatches === true
-    ? 'The npm package integrity, tarball, and release SHA match.'
-    : 'The npm package integrity and tarball metadata are verified.');
-  if (local?.recommended) positives.push('The release is eligible and recommended.');
+  if (checks?.failure === 0 && checks?.pending === 0 && checks?.success > 0) positives.push(releaseCheckSummaryText(checks));
+  if (artifact?.verified && artifact.releaseShaMatches === true) {
+    positives.push(artifactVerifiedCopy(artifact));
+  }
+  const decisionSummary = recommendationDecisionCopy(local);
+  if (local?.recommended) positives.push(decisionSummary || 'The release is eligible and recommended.');
   else if (local?.status === 'eligible') positives.push('The release passed install eligibility checks.');
 
   return '<div class="score-explain">'
-    + '<div class="score-explain__title">Why not 10?</div>'
+    + '<div class="score-explain__title">How this 0–10 assessment was formed</div>'
     + (positives.length
       ? `<p><strong>What looks good:</strong> ${esc(positives.join(' '))}</p>`
       : '')
-    + '<p><strong>What keeps it below perfect:</strong></p>'
+    + '<p><strong>What lowers or limits this assessment:</strong></p>'
     + '<ul>' + reasons.map((reason) => `<li>${esc(reason)}</li>`).join('') + '</ul>'
+    + (contexts.length
+      ? '<p><strong>Context that does not lower the assessment:</strong></p>'
+        + '<ul>' + contexts.map((context) => `<li>${esc(context)}</li>`).join('') + '</ul>'
+      : '')
     + `<p>${esc(installVerdictText(local))}</p>`
     + '</div>';
 }
 
 function scoreReviewHtml(r) {
-  const review = reviewByTag.get(r.tag);
+  const review = reviewForRender(r.tag);
   const local = review?.local;
-  if (!local) return '';
+  if (!local || isStaleAnalysis(r) || isStaleAnalysis(local) || local.staleAudit) return '';
   const components = local.components?.components ?? {};
   const input = local.input ?? {};
   const fix = local.gateEvidence?.fixProvenance ?? {};
@@ -2653,8 +3351,11 @@ function scoreReviewHtml(r) {
     closureProof ? (closureProof.creditedCount ?? 0) + (closureProof.notCreditedCount ?? 0) : null
   );
   const closureRisk = closureProof?.riskSummary;
+  const scoredClosureCount = Number(input.unresolvedClosureIssueCount ?? 0);
+  const scoredClosureWeight = Number(input.unresolvedClosureRiskWeight ?? 0);
   const closureRiskLine = closureRisk
-    ? `${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved · ${esc(closureRisk.knownNotInReleaseCount ?? 0)} known not in tag · ${esc(closureRisk.neutralOrNonActionableCount ?? 0)} not scored`
+    ? `Scored: ${esc(scoredClosureCount)} deduplicated groups · weight ${esc(humanWeightValue(scoredClosureWeight))}` +
+      ` · Raw proof audit: ${esc(closureRisk.unresolvedForReleaseCount ?? 0)} unresolved groups`
     : '';
   const dataFreshnessLine = dataFreshnessText(local.dataFreshness);
   const signalSummary = scoreSignalSummary(local);
@@ -2662,7 +3363,7 @@ function scoreReviewHtml(r) {
   const compHtml = componentEntries.length
     ? '<div class="score-review__components">'
       + componentEntries.map(([key, value]) =>
-        `<div class="score-review__item"><span class="score-review__label">${esc(componentLabel(key))}</span><span class="score-review__value">${esc(value)}</span></div>`
+        `<div class="score-review__item"><span class="score-review__label">${esc(componentLabel(key))}</span><span class="score-review__value">${esc(roundedPointValue(value))}</span></div>`
       ).join('')
       + '</div>'
     : '';
@@ -2670,24 +3371,26 @@ function scoreReviewHtml(r) {
     + whyNotTenHtml(local, r.tag)
     + '<div class="score-review__grid">'
     + `<div class="score-review__item"><span class="score-review__label">Model</span><span class="score-review__value">${esc(local.modelVersion ?? 'unknown')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Score</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Policy/stability assessment</span><span class="score-review__value">${esc(formatScore10(local.score) ?? '—')} / 10</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Install gate</span><span class="score-review__value">${esc(installStatusLabel(local.status))}${local.reason ? ` · ${esc(humanizeUiText(local.reason))}` : ''}</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + (dataFreshnessLine ? `<div class="score-review__item"><span class="score-review__label">Source freshness</span><span class="score-review__value">${dataFreshnessLine}</span></div>` : '')
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Audit weights</span><span class="score-review__value">Field ${esc(Math.round(input.verifiedDebtWeight ?? 0))} · Open unconfirmed ${esc(Math.round(input.carryoverDebtWeight ?? 0))} · Weak/stale ${esc(Math.round(input.staleDebtWeight ?? 0))} · Closed proof gap ${esc(Math.round(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} counted · ${esc(notCountedClosed)} not counted${analyzedClosed != null ? ` · ${esc(analyzedClosed)} analyzed` : ''}</span></div>`
-    + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closed issue proof</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
-    + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Closed issue status</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
-    + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseChecks.state ?? 'unknown')} · ${esc(releaseChecks.success ?? 0)} passed · ${esc(releaseChecks.failure ?? 0)} failed · ${esc(releaseChecks.pending ?? 0)} pending${releaseChecks.contextsTruncated ? ` · showing ${esc(releaseChecks.shownContextCount ?? 0)}/${esc(releaseChecks.contextCount ?? releaseChecks.total ?? 0)} contexts` : ''}</span></div>` : '')
-    + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact</span><span class="score-review__value">${artifact.verified ? 'npm verified' : 'not verified'}${artifact.releaseValidationVerified ? ' · validation run verified' : ''}${artifact.mismatch ? ` · ${esc(artifact.mismatch)}` : ''}${artifact.ciReportMismatch ? ` · ${esc(artifact.ciReportMismatch)}` : ''}${artifact.releaseValidationMismatch ? ` · ${esc(artifact.releaseValidationMismatch)}` : ''}</span></div>` : '')
-    + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Community signal</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
+    + `<div class="score-review__item"><span class="score-review__label">Assessment-affecting evidence weights</span><span class="score-review__value">Policy-qualified blocker ${esc(humanWeightValue(input.verifiedDebtWeight ?? 0))} · Weak/stale ${esc(humanWeightValue(input.staleDebtWeight ?? 0))} · Closed-issue risk ${esc(humanWeightValue(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Inherited context (zero assessment impact)</span><span class="score-review__value">${esc(humanWeightValue(input.carryoverDebtWeight ?? 0))} audit weight · does not lower or limit the assessment</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} direct fixes credited · ${esc(notCountedClosed)} raw proof issues without direct credit${analyzedClosed != null ? ` · ${esc(analyzedClosed)} raw closed issues analyzed` : ''}</span></div>`
+    + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closed-issue risk</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
+    + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Raw closed-issue statuses</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
+    + (releaseChecks ? `<div class="score-review__item"><span class="score-review__label">Release checks</span><span class="score-review__value">${esc(releaseCheckSummaryText(releaseChecks))}</span></div>` : '')
+    + (artifact ? `<div class="score-review__item"><span class="score-review__label">Artifact evidence</span><span class="score-review__value">${esc(artifactSummaryText(artifact))}</span></div>` : '')
+    + (signalSummary ? `<div class="score-review__item"><span class="score-review__label">Policy and discussion signals</span><span class="score-review__value">${esc(signalSummary)}</span></div>` : '')
     + '</div>'
     + scoreEvidenceLinksHtml(releaseChecks, artifact)
     + compHtml
-    + `<div class="evidence__meta">Field risk requires release-local human/maintainer confirmation; source-only/static and inherited findings remain capped as open unconfirmed issue risk. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
-    + `<div class="evidence__meta">Open unconfirmed issue risk means open negative issues that still overlap this release, but are inherited backlog, source-only/static findings, or otherwise not proven as release-local blockers.</div>`
-    + `<div class="evidence__meta"><a href="/api/releases/${encodeURIComponent(r.tag)}/review" target="_blank" rel="noopener">Open review JSON</a> · ${issueEvidenceApiLinksHtml(r.tag)} · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/closure-proofs" target="_blank" rel="noopener">Open closure proof rows</a> · <a href="/api/releases/${encodeURIComponent(r.tag)}/review/reachability" target="_blank" rel="noopener">Open PR reachability rows</a></div>`
-    + `<div class="evidence__meta">${esc(local.reason ?? '')}</div>`
+    + `<div class="evidence__meta">Blocker scoring requires release-local policy evidence such as qualifying human or maintainer signals. Those signals are not independent reproduction. Source-only/static or otherwise unconfirmed findings are weak/stale evidence; inherited findings remain zero-impact audit context. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
+    + `<div class="evidence__meta">Inherited issue context remains visible for audit and follow-up, but has zero assessment impact and cannot apply an assessment ceiling.</div>`
+    + reviewAuditNavigationHtml(r)
+    + `<div class="evidence__meta">${esc(humanizeUiText(local.reason))}</div>`
     + closureProofHtml(closureProof)
     + '</div>';
 }
@@ -2695,11 +3398,11 @@ function scoreReviewHtml(r) {
 function dataFreshnessText(freshness) {
   if (!freshness) return '';
   const issueAt = freshness.issueUpdatedAtMax ? compactDateTime(freshness.issueUpdatedAtMax) : 'unknown issue time';
-  const scoredAt = freshness.scoredAt ? compactDateTime(freshness.scoredAt) : 'unknown score time';
+  const scoredAt = freshness.scoredAt ? compactDateTime(freshness.scoredAt) : 'unknown assessment time';
   const lag = Number.isFinite(freshness.issueUpdatedAgeHoursAtScore)
     ? ` · ${metricValue(freshness.issueUpdatedAgeHoursAtScore)}h issue lag`
     : '';
-  return `${esc(issueAt)} issues · ${esc(scoredAt)} score${esc(lag)}`;
+  return `${esc(issueAt)} issues · ${esc(scoredAt)} assessment${esc(lag)}`;
 }
 
 function compactDateTime(value) {
@@ -2718,17 +3421,156 @@ function collapsibleEvidence(summary, contentHtml) {
 
 function installPanelHtml(r) {
   const advCount = (r.advisories?.affected?.items ?? []).length;
-  const scoreLabel = formatScore10(r.finalScore);
   return `<div class="details__inner">`
-    + installActionHtml(r)
-    + collapsibleEvidence(scoreLabel ? `Why ${scoreLabel}/10?` : 'Show score breakdown', scoreReviewHtml(r))
+    + `<div id="install-action-${cssId(r.tag)}">${installActionHtml(r)}</div>`
+    + `<div id="review-${cssId(r.tag)}" aria-live="polite">${reviewSlotHtml(r)}</div>`
     + collapsibleEvidence(advCount === 1 ? 'Show known advisory' : 'Show known advisories', advisoryEvidenceHtml(r))
-    + collapsibleEvidence('Show related issues', issueEvidenceHtml(r))
+    + `<div id="issues-${cssId(r.tag)}">${relatedIssuesSlotHtml(r)}</div>`
     + `</div>`;
 }
 
+function reviewSlotHtml(r) {
+  if (isStaleAnalysis(r)) {
+    return '<div class="review-state" data-review-state="stale" role="alert">'
+      + `<span><strong>Assessment details unavailable.</strong> ${esc(staleAuditDiagnosticsText(r))}</span>`
+      + '</div>';
+  }
+  const state = reviewLoadStateByTag.get(r.tag);
+  if (state?.status === 'error') {
+    return '<div class="review-state" data-review-state="error" role="alert">'
+      + `<span><strong>Assessment details unavailable.</strong> ${esc(state.message || 'Could not load matching assessment details.')}</span>`
+      + '<button class="btn-ghost" type="button" data-release-retry>Retry</button>'
+      + '</div>';
+  }
+  if (!releaseSnapshotIdentityVerified()) {
+    const hold = actionabilityHoldCopy();
+    return '<div class="review-state" data-review-state="pending" role="status">'
+      + `<span><strong>Assessment details unavailable.</strong> ${esc(hold.label)}. ${esc(hold.detail)}</span>`
+      + '</div>';
+  }
+  if (!releaseSnapshotActionabilityVerified()) {
+    const hold = actionabilityHoldCopy();
+    return '<div class="review-state" data-review-state="held" role="status">'
+      + `<span><strong>Assessment details unavailable.</strong> ${esc(hold.label)}. ${esc(hold.detail)}</span>`
+      + '</div>';
+  }
+  const reviewHtml = scoreReviewHtml(r);
+  if (reviewHtml) {
+    const scoreLabel = formatScore10(r.finalScore);
+    return collapsibleEvidence(scoreLabel ? `Assessment details for ${scoreLabel}/10` : 'Show assessment details', reviewHtml);
+  }
+  if (state?.status === 'loading') {
+    return '<div class="review-state" data-review-state="loading" role="status" aria-busy="true">Loading assessment details...</div>';
+  }
+  return '<div class="review-state" data-review-state="idle">Assessment details load when this release is opened.</div>';
+}
+
+function relatedIssuesSlotHtml(r) {
+  const state = publicLoadState.snapshot === releaseSnapshot
+    ? publicLoadState.status
+    : 'pending';
+  if (state === 'pending' || state === 'idle') {
+    return '<div class="public-state" data-public-state="pending" role="status" aria-busy="true">Loading related issue evidence...</div>';
+  }
+  if (state === 'error') {
+    return '<div class="public-state public-state--error" data-public-state="error" role="alert">'
+      + `<span>${esc(publicLoadState.message || 'Could not load related issue evidence.')}</span>`
+      + '<button class="btn-ghost" type="button" data-public-retry>Retry</button>'
+      + '</div>';
+  }
+  const content = issueEvidenceHtml(r);
+  if (!content) {
+    return '<div class="public-state" data-public-state="empty">No related issue evidence is available for this release.</div>';
+  }
+  return `<div data-public-state="ready">${collapsibleEvidence('Show related issues', content)}</div>`;
+}
+
+function patchReleaseReviewSlot(tag) {
+  const release = allReleases.find((row) => row.tag === tag);
+  const slot = document.getElementById(`review-${cssId(tag)}`);
+  if (!release || !slot) return;
+  slot.innerHTML = reviewSlotHtml(release);
+}
+
+function patchReleaseActionSlot(tag) {
+  const release = allReleases.find((row) => row.tag === tag);
+  const slot = document.getElementById(`install-action-${cssId(tag)}`);
+  if (!release || !slot) return;
+  slot.innerHTML = installActionHtml(release);
+}
+
+function patchReleaseIssueSlot(tag) {
+  const release = allReleases.find((row) => row.tag === tag);
+  const slot = document.getElementById(`issues-${cssId(tag)}`);
+  if (!release || !slot) return;
+  const wasOpen = slot.querySelector('details.evidence-toggle')?.open === true;
+  slot.innerHTML = relatedIssuesSlotHtml(release);
+  if (wasOpen) slot.querySelector('details.evidence-toggle')?.setAttribute('open', '');
+}
+
+function patchReleasePublicSlots(tag) {
+  const release = allReleases.find((row) => row.tag === tag);
+  if (!release) return;
+  const surfaceSlot = document.getElementById(`surfaces-${cssId(tag)}`);
+  if (surfaceSlot) surfaceSlot.innerHTML = affectedAreasHtml(issueBackedSurfaces(release));
+  patchReleaseIssueSlot(tag);
+}
+
+function patchReleaseRecommendationPresentation(release, category) {
+  const id = cssId(release.tag);
+  const row = document.querySelector(`.release[data-tag="${CSS.escape(release.tag)}"]`);
+  if (!row) return;
+  ['normal', 'skip', 'too-new', 'recommended', 'stale']
+    .forEach((name) => row.classList.remove(`release--${name}`));
+  row.classList.add(`release--${category.category}`);
+  const recommendationSlot = document.getElementById(`recommendation-${id}`);
+  if (recommendationSlot) {
+    recommendationSlot.innerHTML = category.category === 'recommended'
+      ? '<span class="rec-pill">Recommended</span>'
+      : '';
+  }
+  const reasonSlot = document.getElementById(`reason-${id}`);
+  if (reasonSlot) {
+    const reasonText = releaseReasonText(release, category);
+    reasonSlot.hidden = !reasonText;
+    reasonSlot.textContent = reasonText;
+  }
+  patchReleaseActionSlot(release.tag);
+  patchReleaseReviewSlot(release.tag);
+}
+
+function refreshActionabilityUi() {
+  const rowsShouldBeVisible = releaseSnapshotAuthorityVerified();
+  const rowsAreVisible = document.querySelector('#releases .release') != null;
+  if (!releaseSnapshotIdentityVerified()) {
+    const filter = document.getElementById('profileFilter');
+    if (filter) filter.hidden = true;
+  }
+  if (isPackageView() && rowsShouldBeVisible !== rowsAreVisible) {
+    renderReleases();
+    renderPackageLoadState();
+    renderPackageCard();
+    bindInstallCopy();
+    markActionabilityUiRendered();
+    return;
+  }
+  const { categorized } = categorizeReleases(allReleases);
+  const byTag = new Map(categorized.map((entry) => [entry.release.tag, entry]));
+  allReleases.forEach((release) => {
+    const category = byTag.get(release.tag);
+    if (category) patchReleaseRecommendationPresentation(release, category);
+    patchReleaseIssueSlot(release.tag);
+  });
+  renderTarget(categorized);
+  renderPackageLoadState();
+  renderPackageCard();
+  bindInstallCopy();
+  markActionabilityUiRendered();
+}
+
 function pickRecommendedRelease(rows) {
-  return rows.find((r) => r.recommended) ?? null;
+  return rows.find((r) =>
+    r.recommended && !isStaleAnalysis(r) && finiteScore(r.finalScore) != null) ?? null;
 }
 
 let installCopyBound = false;
@@ -2736,6 +3578,13 @@ function bindInstallCopy() {
   if (installCopyBound) return;
   installCopyBound = true;
   document.addEventListener('click', (e) => {
+    const releaseRetry = e.target.closest('[data-release-retry],[data-public-retry]');
+    if (releaseRetry) {
+      e.stopPropagation();
+      e.preventDefault();
+      loadReleases();
+      return;
+    }
     const more = e.target.closest('.evidence__more');
     if (more) {
       e.stopPropagation();
@@ -2751,6 +3600,10 @@ function bindInstallCopy() {
     if (!btn) return;
     e.stopPropagation();
     e.preventDefault();
+    if (!releaseSnapshotActionabilityVerified()) {
+      refreshActionabilityUi();
+      return;
+    }
     const cmd = btn.dataset.cmd;
     if (!cmd) return;
     const done = () => {
@@ -2770,88 +3623,800 @@ function bindInstallCopy() {
 }
 
 function pickBestAlternative(rows, latest) {
-  const rec = rows.find((r) => r.recommended);
+  const rec = pickRecommendedRelease(rows);
   if (rec && rec.tag !== latest.tag) return rec;
   return null;
 }
 
 function isPackageView() {
-  return (location.hash || '').startsWith('#/openclaw');
+  return location.hash === '#/openclaw';
+}
+
+function setRouteClass(onPkg) {
+  document.documentElement.classList.toggle('route-openclaw', onPkg);
+  document.documentElement.classList.toggle('route-home', !onPkg);
+}
+
+function keepFocusInVisibleRoute(onPkg) {
+  const hiddenView = document.getElementById(onPkg ? 'viewHome' : 'viewPackage');
+  if (!hiddenView?.contains(document.activeElement)) return;
+  const visibleView = document.getElementById(onPkg ? 'viewPackage' : 'viewHome');
+  const target = visibleView?.querySelector('h1, [data-release-retry], a, button');
+  if (!(target instanceof HTMLElement)) return;
+  if (!target.hasAttribute('tabindex') && !target.matches('a,button')) {
+    target.setAttribute('tabindex', '-1');
+  }
+  target.focus();
 }
 
 function applyRoute() {
   const onPkg = isPackageView();
+  setRouteClass(onPkg);
   document.getElementById('viewHome').hidden = onPkg;
   document.getElementById('viewPackage').hidden = !onPkg;
   document.title = onPkg
     ? 'openclaw — Release Radar'
     : 'Release Radar — openclaw';
-  if (onPkg && allReleases.length) renderReleases();
+  renderPackageLoadState();
+  if (onPkg) renderReleases();
   else if (!onPkg) renderPackageCard();
+  keepFocusInVisibleRoute(onPkg);
   if (onPkg) window.scrollTo(0, 0);
 }
 
 /* ── api ──────────────────────────────────────────────────────────────── */
-async function api(path, opts) {
-  const r = await fetch('/api' + path, opts);
-  if (!r.ok) throw new Error(r.status + ' ' + await r.text().catch(() => ''));
-  return r.json();
+const API_REQUEST_TIMEOUT_MS = 12_000;
+const API_SCORE_REQUEST_TIMEOUT_MS = 11_000;
+const API_PUBLIC_REQUEST_TIMEOUT_MS = 17_000;
+const API_SNAPSHOT_HEADER = 'x-radar-snapshot-id';
+
+function apiRequestTimeout(path) {
+  if (path === '/public') return API_PUBLIC_REQUEST_TIMEOUT_MS;
+  if (
+    path === '/releases'
+    || path === '/releases/history'
+    || path === '/comparison'
+    || /^\/releases\/[^/]+\/review(?:\/|$)/.test(path)
+  ) {
+    return API_SCORE_REQUEST_TIMEOUT_MS;
+  }
+  return API_REQUEST_TIMEOUT_MS;
+}
+
+class UiRequestError extends Error {
+  constructor(kind, status = null) {
+    super('Request failed');
+    this.name = 'UiRequestError';
+    this.kind = kind;
+    this.status = Number.isInteger(status) ? status : null;
+  }
+}
+
+function boundedUiMessage(value, fallback, maxLength = 160) {
+  const clean = String(value || fallback)
+    .replace(/[^\x20-\x7e]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  return (clean || fallback).slice(0, maxLength);
+}
+
+function requestErrorMessage(error, fallback) {
+  const suffix = error?.kind === 'timeout'
+    ? ' The request timed out.'
+    : error?.kind === 'snapshot'
+      ? ' Release data changed while loading.'
+      : '';
+  return boundedUiMessage(`${fallback}${suffix}`, fallback);
+}
+
+function isCanceledRequest(error) {
+  return error?.kind === 'aborted';
+}
+
+function isAuthorityUnavailableError(error) {
+  return error?.kind === 'http' && error?.status === 503;
+}
+
+async function api(path, options = {}) {
+  const {
+    signal: parentSignal,
+    includeMeta = false,
+    timeoutMs = apiRequestTimeout(path),
+    ...fetchOptions
+  } = options;
+  const controller = new AbortController();
+  let timedOut = false;
+  const abortFromParent = () => controller.abort();
+  if (parentSignal?.aborted) controller.abort();
+  else parentSignal?.addEventListener('abort', abortFromParent, { once: true });
+  const timeout = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
+  try {
+    const response = await fetch('/api' + path, {
+      ...fetchOptions,
+      signal: controller.signal,
+    });
+    if (!response.ok) throw new UiRequestError('http', response.status);
+    try {
+      const body = await response.json();
+      return includeMeta
+        ? {
+            body,
+            snapshotId: response.headers.get(API_SNAPSHOT_HEADER) ?? '',
+          }
+        : body;
+    } catch {
+      throw new UiRequestError('invalid');
+    }
+  } catch (error) {
+    if (error instanceof UiRequestError) throw error;
+    if (timedOut) throw new UiRequestError('timeout');
+    if (parentSignal?.aborted || error?.name === 'AbortError') {
+      throw new UiRequestError('aborted');
+    }
+    throw new UiRequestError('network');
+  } finally {
+    clearTimeout(timeout);
+    parentSignal?.removeEventListener('abort', abortFromParent);
+  }
 }
 
 /* ── render releases ──────────────────────────────────────────────────── */
 let allReleases = [];
 let chartReleases = [];
 let publicReleaseDetails = new Map();
+let releaseLoadState = { status: 'loading', message: '' };
+let publicLoadState = { status: 'idle', snapshot: '', message: '' };
 let reviewByTag = new Map();
+let reviewLoadStateByTag = new Map();
+const reviewRequests = new Map();
+let releaseLoadEpoch = 0;
+let releaseSnapshot = '';
+let releaseRequestController = null;
+let actionabilityHold = null;
+let userLoadCycle = 0;
+let automaticSnapshotRebaseUsed = false;
+let scheduledSnapshotRebaseCycle = null;
+let scheduledStatusVerificationSnapshot = '';
 
-async function loadReleases() {
-  try {
-    const [releases, history, publicPayload] = await Promise.all([
-      api('/releases'),
-      api('/releases/history'),
-      api('/public').catch(() => null),
-    ]);
-    allReleases = releases;
-    chartReleases = history;
-    publicReleaseDetails = new Map((publicPayload?.releases ?? []).map((r) => [r.tag, r]));
-    const reviewPayloads = await Promise.all(
-      releases.map((release) => api(`/releases/${encodeURIComponent(release.tag)}/review`).catch(() => null)),
-    );
-    reviewByTag = new Map(reviewPayloads.filter(Boolean).map((review) => [review.tag, review]));
+function retainedDiagnosticRelease(release, cause, message) {
+  const previousStatus = release?.diagnosticStatus
+    ?? release?.staleAudit?.previousStatus
+    ?? (release?.status === 'stale' ? null : release?.status)
+    ?? null;
+  const auditedAt = release?.staleAudit?.auditedAt ?? release?.scoredAt ?? null;
+  const diagnosticMessage = `${STALE_ANALYSIS_PREFIX} ${boundedUiMessage(
+    message,
+    'The current API snapshot is unavailable.',
+  )} Retained metadata is diagnostic only. Refresh before installing.`;
+  return {
+    ...release,
+    finalScore: null,
+    band: 'wait',
+    status: 'stale',
+    diagnosticStatus: previousStatus,
+    recommended: false,
+    reason: diagnosticMessage,
+    brokenSurfaces: [],
+    negativeIssues: null,
+    positiveIssues: null,
+    closedSeriousFixed: null,
+    openedSeriousDuringReign: null,
+    scoredAt: null,
+    scoreAudit: null,
+    explanation: null,
+    staleAudit: {
+      schemaVersion: 1,
+      state: 'stale',
+      message: diagnosticMessage,
+      previousStatus,
+      auditedAt,
+      causes: [cause],
+    },
+    diagnosticOnly: true,
+  };
+}
+
+function invalidateRetainedActionability(cause, message) {
+  if (!allReleases.length) return false;
+  releaseRequestController?.abort();
+  releaseLoadEpoch += 1;
+  actionabilityHold = null;
+  allReleases = allReleases.map((release) =>
+    retainedDiagnosticRelease(release, cause, message));
+  releaseSnapshot = '';
+  scheduledStatusVerificationSnapshot = '';
+  chartReleases = [];
+  publicReleaseDetails = new Map();
+  reviewByTag = new Map();
+  reviewLoadStateByTag = new Map();
+  reviewRequests.clear();
+  publicLoadState = {
+    status: 'error',
+    snapshot: releaseSnapshot,
+    message: boundedUiMessage(
+      `${message} Retained issue evidence is unavailable for this diagnostic snapshot.`,
+      'Related issue evidence is unavailable for this diagnostic snapshot.',
+    ),
+  };
+  setReleaseLoadState(
+    'stale',
+    `${boundedUiMessage(message, 'The current API snapshot is unavailable.')} Retained release metadata is diagnostic only.`,
+  );
+  renderScoreHistory();
+  applyRoute();
+  renderPackageCard();
+  markActionabilityUiRendered();
+  return true;
+}
+
+function holdDownstreamActionability(cause, message, options = {}) {
+  if (!releaseSnapshotRowsVerified()) return false;
+  const label = ({
+    snapshot_mismatch: 'Publication snapshot mismatch',
+    public_snapshot_stale: 'Issue evidence is non-actionable',
+    public_load_failed: 'Issue evidence unavailable',
+    review_load_failed: 'Assessment details unavailable',
+  })[cause] ?? 'Release actions unavailable';
+  const sourceMessage = boundedUiMessage(
+    message,
+    'Required publication evidence could not be verified.',
+  );
+  actionabilityHold = {
+    cause,
+    label,
+    detail: `${sourceMessage} Scores remain visible from the authoritative release snapshot, but install actions remain unavailable.`,
+  };
+
+  if (options.publicEvidence === true) {
+    publicReleaseDetails = new Map();
+    publicLoadState = {
+      status: 'error',
+      snapshot: releaseSnapshot,
+      message: sourceMessage,
+    };
+    patchAllPublicSlots();
   }
-  catch (e) {
-    const msg = `Could not load releases — ${esc(e.message)}`;
-    const cards = document.getElementById('packageCards');
-    if (cards) cards.innerHTML = `<div class="state">${msg}</div>`;
-    const recBlock = document.getElementById('recBlock');
-    if (recBlock) recBlock.hidden = false;
-    const targetEl = document.getElementById('recTarget');
-    if (targetEl) {
-      targetEl.hidden = false;
-      targetEl.className = 'rec-target rec-target--none';
-      targetEl.innerHTML = `<div class="state">${msg}</div>`;
+  if (options.reviewTag) {
+    reviewByTag.delete(options.reviewTag);
+    reviewLoadStateByTag.set(options.reviewTag, {
+      status: 'error',
+      cause,
+      message: sourceMessage,
+    });
+  }
+
+  refreshActionabilityUi();
+  return true;
+}
+
+function clearLoadedReleaseAuthority(message) {
+  releaseRequestController?.abort();
+  releaseRequestController = null;
+  releaseLoadEpoch += 1;
+  actionabilityHold = null;
+  allReleases = [];
+  chartReleases = [];
+  publicReleaseDetails = new Map();
+  releaseSnapshot = '';
+  scheduledStatusVerificationSnapshot = '';
+  reviewByTag = new Map();
+  reviewLoadStateByTag = new Map();
+  reviewRequests.clear();
+  publicLoadState = {
+    status: 'error',
+    snapshot: '',
+    message: 'Release evidence is unavailable until an authorized catalog is loaded.',
+  };
+  setReleaseLoadState(
+    'error',
+    boundedUiMessage(
+      message,
+      'Release data is unavailable until its GitHub catalog can be verified.',
+    ),
+  );
+  renderScoreHistory();
+  applyRoute();
+  renderPackageCard();
+  markActionabilityUiRendered();
+}
+
+function setReleaseLoadState(status, message = '') {
+  releaseLoadState = { status, message: boundedUiMessage(message, '') };
+  renderPackageLoadState();
+}
+
+function renderPackageLoadState() {
+  const state = document.getElementById('packageLoadState');
+  if (!state) return;
+  const publicationHeld = releaseLoadState.status === 'ready'
+    && allReleases.length > 0
+    && !releaseSnapshotPublicationVerified();
+  const renderedStatus = publicationHeld ? 'hold' : releaseLoadState.status;
+  state.dataset.releaseState = renderedStatus;
+  state.setAttribute('aria-busy', renderedStatus === 'loading' ? 'true' : 'false');
+  const failed = renderedStatus === 'error' || renderedStatus === 'stale';
+  const refreshActive = analysisRefreshInProgress();
+  state.className = `load-state${failed && !refreshActive ? ' load-state--error' : ''}`;
+  state.hidden = renderedStatus === 'ready';
+  if (renderedStatus === 'loading') {
+    state.setAttribute('role', 'status');
+    state.innerHTML = 'Loading releases...';
+  } else if (renderedStatus === 'empty') {
+    state.setAttribute('role', 'status');
+    state.innerHTML = 'No releases are available yet.';
+  } else if (renderedStatus === 'error') {
+    state.setAttribute('role', 'alert');
+    state.innerHTML = `<span>${esc(releaseLoadState.message || 'Could not load releases.')}</span>`
+      + '<button class="btn-ghost" type="button" data-release-retry>Retry</button>';
+  } else if (renderedStatus === 'stale') {
+    state.setAttribute('role', refreshActive ? 'status' : 'alert');
+    state.innerHTML = refreshActive
+      ? `<span><strong>${ACTIVE_ANALYSIS_REFRESH_LABEL}.</strong> ${esc(ACTIVE_ANALYSIS_REFRESH_MESSAGE)}</span>`
+      : `<span>${esc(releaseLoadState.message || 'Could not refresh releases. Showing retained release data.')}</span>`
+        + '<button class="btn-ghost" type="button" data-release-retry>Retry</button>';
+  } else if (renderedStatus === 'hold') {
+    const hold = actionabilityHoldCopy();
+    state.setAttribute('role', 'status');
+    state.innerHTML = `<span><strong>${esc(hold.label)}</strong>. ${esc(hold.detail)}</span>`;
+  }
+}
+
+function patchAllPublicSlots() {
+  allReleases.forEach((release) => patchReleasePublicSlots(release.tag));
+}
+
+function scheduleAutomaticSnapshotRebase(epoch, snapshot) {
+  if (!responseBelongsToSnapshot(epoch, snapshot)) return false;
+  if (scheduledSnapshotRebaseCycle === userLoadCycle) return true;
+  if (automaticSnapshotRebaseUsed) return false;
+  automaticSnapshotRebaseUsed = true;
+  const cycle = userLoadCycle;
+  scheduledSnapshotRebaseCycle = cycle;
+  queueMicrotask(() => {
+    if (cycle !== userLoadCycle || scheduledSnapshotRebaseCycle !== cycle) return;
+    scheduledSnapshotRebaseCycle = null;
+    loadReleases({ automatic: true, cycle });
+  });
+  return true;
+}
+
+function scheduleStatusVerificationForSnapshot(epoch, snapshot) {
+  if (!responseBelongsToSnapshot(epoch, snapshot)) return;
+  if (statusBelongsToReleaseSnapshot()) return;
+  if (scheduledStatusVerificationSnapshot === snapshot) return;
+  scheduledStatusVerificationSnapshot = snapshot;
+  queueMicrotask(() => {
+    if (scheduledStatusVerificationSnapshot !== snapshot) return;
+    scheduledStatusVerificationSnapshot = '';
+    if (!responseBelongsToSnapshot(epoch, snapshot) || statusBelongsToReleaseSnapshot()) return;
+    loadStatus();
+  });
+}
+
+async function loadReleases(options = {}) {
+  const automatic = options.automatic === true;
+  if (automatic) {
+    if (options.cycle !== userLoadCycle) return;
+    scheduledSnapshotRebaseCycle = null;
+  } else {
+    userLoadCycle += 1;
+    automaticSnapshotRebaseUsed = false;
+    scheduledSnapshotRebaseCycle = null;
+  }
+  const epoch = ++releaseLoadEpoch;
+  releaseRequestController?.abort();
+  releaseRequestController = new AbortController();
+  actionabilityHold = null;
+  reviewRequests.clear();
+  setReleaseLoadState('loading');
+  publicLoadState = { status: 'pending', snapshot: releaseSnapshot, message: '' };
+  patchAllPublicSlots();
+  refreshActionabilityUi();
+  try {
+    const response = await api('/releases', {
+      signal: releaseRequestController.signal,
+      includeMeta: true,
+    });
+    if (epoch !== releaseLoadEpoch) return;
+    const releases = response?.body;
+    const snapshotId = response?.snapshotId;
+    if (!Array.isArray(releases)) throw new UiRequestError('invalid');
+    if (
+      !isExplicitSnapshotId(snapshotId)
+      || !rowsBelongToExplicitSnapshot(releases, snapshotId)
+    ) {
+      throw new UiRequestError('snapshot');
     }
-    applyRoute();
+    const refreshActive = analysisRefreshInProgress();
+    allReleases = releases;
+    releaseSnapshot = snapshotId;
+    chartReleases = [];
+    publicReleaseDetails = new Map();
+    publicLoadState = {
+      status: refreshActive ? 'error' : (allReleases.length ? 'pending' : 'idle'),
+      snapshot: releaseSnapshot,
+      message: refreshActive ? ACTIVE_ANALYSIS_REFRESH_MESSAGE : '',
+    };
+    reviewByTag = new Map();
+    reviewLoadStateByTag = new Map();
+    setReleaseLoadState(releases.length ? 'ready' : 'empty');
+    if (!refreshActive) scheduleStatusVerificationForSnapshot(epoch, releaseSnapshot);
+  }
+  catch (error) {
+    if (epoch !== releaseLoadEpoch) return;
+    if (isCanceledRequest(error)) return;
+    const message = requestErrorMessage(error, 'Could not load releases.');
+    if (isAuthorityUnavailableError(error)) {
+      clearLoadedReleaseAuthority(message);
+      return;
+    }
+    if (allReleases.length) {
+      invalidateRetainedActionability('release_load_failed', message);
+    } else {
+      setReleaseLoadState('error', message);
+    }
+    if (!allReleases.length) {
+      applyRoute();
+      renderPackageCard();
+    }
     return;
   }
   renderPackageCard();
   applyRoute();
+  if (!allReleases.length) return;
+  loadHistoryForSnapshot(epoch, releaseSnapshot, releaseRequestController.signal);
+  loadPublicForSnapshot(epoch, releaseSnapshot, releaseRequestController.signal);
+}
+
+function releaseSnapshotRow(row, scoreKey = 'finalScore') {
+  return {
+    tag: row?.tag ?? null,
+    score: row?.[scoreKey] ?? null,
+    status: row?.status ?? null,
+    recommended: row?.recommended === true,
+    scoredAt: row?.scoredAt ?? null,
+    scoreAudit: row?.scoreAudit ?? null,
+    staleAudit: row?.staleAudit ?? null,
+    dataFreshness: row?.dataFreshness ?? null,
+  };
+}
+
+function isExplicitSnapshotId(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+function rowsBelongToExplicitSnapshot(rows, snapshotId) {
+  return Array.isArray(rows)
+    && isExplicitSnapshotId(snapshotId)
+    && rows.every((row) => row?.snapshotId === snapshotId);
+}
+
+function releaseTagSetsMatch(authoritativeRows, candidateRows) {
+  if (
+    !Array.isArray(authoritativeRows)
+    || !Array.isArray(candidateRows)
+    || authoritativeRows.length !== candidateRows.length
+  ) {
+    return false;
+  }
+  const authoritativeTags = new Set();
+  const candidateTags = new Set();
+  for (const row of authoritativeRows) {
+    const tag = row?.tag;
+    if (typeof tag !== 'string' || !tag || authoritativeTags.has(tag)) return false;
+    authoritativeTags.add(tag);
+  }
+  for (const row of candidateRows) {
+    const tag = row?.tag;
+    if (typeof tag !== 'string' || !tag || candidateTags.has(tag)) return false;
+    candidateTags.add(tag);
+  }
+  return authoritativeTags.size === candidateTags.size
+    && [...authoritativeTags].every((tag) => candidateTags.has(tag));
+}
+
+function historyRowsMatchReleaseSnapshot(authoritativeRows, historyRows) {
+  if (!Array.isArray(authoritativeRows) || !Array.isArray(historyRows)) {
+    return false;
+  }
+  const authoritativeByTag = new Map();
+  for (const row of authoritativeRows) {
+    const tag = row?.tag;
+    if (typeof tag !== 'string' || !tag || authoritativeByTag.has(tag)) {
+      return false;
+    }
+    authoritativeByTag.set(tag, row);
+  }
+  const historyTags = new Set();
+  for (const row of historyRows) {
+    const tag = row?.tag;
+    const authoritative = authoritativeByTag.get(tag);
+    if (
+      typeof tag !== 'string'
+      || !tag
+      || historyTags.has(tag)
+      || !authoritative
+      || !releaseSnapshotRowMatches(authoritative, row)
+    ) {
+      return false;
+    }
+    historyTags.add(tag);
+  }
+  return true;
+}
+
+function releaseSnapshotRowMatches(authoritative, candidate, scoreKey = 'finalScore') {
+  return JSON.stringify(releaseSnapshotRow(authoritative))
+    === JSON.stringify(releaseSnapshotRow(candidate, scoreKey));
+}
+
+function responseBelongsToSnapshot(epoch, snapshot) {
+  return epoch === releaseLoadEpoch && snapshot === releaseSnapshot;
+}
+
+async function loadHistoryForSnapshot(epoch, snapshot, signal) {
+  if (analysisRefreshInProgress()) return;
+  try {
+    const response = await api('/releases/history', { signal, includeMeta: true });
+    if (!responseBelongsToSnapshot(epoch, snapshot)) return;
+    const history = response?.body;
+    if (
+      response?.snapshotId !== snapshot
+      || !rowsBelongToExplicitSnapshot(history, snapshot)
+      || !historyRowsMatchReleaseSnapshot(allReleases, history)
+    ) {
+      chartReleases = [];
+      renderScoreHistory();
+      scheduleAutomaticSnapshotRebase(epoch, snapshot);
+      return;
+    }
+    chartReleases = history;
+    renderScoreHistory();
+  } catch (error) {
+    if (isCanceledRequest(error)) return;
+    if (!responseBelongsToSnapshot(epoch, snapshot)) return;
+    chartReleases = [];
+    renderScoreHistory();
+  }
+}
+
+function publicReleaseEnrichment(row) {
+  return {
+    tag: row.tag,
+    profileEvidence: row.profileEvidence ?? null,
+    issues: Array.isArray(row.issues) ? row.issues : [],
+    watchIssues: Array.isArray(row.watchIssues) ? row.watchIssues : [],
+  };
+}
+
+async function loadPublicForSnapshot(epoch, snapshot, signal) {
+  if (analysisRefreshInProgress()) return;
+  try {
+    const response = await api('/public', { signal, includeMeta: true });
+    const payload = response?.body;
+    const rows = payload?.releases;
+    if (!responseBelongsToSnapshot(epoch, snapshot)) return;
+    const snapshotMetadata = payload?.snapshot;
+    const identityMatches = response?.snapshotId === snapshot
+      && payload?.snapshotId === snapshot
+      && snapshotMetadata?.id === snapshot
+      && rowsBelongToExplicitSnapshot(rows, snapshot)
+      && releaseTagSetsMatch(allReleases, rows);
+    if (!identityMatches) {
+      scheduleAutomaticSnapshotRebase(epoch, snapshot);
+      holdDownstreamActionability(
+        'snapshot_mismatch',
+        requestErrorMessage(
+          new UiRequestError('snapshot'),
+          'Could not load a complete, duplicate-free public evidence release set.',
+        ),
+        { publicEvidence: true },
+      );
+      return;
+    }
+    if (
+      snapshotMetadata.stale === true
+      || snapshotMetadata.retained === true
+      || snapshotMetadata.actionable !== true
+    ) {
+      holdDownstreamActionability(
+        'public_snapshot_stale',
+        'The public evidence endpoint returned retained or stale diagnostic data.',
+        { publicEvidence: true },
+      );
+      return;
+    }
+    publicReleaseDetails = new Map(rows.map((row) => [row.tag, publicReleaseEnrichment(row)]));
+    publicLoadState = { status: 'ready', snapshot, message: '' };
+    patchAllPublicSlots();
+    if (releaseSnapshotIdentityVerified()) renderProfileFilter(allReleases);
+    refreshActionabilityUi();
+  } catch (error) {
+    if (isCanceledRequest(error) || !responseBelongsToSnapshot(epoch, snapshot)) return;
+    holdDownstreamActionability(
+      'public_load_failed',
+      requestErrorMessage(error, 'Could not load related issue evidence.'),
+      { publicEvidence: true },
+    );
+  }
+}
+
+function reviewMatchesReleaseSnapshot(review, release, snapshot) {
+  const local = review?.local;
+  if (review?.tag !== release?.tag || !local) return false;
+  if (
+    !isExplicitSnapshotId(snapshot)
+    || review?.snapshotId !== snapshot
+    || release?.snapshotId !== snapshot
+  ) {
+    return false;
+  }
+  if (isStaleAnalysis(release)) return false;
+  if (release.scoreAudit) {
+    if (local.schemaVersion !== release.scoreAudit.reviewSchemaVersion) return false;
+    if (local.auditDigest !== release.scoreAudit.auditDigest) return false;
+    if (local.sourceProvenance?.auditDigest !== local.auditDigest) return false;
+  }
+  const scoreAuthority = local.sourceProvenance?.scoreAuthority;
+  const candidate = {
+    tag: review.tag,
+    finalScore: local.score,
+    status: local.status,
+    recommended: local.recommended,
+    scoredAt: local.scoredAt,
+    scoreAudit: release.scoreAudit ? {
+      schemaVersion: release.scoreAudit.schemaVersion,
+      reviewSchemaVersion: local.schemaVersion ?? null,
+      auditDigest: local.auditDigest ?? null,
+      authorityRunId: scoreAuthority?.runId ?? null,
+      authorityRunContentHash: scoreAuthority?.contentHash ?? null,
+      historyV2SealContentHash:
+        scoreAuthority?.historyV2SealContentHash ?? null,
+      modelVersion: local.modelVersion ?? null,
+      promptVersion: local.promptVersion ?? null,
+      evidenceCoverage: local.components?.evidenceCoverage ?? null,
+      rawIssueCount: local.input?.rawIssueCount ?? null,
+      classifiedIssueCount: local.input?.classifiedIssueCount ?? null,
+    } : null,
+    dataFreshness: local.dataFreshness ?? null,
+  };
+  return releaseSnapshotRowMatches(release, candidate);
+}
+
+function loadReviewForRelease(tag) {
+  const release = allReleases.find((row) => row.tag === tag);
+  if (!release) return Promise.resolve(null);
+  if (isStaleAnalysis(release)) {
+    reviewByTag.delete(tag);
+    reviewLoadStateByTag.delete(tag);
+    patchReleaseReviewSlot(tag);
+    return Promise.resolve(null);
+  }
+  if (reviewByTag.has(tag)) {
+    patchReleaseReviewSlot(tag);
+    return Promise.resolve(reviewByTag.get(tag));
+  }
+
+  const epoch = releaseLoadEpoch;
+  const snapshot = releaseSnapshot;
+  const releaseRowSnapshot = JSON.stringify(releaseSnapshotRow(release));
+  const requestKey = `${epoch}:${tag}`;
+  const inflight = reviewRequests.get(requestKey);
+  if (inflight) return inflight;
+
+  reviewLoadStateByTag.set(tag, { status: 'loading' });
+  patchReleaseReviewSlot(tag);
+
+  const reviewUrl = release.auditLinks?.review;
+  if (!reviewUrl) {
+    holdDownstreamActionability(
+      'review_load_failed',
+      'The release row did not include a snapshot-bound assessment link.',
+      { reviewTag: tag },
+    );
+    return Promise.resolve(null);
+  }
+  const requestPath = reviewUrl.startsWith('/api')
+    ? reviewUrl.slice('/api'.length)
+    : reviewUrl;
+  const request = api(requestPath, {
+    signal: releaseRequestController?.signal,
+    includeMeta: true,
+  })
+    .then((response) => {
+      if (!responseBelongsToSnapshot(epoch, snapshot)) return null;
+      const currentRelease = allReleases.find((row) => row.tag === tag);
+      if (!currentRelease || JSON.stringify(releaseSnapshotRow(currentRelease)) !== releaseRowSnapshot) return null;
+      const review = response?.body;
+      if (
+        response?.snapshotId !== snapshot
+        || !reviewMatchesReleaseSnapshot(review, currentRelease, snapshot)
+      ) {
+        scheduleAutomaticSnapshotRebase(epoch, snapshot);
+        holdDownstreamActionability(
+          'snapshot_mismatch',
+          requestErrorMessage(
+            new UiRequestError('snapshot'),
+            'Could not load matching assessment details.',
+          ),
+          { reviewTag: tag },
+        );
+        return null;
+      }
+      reviewByTag.set(tag, review);
+      reviewLoadStateByTag.delete(tag);
+      patchReleaseReviewSlot(tag);
+      patchReleaseIssueSlot(tag);
+      return review;
+    })
+    .catch((error) => {
+      if (!responseBelongsToSnapshot(epoch, snapshot)) return null;
+      if (isCanceledRequest(error)) return null;
+      const currentRelease = allReleases.find((row) => row.tag === tag);
+      if (!currentRelease || JSON.stringify(releaseSnapshotRow(currentRelease)) !== releaseRowSnapshot) return null;
+      holdDownstreamActionability(
+        'review_load_failed',
+        requestErrorMessage(error, 'Could not load assessment details.'),
+        { reviewTag: tag },
+      );
+      return null;
+    })
+    .finally(() => {
+      if (reviewRequests.get(requestKey) === request) reviewRequests.delete(requestKey);
+    });
+  reviewRequests.set(requestKey, request);
+  return request;
 }
 
 function renderPackageCard() {
   const root = document.getElementById('packageCards');
-  if (!root || isPackageView()) return;
+  if (!root) return;
 
-  if (!allReleases.length) {
-    root.innerHTML = '<div class="state">No releases yet — first refresh in progress</div>';
+  const publishedReleases = releaseSnapshotAuthorityVerified()
+    ? allReleases
+    : [];
+  if (!publishedReleases.length) {
+    if (releaseLoadState.status === 'loading') {
+      root.innerHTML = '<div class="state">Loading releases...</div>';
+    } else if (releaseLoadState.status === 'error') {
+      root.innerHTML = `<div class="state">${esc(releaseLoadState.message || 'Could not load releases.')}`
+        + '<br><button class="btn-ghost" type="button" data-release-retry>Retry</button></div>';
+    } else if (allReleases.length) {
+      const hold = actionabilityHoldCopy();
+      root.innerHTML = `<div class="state">${esc(hold.label)}. ${esc(hold.detail)}</div>`;
+    } else {
+      root.innerHTML = '<div class="state">No releases are available yet.</div>';
+    }
+    bindInstallCopy();
     return;
   }
 
-  const latest = allReleases[0];
-  const recommended = pickRecommendedRelease(allReleases);
-  const bestAlt = pickBestAlternative(allReleases, latest);
+  const latest = publishedReleases[0];
+  const actionabilityVerified = releaseSnapshotActionabilityVerified();
+  const recommended = actionabilityVerified ? pickRecommendedRelease(publishedReleases) : null;
+  const bestAlt = actionabilityVerified ? pickBestAlternative(publishedReleases, latest) : null;
   const latestScore = formatScore10(latest.finalScore);
   const latestColor = scoreColor10(latest.finalScore, latest.band);
+  const retainedDiagnostic = releaseLoadState.status === 'stale'
+    || latest.diagnosticOnly === true
+    || isStaleAnalysis(latest);
+  const releaseLabel = retainedDiagnostic ? 'Retained release' : 'Latest';
+  const scoreAriaLabel = retainedDiagnostic
+    ? 'Retained diagnostic release score'
+    : 'Latest release score';
+  const hasStaleAnalysis = publishedReleases.some(isStaleAnalysis);
+  const holdCopy = actionabilityHoldCopy();
+  const staleCopy = staleAnalysisBannerCopy();
+  const staleState = analysisRefreshInProgress()
+    ? `<div class="pkg-card__cmd state">${ACTIVE_ANALYSIS_REFRESH_LABEL}. ${ACTIVE_ANALYSIS_REFRESH_MESSAGE}</div>`
+    : !actionabilityVerified
+      ? `<div class="pkg-card__cmd state">${esc(holdCopy.label)}. ${esc(holdCopy.detail)}</div>`
+      : hasStaleAnalysis
+        ? `<div class="pkg-card__cmd state">${esc(staleCopy.label)}. ${esc(staleCopy.detail)}</div>`
+        : '<div class="pkg-card__cmd state">No recommended target right now</div>';
 
   const altBlock = bestAlt
     ? `<div class="pkg-card__alt">`
@@ -2868,9 +4433,9 @@ function renderPackageCard() {
         <div class="pkg-card__top">
           <div>
             <h3 class="pkg-card__name">openclaw</h3>
-            <p class="pkg-card__meta">Latest <strong>${esc(latest.tag)}</strong></p>
+            <p class="pkg-card__meta">${releaseLabel} <strong>${esc(latest.tag)}</strong></p>
           </div>
-          <div class="pkg-card__score-wrap" aria-label="Latest release score">
+          <div class="pkg-card__score-wrap" aria-label="${scoreAriaLabel}">
             <div class="pkg-card__score-big" style="color:${latestColor}">
               ${latestScore ?? '—'}<span class="pkg-card__score-denom">/10</span>
             </div>
@@ -2882,33 +4447,42 @@ function renderPackageCard() {
         </div>
         ${altBlock}
       </a>
-      ${recommended ? `<div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>` : '<div class="pkg-card__cmd state">No recommended target right now</div>'}
+      ${recommended ? `<div class="pkg-card__cmd">${updateCommandBlockHtml(recommended.tag, { showLabel: false })}</div>` : staleState}
     </div>`;
   bindInstallCopy();
 }
 
 function renderReleases() {
   if (!isPackageView()) return;
-  const rows = allReleases.slice(0, uiLimits.releases);
+  const rows = releaseSnapshotAuthorityVerified() ? allReleases : [];
   const root = document.getElementById('releases');
   const recBlock = document.getElementById('recBlock');
-
-  if (recBlock) recBlock.hidden = false;
+  const activeElement = document.activeElement;
+  const focusedRelease = activeElement instanceof Element
+    ? activeElement.closest('.release')
+      ?? activeElement.closest('.details')?.previousElementSibling
+    : null;
+  const focusedReleaseTag = focusedRelease?.classList?.contains('release')
+    ? focusedRelease.dataset.tag
+    : null;
 
   if (!rows.length) {
-    const targetEl = document.getElementById('recTarget');
-    targetEl.hidden = false;
-    targetEl.className = 'rec-target rec-target--none';
-    targetEl.innerHTML =
-      '<div class="state">No releases yet — first refresh in progress</div>';
+    if (recBlock) recBlock.hidden = true;
     root.innerHTML = '';
+    markActionabilityUiRendered();
     return;
   }
 
+  if (recBlock) recBlock.hidden = false;
   const { categorized } = categorizeReleases(rows);
   const byTag = new Map(categorized.map(c => [c.release.tag, c]));
   renderTarget(categorized);
-  renderProfileFilter(rows);
+  if (releaseSnapshotIdentityVerified()) {
+    renderProfileFilter(rows);
+  } else {
+    const filter = document.getElementById('profileFilter');
+    if (filter) filter.hidden = true;
+  }
 
   root.innerHTML = '';
 
@@ -2920,52 +4494,46 @@ function renderReleases() {
     const row = document.createElement('div');
     row.className = 'release release--' + cat.category;
     row.dataset.tag = r.tag;
-    row.tabIndex = 0;
-    row.setAttribute('role', 'button');
-    row.setAttribute('aria-expanded', 'false');
-    row.setAttribute('aria-controls', `det-${id}`);
     row.style.setProperty('--score-color', si.main.color);
 
-    // Only flag a problem when there is one: vulnerable → "known CVE"; otherwise
-    // show nothing (no "patched" badge — absence of a flag already means "clean").
+    // Only flag a problem when there is one. Advisory records are guaranteed here;
+    // a CVE identifier is not, so the UI names the advisory rather than assuming one.
     const affectedCount = (r.advisories?.affected?.total) ?? 0;
     const advBadge = affectedCount > 0
-      ? `<span class="cve-badge cve-badge--affected" title="Vulnerable to ${affectedCount} known CVE — exact severity is in the score">known CVE</span>`
+      ? `<span class="cve-badge cve-badge--affected" title="${affectedCount} medium-or-higher security ${affectedCount === 1 ? 'advisory affects' : 'advisories affect'} this version">security advisory</span>`
       : '';
 
     const recPill = cat.category === 'recommended'
       ? '<span class="rec-pill">Recommended</span>' : '';
-    // Eligible + skip-cve rows say everything via the score, recommended pill, CVE
-    // badge and the red surface chips — so their verbose reason text is hidden.
-    // Only 'wait' (too-new) and 'skip-hotfix' keep a short explanatory note.
-    const reasonText = (r.status === 'skip-cve' || r.status === 'eligible')
-      ? '' : (cat.reason || r.reason || '');
-    const reasonLine = reasonText
-      ? `<span class="release__reason">${esc(reasonText)}</span>` : '';
+    const reasonText = releaseReasonText(r, cat);
+    const reasonLine = `<span class="release__reason" id="reason-${id}"${reasonText ? '' : ' hidden'}>${esc(reasonText)}</span>`;
     const driversLine = scoreDriversHtml(r);
 
-	    const surfaces = issueBackedSurfaces(r);
-	    const surfacesLine = affectedAreasHtml(surfaces);
+    const surfaces = issueBackedSurfaces(r);
+    const surfacesLine = affectedAreasHtml(surfaces);
     row.innerHTML = `
-      <div class="release__left">
-        <div class="release__head">
-          <span class="release__tag">${esc(r.tag)}</span>
-          <span class="release__date">${timeAgo(r.publishedAt)}</span>
-          ${recPill}
-          ${advBadge}
-        </div>
-	        ${reasonLine}
-	        ${driversLine}
-	        ${surfacesLine}
-	      </div>
-      <div class="release__right" title="${esc(si.main.label)}">
-        <span class="score-dot"></span>
-        <span class="score-stack"><span class="score-num">${esc(si.main.num)}</span>${si.sub ? `<span class="score-sub">${esc(si.sub)}</span>` : ''}</span>
-        <svg class="chevron" viewBox="0 0 16 16" fill="none">
-          <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5"
-                stroke-linecap="round" stroke-linejoin="round"/>
-        </svg>
-      </div>`;
+      <button class="release__toggle" type="button" data-release-toggle
+              aria-expanded="false" aria-controls="det-${id}">
+        <span class="release__left">
+          <span class="release__head">
+            <span class="release__tag">${esc(r.tag)}</span>
+            <span class="release__date">${timeAgo(r.publishedAt)}</span>
+            <span id="recommendation-${id}">${recPill}</span>
+            ${advBadge}
+          </span>
+          ${reasonLine}
+          ${driversLine}
+        </span>
+        <span class="release__right" title="${esc(si.main.label)}">
+          <span class="score-dot"></span>
+          <span class="score-stack"><span class="score-num">${esc(si.main.num)}</span>${si.sub ? `<span class="score-sub">${esc(si.sub)}</span>` : ''}</span>
+          <svg class="chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+            <path d="M6 3l5 5-5 5" stroke="currentColor" stroke-width="1.5"
+                  stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </span>
+      </button>
+      <div class="release__surface-slot" id="surfaces-${id}">${surfacesLine}</div>`;
 
     const det = document.createElement('div');
     det.className = 'details';
@@ -2973,59 +4541,78 @@ function renderReleases() {
     det.hidden = true;
     det.innerHTML = installPanelHtml(r);
 
-    row.addEventListener('click', () => toggleRelease(row));
-    row.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      e.preventDefault();
-      toggleRelease(row);
-    });
-    // "+N more" toggles its own disclosure — don't let it also open the issue panel.
-    row.querySelectorAll('.surf-more').forEach((el) =>
-      el.addEventListener('click', (e) => e.stopPropagation()));
+    row.querySelector('[data-release-toggle]').addEventListener('click', () => toggleRelease(row));
     root.appendChild(row);
     root.appendChild(det);
   });
   bindInstallCopy();
   renderScoreHistory();
+  if (focusedReleaseTag && activeElement instanceof Element && !activeElement.isConnected) {
+    queueMicrotask(() => {
+      const toggle = root.querySelector(
+        `.release[data-tag="${CSS.escape(focusedReleaseTag)}"] [data-release-toggle]`,
+      );
+      if (toggle instanceof HTMLElement) toggle.focus();
+    });
+  }
+  markActionabilityUiRendered();
 }
 
 /* ── recommendation view ─────────────────────────────────────────────────
  * The server (lib/score.ts) already answers "which stable should I install?"
- * via gates + Install Confidence and flags exactly one release as `recommended`.
+ * via gates + the policy/stability assessment and flags exactly one release as `recommended`.
  * The UI just maps each release's status into a display category + reason:
- *   - 'skip'        : known CVE, or the maintainers hotfixed it
+ *   - 'skip'        : security advisory gate, or the maintainers hotfixed it
  *   - 'too-new'     : younger than the settle window (status 'wait')
  *   - 'recommended' : the one release the server picked
  *   - 'normal'      : eligible but not the pick — its score speaks for itself
  */
 function categorizeReleases(rows) {
+  const actionabilityVerified = releaseSnapshotActionabilityVerified();
   const out = rows.map((r) => {
     const adv = r.advisories?.affected ?? { total: 0, bySeverity: {} };
-    const affectedCves = adv.total ?? 0;
+    const affectedAdvisories = adv.total ?? 0;
     let category = 'normal';
     let reason = '';
-    if (affectedCves > 0 || r.status === 'skip-cve') {
+    if (r.status === 'skip-cve') {
       category = 'skip';
       const sev = ['critical', 'high', 'medium', 'low']
         .filter((s) => (adv.bySeverity?.[s] ?? 0) > 0)
         .map((s) => `${adv.bySeverity[s]} ${s}`)
         .join(', ');
-      reason = affectedCves > 0
-        ? `Vulnerable to ${affectedCves} known CVE${sev ? ` (${sev})` : ''} — upgrade past this version`
-        : (r.reason || 'Vulnerable to a known CVE — upgrade past this version');
+      reason = affectedAdvisories > 0
+        ? `Affected by ${affectedAdvisories} medium-or-higher security advisor${affectedAdvisories === 1 ? 'y' : 'ies'}${sev ? ` (${sev})` : ''}; upgrade past this version`
+        : (humanizeUiText(r.reason) || 'A medium-or-higher security advisory blocks this version; upgrade past it');
     } else if (r.status === 'skip-hotfix') {
       category = 'skip';
       reason = r.reason || 'Maintainers hotfixed it — install the successor';
     } else if (r.status === 'wait') {
       category = 'too-new';
       reason = r.reason || 'Too new — wait for it to settle';
-    } else if (r.recommended) {
+    } else if (isStaleAnalysis(r)) {
+      category = 'stale';
+      reason = r.reason;
+    } else if (r.recommended && actionabilityVerified) {
       category = 'recommended';
       reason = '';
     }
     return { release: r, category, reason };
   });
   return { categorized: out };
+}
+
+function releaseReasonText(r, cat) {
+  const recommendationSummary = recommendationDecisionCopy(r);
+  const gateReason = cat.reason || r.reason || '';
+  if (isStaleAnalysis(r)) {
+    return humanizeUiText(
+      [r.reason, gateReason !== r.reason ? gateReason : ''].filter(Boolean).join(' '),
+    );
+  }
+  if (r.status === 'eligible') {
+    return cat.category === 'recommended' ? (recommendationSummary || r.reason || '') : '';
+  }
+  return gateReason;
 }
 
 function renderTarget(categorized) {
@@ -3039,12 +4626,31 @@ function renderTarget(categorized) {
     targetEl.innerHTML = '';
     return;
   }
+  const stale = categorized.some((entry) => isStaleAnalysis(entry.release));
+  const refreshActive = analysisRefreshInProgress();
+  const actionabilityVerified = releaseSnapshotActionabilityVerified();
+  const holdCopy = actionabilityHoldCopy();
+  const staleCopy = staleAnalysisBannerCopy(categorized.map((entry) => entry.release));
   targetEl.hidden = false;
   targetEl.className = 'rec-target rec-target--none';
   targetEl.innerHTML = `
-    <div class="rec-target__label">No recommended target right now</div>
+    <div class="rec-target__label">${
+      refreshActive
+        ? ACTIVE_ANALYSIS_REFRESH_LABEL
+        : !actionabilityVerified
+          ? esc(holdCopy.label)
+          : stale
+            ? esc(staleCopy.label)
+            : 'No recommended target right now'
+    }</div>
     <div class="rec-target__reason">
-      None of the loaded releases passed the recommendation gates. Review the rows below or refresh evidence before installing.
+      ${refreshActive
+        ? esc(ACTIVE_ANALYSIS_REFRESH_MESSAGE)
+        : !actionabilityVerified
+          ? esc(holdCopy.detail)
+          : stale
+            ? esc(staleCopy.detail)
+            : 'None of the loaded releases passed the recommendation gates. Review the rows below or refresh evidence before installing.'}
     </div>
   `;
 }
@@ -3055,14 +4661,15 @@ function toggleRelease(row) {
   const opening = !row.classList.contains('open');
   document.querySelectorAll('.release.open').forEach((r) => {
     r.classList.remove('open');
-    r.setAttribute('aria-expanded', 'false');
+    r.querySelector('[data-release-toggle]')?.setAttribute('aria-expanded', 'false');
     const d = r.nextElementSibling;
     if (d?.classList.contains('details')) d.hidden = true;
   });
   if (!opening) return;
   row.classList.add('open');
-  row.setAttribute('aria-expanded', 'true');
+  row.querySelector('[data-release-toggle]')?.setAttribute('aria-expanded', 'true');
   if (details?.classList.contains('details')) details.hidden = false;
+  loadReviewForRelease(row.dataset.tag);
 }
 
 /* ── status dot ───────────────────────────────────────────────────────── */
@@ -3072,12 +4679,104 @@ function toggleRelease(row) {
 // advice on screen might no longer reflect reality.
 const STALE_AFTER_MS = 6 * 60 * 60 * 1000; // 6 hours
 const SOURCE_STALE_AFTER_HOURS = 12;
+let statusLoadEpoch = 0;
+let statusRequestController = null;
+let latestStatus = null;
+let statusAvailable = false;
+let postRefreshReloadSequence = 0;
+let scheduledPostRefreshReload = 0;
+let renderedActionabilityUiKey = '';
+
+function markActionabilityUiRendered() {
+  renderedActionabilityUiKey = actionabilityUiStateKey();
+}
+
+function refreshActionabilityUiIfChanged() {
+  if (renderedActionabilityUiKey === actionabilityUiStateKey()) return false;
+  refreshActionabilityUi();
+  return true;
+}
+
+function schedulePostRefreshReload() {
+  const sequence = ++postRefreshReloadSequence;
+  scheduledPostRefreshReload = sequence;
+  queueMicrotask(() => {
+    if (scheduledPostRefreshReload !== sequence
+        || !statusAvailable
+        || analysisRefreshInProgress()) return;
+    scheduledPostRefreshReload = 0;
+    loadReleases();
+  });
+}
+
+function applyStatusSnapshot(status) {
+  const previousStatus = latestStatus;
+  const wasRefreshing = analysisRefreshInProgress(previousStatus);
+  const isRefreshing = analysisRefreshInProgress(status);
+  latestStatus = status;
+  statusAvailable = true;
+
+  if (isRefreshing) {
+    scheduledPostRefreshReload = 0;
+    refreshActionabilityUiIfChanged();
+    return;
+  }
+
+  refreshActionabilityUiIfChanged();
+  if (wasRefreshing) {
+    schedulePostRefreshReload();
+    return;
+  }
+  if (
+    isExplicitSnapshotId(releaseSnapshot)
+    && !statusBelongsToReleaseSnapshot(status)
+  ) {
+    const scheduled = scheduleAutomaticSnapshotRebase(
+      releaseLoadEpoch,
+      releaseSnapshot,
+    );
+    if (!scheduled) refreshActionabilityUiIfChanged();
+    return;
+  }
+}
 
 async function loadStatus() {
+  const epoch = ++statusLoadEpoch;
+  statusRequestController?.abort();
+  statusRequestController = new AbortController();
   const box = document.getElementById('topbarUpdated');
   const label = document.getElementById('updatedLabel');
   try {
-    const s = await api('/status');
+    const response = await api('/status', {
+      signal: statusRequestController.signal,
+      includeMeta: true,
+    });
+    if (epoch !== statusLoadEpoch) return;
+    const s = response?.body;
+    if (
+      !s
+      || !isExplicitSnapshotId(response?.snapshotId)
+      || response.snapshotId !== s.snapshotId
+      || response.snapshotId !== s.publicationSnapshotId
+    ) {
+      throw new UiRequestError('snapshot');
+    }
+    applyStatusSnapshot(s);
+    if (analysisRefreshInProgress(s)) {
+      box.hidden = false;
+      label.textContent = ACTIVE_ANALYSIS_REFRESH_LABEL;
+      return;
+    }
+    if (isExplicitSnapshotId(releaseSnapshot) && !statusBelongsToReleaseSnapshot(s)) {
+      box.hidden = false;
+      label.textContent = 'Verifying updated publication';
+      return;
+    }
+    if (s.lastError) {
+      box.hidden = false;
+      label.textContent = 'Latest refresh failed';
+      return;
+    }
     const issueLag = Number(s.dataFreshness?.issueUpdatedAgeHoursAtScore);
     if (Number.isFinite(issueLag) && issueLag > SOURCE_STALE_AFTER_HOURS) {
       box.hidden = false;
@@ -3092,22 +4791,25 @@ async function loadStatus() {
     }
     box.hidden = false;
     label.textContent = Number.isFinite(last)
-      ? 'Score may be stale — last scored ' + timeAgo(s.lastScoredAt)
+      ? 'Assessment may be stale — last assessed ' + timeAgo(s.lastScoredAt)
       : 'Data not yet refreshed';
-  } catch {
+  } catch (error) {
+    if (epoch !== statusLoadEpoch || isCanceledRequest(error)) return;
     // Can't reach the status endpoint — treat as a staleness warning.
+    statusAvailable = false;
+    refreshActionabilityUiIfChanged();
     box.hidden = false;
-    label.textContent = 'Status unavailable';
+    label.textContent = error?.kind === 'snapshot'
+      ? 'Status snapshot mismatch'
+      : 'Status unavailable';
   }
 }
 
 /* ── init ─────────────────────────────────────────────────────────────── */
-let uiLimits = { releases: 10, refreshMinutes: 30 };
-
 window.addEventListener('hashchange', applyRoute);
 
 (async () => {
-  try { uiLimits = await api('/config'); } catch { /* use defaults */ }
+  bindInstallCopy();
   applyRoute();
   loadStatus();
   loadReleases();

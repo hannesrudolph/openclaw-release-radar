@@ -4,10 +4,13 @@ import {
   CLOSURE_PROOF_SCHEMA_VERSION,
   CLOSURE_PROOF_STATUS_RANK,
   RELEASE_FIX_CREDIT_SCHEMA_VERSION,
+  closureRiskClassificationWeightForRow,
   closureRiskDisposition,
   closureRiskWeightForRow,
   emptyClosureProofPayload,
   enrichGateEvidenceWithClosureProof,
+  isAffirmativeClosureRiskDisposition,
+  persistClosureProofInScoreAudit,
 } from './closureProofPayload.ts';
 import { CLOSURE_PROOF_STATUSES } from './closureProofTaxonomy.ts';
 
@@ -40,6 +43,13 @@ describe('closure proof risk weighting', () => {
       notCountedClosedCount: 0,
       analyzedClosedCount: 0,
     });
+  });
+
+  it('requires a full sealed score rebuild instead of patching the current audit', () => {
+    assert.throws(
+      () => persistClosureProofInScoreAudit('v-test'),
+      /Direct closure-proof patching is disabled.*rebuild and seal the full score run/,
+    );
   });
 
   it('ranks every known closure proof status intentionally', () => {
@@ -103,14 +113,20 @@ describe('closure proof risk weighting', () => {
       assert.ok(weight > 0, `${status} should carry unresolved risk`);
     }
     assert.equal(closureRiskDisposition('linked_closing_pr_reachability_unknown'), 'missing_evidence');
-    assert.ok(closureRiskWeightForRow({
+    const missingEvidence = {
       status: 'linked_closing_pr_reachability_unknown',
       sentiment: 'negative',
       severity: 'high',
       functionality: 'core',
       scope: 'moderate',
       affected_users: 'some',
-    }) > 0);
+    };
+    assert.ok(closureRiskClassificationWeightForRow(missingEvidence) > 0);
+    assert.equal(closureRiskWeightForRow(missingEvidence), 0);
+    assert.equal(isAffirmativeClosureRiskDisposition('missing_evidence'), false);
+    assert.equal(isAffirmativeClosureRiskDisposition('known_not_in_release'), true);
+    assert.equal(isAffirmativeClosureRiskDisposition('open_canonical_risk'), true);
+    assert.equal(isAffirmativeClosureRiskDisposition('unsupported_closure_claim'), true);
   });
 
   it('counts bare admin not-planned closures as unresolved unsupported risk', () => {
@@ -185,5 +201,11 @@ describe('closure proof risk weighting', () => {
     assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_duplicate_to_closed_canonical_missing_proof' }), 0);
     assert.equal(closureRiskWeightForRow({ ...base, status: 'non_bug_not_actionable' }), 0);
     assert.equal(closureRiskWeightForRow({ ...base, status: 'fixed_after_release', sentiment: 'neutral' }), 0);
+    assert.ok(
+      closureRiskWeightForRow(
+        { ...base, status: 'not_planned' },
+        'unsupported_closure_claim',
+      ) > 0,
+    );
   });
 });
