@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 27;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 28;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2697,6 +2697,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         neutral: [
           '\\b(?:feature request|feature|enhancement|proposal|propose|proposed|suggestion|suggest|question|request|would like|could we|should we|how|support for|add(?:ing)?|provide|rename|documentation)\\b',
           "\\b(?:i|we)[\\u0027\\u2019]d\\s+like\\s+to\\s+(?:discuss|propose|suggest|request)\\b",
+          '(?:^|:[\\t ]*)make[\\t ]+\\.skill[\\t ]+package[\\t ]+file[\\t ]+order[\\t ]+deterministic\\b',
         ],
       },
       severity: {
@@ -2711,15 +2712,16 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:broken|fail(?:s|ed|ing|ure)?|crash(?:es|ed|ing)?|exit(?:s|ed|ing)?|stops?)\\b.{0,60}\\b(?:install(?:er|ation)?|update|gateway|startup|boot|cli|chat|session|auth(?:entication)?|login|exec|doctor)\\b',
         ],
         medium: [
-          '\\b(?:medium|routine|intermittent|sometimes|specific|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|timeouts?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
+          '\\b(?:medium|routine|intermittent|sometimes|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|timeouts?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
           '\\btim(?:e|es|ed|ing)\\s+out\\b',
           '\\b(?:raw\\s+)?binary\\s+garbage\\b',
           '(?:\\u65e0\\u6cd5\\u83b7\\u53d6\\u5b8c\\u6574|\\u53ea\\u8fd4\\u56de(?:\\u524d)?\\s*\\d+\\s*\\u6761\\u8bb0\\u5f55)',
         ],
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge cases?|rare|niche)\\b',
-          '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
+          '\\b(?:feature request|feature|enhancement|proposal|suggestion)\\b',
           '\\bwould be (?:great|useful|helpful) to (?:add|expose|support|provide)\\b',
+          '\\bcleaner[\\t ]+diffs[\\t ]+when[\\t ]+comparing[\\t ]+packaged[\\t ]+artifacts\\b',
           '\\b(?:package|packaging|archives?|bundles?|artifacts?).{0,80}\\b(?:deterministic|non-?deterministic|reproducible|reproducibility)\\b',
           '\\b(?:flaky|tests?|test suite|test harness|fixture|ci|lint|formatter|formatting|typecheck|build-only|developer tooling)\\b',
         ],
@@ -2772,7 +2774,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:language|locale)\\s+(?:selector|picker|ids?|identifiers?)\\b',
         ],
         provider: [
-          '\\b(?:provider|model|inference|embedding|ollama|openai|anthropic|codex|deepseek|minimax|xai|bedrock|gemini|google ai|azure openai|mistral|groq)\\b',
+          '\\b(?:provider|inference|embedding|ollama|openai|anthropic|codex|deepseek|minimax|xai|bedrock|gemini|google ai|azure openai|mistral|groq)\\b',
         ],
         tooling: [
           '\\b(?:test|testing)\\s+(?:infrastructure|suite|runner|harness|fixtures?|coverage)\\b',
@@ -2785,9 +2787,11 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:code|source)\\s+(?:formatter|formatting)\\b',
           '\\bformatting\\s+(?:checks?|tooling)\\b',
           '\\b(?:test harness|fixture)\\s+(?:issue|failure|bug)\\b',
+          '\\bskills/model-usage/scripts/model_usage\\.py\\b',
         ],
         docs: [
-          '\\b(?:docs?|documentation|readme|guide|example|tutorial|typo|jsdoc)\\b',
+          '\\b(?:docs?|documentation|readme|guide|tutorial|typo|jsdoc)\\b',
+          '\\b(?:code|usage|configuration|documentation|readme)\\s+examples?\\b',
         ],
       },
       affectedUsers: {
@@ -2801,7 +2805,9 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\banyone\\s+(?:using|running|updating|operating|deploying|managing)\\b',
         ],
         few: [
-          '\\b(?:few|single|one|rare|niche|specific|custom|non-default|experimental)\\b(?:.{0,30}\\b(?:users?|operator|setup|config|environment|machine|deployment))?',
+          '\\b(?:few|rare)\\s+(?:users?|operators?|installs?|deployments?|teams?|setups?|configurations?|configs?|environments?|machines?)\\b',
+          '\\b(?:single|one)\\s+(?:(?:custom|non-default|experimental|niche)\\s+)?(?:user|operator|install(?:ation)?|setup|configuration|config|environment|machine|deployment|team)\\b',
+          '\\b(?:specific|custom|non-default|experimental|niche)\\s+(?:user|operator|install(?:ation)?|setup|configuration|config|environment|machine|deployment|team)\\b',
         ],
         unknown: [],
       },

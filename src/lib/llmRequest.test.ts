@@ -3845,12 +3845,15 @@ describe('LLM source grounding', () => {
     );
     const issueTitle =
       'skill-creator: make .skill package file order deterministic';
-    const sentimentEvidence = '## Proposed improvement';
-    const functionalityEvidence =
-      'More predictable packaging behavior for CI and release workflows';
+    const issueBody = [
+      '`skills/skill-creator/scripts/package_skill.py` currently walks files without enforcing order.',
+      'Sort files by relative path before writing archive entries so package output order is stable and reproducible.',
+      'Cleaner diffs when comparing packaged artifacts',
+      'More predictable packaging behavior for CI and release workflows',
+    ].join('\n\n');
     const prompt = __llmTest.buildClassifierPromptInput(
       groundingIssue(
-        `${body} ${sentimentEvidence} ${functionalityEvidence}.`,
+        issueBody,
         issueTitle,
       ) as any,
       [],
@@ -3861,22 +3864,30 @@ describe('LLM source grounding', () => {
     raw.severity = 'low';
     raw.scope = 'niche';
     raw.functionality = 'tooling';
+    raw.affected_users = 'unknown';
+    raw.workaroundStatus = 'unknown';
+    raw.duplicateCluster = null;
+    raw.affectsVersion = null;
     raw.evidence.sentiment = [{
-      source_id: 'issue:body',
-      excerpt: sentimentEvidence,
+      source_id: 'issue:title',
+      excerpt: issueTitle,
     }];
     raw.evidence.severity = [{
-      source_id: 'issue:title',
-      excerpt: 'make .skill package file order deterministic',
+      source_id: 'issue:body',
+      excerpt: 'Cleaner diffs when comparing packaged artifacts',
     }];
     raw.evidence.scope = [{
-      source_id: 'issue:title',
-      excerpt: 'skill-creator',
+      source_id: 'issue:body',
+      excerpt: 'skills/skill-creator/scripts/package_skill.py',
     }];
     raw.evidence.functionality = [{
       source_id: 'issue:body',
       excerpt: 'CI and release workflows',
     }];
+    raw.evidence.affected_users = [];
+    raw.evidence.workaroundStatus = [];
+    raw.evidence.duplicateCluster = [];
+    raw.evidence.affectsVersion = [];
     const accepted = __llmTest.parseRawClassification(
       JSON.stringify(raw),
       ['v2026.7.4'],
@@ -3889,15 +3900,63 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'tooling');
   });
 
-  it('accepts issue #37878 model-usage numeric edge-case evidence', async () => {
-    const { __llmTest } = await import(
+  it('keeps issue #37748 deterministic packaging cues exact', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?deterministic-skill-packaging-boundary=${Date.now()}`);
+    const invalidNeutral =
+      'Failures make package artifacts reproducible only by accident.';
+    const invalidLow = 'Cleaner diffs for packaged artifacts';
+    const negatedLow = 'No cleaner diffs when comparing packaged artifacts';
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${invalidNeutral} ${invalidLow}. ${negatedLow}.`,
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const cases = [
+      ['sentiment', 'neutral', invalidNeutral],
+      ['severity', 'low', invalidLow],
+      ['severity', 'low', negatedLow],
+    ] as const;
+    for (const [field, value, excerpt] of cases) {
+      const raw = structuredClone(fullyGroundedOutput()) as any;
+      raw[field] = value;
+      raw.evidence[field] = [{ source_id: 'issue:body', excerpt }];
+      assert.throws(
+        () => __llmTest.parseRawClassification(
+          JSON.stringify(raw),
+          ['v2026.7.4'],
+          prompt.groundingSources,
+          prompt.inputTruncation,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassificationGroundingError);
+          assert.ok(error.diagnostics.some((diagnostic) =>
+            diagnostic.field === field &&
+            diagnostic.code === 'excerpt_not_field_relevant'));
+          return true;
+        },
+      );
+    }
+  });
+
+  it('classifies issue #37878 model-usage helper evidence as tooling, not provider', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(
       `./llm.ts?model-usage-numeric-edge=${Date.now()}`
     );
     const issueTitle =
       'model-usage: handle numeric-string costs and ignore non-finite values';
+    const functionalityEvidence =
+      'The `skills/model-usage/scripts/model_usage.py` helper currently aggregates costs only when values are native numbers.';
     const prompt = __llmTest.buildClassifierPromptInput(
       groundingIssue(
-        `${body} ## Proposed improvement Add tests covering these edge cases. ` +
+        `${body} ${functionalityEvidence} Add tests covering these edge cases. ` +
         'Those valid values can be dropped during aggregation/model selection.',
         issueTitle,
       ) as any,
@@ -3908,7 +3967,7 @@ describe('LLM source grounding', () => {
     raw.sentiment = 'negative';
     raw.severity = 'low';
     raw.scope = 'niche';
-    raw.functionality = 'provider';
+    raw.functionality = 'tooling';
     raw.evidence.sentiment = [{
       source_id: 'issue:body',
       excerpt: 'Those valid values can be dropped during aggregation/model selection.',
@@ -3923,7 +3982,7 @@ describe('LLM source grounding', () => {
     }];
     raw.evidence.functionality = [{
       source_id: 'issue:body',
-      excerpt: 'model selection',
+      excerpt: functionalityEvidence,
     }];
     const accepted = __llmTest.parseRawClassification(
       JSON.stringify(raw),
@@ -3934,7 +3993,78 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.sentiment, 'negative');
     assert.equal(accepted.severity, 'low');
     assert.equal(accepted.scope, 'niche');
-    assert.equal(accepted.functionality, 'provider');
+    assert.equal(accepted.functionality, 'tooling');
+
+    raw.functionality = 'provider';
+    assert.throws(
+      () => __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      ),
+      (error: unknown) => {
+        assert.ok(error instanceof ClassificationGroundingError);
+        assert.ok(error.diagnostics.some((diagnostic) =>
+          diagnostic.field === 'functionality' &&
+          diagnostic.code === 'excerpt_not_field_relevant'));
+        return true;
+      },
+    );
+  });
+
+  it('rejects issue-template and modifier words as unrelated field evidence', async () => {
+    const {
+      __llmTest,
+      ClassificationGroundingError,
+    } = await import(`./llm.ts?generic-field-modifiers=${Date.now()}`);
+    const excerpts = [
+      'Agent request:',
+      'Example:',
+      '### Proposed solution',
+      '`streamParams.cacheRetention` (Anthropic-specific SDK param)',
+      'routing user-specific subAgents for every unique sender',
+    ];
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(`${body}\n\n${excerpts.join('\n\n')}`) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    const cases = [
+      ['severity', 'low', 'Agent request:'],
+      ['functionality', 'docs', 'Example:'],
+      ['severity', 'low', '### Proposed solution'],
+      [
+        'affected_users',
+        'few',
+        '`streamParams.cacheRetention` (Anthropic-specific SDK param)',
+      ],
+      [
+        'severity',
+        'medium',
+        'routing user-specific subAgents for every unique sender',
+      ],
+    ] as const;
+    for (const [field, value, excerpt] of cases) {
+      const raw = structuredClone(fullyGroundedOutput()) as any;
+      raw[field] = value;
+      raw.evidence[field] = [{ source_id: 'issue:body', excerpt }];
+      assert.throws(
+        () => __llmTest.parseRawClassification(
+          JSON.stringify(raw),
+          ['v2026.7.4'],
+          prompt.groundingSources,
+          prompt.inputTruncation,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassificationGroundingError);
+          assert.ok(error.diagnostics.some((diagnostic) =>
+            diagnostic.field === field &&
+            diagnostic.code === 'excerpt_not_field_relevant'));
+          return true;
+        },
+      );
+    }
   });
 
   it('accepts issue #37902 sessions_spawn timeout evidence', async () => {
