@@ -354,23 +354,77 @@ describe('durable exhaustive issue catalog snapshots', { concurrency: false }, (
     assert.equal(attestation.snapshotId, header.snapshotId);
     assert.equal(attestation.contentDigest, header.contentDigest);
 
-    const changed = catalogFixture();
-    changed.issues[0] = { ...changed.issues[0], state: 'closed' };
-    const changedRecords = changed.issues.map((issue) => ({
+    const changedContent = catalogFixture();
+    changedContent.issues[0] = {
+      ...changedContent.issues[0],
+      state: 'closed',
+    };
+    const changedRecords = changedContent.issues.map((issue) => ({
       nodeId: issue.node_id,
       issue,
     }));
-    changed.metadata.contentDigest = canonicalIssueContentDigest(
-      changed.issues.length,
+    changedContent.metadata.contentDigest = canonicalIssueContentDigest(
+      changedContent.issues.length,
       changedRecords,
     );
+    const changedContentAttestation = refreshTest.finalIssueCatalogAttestation({
+      snapshot,
+      finalCatalog: {
+        ...boundaryVerification(changedContent),
+        observedTotalCount: changedContent.metadata.observedTotalCount + 1,
+      },
+      observedAt: '2026-07-04T15:31:00.000Z',
+    });
+    assert.equal(changedContentAttestation.contentDigest, header.contentDigest);
+
+    const changedCount = boundaryVerification(catalogFixture());
+    changedCount.boundary = {
+      ...changedCount.boundary,
+      totalCount: changedCount.boundary.totalCount + 1,
+    };
+    changedCount.fetchedCount++;
+    changedCount.observedTotalCount++;
     assert.throws(
       () => refreshTest.finalIssueCatalogAttestation({
         snapshot,
-        finalCatalog: boundaryVerification(changed),
-        observedAt: '2026-07-04T15:31:00.000Z',
+        finalCatalog: changedCount,
+        observedAt: '2026-07-04T15:32:00.000Z',
       }),
-      /contentDigest changed/,
+      /totalCount changed/,
+    );
+
+    const changedTerminal = boundaryVerification(catalogFixture());
+    assert.ok(changedTerminal.boundary.terminalIssue);
+    changedTerminal.boundary = {
+      ...changedTerminal.boundary,
+      terminalIssue: {
+        ...changedTerminal.boundary.terminalIssue,
+        nodeId: 'ISSUE-node-replaced',
+      },
+    };
+    assert.throws(
+      () => refreshTest.finalIssueCatalogAttestation({
+        snapshot,
+        finalCatalog: changedTerminal,
+        observedAt: '2026-07-04T15:33:00.000Z',
+      }),
+      /immutable terminal boundary changed/,
+    );
+
+    const changedMembership = catalogFixture();
+    changedMembership.metadata.membershipDigest = 'b'.repeat(64);
+    changedMembership.metadata.digest = changedMembership.metadata.membershipDigest;
+    changedMembership.metadata.snapshotBoundary = {
+      ...changedMembership.metadata.snapshotBoundary,
+      membershipDigest: changedMembership.metadata.membershipDigest,
+    };
+    assert.throws(
+      () => refreshTest.finalIssueCatalogAttestation({
+        snapshot,
+        finalCatalog: boundaryVerification(changedMembership),
+        observedAt: '2026-07-04T15:34:00.000Z',
+      }),
+      /membershipDigest changed/,
     );
   });
 
@@ -440,12 +494,11 @@ function boundaryVerification(
   catalog: GhIssueCatalog,
 ): GhIssueCatalogBoundaryVerification {
   return {
-    issues: catalog.issues,
     boundary: catalog.metadata.snapshotBoundary,
     observedTotalCount: catalog.metadata.observedTotalCount,
+    fetchedCount: catalog.issues.length,
     pageCount: catalog.metadata.pageCount,
     membershipDigest: catalog.metadata.membershipDigest,
-    contentDigest: catalog.metadata.contentDigest,
     lastRequestCursor: catalog.metadata.lastRequestCursor,
   };
 }

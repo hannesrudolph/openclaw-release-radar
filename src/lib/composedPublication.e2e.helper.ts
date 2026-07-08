@@ -1787,12 +1787,11 @@ function seedSimpleIssueCatalogPublication(input: {
     input.refreshModule.__refreshTest.finalIssueCatalogAttestation({
       snapshot,
       finalCatalog: {
-        issues: catalog.issues,
         boundary: catalog.metadata.snapshotBoundary,
         observedTotalCount: catalog.metadata.observedTotalCount,
+        fetchedCount: catalog.issues.length,
         pageCount: catalog.metadata.pageCount,
         membershipDigest: catalog.metadata.membershipDigest,
-        contentDigest: catalog.metadata.contentDigest,
         lastRequestCursor: catalog.metadata.lastRequestCursor,
       },
       observedAt,

@@ -40,7 +40,12 @@ export const ISSUE_CATALOG_SNAPSHOT_ROW_SCHEMA_DIGEST = createHash('sha256')
   ]))
   .digest('hex');
 
-export interface CanonicalIssueCatalogRecord {
+export interface CanonicalIssueMembershipRecord {
+  nodeId: string;
+  issue: Pick<GhIssue, 'number' | 'created_at'>;
+}
+
+export interface CanonicalIssueCatalogRecord extends CanonicalIssueMembershipRecord {
   nodeId: string;
   issue: GhIssue;
 }
@@ -234,7 +239,7 @@ export function parseIssueCatalogIssueJson(issueJson: string): GhIssueCatalogIss
 
 export function canonicalIssueMembershipDigest(
   totalCount: number,
-  records: CanonicalIssueCatalogRecord[],
+  records: CanonicalIssueMembershipRecord[],
 ): string {
   const canonical = records
     .map(({ nodeId, issue }) => [nodeId, issue.number, issue.created_at] as const)

@@ -39,7 +39,6 @@ const COMMENT_SNAPSHOT_MAX_ATTEMPTS = 6;
 const COMMENT_SNAPSHOT_RETRY_BASE_MS = 250;
 const COMMENT_SNAPSHOT_RETRY_MAX_MS = 2_000;
 const RELEASE_CATALOG_MAX_SWEEPS = 3;
-const ISSUE_CATALOG_MAX_SWEEPS = 3;
 const ISSUE_CLOSED_AT_SKEW_TOLERANCE_MS = 2_000;
 const ISSUE_LABEL_MAX_SWEEPS = 3;
 const ADVISORY_CATALOG_MAX_SWEEPS = 3;
@@ -489,6 +488,23 @@ interface IssuesQueryData {
     issues: {
       totalCount: number;
       nodes: Array<IssueNode | null> | null;
+      pageInfo: PageInfo;
+    };
+  } | null;
+}
+
+interface IssueCatalogBoundaryNode {
+  id: string;
+  __typename: 'Issue';
+  number: number;
+  createdAt: string;
+}
+
+interface IssueCatalogBoundaryQueryData {
+  repository: {
+    issues: {
+      totalCount: number;
+      nodes: Array<IssueCatalogBoundaryNode | null> | null;
       pageInfo: PageInfo;
     };
   } | null;
@@ -3406,13 +3422,17 @@ interface IncrementalIssueSweep {
 }
 
 export interface GhIssueCatalogBoundaryVerification {
-  issues: GhIssueCatalogIssue[];
   boundary: GhIssueSnapshotBoundary;
   observedTotalCount: number;
+  fetchedCount: number;
   pageCount: number;
   membershipDigest: string;
-  contentDigest: string;
   lastRequestCursor: string | null;
+}
+
+interface IssueCatalogSweep extends GhIssueCatalogBoundaryVerification {
+  issues: GhIssueCatalogIssue[];
+  contentDigest: string;
 }
 
 function buildIssuesQuery(
@@ -3455,6 +3475,55 @@ function buildIssuesQuery(
       }
     }
   }`;
+}
+
+function buildIssueCatalogBoundaryQuery(): string {
+  return `query IssueCatalogBoundary(
+    $owner: String!
+    $repo: String!
+    $first: Int!
+    $after: String
+  ) {
+    repository(owner: $owner, name: $repo) {
+      issues(
+        first: $first
+        after: $after
+        states: [OPEN, CLOSED]
+        orderBy: {field: CREATED_AT, direction: ASC}
+      ) {
+        totalCount
+        nodes {
+          id
+          __typename
+          number
+          createdAt
+        }
+        pageInfo { hasNextPage endCursor }
+      }
+    }
+  }`;
+}
+
+function requireIssueCatalogBoundaryNode(
+  node: IssueCatalogBoundaryNode,
+  context: string,
+): IssueCatalogBoundaryNode {
+  if (!node || typeof node !== 'object') {
+    throw new Error(`GitHub GraphQL ${context} is invalid`);
+  }
+  if (node.__typename !== 'Issue') {
+    throw new Error(`GitHub GraphQL ${context} has invalid node type`);
+  }
+  if (!Number.isInteger(node.number) || node.number <= 0) {
+    throw new Error(`GitHub GraphQL ${context} has invalid issue number`);
+  }
+  if (!Number.isFinite(Date.parse(node.createdAt))) {
+    throw new Error(`GitHub GraphQL ${context} has invalid createdAt`);
+  }
+  return {
+    ...node,
+    id: requireCanonicalGraphqlIdentity(node.id, `${context} node ID`),
+  };
 }
 
 function requireIssueNode(node: IssueNode, context: string): IssueNode {
@@ -3619,10 +3688,193 @@ export async function* paginateIssues(
   };
 }
 
-async function fetchIssueCatalogSweep(
+async function fetchIssueCatalogBoundarySweep(
   options: IssuePaginationOptions = {},
   frozenBoundary: GhIssueSnapshotBoundary | null = null,
 ): Promise<GhIssueCatalogBoundaryVerification> {
+  const request = options.request ?? gh;
+  const pageSize = Math.min(
+    GRAPHQL_PAGE_SIZE,
+    Math.max(1, options.perPage ?? GRAPHQL_PAGE_SIZE),
+  );
+  const pageDelayMs = options.pageDelayMs ?? config.refresh.githubPageDelayMs;
+  const sleeper = options.sleep ?? sleep;
+  const maxPages = options.maxPagesPerConnection ?? GRAPHQL_MAX_PAGES_PER_CONNECTION;
+  if (!Number.isInteger(maxPages) || maxPages <= 0) {
+    throw new Error(
+      'GitHub GraphQL repository.issues boundary max pages must be a positive integer',
+    );
+  }
+
+  let after: string | null = null;
+  let boundaryTotalCount = frozenBoundary?.totalCount ?? null;
+  let observedTotalCount = boundaryTotalCount ?? 0;
+  let pageCount = 0;
+  let lastRequestCursor: string | null = null;
+  const seenCursors = new Set<string>();
+  const records: Array<{
+    nodeId: string;
+    issue: Pick<GhIssue, 'number' | 'created_at'>;
+  }> = [];
+  const nodeIds = new Set<string>();
+  const issueNumbers = new Set<number>();
+
+  for (;;) {
+    if (after && pageDelayMs > 0) {
+      await sleepWithSignal(sleeper, pageDelayMs, options.signal);
+    }
+    const requestCursor: string | null = after;
+    lastRequestCursor = requestCursor;
+    const remaining = boundaryTotalCount == null
+      ? pageSize
+      : Math.max(0, boundaryTotalCount - records.length);
+    const first = Math.max(1, Math.min(pageSize, remaining || 1));
+    const data = await request<IssueCatalogBoundaryQueryData>(
+      buildIssueCatalogBoundaryQuery(),
+      repoVars({ first, after }),
+      options.signal,
+    );
+    const connection = requireCountedGraphqlConnection(
+      assertRepo(data.repository).issues,
+      'repository.issues boundary',
+    );
+    if (boundaryTotalCount == null) boundaryTotalCount = connection.totalCount;
+    if (connection.totalCount < boundaryTotalCount) {
+      throw new Error(
+        `GitHub GraphQL repository.issues totalCount decreased below frozen snapshot boundary ` +
+        `from ${boundaryTotalCount} to ${connection.totalCount}`,
+      );
+    }
+    observedTotalCount = Math.max(observedTotalCount, connection.totalCount);
+    pageCount++;
+
+    const pageNodes = connection.nodes.map((node, index) =>
+      requireIssueCatalogBoundaryNode(
+        node,
+        `repository.issues boundary page ${pageCount} node ${index}`,
+      ));
+    const rowsRemaining = boundaryTotalCount - records.length;
+    if (pageNodes.length > rowsRemaining) {
+      throw new Error(
+        `GitHub GraphQL repository.issues boundary returned ${pageNodes.length} nodes with only ` +
+        `${rowsRemaining} frozen snapshot row(s) remaining`,
+      );
+    }
+    for (const node of pageNodes) {
+      if (nodeIds.has(node.id)) {
+        throw new Error(
+          `GitHub GraphQL repository.issues boundary returned duplicate node id ${node.id}`,
+        );
+      }
+      if (issueNumbers.has(node.number)) {
+        throw new Error(
+          `GitHub GraphQL repository.issues boundary returned duplicate issue number ${node.number}`,
+        );
+      }
+      nodeIds.add(node.id);
+      issueNumbers.add(node.number);
+      records.push({
+        nodeId: node.id,
+        issue: {
+          number: node.number,
+          created_at: node.createdAt,
+        },
+      });
+    }
+
+    const nextCursor = nextGraphqlPageCursor(
+      connection.pageInfo,
+      'repository.issues boundary',
+    );
+    if (
+      nextCursor &&
+      (nextCursor === requestCursor || seenCursors.has(nextCursor))
+    ) {
+      throw new Error(
+        `GitHub GraphQL repository.issues boundary repeated pagination cursor ${nextCursor}`,
+      );
+    }
+    if (nextCursor) seenCursors.add(nextCursor);
+
+    if (records.length === boundaryTotalCount) {
+      if (connection.totalCount > boundaryTotalCount && nextCursor == null) {
+        throw new Error(
+          `GitHub GraphQL repository.issues boundary omitted a cursor after the frozen ` +
+          `snapshot boundary while totalCount was ${connection.totalCount}`,
+        );
+      }
+      if (connection.totalCount === boundaryTotalCount && nextCursor != null) {
+        throw new Error(
+          `GitHub GraphQL repository.issues boundary returned a cursor beyond frozen ` +
+          `snapshot boundary ${boundaryTotalCount} without post-boundary growth`,
+        );
+      }
+      const membershipDigest = canonicalIssueMembershipDigest(
+        boundaryTotalCount,
+        records,
+      );
+      const terminalRecord = records.at(-1);
+      const terminalIssue = terminalRecord
+        ? {
+            nodeId: terminalRecord.nodeId,
+            issueNumber: terminalRecord.issue.number,
+            createdAt: terminalRecord.issue.created_at,
+          }
+        : null;
+      const boundary = {
+        totalCount: boundaryTotalCount,
+        terminalIssue,
+        membershipDigest,
+      };
+      if (
+        frozenBoundary &&
+        JSON.stringify(terminalIssue) !==
+          JSON.stringify(frozenBoundary.terminalIssue)
+      ) {
+        throw new Error(
+          `GitHub GraphQL repository.issues terminal immutable identity changed across ` +
+          `frozen-boundary sweeps`,
+        );
+      }
+      if (
+        frozenBoundary &&
+        membershipDigest !== frozenBoundary.membershipDigest
+      ) {
+        throw new Error(
+          `GitHub GraphQL repository.issues immutable membership changed across ` +
+          `frozen-boundary sweeps`,
+        );
+      }
+      return {
+        boundary,
+        observedTotalCount,
+        fetchedCount: records.length,
+        pageCount,
+        membershipDigest,
+        lastRequestCursor,
+      };
+    }
+
+    if (!nextCursor) {
+      throw new Error(
+        `GitHub GraphQL repository.issues boundary terminal unique count ` +
+        `${issueNumbers.size} did not match frozen snapshot boundary ${boundaryTotalCount}`,
+      );
+    }
+    if (pageCount >= maxPages) {
+      throw new Error(
+        `GitHub GraphQL repository.issues boundary exceeded ${maxPages} pages before ` +
+        `frozen snapshot boundary was collected`,
+      );
+    }
+    after = nextCursor;
+  }
+}
+
+async function fetchIssueCatalogSweep(
+  options: IssuePaginationOptions = {},
+  frozenBoundary: GhIssueSnapshotBoundary | null = null,
+): Promise<IssueCatalogSweep> {
   const request = options.request ?? gh;
   const pageSize = Math.min(
     GRAPHQL_PAGE_SIZE,
@@ -3765,6 +4017,7 @@ async function fetchIssueCatalogSweep(
         issues,
         boundary,
         observedTotalCount,
+        fetchedCount: issues.length,
         pageCount,
         membershipDigest,
         contentDigest: canonicalIssueContentDigest(boundaryTotalCount, records),
@@ -3792,61 +4045,51 @@ export async function verifyIssueCatalogBoundary(
   frozenBoundary: GhIssueSnapshotBoundary,
   options: IssuePaginationOptions = {},
 ): Promise<GhIssueCatalogBoundaryVerification> {
-  return fetchIssueCatalogSweep(options, frozenBoundary);
+  return fetchIssueCatalogBoundarySweep(options, frozenBoundary);
 }
 
 export async function fetchIssueCatalog(
   options: IssuePaginationOptions = {},
 ): Promise<GhIssueCatalog> {
-  let pagesFetched = 0;
-  let frozenBoundary = options.frozenBoundary ?? null;
-  let observedTotalCount = frozenBoundary?.totalCount ?? 0;
-  let previousMembershipDigest: string | null = null;
-  let previousContentDigest: string | null = null;
-
-  for (let sweepCount = 1; sweepCount <= ISSUE_CATALOG_MAX_SWEEPS; sweepCount++) {
-    const current = await fetchIssueCatalogSweep(options, frozenBoundary);
-    frozenBoundary ??= current.boundary;
-    observedTotalCount = Math.max(observedTotalCount, current.observedTotalCount);
-    pagesFetched += current.pageCount;
-
-    if (
-      previousMembershipDigest === current.membershipDigest &&
-      previousContentDigest === current.contentDigest
-    ) {
-      return {
-        issues: current.issues,
-        metadata: {
-          exhausted: true,
-          stabilized: true,
-          totalCount: current.boundary.totalCount,
-          observedTotalCount,
-          postBoundaryGrowthCount:
-            observedTotalCount - current.boundary.totalCount,
-          nodeCount: current.issues.length,
-          uniqueCount: current.issues.length,
-          pageCount: current.pageCount,
-          pagesFetched,
-          sweepCount,
-          digest: current.membershipDigest,
-          membershipDigest: current.membershipDigest,
-          contentDigest: current.contentDigest,
-          snapshotBoundary: current.boundary,
-          lastRequestCursor: current.lastRequestCursor,
-          nextCursor: null,
-          hasNextPage: false,
-          sourceOrder: 'CREATED_AT_ASC',
-        },
-      };
-    }
-    previousMembershipDigest = current.membershipDigest;
-    previousContentDigest = current.contentDigest;
-  }
-
-  throw new Error(
-    `GitHub GraphQL repository.issues failed to stabilize frozen first-N ` +
-    `membership and content after ${ISSUE_CATALOG_MAX_SWEEPS} complete sweeps`,
+  const boundarySweep = await fetchIssueCatalogBoundarySweep(
+    {
+      ...options,
+      perPage: GRAPHQL_PAGE_SIZE,
+    },
+    options.frozenBoundary ?? null,
   );
+  const contentSweep = await fetchIssueCatalogSweep(
+    options,
+    boundarySweep.boundary,
+  );
+  const observedTotalCount = Math.max(
+    boundarySweep.observedTotalCount,
+    contentSweep.observedTotalCount,
+  );
+  return {
+    issues: contentSweep.issues,
+    metadata: {
+      exhausted: true,
+      stabilized: true,
+      totalCount: contentSweep.boundary.totalCount,
+      observedTotalCount,
+      postBoundaryGrowthCount:
+        observedTotalCount - contentSweep.boundary.totalCount,
+      nodeCount: contentSweep.issues.length,
+      uniqueCount: contentSweep.issues.length,
+      pageCount: contentSweep.pageCount,
+      pagesFetched: boundarySweep.pageCount + contentSweep.pageCount,
+      sweepCount: 2,
+      digest: contentSweep.membershipDigest,
+      membershipDigest: contentSweep.membershipDigest,
+      contentDigest: contentSweep.contentDigest,
+      snapshotBoundary: contentSweep.boundary,
+      lastRequestCursor: contentSweep.lastRequestCursor,
+      nextCursor: null,
+      hasNextPage: false,
+      sourceOrder: 'CREATED_AT_ASC',
+    },
+  };
 }
 
 export async function listIssuesBatch(
@@ -9343,7 +9586,9 @@ export const __githubTest = {
   fetchReleaseCatalogSweep,
   githubReleaseCatalogActiveReleaseDigest,
   githubReleaseCatalogPublicationEvidence,
+  buildIssueCatalogBoundaryQuery,
   fetchIssueCatalog,
+  fetchIssueCatalogBoundarySweep,
   fetchIssueCatalogSweep,
   verifyIssueCatalogBoundary,
   fetchRepositoryCollaboratorPermissionSweep,

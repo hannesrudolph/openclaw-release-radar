@@ -2252,7 +2252,7 @@ function finalIssueCatalogAttestation(input: {
     throw new Error('Final issue catalog observation time is invalid');
   }
   if (
-    finalCatalog.boundary.totalCount !== finalCatalog.issues.length ||
+    finalCatalog.boundary.totalCount !== finalCatalog.fetchedCount ||
     finalCatalog.observedTotalCount < finalCatalog.boundary.totalCount ||
     finalCatalog.pageCount <= 0
   ) {
@@ -2268,9 +2268,6 @@ function finalIssueCatalogAttestation(input: {
   }
   if (finalCatalog.membershipDigest !== expected.membershipDigest) {
     mismatches.push('membershipDigest changed');
-  }
-  if (finalCatalog.contentDigest !== expected.contentDigest) {
-    mismatches.push('contentDigest changed');
   }
   if (
     JSON.stringify(finalCatalog.boundary) !== JSON.stringify({
@@ -2297,9 +2294,9 @@ function finalIssueCatalogAttestation(input: {
     snapshotId: expected.snapshotId,
     snapshotContentHash: expected.contentHash,
     observedAt,
-    totalCount: finalCatalog.boundary.totalCount,
-    membershipDigest: finalCatalog.membershipDigest,
-    contentDigest: finalCatalog.contentDigest,
+    totalCount: expected.boundaryTotalCount,
+    membershipDigest: expected.membershipDigest,
+    contentDigest: expected.contentDigest,
     finalSweepCount: 1,
     finalPagesFetched: finalCatalog.pageCount,
   };
@@ -4501,12 +4498,9 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
     // Every run must observe current metadata for every issue before deciding
     // whether it overlaps a monitored release.
     //
-    // First run (no backfill flag yet) IGNORES condition (a). Otherwise a fresh deploy
-    // on top of an existing DB stops on page 1 the moment every visible issue is "known
-    // unchanged" — never reaching the older issues that older releases need. Once we've
-    // crossed the oldest release published_at at least once, the flag is set and future
-    // runs use the cheap (a)+(b)+(c) stop logic. No tokens are spent re-classifying
-    // unchanged issues — only fetched + upserted.
+    // The immutable first-N boundary makes each score an explicit as-of snapshot.
+    // Issues created after that boundary are recorded as growth and are picked up
+    // by the next exhaustive refresh instead of restarting this run indefinitely.
     const publishedAts = releases
       .map((r) => r.published_at)
       .filter((p): p is string => !!p)
@@ -6094,7 +6088,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
               completedCatalog.snapshotBoundary,
               {
                 maxPagesPerConnection: MAX_PAGES,
-                perPage: config.refresh.issuePageSize,
+                perPage: 100,
                 signal: groupSignal,
               },
             ),

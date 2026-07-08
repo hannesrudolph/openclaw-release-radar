@@ -1935,6 +1935,11 @@ describe('static scoring/UI contracts', () => {
       refresh,
       /\[finalIssueCatalog, finalReleaseCatalog\] = await runCooperativeGroup\(\[[\s\S]*?'release\.final-attest'/,
     );
+    assert.match(
+      refresh,
+      /verifyIssueCatalogBoundary\(\s*completedCatalog\.snapshotBoundary,/,
+    );
+    assert.doesNotMatch(refresh, /previousContentDigest/);
     assert.match(refresh, /finalReleaseCatalogAttestation\(\{/);
     assert.match(refresh, /catalogAttestation,/);
     assert.doesNotMatch(refresh, /allFetchedTags: releaseSelection|stableTagsNewestFirst: releaseSelection/);

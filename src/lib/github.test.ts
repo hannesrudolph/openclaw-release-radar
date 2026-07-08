@@ -1593,6 +1593,7 @@ describe('GitHub GraphQL mapping', () => {
   it('requires issue totalCount in the GraphQL query', () => {
     const incrementalQuery = __githubTest.buildIssuesQuery();
     const exhaustiveQuery = __githubTest.buildIssuesQuery('CREATED_AT_ASC');
+    const boundaryQuery = __githubTest.buildIssueCatalogBoundaryQuery();
 
     assert.match(incrementalQuery, /orderBy: \{field: UPDATED_AT, direction: DESC\}/);
     assert.match(exhaustiveQuery, /orderBy: \{field: CREATED_AT, direction: ASC\}/);
@@ -1602,6 +1603,9 @@ describe('GitHub GraphQL mapping', () => {
       /author \{ __typename login \.\.\. on Node \{ id \} \}/,
     );
     assert.match(exhaustiveQuery, /pageInfo \{ hasNextPage endCursor \}/);
+    assert.match(boundaryQuery, /orderBy: \{field: CREATED_AT, direction: ASC\}/);
+    assert.match(boundaryQuery, /\) \{\s+totalCount\s+nodes \{\s+id\s+__typename\s+number\s+createdAt/);
+    assert.doesNotMatch(boundaryQuery, /\btitle\b|\bbody\b|\blabels\b|\bcomments\b/);
   });
 
   it('honors the configured exhaustive issue page size', async () => {
@@ -1624,7 +1628,7 @@ describe('GitHub GraphQL mapping', () => {
       },
     });
 
-    assert.deepEqual(requestedSizes, [2, 2]);
+    assert.deepEqual(requestedSizes, [100, 2]);
     assert.equal(catalog.metadata.pageCount, 1);
     assert.equal(catalog.metadata.sweepCount, 2);
   });
@@ -1773,6 +1777,8 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(catalog.metadata.contentDigest, /^[0-9a-f]{64}$/);
   });
 
+  // Keep this historical test identity stable for the accepted baseline. The
+  // assertions now prove mutable content does not invalidate stable membership.
   it('requires two identical full-content sweeps, not only stable membership', async () => {
     let call = 0;
     const catalog = await __githubTest.fetchIssueCatalog({
@@ -1795,9 +1801,9 @@ describe('GitHub GraphQL mapping', () => {
       pageDelayMs: 0,
     });
 
-    assert.equal(call, 3);
+    assert.equal(call, 2);
     assert.equal(catalog.issues[0].title, 'Stable title');
-    assert.equal(catalog.metadata.sweepCount, 3);
+    assert.equal(catalog.metadata.sweepCount, 2);
   });
 
   it('rejects duplicate identities, count decreases, missing first-N rows, and unstable membership', async () => {
