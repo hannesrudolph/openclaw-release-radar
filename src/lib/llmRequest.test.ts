@@ -2043,6 +2043,144 @@ describe('OpenAI classification request', () => {
     }
   });
 
+  it('enumerates exact supported values for multi-field grounding repair', async () => {
+    process.env.OPENAI_API_KEY = 'test-key';
+    const { config } = await import('../config.ts');
+    const previousFetch = globalThis.fetch;
+    const originalMaxAttempts = config.openai.maxAttempts;
+    (config.openai as any).maxAttempts = 2;
+    const title = 'Feature: Graceful sub-agent timeout (pre-timeout warning)';
+    const body =
+      'All unsaved work is lost when a sub-agent session reaches its hard timeout.';
+    const invalid = groundedOutput({
+      sentiment: 'negative',
+      severity: 'critical',
+      scope: 'niche',
+      functionality: 'core',
+      evidence: {
+        sentiment: [{ source_id: 'issue:body', excerpt: 'work' }],
+        severity: [{ source_id: 'issue:body', excerpt: 'timeout' }],
+        scope: [{ source_id: 'issue:title', excerpt: 'Feature' }],
+        functionality: [{ source_id: 'issue:body', excerpt: 'session' }],
+        affected_users: [],
+        workaroundStatus: [],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+    });
+    const corrected = groundedOutput({
+      sentiment: 'negative',
+      severity: 'critical',
+      scope: 'moderate',
+      functionality: 'core',
+      evidence: {
+        sentiment: [{ source_id: 'issue:body', excerpt: 'lost' }],
+        severity: [{
+          source_id: 'issue:body',
+          excerpt: 'All unsaved work is lost',
+        }],
+        scope: [{ source_id: 'issue:body', excerpt: 'sub-agent' }],
+        functionality: [{ source_id: 'issue:body', excerpt: 'session' }],
+        affected_users: [],
+        workaroundStatus: [],
+        duplicateCluster: [],
+        affectsVersion: [],
+      },
+    });
+    let attempts = 0;
+    const requestBodies: string[] = [];
+    globalThis.fetch = (async (_input, init) => {
+      attempts++;
+      requestBodies.push(String(init?.body ?? ''));
+      return new Response(JSON.stringify({
+        id: `chatcmpl-multi-field-repair-${attempts}`,
+        model: config.openai.model,
+        service_tier: config.openai.serviceTier,
+        choices: [{
+          message: {
+            content: JSON.stringify(attempts === 1 ? invalid : corrected),
+          },
+        }],
+      }), { status: 200 });
+    }) as typeof fetch;
+    try {
+      const { classifyIssueWithAttemptLedger } = await import(
+        `./llm.ts?multi-field-repair=${Date.now()}`
+      );
+      const result = await classifyIssueWithAttemptLedger(
+        groundingIssue(body, title) as any,
+        [],
+        [],
+      );
+      assert.equal(result.classification.sentiment, 'negative');
+      assert.equal(result.classification.severity, 'critical');
+      assert.equal(result.classification.scope, 'moderate');
+      assert.deepEqual(
+        result.ledger.attempts.map((attempt) => attempt.status),
+        ['semantic_rejection', 'accepted_success'],
+      );
+      assert.deepEqual(
+        result.ledger.attempts[0].semanticDiagnostics.map((diagnostic) => [
+          diagnostic.field,
+          diagnostic.code,
+        ]),
+        [
+          ['sentiment', 'excerpt_not_field_relevant'],
+          ['severity', 'excerpt_not_field_relevant'],
+          ['scope', 'excerpt_not_field_relevant'],
+        ],
+      );
+      const retryBody = JSON.parse(requestBodies[1]);
+      const feedbackText = retryBody.messages[2].content as string;
+      const feedbackJson = feedbackText
+        .split('BEGIN CLASSIFIER RETRY FEEDBACK JSON\n')[1]
+        ?.split('\nEND CLASSIFIER RETRY FEEDBACK JSON')[0];
+      assert.ok(feedbackJson);
+      const feedback = JSON.parse(feedbackJson);
+      const requirements = new Map(
+        feedback.correction_requirements.map((requirement: any) => [
+          requirement.field,
+          requirement,
+        ]),
+      );
+      const sentiment = requirements.get('sentiment') as any;
+      const severity = requirements.get('severity') as any;
+      const scope = requirements.get('scope') as any;
+      assert.ok(sentiment.supported_values.some(
+        (supported: any) =>
+          supported.value === 'negative' &&
+          supported.candidate_citations.some(
+            (citation: any) => citation.excerpt === 'lost',
+          ),
+      ));
+      assert.ok(severity.supported_values.some(
+        (supported: any) =>
+          supported.value === 'critical' &&
+          supported.candidate_citations.some(
+            (citation: any) => citation.excerpt === 'All unsaved work is lost',
+          ),
+      ));
+      assert.ok(scope.supported_values.some(
+        (supported: any) =>
+          supported.value === 'moderate' &&
+          supported.candidate_citations.some(
+            (citation: any) => /agent|session/i.test(citation.excerpt),
+          ),
+      ));
+      assert.equal(
+        scope.supported_values.some((supported: any) => supported.value === 'niche'),
+        false,
+      );
+      assert.match(
+        feedback.instruction,
+        /choose one listed value and copy a listed candidate citation exactly/,
+      );
+    } finally {
+      globalThis.fetch = previousFetch;
+      (config.openai as any).maxAttempts = originalMaxAttempts;
+    }
+  });
+
   it('retries semantically malformed model JSON and persists exact raw provenance', async () => {
     process.env.OPENAI_API_KEY = 'test-key';
     const { config } = await import('../config.ts');

@@ -245,7 +245,7 @@ export const PROMPT_VERSION = 9;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 3;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 4;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -413,7 +413,7 @@ const CLASSIFICATION_SEMANTIC_RETRY_RULES = {
   feedbackStart: 'BEGIN CLASSIFIER RETRY FEEDBACK JSON',
   feedbackEnd: 'END CLASSIFIER RETRY FEEDBACK JSON',
   instruction:
-    'Return one complete replacement JSON object. Correct every diagnostic using only exact citations from the original included sources. If a citation does not support the selected enum value, either cite different exact evidence that satisfies that value or change the value and its citations to a supported alternative. Do not repeat an unsupported field/value/citation combination.',
+    'Return one complete replacement JSON object. Correct every diagnostic using only exact citations from the original included sources. For each correction requirement with supported_values, choose one listed value and copy a listed candidate citation exactly; do not use an unlisted value. Keep mandatory-field citation identities distinct. For affected_users=unknown use an empty citation array. Do not repeat an unsupported field/value/citation combination.',
   messageHistoryPolicy:
     'system prompt plus original user input plus latest semantic retry feedback only',
   payloadFieldOrder: [
@@ -1623,6 +1623,10 @@ function buildSemanticRetryFeedback(
         rejectedAssistantOutput,
         diagnostic.field,
       );
+      const supportedValues = semanticRetrySupportedValues(
+        diagnostic.field,
+        groundingSources,
+      );
       return {
         field: diagnostic.field,
         diagnostic_code: diagnostic.code,
@@ -1632,11 +1636,9 @@ function buildSemanticRetryFeedback(
           diagnostic.field,
           rejectedValue,
           repeatedOutputCount > 0,
+          supportedValues,
         ),
-        supported_values: semanticRetrySupportedValues(
-          diagnostic.field,
-          groundingSources,
-        ),
+        supported_values: supportedValues,
       };
     }),
     rejected_assistant_output: {
@@ -1694,9 +1696,13 @@ function semanticRetryRequiredAction(
   field: string | null,
   rejectedValue: string | null,
   repeatedUnchangedOutput: boolean,
+  supportedValues: readonly SemanticRetrySupportedValue[],
 ): string {
   const progressRequirement = repeatedUnchangedOutput
     ? ' The prior unsupported output was repeated unchanged; this field must now use different supporting evidence or a different supported value.'
+    : '';
+  const supportedValueRequirement = supportedValues.length > 0
+    ? ' The supported_values list is exhaustive for the deterministic validator. Choose one listed value and copy one listed candidate citation exactly; use an empty citation array only for an explicitly listed abstention value.'
     : '';
   if (field === 'scope' && rejectedValue === 'broad') {
     return (
@@ -1705,7 +1711,7 @@ function semanticRetryRequiredAction(
       'Words such as "multiple sessions", "both options", or "across a workflow" do not qualify. ' +
       'If that evidence is absent, choose scope=moderate only with exact evidence for one common ' +
       'surface or configuration, or scope=niche only with exact evidence for a specialized or ' +
-      `non-default case.${progressRequirement}`
+      `non-default case.${supportedValueRequirement}${progressRequirement}`
     );
   }
   if (field === 'scope' && rejectedValue === 'niche') {
@@ -1714,7 +1720,7 @@ function semanticRetryRequiredAction(
       'custom, experimental, or non-default user population, setup, configuration, or ' +
       'environment. A narrowly worded feature or one product capability is not itself niche. ' +
       'If the evidence names one common agent, session, gateway, CLI, UI, provider, platform, ' +
-      `or configuration surface, choose scope=moderate and cite that exact text.${progressRequirement}`
+      `or configuration surface, choose scope=moderate and cite that exact text.${supportedValueRequirement}${progressRequirement}`
     );
   }
   if (field === 'scope' && rejectedValue === 'moderate') {
@@ -1722,31 +1728,68 @@ function semanticRetryRequiredAction(
       'Keep scope=moderate only with exact text naming one common operating system, agent, ' +
       'session, gateway, CLI, UI, provider, platform, channel, or configuration surface. ' +
       'Otherwise choose another scope value only when exact evidence satisfies that value.' +
+      supportedValueRequirement +
+      progressRequirement
+    );
+  }
+  if (field === 'affected_users') {
+    return (
+      'Choose a listed population value with one exact candidate citation, or choose ' +
+      'affected_users=unknown with an empty evidence array when the sources do not state reach.' +
+      supportedValueRequirement +
+      progressRequirement
+    );
+  }
+  if (field === 'workaroundStatus') {
+    return (
+      'Use workaroundStatus=unknown with an empty evidence array unless exact source text ' +
+      'explicitly supports none, partial, or confirmed.' +
+      progressRequirement
+    );
+  }
+  if (field === 'duplicateCluster') {
+    return (
+      'Use duplicateCluster=null with an empty evidence array unless exact source text ' +
+      'explicitly identifies a duplicate, same bug, same root cause, or tracked issue.' +
+      progressRequirement
+    );
+  }
+  if (field === 'affectsVersion') {
+    return (
+      'Use affectsVersion=null with an empty evidence array unless an exact known release tag ' +
+      'appears in the cited source text.' +
       progressRequirement
     );
   }
   return (
     'Either replace the citation with exact included-source evidence that supports the selected ' +
     'value, or change the value and citations to an alternative that the exact source text supports.' +
+    supportedValueRequirement +
     progressRequirement
   );
+}
+
+interface SemanticRetrySupportedValue {
+  value: string;
+  candidate_citations: Array<{ source_id: string; excerpt: string }>;
 }
 
 function semanticRetrySupportedValues(
   field: string | null,
   groundingSources: readonly ClassifierSource[],
-): Array<{
-  value: Scope;
-  candidate_citations: Array<{ source_id: string; excerpt: string }>;
-}> {
-  if (field !== 'scope') return [];
-  const values: readonly Scope[] = ['broad', 'moderate', 'niche'];
-  return values.flatMap((value) => {
+): SemanticRetrySupportedValue[] {
+  const binding = semanticRetryMandatoryBinding(field);
+  if (binding === null) return [];
+  const supported = binding.values.flatMap((value) => {
     const candidateCitations: Array<{ source_id: string; excerpt: string }> = [];
     const identities = new Set<string>();
     for (const source of groundingSources) {
       if (candidateCitations.length >= 3) break;
-      const excerpt = firstScopeEvidenceCandidate(value, source.text);
+      const excerpt = firstMandatoryEvidenceCandidate(
+        binding.field,
+        value,
+        source.text,
+      );
       if (excerpt === null) continue;
       const identity = `${source.sourceId}\u0000${excerpt}`;
       if (identities.has(identity)) continue;
@@ -1760,14 +1803,43 @@ function semanticRetrySupportedValues(
       ? []
       : [{ value, candidate_citations: candidateCitations }];
   });
+  if (binding.field === 'affected_users') {
+    supported.push({ value: 'unknown', candidate_citations: [] });
+  }
+  return supported;
 }
 
-function firstScopeEvidenceCandidate(
-  value: Scope,
+function semanticRetryMandatoryBinding(
+  field: string | null,
+): {
+  field: MandatoryEvidenceField;
+  values: readonly string[];
+} | null {
+  switch (field) {
+    case 'sentiment':
+      return { field, values: CLASSIFICATION_SCHEMA_RULES.enums.sentiment };
+    case 'severity':
+      return { field, values: CLASSIFICATION_SCHEMA_RULES.enums.severity };
+    case 'scope':
+      return { field, values: CLASSIFICATION_SCHEMA_RULES.enums.scope };
+    case 'functionality':
+      return { field, values: CLASSIFICATION_SCHEMA_RULES.enums.functionality };
+    case 'affected_users':
+      return {
+        field,
+        values: CLASSIFICATION_SCHEMA_RULES.enums.affectedUsers,
+      };
+    default:
+      return null;
+  }
+}
+
+function firstMandatoryEvidenceCandidate(
+  field: MandatoryEvidenceField,
+  value: string,
   sourceText: string,
 ): string | null {
-  const patterns =
-    CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.scope[value];
+  const patterns = mandatoryCitationPatterns(field, value);
   for (const pattern of patterns) {
     const match = new RegExp(pattern, 'iu').exec(sourceText)?.[0]?.trim();
     if (
@@ -1775,7 +1847,7 @@ function firstScopeEvidenceCandidate(
       match.length >= CLASSIFICATION_SCHEMA_RULES.citations.minLength &&
       match.length <= CLASSIFICATION_SCHEMA_RULES.citations.maxLength &&
       sourceText.includes(match) &&
-      mandatoryCitationSupports('scope', value, match)
+      mandatoryCitationSupports(field, value, match)
     ) {
       return match;
     }
@@ -2164,13 +2236,14 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:positive|works?|working|fixed|resolved|successful|success|great|excellent|thanks?|appreciate|love|helpful|improved|ok|okay)\\b',
         ],
         neutral: [
-          '\\b(?:feature request|enhancement|proposal|propose|suggestion|suggest|question|request|would like|could we|should we|how|support for|add(?:ing)?|documentation)\\b',
+          '\\b(?:feature request|feature|enhancement|proposal|propose|proposed|suggestion|suggest|question|request|would like|could we|should we|how|support for|add(?:ing)?|documentation)\\b',
         ],
       },
       severity: {
         critical: [
           '\\b(?:critical|p0|release blocker|beta blocker|data loss|message loss|security|vulnerab(?:ility|le)|cve(?:-\\d+)*|auth(?:entication)? bypass|remote code execution|total outage|systemwide outage|crash loop)\\b',
           '\\b(?:all|every|default)\\b.{0,80}\\b(?:fail(?:s|ed|ing|ure)?|broken|unusable|down|outage)\\b',
+          '\\b(?:all|any)\\b.{0,40}\\b(?:unsaved\\s+)?(?:work|progress|state|content|code|research|analysis|data)\\b.{0,40}\\b(?:lost|destroyed|discarded)\\b',
         ],
         high: [
           '\\b(?:high|blocker|blocked|unusable|outage|regression|cannot|unable)\\b',
@@ -2182,6 +2255,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
         ],
         low: [
           '\\b(?:low|minor|typo|docs?|documentation|cosmetic|warning|noise|edge case|rare|niche)\\b',
+          '\\b(?:feature request|feature|enhancement|proposal|proposed|suggestion|request)\\b',
         ],
       },
       scope: {
@@ -2811,42 +2885,37 @@ function mandatoryCitationSupports(
   ) {
     return false;
   }
+  return citationMatchesAnyPattern(
+    mandatoryCitationPatterns(field, value),
+    excerpt,
+  );
+}
+
+function mandatoryCitationPatterns(
+  field: MandatoryEvidenceField,
+  value: string,
+): readonly string[] {
   switch (field) {
     case 'sentiment':
-      return citationMatchesAnyPattern(
-        CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.sentiment[
-          value as Sentiment
-        ],
-        excerpt,
-      );
+      return CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.sentiment[
+        value as Sentiment
+      ];
     case 'severity':
-      return citationMatchesAnyPattern(
-        CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.severity[
-          value as Severity
-        ],
-        excerpt,
-      );
+      return CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.severity[
+        value as Severity
+      ];
     case 'scope':
-      return citationMatchesAnyPattern(
-        CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.scope[
-          value as Scope
-        ],
-        excerpt,
-      );
+      return CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.scope[
+        value as Scope
+      ];
     case 'functionality':
-      return citationMatchesAnyPattern(
-        CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.functionality[
-          value as Functionality
-        ],
-        excerpt,
-      );
+      return CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.functionality[
+        value as Functionality
+      ];
     case 'affected_users':
-      return citationMatchesAnyPattern(
-        CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.affectedUsers[
-          value as AffectedUsers
-        ],
-        excerpt,
-      );
+      return CLASSIFICATION_SCHEMA_RULES.citations.fieldRelevance.affectedUsers[
+        value as AffectedUsers
+      ];
   }
   const exhaustiveField: never = field;
   throw new Error(`Unsupported mandatory evidence field: ${exhaustiveField}`);
