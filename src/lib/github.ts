@@ -40,7 +40,6 @@ const COMMENT_SNAPSHOT_RETRY_BASE_MS = 250;
 const COMMENT_SNAPSHOT_RETRY_MAX_MS = 2_000;
 const RELEASE_CATALOG_MAX_SWEEPS = 3;
 const ISSUE_CATALOG_MAX_SWEEPS = 3;
-const ISSUE_CATALOG_MAX_BOUNDARY_RESTARTS = 3;
 const ISSUE_CLOSED_AT_SKEW_TOLERANCE_MS = 2_000;
 const ISSUE_LABEL_MAX_SWEEPS = 3;
 const ADVISORY_CATALOG_MAX_SWEEPS = 3;
@@ -3389,6 +3388,7 @@ export interface IssuePaginationOptions extends Pick<
   perPage?: number;
   pageDelayMs?: number;
   sleep?: GithubSleep;
+  frozenBoundary?: GhIssueSnapshotBoundary;
 }
 
 interface CanonicalIssueRecord {
@@ -3405,7 +3405,7 @@ interface IncrementalIssueSweep {
   lastRequestCursor: string | null;
 }
 
-interface IssueCatalogSweep {
+export interface GhIssueCatalogBoundaryVerification {
   issues: GhIssueCatalogIssue[];
   boundary: GhIssueSnapshotBoundary;
   observedTotalCount: number;
@@ -3622,7 +3622,7 @@ export async function* paginateIssues(
 async function fetchIssueCatalogSweep(
   options: IssuePaginationOptions = {},
   frozenBoundary: GhIssueSnapshotBoundary | null = null,
-): Promise<IssueCatalogSweep> {
+): Promise<GhIssueCatalogBoundaryVerification> {
   const request = options.request ?? gh;
   const pageSize = Math.min(
     GRAPHQL_PAGE_SIZE,
@@ -3752,6 +3752,15 @@ async function fetchIssueCatalogSweep(
           `frozen-boundary sweeps`,
         );
       }
+      if (
+        frozenBoundary &&
+        membershipDigest !== frozenBoundary.membershipDigest
+      ) {
+        throw new Error(
+          `GitHub GraphQL repository.issues immutable membership changed across ` +
+          `frozen-boundary sweeps`,
+        );
+      }
       return {
         issues,
         boundary,
@@ -3779,73 +3788,64 @@ async function fetchIssueCatalogSweep(
   }
 }
 
+export async function verifyIssueCatalogBoundary(
+  frozenBoundary: GhIssueSnapshotBoundary,
+  options: IssuePaginationOptions = {},
+): Promise<GhIssueCatalogBoundaryVerification> {
+  return fetchIssueCatalogSweep(options, frozenBoundary);
+}
+
 export async function fetchIssueCatalog(
   options: IssuePaginationOptions = {},
 ): Promise<GhIssueCatalog> {
   let pagesFetched = 0;
-  for (
-    let boundaryAttempt = 0;
-    boundaryAttempt <= ISSUE_CATALOG_MAX_BOUNDARY_RESTARTS;
-    boundaryAttempt++
-  ) {
-    let frozenBoundary: GhIssueSnapshotBoundary | null = null;
-    let previousMembershipDigest: string | null = null;
-    let previousContentDigest: string | null = null;
-    let boundaryGrew = false;
+  let frozenBoundary = options.frozenBoundary ?? null;
+  let observedTotalCount = frozenBoundary?.totalCount ?? 0;
+  let previousMembershipDigest: string | null = null;
+  let previousContentDigest: string | null = null;
 
-    for (let sweepCount = 1; sweepCount <= ISSUE_CATALOG_MAX_SWEEPS; sweepCount++) {
-      const current = await fetchIssueCatalogSweep(options, frozenBoundary);
-      frozenBoundary ??= current.boundary;
-      pagesFetched += current.pageCount;
+  for (let sweepCount = 1; sweepCount <= ISSUE_CATALOG_MAX_SWEEPS; sweepCount++) {
+    const current = await fetchIssueCatalogSweep(options, frozenBoundary);
+    frozenBoundary ??= current.boundary;
+    observedTotalCount = Math.max(observedTotalCount, current.observedTotalCount);
+    pagesFetched += current.pageCount;
 
-      if (current.observedTotalCount !== current.boundary.totalCount) {
-        boundaryGrew = true;
-        break;
-      }
-
-      if (
-        previousMembershipDigest === current.membershipDigest &&
-        previousContentDigest === current.contentDigest
-      ) {
-        return {
-          issues: current.issues,
-          metadata: {
-            exhausted: true,
-            stabilized: true,
-            totalCount: current.boundary.totalCount,
-            observedTotalCount: current.boundary.totalCount,
-            postBoundaryGrowthCount: 0,
-            nodeCount: current.issues.length,
-            uniqueCount: current.issues.length,
-            pageCount: current.pageCount,
-            pagesFetched,
-            sweepCount,
-            digest: current.membershipDigest,
-            membershipDigest: current.membershipDigest,
-            contentDigest: current.contentDigest,
-            snapshotBoundary: current.boundary,
-            lastRequestCursor: current.lastRequestCursor,
-            nextCursor: null,
-            hasNextPage: false,
-            sourceOrder: 'CREATED_AT_ASC',
-          },
-        };
-      }
-      previousMembershipDigest = current.membershipDigest;
-      previousContentDigest = current.contentDigest;
+    if (
+      previousMembershipDigest === current.membershipDigest &&
+      previousContentDigest === current.contentDigest
+    ) {
+      return {
+        issues: current.issues,
+        metadata: {
+          exhausted: true,
+          stabilized: true,
+          totalCount: current.boundary.totalCount,
+          observedTotalCount,
+          postBoundaryGrowthCount:
+            observedTotalCount - current.boundary.totalCount,
+          nodeCount: current.issues.length,
+          uniqueCount: current.issues.length,
+          pageCount: current.pageCount,
+          pagesFetched,
+          sweepCount,
+          digest: current.membershipDigest,
+          membershipDigest: current.membershipDigest,
+          contentDigest: current.contentDigest,
+          snapshotBoundary: current.boundary,
+          lastRequestCursor: current.lastRequestCursor,
+          nextCursor: null,
+          hasNextPage: false,
+          sourceOrder: 'CREATED_AT_ASC',
+        },
+      };
     }
-
-    if (!boundaryGrew) {
-      throw new Error(
-        `GitHub GraphQL repository.issues failed to stabilize full membership and content after ` +
-        `${ISSUE_CATALOG_MAX_SWEEPS} complete sweeps`,
-      );
-    }
+    previousMembershipDigest = current.membershipDigest;
+    previousContentDigest = current.contentDigest;
   }
 
   throw new Error(
-    `GitHub GraphQL repository.issues kept growing across ` +
-    `${ISSUE_CATALOG_MAX_BOUNDARY_RESTARTS + 1} frozen-boundary attempts`,
+    `GitHub GraphQL repository.issues failed to stabilize frozen first-N ` +
+    `membership and content after ${ISSUE_CATALOG_MAX_SWEEPS} complete sweeps`,
   );
 }
 
@@ -9345,6 +9345,7 @@ export const __githubTest = {
   githubReleaseCatalogPublicationEvidence,
   fetchIssueCatalog,
   fetchIssueCatalogSweep,
+  verifyIssueCatalogBoundary,
   fetchRepositoryCollaboratorPermissionSweep,
   fetchRepositorySecurityAdvisorySweep,
   fetchSecurityVulnerabilitySweep,

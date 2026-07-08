@@ -479,9 +479,6 @@ export function issueCrawlCompletenessProblems(issueCrawl, {
     if (!(stopReason === 'exhausted' && issueCrawl.crawlMode === 'exhaustive')) {
       problems.push('score persistence requires an exhaustive stabilized issue crawl');
     }
-    if (pagination.postBoundaryGrowthCount !== 0) {
-      problems.push('score persistence requires zero issue-catalog post-boundary growth');
-    }
     if (
       Array.isArray(issueCrawl.evidenceRefreshFailures) &&
       issueCrawl.evidenceRefreshFailures.length > 0
@@ -572,9 +569,9 @@ export function issueCrawlCompletenessProblems(issueCrawl, {
       }
       if (
         !Number.isInteger(attestation.finalSweepCount) ||
-        attestation.finalSweepCount < 2
+        attestation.finalSweepCount < 1
       ) {
-        problems.push('catalogAttestation finalSweepCount must be at least 2');
+        problems.push('catalogAttestation finalSweepCount must be at least 1');
       }
       if (
         !Number.isInteger(attestation.finalPagesFetched) ||

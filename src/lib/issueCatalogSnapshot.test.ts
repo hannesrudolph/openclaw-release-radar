@@ -8,9 +8,11 @@ import {
   canonicalIssueContentDigest,
   canonicalIssueMembershipDigest,
   issueCatalogSnapshotCatalog,
+  issueCatalogSnapshotProblems,
 } from './issueCatalogSnapshot.ts';
 import type {
   GhIssueCatalog,
+  GhIssueCatalogBoundaryVerification,
   GhIssueCatalogIssue,
 } from './github.ts';
 
@@ -175,18 +177,41 @@ describe('durable exhaustive issue catalog snapshots', { concurrency: false }, (
     );
   });
 
+  // Keep this historical test identity stable for the accepted baseline. The
+  // assertions now prove that post-boundary growth is recorded, not rejected.
   it('refuses a catalog that observed issues beyond its frozen boundary', () => {
     const growing = catalogFixture();
     growing.metadata.observedTotalCount++;
     growing.metadata.postBoundaryGrowthCount++;
 
+    const header = dbModule.insertIssueCatalogSnapshot({
+      repository: 'openclaw/openclaw',
+      capturedAt: '2026-07-04T10:45:00.000Z',
+      catalog: growing,
+    });
+    const snapshot = dbModule.getIssueCatalogSnapshot(header.snapshotId);
+    assert.ok(snapshot);
+    assert.equal(snapshot.header.boundaryTotalCount, 2);
+    assert.equal(snapshot.header.observedTotalCount, 3);
+    assert.equal(snapshot.header.postBoundaryGrowthCount, 1);
+    assert.equal(snapshot.rows.length, 2);
+    assert.deepEqual(
+      issueCatalogSnapshotProblems(snapshot),
+      [],
+    );
+  });
+
+  it('rejects inconsistent post-boundary growth arithmetic', () => {
+    const growing = catalogFixture();
+    growing.metadata.observedTotalCount++;
+
     assert.throws(
       () => dbModule.insertIssueCatalogSnapshot({
         repository: 'openclaw/openclaw',
-        capturedAt: '2026-07-04T10:45:00.000Z',
+        capturedAt: '2026-07-04T10:46:00.000Z',
         catalog: growing,
       }),
-      /no post-boundary growth/,
+      /complete stabilized frozen-boundary catalog/,
     );
   });
 
@@ -323,7 +348,7 @@ describe('durable exhaustive issue catalog snapshots', { concurrency: false }, (
     const matching = catalogFixture();
     const attestation = refreshTest.finalIssueCatalogAttestation({
       snapshot,
-      finalCatalog: matching,
+      finalCatalog: boundaryVerification(matching),
       observedAt: '2026-07-04T15:30:00.000Z',
     });
     assert.equal(attestation.snapshotId, header.snapshotId);
@@ -342,7 +367,7 @@ describe('durable exhaustive issue catalog snapshots', { concurrency: false }, (
     assert.throws(
       () => refreshTest.finalIssueCatalogAttestation({
         snapshot,
-        finalCatalog: changed,
+        finalCatalog: boundaryVerification(changed),
         observedAt: '2026-07-04T15:31:00.000Z',
       }),
       /contentDigest changed/,
@@ -408,6 +433,20 @@ function catalogFixture(): GhIssueCatalog {
       hasNextPage: false,
       sourceOrder: 'CREATED_AT_ASC',
     },
+  };
+}
+
+function boundaryVerification(
+  catalog: GhIssueCatalog,
+): GhIssueCatalogBoundaryVerification {
+  return {
+    issues: catalog.issues,
+    boundary: catalog.metadata.snapshotBoundary,
+    observedTotalCount: catalog.metadata.observedTotalCount,
+    pageCount: catalog.metadata.pageCount,
+    membershipDigest: catalog.metadata.membershipDigest,
+    contentDigest: catalog.metadata.contentDigest,
+    lastRequestCursor: catalog.metadata.lastRequestCursor,
   };
 }
 

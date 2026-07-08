@@ -11,6 +11,7 @@ import {
   type GhRelease,
   type GhReleaseCatalog,
   type GhIssueCatalog,
+  type GhIssueCatalogBoundaryVerification,
   type GhIssueCatalogMetadata,
   type GhIssueIncrementalSweepMetadata,
   type GhIssueLabelEvidenceSnapshot,
@@ -24,6 +25,7 @@ import {
   GhIssue,
   authorizeGithubReleaseCatalogPublication,
   fetchIssueCatalog,
+  verifyIssueCatalogBoundary,
   fetchRepositoryCollaboratorPermissionSnapshot,
   fetchReleaseCatalog,
   getReleaseCommit as fetchReleaseCommit,
@@ -608,7 +610,6 @@ import {
 } from './issueLabelEvidenceSnapshot';
 import {
   issueCatalogSnapshotCatalog,
-  stageIssueCatalogSnapshot,
   type IssueCatalogSnapshot,
 } from './issueCatalogSnapshot';
 import {
@@ -2243,49 +2244,36 @@ function issueRepositoryIdentity(): string {
 
 function finalIssueCatalogAttestation(input: {
   snapshot: IssueCatalogSnapshot;
-  finalCatalog: GhIssueCatalog;
+  finalCatalog: GhIssueCatalogBoundaryVerification;
   observedAt: string;
 }): IssueCatalogPublicationAttestation {
   const { snapshot, finalCatalog, observedAt } = input;
-  const metadata = finalCatalog.metadata;
   if (!Number.isFinite(Date.parse(observedAt))) {
     throw new Error('Final issue catalog observation time is invalid');
   }
   if (
-    metadata.exhausted !== true ||
-    metadata.stabilized !== true ||
-    metadata.sourceOrder !== 'CREATED_AT_ASC' ||
-    metadata.hasNextPage !== false ||
-    metadata.nextCursor !== null ||
-    metadata.observedTotalCount !== metadata.totalCount ||
-    metadata.postBoundaryGrowthCount !== 0 ||
-    metadata.nodeCount !== metadata.totalCount ||
-    metadata.uniqueCount !== metadata.totalCount ||
-    metadata.sweepCount < 2
+    finalCatalog.boundary.totalCount !== finalCatalog.issues.length ||
+    finalCatalog.observedTotalCount < finalCatalog.boundary.totalCount ||
+    finalCatalog.pageCount <= 0
   ) {
-    throw new Error('Final issue catalog is not complete, stable, and growth-free');
+    throw new Error('Final issue catalog verification did not collect its frozen boundary');
   }
   const expected = snapshot.header;
-  stageIssueCatalogSnapshot({
-    repository: expected.repository,
-    capturedAt: observedAt,
-    catalog: finalCatalog,
-    previousContentHash: null,
-  });
   const mismatches: string[] = [];
-  if (metadata.totalCount !== expected.boundaryTotalCount) {
+  if (finalCatalog.boundary.totalCount !== expected.boundaryTotalCount) {
     mismatches.push(
-      `totalCount changed from ${expected.boundaryTotalCount} to ${metadata.totalCount}`,
+      `totalCount changed from ${expected.boundaryTotalCount} ` +
+      `to ${finalCatalog.boundary.totalCount}`,
     );
   }
-  if (metadata.membershipDigest !== expected.membershipDigest) {
+  if (finalCatalog.membershipDigest !== expected.membershipDigest) {
     mismatches.push('membershipDigest changed');
   }
-  if (metadata.contentDigest !== expected.contentDigest) {
+  if (finalCatalog.contentDigest !== expected.contentDigest) {
     mismatches.push('contentDigest changed');
   }
   if (
-    JSON.stringify(metadata.snapshotBoundary) !== JSON.stringify({
+    JSON.stringify(finalCatalog.boundary) !== JSON.stringify({
       totalCount: expected.boundaryTotalCount,
       terminalIssue: expected.terminalNodeId == null
         ? null
@@ -2309,11 +2297,11 @@ function finalIssueCatalogAttestation(input: {
     snapshotId: expected.snapshotId,
     snapshotContentHash: expected.contentHash,
     observedAt,
-    totalCount: metadata.totalCount,
-    membershipDigest: metadata.membershipDigest,
-    contentDigest: metadata.contentDigest,
-    finalSweepCount: metadata.sweepCount,
-    finalPagesFetched: metadata.pagesFetched,
+    totalCount: finalCatalog.boundary.totalCount,
+    membershipDigest: finalCatalog.membershipDigest,
+    contentDigest: finalCatalog.contentDigest,
+    finalSweepCount: 1,
+    finalPagesFetched: finalCatalog.pageCount,
   };
 }
 
@@ -2842,10 +2830,6 @@ function issueCrawlMetadataProblems(
     if (Array.isArray(crawl.classificationFailures) && crawl.classificationFailures.length > 0) {
       problems.push('classificationFailures must be empty before score persistence');
     }
-    if (pagination.postBoundaryGrowthCount !== 0) {
-      problems.push('score persistence requires zero issue-catalog post-boundary growth');
-    }
-
     const snapshot = crawl.catalogSnapshot;
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       problems.push('catalogSnapshot must be an object before score persistence');
@@ -2936,9 +2920,9 @@ function issueCrawlMetadataProblems(
       }
       if (
         !Number.isInteger(attestation.finalSweepCount) ||
-        attestation.finalSweepCount < 2
+        attestation.finalSweepCount < 1
       ) {
-        problems.push('catalogAttestation finalSweepCount must be at least 2');
+        problems.push('catalogAttestation finalSweepCount must be at least 1');
       }
       if (
         !Number.isInteger(attestation.finalPagesFetched) ||
@@ -6088,7 +6072,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
       });
       throw new Error(`${message}; refusing to persist scores after score build failure`);
     }
-    let finalIssueCatalog: GhIssueCatalog;
+    let finalIssueCatalog: GhIssueCatalogBoundaryVerification;
     let finalReleaseCatalog: GhReleaseCatalog;
     let catalogAttestation: ReleaseCatalogAttestation;
     const publicationIssueCatalogSnapshot =
@@ -6106,11 +6090,14 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         [finalIssueCatalog, finalReleaseCatalog] = await runCooperativeGroup([
           (groupSignal) => finalAttestationStages.timed(
             'issue.final-attest',
-            () => fetchIssueCatalog({
-              maxPagesPerConnection: MAX_PAGES,
-              perPage: config.refresh.issuePageSize,
-              signal: groupSignal,
-            }),
+            () => verifyIssueCatalogBoundary(
+              completedCatalog.snapshotBoundary,
+              {
+                maxPagesPerConnection: MAX_PAGES,
+                perPage: config.refresh.issuePageSize,
+                signal: groupSignal,
+              },
+            ),
           ),
           (groupSignal) => finalAttestationStages.timed(
             'release.final-attest',

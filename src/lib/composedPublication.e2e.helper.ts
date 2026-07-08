@@ -1786,7 +1786,15 @@ function seedSimpleIssueCatalogPublication(input: {
   const catalogAttestation =
     input.refreshModule.__refreshTest.finalIssueCatalogAttestation({
       snapshot,
-      finalCatalog: catalog,
+      finalCatalog: {
+        issues: catalog.issues,
+        boundary: catalog.metadata.snapshotBoundary,
+        observedTotalCount: catalog.metadata.observedTotalCount,
+        pageCount: catalog.metadata.pageCount,
+        membershipDigest: catalog.metadata.membershipDigest,
+        contentDigest: catalog.metadata.contentDigest,
+        lastRequestCursor: catalog.metadata.lastRequestCursor,
+      },
       observedAt,
     });
   const baseline =

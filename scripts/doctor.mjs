@@ -1564,9 +1564,9 @@ export function issueCatalogSnapshotSummary(db, now = new Date()) {
         }
         if (
           !Number.isInteger(attestation.finalSweepCount) ||
-          attestation.finalSweepCount < 2
+          attestation.finalSweepCount < 1
         ) {
-          linkProblems.push('catalogAttestation finalSweepCount must be at least 2');
+          linkProblems.push('catalogAttestation finalSweepCount must be at least 1');
         }
         if (
           !Number.isInteger(attestation.finalPagesFetched) ||

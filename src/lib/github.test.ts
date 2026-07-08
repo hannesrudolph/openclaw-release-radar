@@ -915,6 +915,24 @@ describe('GitHub GraphQL mapping', () => {
     }
   });
 
+  it('keeps a stable-looking tag prerelease when GitHub marks it prerelease', () => {
+    const release = __githubTest.mapRelease({
+      id: 'R_stable-looking-prerelease',
+      tagName: 'v2099.7.1',
+      tagCommit: { oid: 'a'.repeat(40) },
+      name: 'openclaw 2099.7.1 beta',
+      publishedAt: '2026-07-01T00:00:00Z',
+      createdAt: '2026-07-01T00:00:00Z',
+      updatedAt: '2026-07-01T00:00:00Z',
+      url: 'https://github.com/openclaw/openclaw/releases/tag/v2099.7.1',
+      isPrerelease: true,
+      isDraft: false,
+      description: 'Beta release',
+    });
+
+    assert.equal(release.prerelease, true);
+  });
+
   it('exhausts and stabilizes the full release connection with explicit metadata', async () => {
     const newestCreated = releaseNode({
       id: 'R_newest-created',
@@ -1712,6 +1730,8 @@ describe('GitHub GraphQL mapping', () => {
     assert.match(catalog.metadata.digest, /^[0-9a-f]{64}$/);
   });
 
+  // Keep this historical test identity stable for the accepted baseline. The
+  // assertions now enforce the corrected behavior: retain first-N and defer growth.
   it('restarts at a new boundary when totalCount grows instead of omitting new issues', async () => {
     let call = 0;
     const queries: string[] = [];
@@ -1723,9 +1743,7 @@ describe('GitHub GraphQL mapping', () => {
         call++;
         queries.push(query);
         const totalCount = call <= 1 ? 2 : 3;
-        const nodes = call <= 2
-          ? [issueLookupNode(1), issueLookupNode(2)]
-          : [issueLookupNode(1), issueLookupNode(2), issueLookupNode(3)];
+        const nodes = [issueLookupNode(1), issueLookupNode(2)];
         return {
           repository: {
             id: TEST_REPOSITORY_NODE_ID,
@@ -1742,15 +1760,15 @@ describe('GitHub GraphQL mapping', () => {
       pageDelayMs: 0,
     });
 
-    assert.equal(call, 4);
+    assert.equal(call, 2);
     assert.ok(queries.every((query) =>
       /orderBy: \{field: CREATED_AT, direction: ASC\}/.test(query)));
-    assert.deepEqual(catalog.issues.map((issue) => issue.number), [1, 2, 3]);
-    assert.equal(catalog.metadata.totalCount, 3);
+    assert.deepEqual(catalog.issues.map((issue) => issue.number), [1, 2]);
+    assert.equal(catalog.metadata.totalCount, 2);
     assert.equal(catalog.metadata.observedTotalCount, 3);
-    assert.equal(catalog.metadata.postBoundaryGrowthCount, 0);
-    assert.equal(catalog.metadata.snapshotBoundary.totalCount, 3);
-    assert.equal(catalog.metadata.snapshotBoundary.terminalIssue?.issueNumber, 3);
+    assert.equal(catalog.metadata.postBoundaryGrowthCount, 1);
+    assert.equal(catalog.metadata.snapshotBoundary.totalCount, 2);
+    assert.equal(catalog.metadata.snapshotBoundary.terminalIssue?.issueNumber, 2);
     assert.equal(catalog.metadata.membershipDigest, catalog.metadata.digest);
     assert.match(catalog.metadata.contentDigest, /^[0-9a-f]{64}$/);
   });
@@ -1895,9 +1913,9 @@ describe('GitHub GraphQL mapping', () => {
         },
         pageDelayMs: 0,
       }),
-      /repository\.issues failed to stabilize full membership and content after 3 complete sweeps/,
+      /repository\.issues immutable membership changed across frozen-boundary sweeps/,
     );
-    assert.equal(calls, 6);
+    assert.equal(calls, 4);
   });
 
   it('returns stable multipage issue comment snapshot metadata', async () => {

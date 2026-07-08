@@ -361,12 +361,13 @@ export function stageIssueCatalogSnapshot(input: {
     metadata.uniqueCount !== catalog.issues.length ||
     metadata.totalCount !== catalog.issues.length ||
     metadata.snapshotBoundary.totalCount !== metadata.totalCount ||
-    metadata.observedTotalCount !== metadata.totalCount ||
-    metadata.postBoundaryGrowthCount !== 0 ||
+    metadata.observedTotalCount < metadata.totalCount ||
+    metadata.postBoundaryGrowthCount !==
+      metadata.observedTotalCount - metadata.totalCount ||
     metadata.sweepCount < 2
   ) {
     throw new Error(
-      'Issue catalog snapshot requires a complete stabilized catalog with no post-boundary growth',
+      'Issue catalog snapshot requires a complete stabilized frozen-boundary catalog',
     );
   }
 
@@ -497,10 +498,16 @@ export function issueCatalogSnapshotProblems(
   }
   if (header.sweepCount < 2) problems.push('sweepCount must be at least 2');
   if (
-    header.observedTotalCount !== header.boundaryTotalCount ||
-    header.postBoundaryGrowthCount !== 0
+    header.observedTotalCount < header.boundaryTotalCount
   ) {
-    problems.push('snapshot must not contain post-boundary growth');
+    problems.push('observedTotalCount cannot be less than boundaryTotalCount');
+  } else if (
+    header.postBoundaryGrowthCount !==
+      header.observedTotalCount - header.boundaryTotalCount
+  ) {
+    problems.push(
+      'postBoundaryGrowthCount must equal observedTotalCount minus boundaryTotalCount',
+    );
   }
   if (
     header.fetchedCount !== header.boundaryTotalCount ||
