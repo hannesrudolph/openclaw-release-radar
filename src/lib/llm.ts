@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 12;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 13;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2649,6 +2649,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
           '\\b(?:moderate|common|default|windows|macos|linux|android|ios|agent|session|gateway|cli|ui|tui|channel|provider|platform|surface|configuration|config)\\b',
           '\\b(?:tool calls?|sub-?agents?|exec)\\b',
           '\\b(?:(?:pre|post)-?updates?|doctor(?:\\s+--[a-z0-9-]+)?|upgrade(?:\\s+scanner|-scan))\\b',
+          '\\b(?:additional|multiple)\\s+(?:configuration|config|state)\\s+layers\\b',
         ],
         niche: [
           '\\b(?:niche|non-default|experimental|alpha|rare|edge case|environment-sensitive|wsl2?|windows subsystem for linux)\\b',

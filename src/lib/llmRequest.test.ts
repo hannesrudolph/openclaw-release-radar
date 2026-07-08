@@ -3708,16 +3708,23 @@ describe('LLM source grounding', () => {
     );
     const proposal =
       'I\u2019d like to discuss a maintainable single-source reconcile approach with maintainers.';
+    const scopeEvidence =
+      'In practice, behavior can still be affected by additional state layers:';
     const prompt = __llmTest.buildClassifierPromptInput(
-      groundingIssue(`${body} ${proposal}`) as any,
+      groundingIssue(`${body} ${proposal} ${scopeEvidence}`) as any,
       [],
       ['v2026.7.4'],
     );
     const raw = structuredClone(fullyGroundedOutput()) as any;
     raw.sentiment = 'neutral';
+    raw.scope = 'moderate';
     raw.evidence.sentiment = [{
       source_id: 'issue:body',
       excerpt: proposal,
+    }];
+    raw.evidence.scope = [{
+      source_id: 'issue:body',
+      excerpt: scopeEvidence,
     }];
     const accepted = __llmTest.parseRawClassification(
       JSON.stringify(raw),
@@ -3726,6 +3733,7 @@ describe('LLM source grounding', () => {
       prompt.inputTruncation,
     );
     assert.equal(accepted.sentiment, 'neutral');
+    assert.equal(accepted.scope, 'moderate');
   });
 
   it('accepts issue #25883 multi-instance production impact evidence', async () => {
