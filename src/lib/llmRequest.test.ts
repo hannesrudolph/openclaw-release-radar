@@ -3644,6 +3644,62 @@ describe('LLM source grounding', () => {
       prompt.inputTruncation,
     );
     assert.equal(accepted.sentiment, 'negative');
+
+    for (const excerpt of [
+      'Text between tool calls leaks to messaging channels.',
+      'This has been a recurring issue causing user frustration.',
+      'This is a significant UX problem.',
+    ]) {
+      const issue25592Prompt = __llmTest.buildClassifierPromptInput(
+        groundingIssue(`${body} ${excerpt}`) as any,
+        [],
+        ['v2026.7.4'],
+      );
+      const issue25592 = structuredClone(fullyGroundedOutput()) as any;
+      issue25592.evidence.sentiment = [{
+        source_id: 'issue:body',
+        excerpt,
+      }];
+      const acceptedIssue25592 = __llmTest.parseRawClassification(
+        JSON.stringify(issue25592),
+        ['v2026.7.4'],
+        issue25592Prompt.groundingSources,
+        issue25592Prompt.inputTruncation,
+      );
+      assert.equal(acceptedIssue25592.sentiment, 'negative');
+    }
+
+    for (const excerpt of [
+      'No message leakage was observed.',
+      'There was no user frustration.',
+      'This is not a problem.',
+    ]) {
+      const negatedPrompt = __llmTest.buildClassifierPromptInput(
+        groundingIssue(`${body} ${excerpt}`) as any,
+        [],
+        ['v2026.7.4'],
+      );
+      const negated = structuredClone(fullyGroundedOutput()) as any;
+      negated.evidence.sentiment = [{
+        source_id: 'issue:body',
+        excerpt,
+      }];
+      assert.throws(
+        () => __llmTest.parseRawClassification(
+          JSON.stringify(negated),
+          ['v2026.7.4'],
+          negatedPrompt.groundingSources,
+          negatedPrompt.inputTruncation,
+        ),
+        (error: unknown) => {
+          assert.ok(error instanceof ClassificationGroundingError);
+          assert.ok(error.diagnostics.some((diagnostic) =>
+            diagnostic.field === 'sentiment' &&
+            diagnostic.code === 'excerpt_not_field_relevant'));
+          return true;
+        },
+      );
+    }
   });
 
   it('binds severity declarations only to the cited excerpt', async () => {

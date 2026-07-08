@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 9;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 10;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -2605,7 +2605,7 @@ const CLASSIFICATION_SCHEMA_RULES = {
     fieldRelevance: {
       sentiment: {
         negative: [
-          '\\b(?:bug|broken|breaks?|broke|fail(?:s|ed|ing|ures?)?|errors?|crash(?:es|ed|ing)?|regression|outage|hang(?:s|ing)?|timeout|incorrect|wrong|missing|unusable|blocked|loss|lost|unable|cannot|exit(?:s|ed|ing)?|stops?|reject(?:s|ed|ing)?|denied)\\b',
+          '\\b(?:bugs?|problems?|broken|breaks?|broke|fail(?:s|ed|ing|ures?)?|errors?|crash(?:es|ed|ing)?|regression|outage|hang(?:s|ing)?|timeout|incorrect|wrong|missing|unusable|blocked|loss|lost|unable|cannot|exit(?:s|ed|ing)?|stops?|reject(?:s|ed|ing)?|denied|leak(?:s|ed|ing|ages?)?|frustrat(?:e|es|ed|ing|ion|ions))\\b',
           '\\b(?:does not|doesn.t|did not|will not|won.t|not)\\s+(?:work|start|open|load|send|receive|connect)\\b',
         ],
         positive: [
