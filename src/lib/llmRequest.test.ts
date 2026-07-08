@@ -4674,6 +4674,41 @@ describe('LLM source grounding', () => {
     assert.equal(accepted.functionality, 'core');
   });
 
+  it('accepts issue #35406 binary-read token waste and reasoning degradation evidence', async () => {
+    const { __llmTest } = await import(
+      `./llm.ts?binary-read-token-waste=${Date.now()}`
+    );
+    const severityEvidence = [
+      'This produces garbled output (binary data / ZIP content).',
+      'This wastes a large number of tokens.',
+      'This content may consume thousands of tokens unnecessarily.',
+      'This can significantly degrade agent reasoning.',
+    ];
+    const prompt = __llmTest.buildClassifierPromptInput(
+      groundingIssue(
+        `${body} ${severityEvidence.join(' ')}`,
+        'Improve read tool handling for binary document formats and avoid token waste',
+      ) as any,
+      [],
+      ['v2026.7.4'],
+    );
+    for (const excerpt of severityEvidence) {
+      const raw = structuredClone(fullyGroundedOutput()) as any;
+      raw.severity = 'medium';
+      raw.evidence.severity = [{
+        source_id: 'issue:body',
+        excerpt,
+      }];
+      const accepted = __llmTest.parseRawClassification(
+        JSON.stringify(raw),
+        ['v2026.7.4'],
+        prompt.groundingSources,
+        prompt.inputTruncation,
+      );
+      assert.equal(accepted.severity, 'medium', excerpt);
+    }
+  });
+
   it('accepts issue #37131 explicit multi-surface scope evidence', async () => {
     const { __llmTest } = await import(
       `./llm.ts?direct-tool-multi-surface=${Date.now()}`

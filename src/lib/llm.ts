@@ -268,7 +268,7 @@ const TOOLING_PROVENANCE_PROMPT_VERSION = 10;
 // Bump whenever score-affecting implementation behavior changes without a corresponding
 // declarative manifest change. This includes parsing, citation support predicates, input
 // normalization, and deterministic confidence policy.
-export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 30;
+export const CLASSIFIER_IMPLEMENTATION_CONTRACT_REVISION = 31;
 
 // Attribution philosophy:
 // - The LLM is asked to identify the affected release ONLY when the issue explicitly
@@ -3064,7 +3064,9 @@ const CLASSIFICATION_SCHEMA_RULES = {
         medium: [
           '\\b(?:medium|routine|intermittent|sometimes|configuration|workaround|bug|error|incorrect|wrong|fail(?:s|ed|ing|ure)?|broken|exit(?:s|ed|ing)?|timeouts?|regressions?|cosmetic|unpredictable performance|performance under load|operational (?:risk|complexity|overhead))\\b',
           '\\btim(?:e|es|ed|ing)\\s+out\\b',
-          '\\b(?:raw\\s+)?binary\\s+garbage\\b',
+          '\\b(?:(?:raw\\s+)?binary\\s+(?:data|content|output|garbage)|(?:garbled|malformed)\\s+(?:binary\\s+)?(?:data|content|output))\\b',
+          '\\b(?:significantly|materially|severely)\\s+degrad(?:e|es|ed|ing)\\b.{0,40}\\b(?:agent\\s+)?reasoning\\b',
+          '\\b(?:wast(?:e|es|ed|ing)|consum(?:e|es|ed|ing))\\b.{0,64}\\b(?:thousands|millions|a\\s+large\\s+number)\\b.{0,32}\\btokens?\\b',
           '(?:\\u65e0\\u6cd5\\u83b7\\u53d6\\u5b8c\\u6574|\\u53ea\\u8fd4\\u56de(?:\\u524d)?\\s*\\d+\\s*\\u6761\\u8bb0\\u5f55)',
         ],
         low: [
