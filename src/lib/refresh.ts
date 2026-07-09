@@ -1428,6 +1428,7 @@ function stagedIssueRequiresMetadataReconciliation(
   stagedIssue: GhIssue,
   remoteIssue: GhIssue,
   snapshot: GhIssueCommentSnapshot,
+  labelEvidence: GhIssueLabelEvidenceSnapshot | undefined,
   stateEvidence: GhIssueFixEvidence | undefined,
 ): boolean {
   return !issueRemoteMetadataMatchesPersisted(
@@ -1435,6 +1436,14 @@ function stagedIssueRequiresMetadataReconciliation(
     issueRowFromRemoteMetadata(remoteIssue),
   ) ||
     !issueMetadataMatchesSnapshot(remoteIssue, snapshot) ||
+    !labelEvidence ||
+    labelEvidence.repositoryNodeId !== snapshot.repositoryNodeId ||
+    labelEvidence.issueNumber !== remoteIssue.number ||
+    labelEvidence.issueNodeId !== remoteIssue.node_id ||
+    labelEvidence.issueNodeType !== remoteIssue.node_type ||
+    labelEvidence.issueUpdatedAt !== remoteIssue.updated_at ||
+    labelEvidence.fetchedCount !== labelEvidence.totalCount ||
+    labelEvidence.stabilized !== true ||
     !issueStateMetadataMatchesSnapshot(remoteIssue, snapshot, stateEvidence);
 }
 
@@ -5624,32 +5633,6 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
           `${message}; refusing score persistence after incomplete state evidence`,
         );
       }
-      for (const issueNumber of initialMonitoredIssueNumbers) {
-        const issue = remoteIssuesByIssue.get(issueNumber);
-        const labelEvidence = labelEvidenceSnapshotsByIssue.get(issueNumber);
-        if (
-          issue &&
-          labelEvidence &&
-          labelEvidence.issueNodeId === issue.node_id &&
-          labelEvidence.issueUpdatedAt === issue.updated_at &&
-          labelEvidence.fetchedCount === labelEvidence.totalCount &&
-          labelEvidence.stabilized === true
-        ) {
-          continue;
-        }
-        pageEvidenceFailureCount++;
-        const message = recordEvidenceRefreshFailure(
-          'issue-label-evidence-incomplete',
-          `issue #${issueNumber}`,
-          new Error(
-            'GitHub did not return a complete stabilized label snapshot for the current issue revision',
-          ),
-          pageEvidenceContext,
-        );
-        console.warn(
-          `${message}; refusing score persistence after incomplete label authority evidence`,
-        );
-      }
       const pageFailureCount = evidenceRefreshFailures.length - evidenceFailureCountBeforePage;
       if (pageEvidenceFailureCount > 0 || pageFailureCount > 0) {
         issuePaginationStopReason = 'evidence_failure';
@@ -5675,6 +5658,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
             issue,
             remoteIssue,
             snapshot,
+            labelEvidenceSnapshotsByIssue.get(issue.number),
             stateEvidenceByIssue.get(issue.number),
           );
         })

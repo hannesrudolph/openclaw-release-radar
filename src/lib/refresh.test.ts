@@ -2200,6 +2200,7 @@ describe('refresh backfill completion', () => {
       issueNumber: staged.number,
       issueUpdatedAt: staged.updated_at,
     });
+    const stableLabels = labelEvidenceSnapshot(staged, []);
     const stableState = fixEvidence(staged.number);
 
     assert.equal(
@@ -2207,6 +2208,7 @@ describe('refresh backfill completion', () => {
         staged,
         staged,
         stableSnapshot,
+        stableLabels,
         stableState,
       ),
       false,
@@ -2216,6 +2218,30 @@ describe('refresh backfill completion', () => {
         staged,
         remote,
         stableSnapshot,
+        stableLabels,
+        stableState,
+      ),
+      true,
+    );
+    assert.equal(
+      __refreshTest.stagedIssueRequiresMetadataReconciliation(
+        staged,
+        staged,
+        stableSnapshot,
+        {
+          ...stableLabels,
+          issueUpdatedAt: '2026-07-01T23:59:59.000Z',
+        },
+        stableState,
+      ),
+      true,
+    );
+    assert.equal(
+      __refreshTest.stagedIssueRequiresMetadataReconciliation(
+        staged,
+        staged,
+        stableSnapshot,
+        undefined,
         stableState,
       ),
       true,
