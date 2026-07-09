@@ -66,6 +66,7 @@
       "src/lib/score.test.ts",
       "src/lib/scoreAuditContracts.test.ts",
       "src/lib/scoreAuthorityResolution.test.ts",
+      "src/lib/scorePreviewScript.test.ts",
       "src/lib/scorerVerifierContract.e2e.test.ts",
       "src/lib/scoreSourceIdentity.test.ts",
       "src/lib/scoreVerifierScript.test.ts",

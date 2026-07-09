@@ -94,7 +94,7 @@ export const RELEASE_ISSUE_EVIDENCE_TIER_INFO: Record<ReleaseIssueEvidenceTier, 
   },
   carryoverDebt: {
     label: 'Inherited issue context',
-    description: 'Inherited issue groups linked to this release for audit context only; they have zero score impact and cannot apply a score ceiling.',
+    description: 'Inherited issue groups linked to this release contribute a small logarithmic penalty capped at 0.35 points and cannot apply a score ceiling.',
   },
   staleDebt: {
     label: 'Weak or stale evidence',
@@ -1536,11 +1536,7 @@ function debtEvidenceRow(
     carryover: 'carryoverDebt',
     stale: 'staleDebt',
   } as const)[item.tier];
-  const presentationInfo = debtEvidencePresentationInfo(
-    tier,
-    item,
-    issue ? labelInfo(issue).labels : [],
-  );
+  const presentationInfo = RELEASE_ISSUE_EVIDENCE_TIER_INFO[tier];
   return {
     tier,
     tierLabel: presentationInfo.label,
@@ -1568,24 +1564,7 @@ function debtEvidenceRow(
     releaseLocalEvidence: item.releaseLocalEvidence ?? null,
     debtClassification: item.debtClassification ?? null,
     debtClassificationDiff: item.debtClassificationDiff ?? null,
-    ...(tier === 'carryoverDebt' ? { scoreAffecting: false } : {}),
-  };
-}
-
-function debtEvidencePresentationInfo(
-  tier: ReleaseIssueEvidenceTier,
-  item: DebtEvidenceItem,
-  labels: string[],
-): { label: string; description: string } {
-  const defaultInfo = RELEASE_ISSUE_EVIDENCE_TIER_INFO[tier];
-  if (tier !== 'carryoverDebt') return defaultInfo;
-  const sourceOnly = labels.some((label) =>
-    label === 'clawsweeper:source-repro' || label === 'clawsweeper:current-main-repro'
-  );
-  if (!sourceOnly && item.fieldConfirmed === true) return defaultInfo;
-  return {
-    label: 'Weak or stale evidence',
-    description: 'Source/static-only or otherwise unconfirmed evidence. The legacy carryover machine tier is retained for compatibility, but this row is presentation-only context and does not lower the assessment.',
+    ...(tier === 'carryoverDebt' ? { scoreAffecting: true } : {}),
   };
 }
 

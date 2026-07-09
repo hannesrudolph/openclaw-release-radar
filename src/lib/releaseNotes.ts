@@ -278,9 +278,39 @@ export function computeHoursToNextStable(
   return null; // no newer stable in the window (this is the latest stable)
 }
 
-// True if some release tag is a `<tag>-N` patch of `targetTag` — openclaw's hotfix
-// convention (v2026.5.3 -> v2026.5.3-1). An unambiguous "this stable was hotfixed".
-export function hasHotfixSuccessor(allTags: string[], targetTag: string): boolean {
+// True if a newer stable release uses the `<tag>-N` hotfix convention for
+// `targetTag` (v2026.5.3 -> v2026.5.3-1). Prereleases and older tag-shaped
+// catalog entries are not evidence that the stable target was hotfixed.
+export function hasHotfixSuccessor(
+  releases: Array<{
+    tag: string;
+    published_at?: string | null;
+    prerelease?: number | boolean | null;
+  }>,
+  targetTag: string,
+): boolean {
+  const target = releases.find((release) => release.tag === targetTag);
+  if (
+    !target ||
+    target.prerelease === true ||
+    target.prerelease === 1 ||
+    !target.published_at
+  ) {
+    return false;
+  }
+  const targetPublishedAt = Date.parse(target.published_at);
+  if (!Number.isFinite(targetPublishedAt)) return false;
   const re = new RegExp(`^${targetTag.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}-\\d+$`);
-  return allTags.some((t) => re.test(t));
+  return releases.some((release) => {
+    if (
+      release.prerelease === true ||
+      release.prerelease === 1 ||
+      !re.test(release.tag) ||
+      !release.published_at
+    ) {
+      return false;
+    }
+    const publishedAt = Date.parse(release.published_at);
+    return Number.isFinite(publishedAt) && publishedAt > targetPublishedAt;
+  });
 }

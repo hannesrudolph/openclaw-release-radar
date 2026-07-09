@@ -5,6 +5,7 @@ import {
   computeBetaCount,
   computeHoursToNextRelease,
   computeAggregateBreaking,
+  hasHotfixSuccessor,
 } from './releaseNotes.ts';
 
 describe('parseReleaseNotes', () => {
@@ -253,6 +254,53 @@ describe('computeHoursToNextRelease', () => {
       { tag: 'b', published_at: '2026-01-01T00:00:00Z' },
     ];
     assert.equal(computeHoursToNextRelease(r, 'b'), null);
+  });
+});
+
+describe('hasHotfixSuccessor', () => {
+  const target = {
+    tag: 'v2026.6.10',
+    published_at: '2026-06-10T00:00:00Z',
+    prerelease: false,
+  };
+
+  it('requires a newer stable hotfix release', () => {
+    assert.equal(hasHotfixSuccessor([
+      {
+        tag: 'v2026.6.10-1',
+        published_at: '2026-06-10T01:00:00Z',
+        prerelease: false,
+      },
+      target,
+    ], target.tag), true);
+  });
+
+  it('ignores prereleases and older hotfix-shaped tags', () => {
+    assert.equal(hasHotfixSuccessor([
+      {
+        tag: 'v2026.6.10-2',
+        published_at: '2026-06-10T02:00:00Z',
+        prerelease: true,
+      },
+      target,
+      {
+        tag: 'v2026.6.10-1',
+        published_at: '2026-06-09T23:00:00Z',
+        prerelease: false,
+      },
+    ], target.tag), false);
+  });
+
+  it('returns false without a valid target catalog row', () => {
+    assert.equal(hasHotfixSuccessor([], target.tag), false);
+    assert.equal(hasHotfixSuccessor([
+      { ...target, published_at: null },
+      {
+        tag: 'v2026.6.10-1',
+        published_at: '2026-06-10T01:00:00Z',
+        prerelease: false,
+      },
+    ], target.tag), false);
   });
 });
 

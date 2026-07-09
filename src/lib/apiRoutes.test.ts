@@ -66,6 +66,8 @@ process.env.RADAR_CODE_REVISION ??= 'api-routes-test-revision';
 
 const PRIMARY_RELEASE_TAG = 'v2026.6.1';
 const PRIMARY_RELEASE_PUBLISHED_AT = '2026-06-01T00:00:00Z';
+const SEALED_SCORE_FIXTURE_BETA_COUNT = 1;
+const SEALED_SCORE_FIXTURE_SCORE = 7.1;
 const BETA_RELEASE_TAG = 'v2026.7.1-beta.2';
 const BETA_RELEASE_PUBLISHED_AT = '2026-07-01T00:00:00Z';
 const PHANTOM_RELEASE_FIXTURES = [
@@ -699,7 +701,7 @@ describe('audit API routes', () => {
       const scored = releases.body.find(
         (release: any) => release.tag === PRIMARY_RELEASE_TAG,
       );
-      assert.equal(scored.finalScore, 7.5);
+      assert.equal(scored.finalScore, SEALED_SCORE_FIXTURE_SCORE);
       assert.equal(scored.recommended, true);
       const scoreless = releases.body.find(
         (release: any) => release.tag === scorelessTag,
@@ -1952,7 +1954,7 @@ describe('audit API routes', () => {
     try {
       const releases = await getJson('/api/releases');
       const release = releases.body.find((row: any) => row.tag === 'v2026.6.1');
-      assert.equal(release.finalScore, 7.5);
+      assert.equal(release.finalScore, SEALED_SCORE_FIXTURE_SCORE);
       assert.equal(release.band, 'ok');
       assert.equal(release.recommended, true);
       assert.equal(release.reason, 'test score');
@@ -1973,7 +1975,7 @@ describe('audit API routes', () => {
       const publicPayload = await getJson('/api/public');
       assert.equal(publicPayload.body.snapshot.actionable, true);
       const publicRelease = publicPayload.body.releases.find((row: any) => row.tag === 'v2026.6.1');
-      assert.equal(publicRelease.score, 7.5);
+      assert.equal(publicRelease.score, SEALED_SCORE_FIXTURE_SCORE);
       assert.equal(publicRelease.recommended, true);
       assert.equal(publicRelease.reason, 'test score');
       assert.equal(publicRelease.staleAudit, null);
@@ -2036,7 +2038,7 @@ describe('audit API routes', () => {
       );
 
       const review = await getJson('/api/releases/v2026.6.1/review');
-      assert.equal(review.body.local.score, 7.5);
+      assert.equal(review.body.local.score, SEALED_SCORE_FIXTURE_SCORE);
       assert.equal(review.body.local.recommended, true);
       assert.equal(review.body.local.reason, 'test score');
       assert.equal(review.body.local.staleAudit, null);
@@ -2083,7 +2085,7 @@ describe('audit API routes', () => {
       const actionableRelease = releases.body.find(
         (row: any) => row.tag === 'v2026.6.1',
       );
-      assert.equal(actionableRelease.finalScore, 7.5);
+      assert.equal(actionableRelease.finalScore, SEALED_SCORE_FIXTURE_SCORE);
       assert.equal(actionableRelease.recommended, true);
       assert.equal(actionableRelease.staleAudit, null);
       assert.match(actionableRelease.scoreAudit.auditDigest, /^[0-9a-f]{64}$/);
@@ -2227,10 +2229,11 @@ describe('audit API routes', () => {
 
   it('fails readiness when the selected older candidate has stale closure proof', async () => {
     const olderTag = 'v2026.6.0';
-    const olderScore = 8.1;
+    const olderPublishedAt = '2026-05-30T00:00:00Z';
+    const olderScore = 7.7;
     replaceTestActiveCatalog([
       primaryTestCatalogRelease(),
-      testCatalogRelease(olderTag, '2026-05-31T00:00:00Z'),
+      testCatalogRelease(olderTag, olderPublishedAt),
     ]);
     const configureCurrentDecision = (decision: Record<string, unknown>) => {
       Object.assign(decision, {
@@ -2239,7 +2242,9 @@ describe('audit API routes', () => {
         highestScoringTag: olderTag,
         highestScore: olderScore,
         scoreRank: 2,
-        scoreDeltaToHighest: 0.6,
+        scoreDeltaToHighest: Math.round(
+          (olderScore - SEALED_SCORE_FIXTURE_SCORE) * 1000,
+        ) / 1000,
         decisionCode: 'higher_confidence_release_selected',
       });
       decision.summary = recommendationDecisionSummary(
@@ -2258,10 +2263,10 @@ describe('audit API routes', () => {
     const olderBand = bandFor(olderScore, 'eligible');
     const olderInput = structuredClone(seeded.input);
     Object.assign(olderInput, {
-      publishedAt: '2026-05-31T00:00:00Z',
+      publishedAt: olderPublishedAt,
       isLatest: false,
-      hoursToNextStable: 24,
-      betaCount: 4,
+      hoursToNextStable: 48,
+      betaCount: 9,
       rawIssueCount: 0,
       classifiedIssueCount: 0,
     });
@@ -4232,9 +4237,12 @@ type ScoreAuditSeedOverrides = {
 
 function seedScoreAuditState(overrides: ScoreAuditSeedOverrides = {}) {
   const status = overrides.status ?? 'eligible';
-  const score = overrides.score === undefined ? 7.5 : overrides.score;
-  const recommended = overrides.recommended ?? status === 'eligible';
-  const band = status === 'wait' ? 'wait' : status.startsWith('skip-') ? 'skip' : 'ok';
+  const score = overrides.score === undefined
+    ? SEALED_SCORE_FIXTURE_SCORE
+    : overrides.score;
+  const recommended = overrides.recommended ??
+    (status === 'eligible' && score != null && score >= REC_THRESHOLD);
+  const band = bandFor(score, status);
   const scoredAt = '2026-06-02T00:00:00.000Z';
   const scoreReason = 'test score';
   const selectedTag = recommended
@@ -4354,7 +4362,7 @@ function seedScoreAuditState(overrides: ScoreAuditSeedOverrides = {}) {
       isLatest: status !== 'skip-hotfix',
       hoursToNextStable: null,
       hasHotfixSuccessor: status === 'skip-hotfix',
-      betaCount: 0,
+      betaCount: SEALED_SCORE_FIXTURE_BETA_COUNT,
       breakingCount: 0,
       feltOpenedWeight: 0,
       feltClosedWeight: 0,
@@ -4424,7 +4432,7 @@ function seedScoreAuditState(overrides: ScoreAuditSeedOverrides = {}) {
         load: status === 'skip-cve' ? 1 : 0,
       },
       stableTagsNewestFirst: ['v2026.6.1', predecessorTag],
-      betaCount: 0,
+      betaCount: SEALED_SCORE_FIXTURE_BETA_COUNT,
       breakingCount: 0,
       hoursToNextStable: null,
       hasHotfixSuccessor: status === 'skip-hotfix',

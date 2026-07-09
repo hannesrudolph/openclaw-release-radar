@@ -27,6 +27,7 @@
     "analyze:closure-proofs": "tsx scripts/analyze-closure-proofs.mjs",
     "verify:release-audit": "tsx scripts/verify-release-audit-invariants.mjs",
     "verify:score": "tsx scripts/verify-new-scoring.mjs --check",
+    "score:preview": "tsx scripts/preview-score.mjs",
     "ui:smoke": "tsx scripts/ui-smoke.mjs",
     "backfill:issue-comment-snapshots": "tsx scripts/backfill-issue-comment-snapshots.mjs",
     "backfill:closed-windows": "tsx scripts/backfill-closed-windows.mjs",

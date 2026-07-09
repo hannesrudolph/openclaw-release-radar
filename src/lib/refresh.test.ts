@@ -704,6 +704,10 @@ describe('refresh backfill completion', () => {
           schemaVersion: 2,
           startedAt: '2026-07-04T12:00:00.000Z',
           finishedAt: '2026-07-04T12:00:04.000Z',
+          catalogAdmission: {
+            source: 'issue_catalog_snapshot',
+            cutoffAt: '2026-07-04T11:30:00.000Z',
+          },
           scorePersisted: true,
           scorePersistedAt: '2026-07-04T12:00:05.000Z',
         },
@@ -790,6 +794,10 @@ describe('refresh backfill completion', () => {
     );
     assert.equal((payload.recommendation as any).selectedTag, 'v1');
     assert.equal((payload.issueCrawl as any).metaKey, 'issue_crawl_last_run');
+    assert.equal(
+      (payload.issueCrawl as any).snapshotCutoffAt,
+      '2026-07-04T11:30:00.000Z',
+    );
     assert.equal((payload.releaseCatalog as any).digest, 'b'.repeat(64));
     assert.equal((payload.releaseCatalog as any).attestation.schemaVersion, 4);
     assert.equal((payload.advisoryCatalog as any).contentDigest, 'd'.repeat(64));
@@ -1841,6 +1849,321 @@ describe('refresh backfill completion', () => {
       metadataOnlyIssueNumbers: [1002],
     });
     assert.equal(__refreshTest.issueRowFromRemoteMetadata(irrelevant).comments, 4);
+  });
+
+  it('partitions the full catalog in order and emits dense evidence chunks', () => {
+    const windows = [{
+      start: Date.parse('2026-07-02T00:00:00.000Z'),
+      end: Date.parse('2026-07-04T00:00:00.000Z'),
+    }];
+    const required = Array.from({ length: 7 }, (_, index) => issue(0, {
+      number: 1100 + index,
+      created_at: `2026-07-03T0${index}:00:00.000Z`,
+      closed_at: null,
+    }));
+    const metadataOnly = [
+      issue(0, {
+        number: 1200,
+        created_at: '2026-06-01T00:00:00.000Z',
+        closed_at: '2026-07-01T00:00:00.000Z',
+      }),
+      issue(0, {
+        number: 1201,
+        created_at: '2026-06-01T00:00:00.000Z',
+        closed_at: '2026-07-02T00:00:00.000Z',
+      }),
+    ];
+    const catalog = [
+      required[0],
+      metadataOnly[0],
+      required[1],
+      required[2],
+      metadataOnly[1],
+      ...required.slice(3),
+    ];
+
+    const partition = __refreshTest.partitionIssueCatalogForEvidence(
+      catalog,
+      windows,
+      3,
+    );
+
+    assert.deepEqual(
+      partition.requiredEvidenceIssues.map((candidate: GhIssue) => candidate.number),
+      required.map((candidate) => candidate.number),
+    );
+    assert.deepEqual(
+      partition.metadataOnlyIssues.map((candidate: GhIssue) => candidate.number),
+      metadataOnly.map((candidate) => candidate.number),
+    );
+    assert.deepEqual(
+      partition.evidenceChunks.map((chunk: GhIssue[]) => chunk.length),
+      [3, 3, 1],
+    );
+    assert.deepEqual(
+      partition.evidenceChunks
+        .flat()
+        .map((candidate: GhIssue) => candidate.number),
+      required.map((candidate) => candidate.number),
+    );
+  });
+
+  it('uses half-open monitored release windows for issue lifetime overlap', () => {
+    const firstStart = Date.parse('2026-07-02T00:00:00.000Z');
+    const secondStart = Date.parse('2026-07-03T00:00:00.000Z');
+    const finalEnd = Date.parse('2026-07-04T00:00:00.000Z');
+    const windows = [
+      { start: firstStart, end: secondStart },
+      { start: secondStart, end: finalEnd },
+    ];
+
+    assert.equal(__refreshTest.issueOverlapsMonitoredWindows(issue(0, {
+      created_at: '2026-07-02T00:00:00.000Z',
+      closed_at: null,
+    }), windows), true);
+    assert.equal(__refreshTest.issueOverlapsMonitoredWindows(issue(0, {
+      created_at: '2026-07-01T00:00:00.000Z',
+      closed_at: '2026-07-02T00:00:00.000Z',
+    }), windows), false);
+    assert.equal(__refreshTest.issueOverlapsMonitoredWindows(issue(0, {
+      created_at: '2026-07-03T00:00:00.000Z',
+      closed_at: null,
+    }), windows), true);
+    assert.equal(__refreshTest.issueOverlapsMonitoredWindows(issue(0, {
+      created_at: '2026-07-04T00:00:00.000Z',
+      closed_at: null,
+    }), windows), false);
+  });
+
+  it('binds snapshot admission to its cutoff and selected issue content', () => {
+    const catalog = [
+      issue(0, { number: 1301 }),
+      issue(0, { number: 1302 }),
+      issue(0, { number: 1303 }),
+    ];
+    const snapshotId = 'a'.repeat(64);
+    const cutoffAt = '2026-07-03T12:00:00.000Z';
+    const membershipDigest = 'b'.repeat(64);
+    const contentDigest = 'c'.repeat(64);
+    const admission = __refreshTest.issueCatalogAdmissionMetadata({
+      snapshotId,
+      cutoffAt,
+      catalogMetadata: {
+        nodeCount: catalog.length,
+        membershipDigest,
+        contentDigest,
+      } as any,
+      selectedIssues: [catalog[0], catalog[2]],
+    });
+
+    assert.equal(admission.source, 'issue_catalog_snapshot');
+    assert.equal(admission.snapshotId, snapshotId);
+    assert.equal(admission.cutoffAt, cutoffAt);
+    assert.equal(admission.catalogIssueCount, 3);
+    assert.equal(admission.catalogMembershipDigest, membershipDigest);
+    assert.equal(admission.catalogContentDigest, contentDigest);
+    assert.equal(admission.selectedIssueCount, 2);
+    assert.equal(
+      admission.selectedIssueNumberDigest,
+      __refreshTest.issueNumberSetDigest([1301, 1303]),
+    );
+    assert.match(admission.selectedContentDigest, /^[0-9a-f]{64}$/);
+    assert.throws(
+      () => __refreshTest.issueCatalogAdmissionMetadata({
+        snapshotId,
+        cutoffAt: 'not-a-date',
+        catalogMetadata: {
+          nodeCount: catalog.length,
+          membershipDigest,
+          contentDigest,
+        } as any,
+        selectedIssues: [catalog[0]],
+      }),
+      /cutoff is invalid/,
+    );
+  });
+
+  it('bulk materializes metadata once while preserving equal or newer rows', () => {
+    const incomingNewer = issue(2, {
+      number: 1401,
+      updated_at: '2026-07-04T00:00:00.000Z',
+    });
+    const persistedNewer = issue(3, {
+      number: 1402,
+      title: 'Incoming older title',
+      updated_at: '2026-07-02T00:00:00.000Z',
+    });
+    const equalRevision = issue(4, {
+      number: 1403,
+      title: 'Incoming equal title',
+      updated_at: '2026-07-03T00:00:00.000Z',
+    });
+    const missing = issue(5, {
+      number: 1404,
+      updated_at: '2026-07-04T00:00:00.000Z',
+    });
+    const persisted = new Map([
+      [1401, __refreshTest.issueRowFromRemoteMetadata(issue(1, {
+        number: 1401,
+        updated_at: '2026-07-03T00:00:00.000Z',
+      }))],
+      [1402, __refreshTest.issueRowFromRemoteMetadata({
+        ...persistedNewer,
+        title: 'Persisted newer title',
+        updated_at: '2026-07-05T00:00:00.000Z',
+      })],
+      [1403, __refreshTest.issueRowFromRemoteMetadata({
+        ...equalRevision,
+        title: 'Persisted equal title',
+      })],
+    ]);
+    const upserted: Array<ReturnType<
+      typeof __refreshTest.issueRowFromRemoteMetadata
+    >> = [];
+    const stages: string[] = [];
+    let transactionCount = 0;
+
+    const result = __refreshTest.materializeIssueCatalogMetadata(
+      [incomingNewer, persistedNewer, equalRevision, missing],
+      (stage: string) => stages.push(stage),
+      {
+        getPersisted: (issueNumber: number) => persisted.get(issueNumber),
+        upsertMetadata: (row) => {
+          upserted.push(row);
+        },
+        transaction<T>(write: () => T): T {
+          transactionCount++;
+          return write();
+        },
+      },
+    );
+
+    assert.deepEqual(result, {
+      issueCount: 4,
+      upsertedCount: 2,
+      preservedCount: 2,
+    });
+    assert.equal(transactionCount, 1);
+    assert.deepEqual(stages, [
+      'issue catalog metadata materialization persistence',
+      'issue catalog metadata materialization transaction',
+      'issue catalog metadata materialization commit',
+    ]);
+    assert.deepEqual(upserted.map((row) => row.number), [1401, 1404]);
+    assert.equal(upserted[0].comments, 2);
+    assert.equal('unique_human_commenters' in upserted[0], false);
+    assert.equal('maintainer_commenters' in upserted[0], false);
+    assert.equal('contributor_commenters' in upserted[0], false);
+    assert.equal('commenter_scan_truncated' in upserted[0], false);
+  });
+
+  it('keeps catalog page counts separate from dense evidence chunk counts', () => {
+    const windows = [{
+      start: Date.parse('2026-07-02T00:00:00.000Z'),
+      end: Date.parse('2026-07-04T00:00:00.000Z'),
+    }];
+    const partition = __refreshTest.partitionIssueCatalogForEvidence([
+      issue(0, { number: 1501, created_at: '2026-07-03T00:00:00.000Z' }),
+      issue(0, {
+        number: 1502,
+        created_at: '2026-06-01T00:00:00.000Z',
+        closed_at: '2026-06-02T00:00:00.000Z',
+      }),
+      issue(0, { number: 1503, created_at: '2026-07-03T01:00:00.000Z' }),
+      issue(0, {
+        number: 1504,
+        created_at: '2026-06-01T00:00:00.000Z',
+        closed_at: '2026-06-02T00:00:00.000Z',
+      }),
+      issue(0, { number: 1505, created_at: '2026-07-03T02:00:00.000Z' }),
+    ], windows, 2);
+    const metadata = {
+      totalCount: 5,
+      nodeCount: 5,
+      uniqueCount: 5,
+      pageCount: 3,
+      pagesFetched: 6,
+    };
+
+    assert.deepEqual(
+      __refreshTest.issueCatalogProcessingCounts(metadata, partition),
+      {
+        catalogPageCount: 3,
+        pagesFetched: 6,
+        issuesFetched: 5,
+        requiredEvidenceIssueCount: 3,
+        metadataOnlyIssuesObserved: 2,
+        evidenceChunkCount: 2,
+      },
+    );
+    assert.throws(
+      () => __refreshTest.issueCatalogProcessingCounts(
+        { ...metadata, totalCount: 6 },
+        partition,
+      ),
+      /do not cover the exhaustive catalog/,
+    );
+  });
+
+  it('attests the exact admitted issue set completed live reconciliation', () => {
+    const required = [
+      issue(0, { number: 1601 }),
+      issue(0, { number: 1602 }),
+      issue(0, { number: 1603 }),
+    ];
+    const admission = __refreshTest.issueCatalogAdmissionMetadata({
+      snapshotId: 'a'.repeat(64),
+      cutoffAt: '2026-07-03T12:00:00.000Z',
+      catalogMetadata: {
+        nodeCount: required.length,
+        membershipDigest: 'b'.repeat(64),
+        contentDigest: 'c'.repeat(64),
+      } as any,
+      selectedIssues: required,
+    });
+    const live = required.map((candidate, index) => ({
+      ...candidate,
+      title: `Live title ${index}`,
+      updated_at: `2026-07-04T0${index}:00:00.000Z`,
+    }));
+    const complete = __refreshTest.issueEvidenceCompletionAttestation(
+      required,
+      [live[2], live[0], live[1]],
+      admission,
+    );
+
+    assert.equal(complete.complete, true);
+    assert.equal(complete.admissionSnapshotId, admission.snapshotId);
+    assert.equal(complete.admissionCutoffAt, admission.cutoffAt);
+    assert.equal(
+      complete.admissionSelectedContentDigest,
+      admission.selectedContentDigest,
+    );
+    assert.equal(complete.requiredIssueCount, 3);
+    assert.equal(complete.liveReconciledIssueCount, 3);
+    assert.equal(
+      complete.requiredIssueNumberDigest,
+      complete.liveReconciledIssueNumberDigest,
+    );
+    assert.match(complete.liveReconciledContentDigest, /^[0-9a-f]{64}$/);
+    assert.notEqual(
+      complete.liveReconciledContentDigest,
+      admission.selectedContentDigest,
+    );
+    assert.doesNotThrow(
+      () => __refreshTest.assertIssueEvidenceCompletion(complete),
+    );
+
+    const incomplete = __refreshTest.issueEvidenceCompletionAttestation(
+      required,
+      [live[0], live[2]],
+      admission,
+    );
+    assert.equal(incomplete.complete, false);
+    assert.throws(
+      () => __refreshTest.assertIssueEvidenceCompletion(incomplete),
+      /expected 3 issue\(s\)/,
+    );
   });
 
   it('treats metadata-only row mutations as changed for incremental early-stop decisions', () => {
@@ -3958,6 +4281,11 @@ describe('refresh backfill completion', () => {
       sourceOrder: 'CREATED_AT_ASC',
     });
     const snapshotId = 'e'.repeat(64);
+    const admissionSelectedContentDigest = 'c'.repeat(64);
+    const liveReconciledContentDigest = 'd'.repeat(64);
+    const snapshotCutoffAt = '2026-07-04T01:30:00.000Z';
+    const requiredIssueNumberDigest =
+      __refreshTest.issueNumberSetDigest([1, 2]);
     const crawl = {
       schemaVersion: 4,
       repository: baseline.repository,
@@ -3970,13 +4298,37 @@ describe('refresh backfill completion', () => {
         schemaVersion: 1,
         snapshotId,
         contentHash: snapshotId,
-        capturedAt: '2026-07-04T01:30:00.000Z',
+        capturedAt: snapshotCutoffAt,
         resumed: false,
         priorStatus: 'missing',
         maxAgeHours: 24,
         consumedAt: '2026-07-04T02:01:00.000Z',
         consumedByRunId: 'refresh-run',
         consumptionContentHash: 'f'.repeat(64),
+      },
+      catalogAdmission: {
+        schemaVersion: 1,
+        source: 'issue_catalog_snapshot',
+        snapshotId,
+        cutoffAt: snapshotCutoffAt,
+        catalogIssueCount: 2,
+        catalogMembershipDigest: membershipDigest,
+        catalogContentDigest: contentDigest,
+        selectedIssueCount: 2,
+        selectedIssueNumberDigest: requiredIssueNumberDigest,
+        selectedContentDigest: admissionSelectedContentDigest,
+      },
+      evidenceCompletion: {
+        schemaVersion: 1,
+        admissionSnapshotId: snapshotId,
+        admissionCutoffAt: snapshotCutoffAt,
+        admissionSelectedContentDigest,
+        requiredIssueCount: 2,
+        requiredIssueNumberDigest,
+        liveReconciledIssueCount: 2,
+        liveReconciledIssueNumberDigest: requiredIssueNumberDigest,
+        liveReconciledContentDigest,
+        complete: true,
       },
       catalogAttestation: {
         schemaVersion: 1,
@@ -3989,6 +4341,18 @@ describe('refresh backfill completion', () => {
         finalSweepCount: 1,
         finalPagesFetched: 1,
       },
+      catalogPageCount: 1,
+      pagesFetched: 2,
+      issuesFetched: 2,
+      requiredEvidenceIssueCount: 2,
+      monitoredIssuesFetched: 2,
+      commentSnapshotIssuesRequested: 2,
+      metadataOnlyIssuesObserved: 0,
+      evidenceChunkCount: 1,
+      evidenceChunksProcessed: 1,
+      metadataIssuesMaterialized: 2,
+      metadataIssuesUpserted: 1,
+      metadataIssuesPreserved: 1,
       stopReason: 'exhausted',
       evidenceRefreshFailures: [],
       classificationFailures: [],
@@ -3999,6 +4363,18 @@ describe('refresh backfill completion', () => {
       baseline,
       { forScorePersistence: true },
     ), []);
+    assert.ok(__refreshTest.issueCrawlMetadataProblems(
+      {
+        ...crawl,
+        evidenceCompletion: {
+          ...crawl.evidenceCompletion,
+          liveReconciledIssueCount: 1,
+          complete: false,
+        },
+      },
+      baseline,
+      { forScorePersistence: true },
+    ).some((problem: string) => /liveReconciledIssueCount|complete/.test(problem)));
     assert.ok(__refreshTest.issueCrawlMetadataProblems(
       {
         ...crawl,

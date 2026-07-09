@@ -1813,6 +1813,22 @@ function seedSimpleIssueCatalogPublication(input: {
     input.refreshModule.__refreshTest.issuePaginationFromCatalog(
       catalog.metadata,
     );
+  const catalogAdmission =
+    input.refreshModule.__refreshTest.issueCatalogAdmissionMetadata({
+      snapshotId: header.snapshotId,
+      cutoffAt: header.capturedAt,
+      catalogMetadata: catalog.metadata,
+      selectedIssues: catalog.issues,
+    });
+  const evidenceCompletion =
+    input.refreshModule.__refreshTest.issueEvidenceCompletionAttestation(
+      catalog.issues,
+      catalog.issues,
+      catalogAdmission,
+    );
+  input.refreshModule.__refreshTest.assertIssueEvidenceCompletion(
+    evidenceCompletion,
+  );
   const issueCrawl = {
     schemaVersion: 4,
     repository,
@@ -1836,16 +1852,25 @@ function seedSimpleIssueCatalogPublication(input: {
       consumedByRunId: consumption.runId,
       consumptionContentHash: consumption.contentHash,
     },
+    catalogAdmission,
+    evidenceCompletion,
     catalogAttestation,
     promptSweep: false,
     staleClassificationsAtStart: 0,
     monitoredReleaseCount: 1,
     oldestMonitoredAt: simplePublishedAt,
-    pagesFetched: 1,
+    catalogPageCount: 1,
+    pagesFetched: 2,
     issuesFetched: 1,
+    requiredEvidenceIssueCount: 1,
     monitoredIssuesFetched: 1,
     commentSnapshotIssuesRequested: 1,
     metadataOnlyIssuesObserved: 0,
+    evidenceChunkCount: 1,
+    evidenceChunksProcessed: 1,
+    metadataIssuesMaterialized: 1,
+    metadataIssuesUpserted: 0,
+    metadataIssuesPreserved: 1,
     maxIssuePages: 100,
     stopReason: 'exhausted',
     crossedOldestEver: true,

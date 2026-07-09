@@ -2079,7 +2079,7 @@ function issueEvidenceTierLabel(tier, issue = null, evidenceRow = null) {
     unverifiedClosed: 'Closed issue without release-fix credit',
   };
   if (tier === 'carryoverDebt' || tier === 'carryover') {
-    return 'Inherited issue context (zero assessment impact)';
+    return 'Inherited issue context (bounded assessment impact)';
   }
   if (labels[tier]) return labels[tier];
   if (typeof tier !== 'string' || !tier.trim()) return 'Issue evidence';
@@ -2139,12 +2139,12 @@ function issueBucketReason(issue, evidenceRow) {
     const releaseLocal = typeof evidenceRow?.clusterReleaseLocal === 'boolean' ? evidenceRow.clusterReleaseLocal : null;
     const fieldConfirmed = typeof evidenceRow?.fieldConfirmed === 'boolean' ? evidenceRow.fieldConfirmed : null;
     if (releaseLocal === false && fieldConfirmed === true) {
-      return 'Why this is context only: it met the policy signal threshold, but it is inherited from before this release window and has zero assessment impact.';
+      return 'Why this has bounded impact: it met the policy signal threshold, but it predates this release window. Inherited risk contributes to a category capped at a 0.35 point penalty and cannot apply an assessment ceiling.';
     }
     if (releaseLocal === false) {
-      return 'Why this is context only: it is inherited from before this release window and has zero assessment impact.';
+      return 'Why this has bounded impact: it predates this release window, so it contributes only to inherited risk. That category is capped at a 0.35 point penalty and cannot apply an assessment ceiling.';
     }
-    return 'Why this is context only: it remains linked for audit, but does not lower or limit the assessment.';
+    return 'Why this has bounded impact: it contributes to inherited risk, whose total penalty is capped at 0.35 points and cannot apply an assessment ceiling.';
   }
   const sourceOnly = sourceOnlyIssueEvidence(issue, evidenceRow);
   if (
@@ -2288,7 +2288,7 @@ function issueEvidenceApiLinksHtml(tag) {
   if (!base) return '';
   const links = [
     ['Open issue evidence rows', base],
-    ['inherited issue context (zero assessment impact)', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', sort: 'weight', direction: 'desc' })],
+    ['inherited issue context (bounded penalty)', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', sort: 'weight', direction: 'desc' })],
     ['field-discussed inherited context', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', fieldConfirmed: true, minWeight: 5, sort: 'weight', direction: 'desc' })],
     ['critical core inherited context', appendAuditLinkQuery(base, { tier: 'openUnconfirmedRisk', sentiment: 'negative', severity: 'critical', functionality: 'core', sort: 'weight', direction: 'desc' })],
     ['weak or stale issue evidence', appendAuditLinkQuery(base, { tier: 'weakOrStaleEvidence', sort: 'weight', direction: 'desc' })],
@@ -2672,7 +2672,7 @@ function componentLabel(key) {
     base: 'Base',
     cveGate: 'Security advisory install gate',
     verifiedDebt: 'Policy-qualified blocker debt',
-    carryoverDebt: 'Inherited issue context (zero assessment impact)',
+    carryoverDebt: 'Inherited/carryover risk',
     staleDebt: 'Weak or stale evidence',
     closureRisk: 'Closed-issue proof gap',
     coverage: 'Classification coverage',
@@ -2778,6 +2778,7 @@ function scoreExplanationDetailsHtml(details, fallbackText, releaseTag = null, d
 }
 
 function isContextOnlyDetail(detail) {
+  if (detail?.metrics?.scoreAffecting === true) return false;
   if (detail?.metrics?.scoreAffecting === false) return true;
   const code = String(detail?.code ?? '').toLowerCase();
   if (
@@ -3270,8 +3271,9 @@ function whyNotTenHtml(local, releaseTag = null) {
 
   if ((input.carryoverDebtWeight ?? 0) > 0) {
     const example = issueListText(carryover);
-    contexts.push(
-      'Inherited issue groups remain linked for audit and follow-up, but they have zero assessment impact and cannot apply an assessment ceiling.'
+    reasons.push(
+      `Inherited issue groups contribute a ${roundedPointValue(Math.abs(Number(components.carryoverDebt ?? 0)))} point penalty.`
+      + ' This category is capped at 0.35 points and cannot apply an assessment ceiling.'
       + sentenceSuffix('Top examples', example)
     );
   }
@@ -3388,8 +3390,8 @@ function scoreReviewHtml(r) {
     + `<div class="score-review__item"><span class="score-review__label">Evidence coverage</span><span class="score-review__value">${esc(Math.round((local.components?.evidenceCoverage ?? 0) * 100))}%</span></div>`
     + (dataFreshnessLine ? `<div class="score-review__item"><span class="score-review__label">Source freshness</span><span class="score-review__value">${dataFreshnessLine}</span></div>` : '')
     + `<div class="score-review__item"><span class="score-review__label">Raw/classified</span><span class="score-review__value">${esc(input.classifiedIssueCount ?? '—')} / ${esc(input.rawIssueCount ?? '—')}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Assessment-affecting evidence weights</span><span class="score-review__value">Policy-qualified blocker ${esc(humanWeightValue(input.verifiedDebtWeight ?? 0))} · Weak/stale ${esc(humanWeightValue(input.staleDebtWeight ?? 0))} · Closed-issue risk ${esc(humanWeightValue(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
-    + `<div class="score-review__item"><span class="score-review__label">Inherited context (zero assessment impact)</span><span class="score-review__value">${esc(humanWeightValue(input.carryoverDebtWeight ?? 0))} audit weight · does not lower or limit the assessment</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Assessment-affecting evidence weights</span><span class="score-review__value">Policy-qualified blocker ${esc(humanWeightValue(input.verifiedDebtWeight ?? 0))} · Inherited/carryover ${esc(humanWeightValue(input.carryoverDebtWeight ?? 0))} · Weak/stale ${esc(humanWeightValue(input.staleDebtWeight ?? 0))} · Closed-issue risk ${esc(humanWeightValue(input.unresolvedClosureRiskWeight ?? 0))}</span></div>`
+    + `<div class="score-review__item"><span class="score-review__label">Inherited/carryover penalty</span><span class="score-review__value">${esc(roundedPointValue(components.carryoverDebt ?? 0))} points · category maximum 0.35 points · no assessment ceiling</span></div>`
     + `<div class="score-review__item"><span class="score-review__label">Release fix credit</span><span class="score-review__value">${esc(countedClosed)} direct fixes credited · ${esc(notCountedClosed)} raw proof issues without direct credit${analyzedClosed != null ? ` · ${esc(analyzedClosed)} raw closed issues analyzed` : ''}</span></div>`
     + (closureRiskLine ? `<div class="score-review__item"><span class="score-review__label">Closed-issue risk</span><span class="score-review__value">${closureRiskLine}</span></div>` : '')
     + (closureProof ? `<div class="score-review__item"><span class="score-review__label">Raw closed-issue statuses</span><span class="score-review__value">${closureProofSummaryText(closureProof) || 'all counted'}</span></div>` : '')
@@ -3399,8 +3401,8 @@ function scoreReviewHtml(r) {
     + '</div>'
     + scoreEvidenceLinksHtml(releaseChecks, artifact)
     + compHtml
-    + `<div class="evidence__meta">Blocker scoring requires release-local policy evidence such as qualifying human or maintainer signals. Those signals are not independent reproduction. Source-only/static or otherwise unconfirmed findings are weak/stale evidence; inherited findings remain zero-impact audit context. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
-    + `<div class="evidence__meta">Inherited issue context remains visible for audit and follow-up, but has zero assessment impact and cannot apply an assessment ceiling.</div>`
+    + `<div class="evidence__meta">Blocker scoring requires release-local policy evidence such as qualifying human or maintainer signals. Those signals are not independent reproduction. Source-only/static or otherwise unconfirmed findings are weak/stale evidence; inherited findings contribute only to the separately capped carryover category. A closed issue only reduces release risk when its merged linked PR or named fix/source commit is reachable from this release tag.</div>`
+    + `<div class="evidence__meta">Inherited issue context remains visible for audit and follow-up. Its logarithmic penalty is capped at 0.35 points and cannot apply an assessment ceiling.</div>`
     + reviewAuditNavigationHtml(r)
     + `<div class="evidence__meta">${esc(humanizeUiText(local.reason))}</div>`
     + closureProofHtml(closureProof)

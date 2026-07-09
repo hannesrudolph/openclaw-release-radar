@@ -25,6 +25,9 @@ process.env.RADAR_CODE_REVISION ??=
 
 const LOCAL_TAG = 'v2099.12.2+comparison.test';
 const PREDECESSOR_TAG = 'v2099.12.1+comparison.test';
+const LOCAL_PUBLISHED_AT = '2026-06-30T00:00:00Z';
+const PREDECESSOR_PUBLISHED_AT = '2026-06-29T00:00:00Z';
+const SCORE_AT = '2026-07-03T00:00:00Z';
 
 let server: Server;
 let baseUrl: string;
@@ -37,11 +40,11 @@ before(async () => {
   scoringModule = await import(`./releaseScoring.ts?comparison-isolation-${Date.now()}`);
 
   seedAuthorizedReleaseCatalog([
-    [LOCAL_TAG, '2026-07-02T00:00:00Z'],
-    [PREDECESSOR_TAG, '2026-07-01T00:00:00Z'],
+    [LOCAL_TAG, LOCAL_PUBLISHED_AT],
+    [PREDECESSOR_TAG, PREDECESSOR_PUBLISHED_AT],
   ]);
-  seedReleaseCommit(LOCAL_TAG, '2026-07-02T00:00:00Z');
-  seedReleaseCommit(PREDECESSOR_TAG, '2026-07-01T00:00:00Z');
+  seedReleaseCommit(LOCAL_TAG, LOCAL_PUBLISHED_AT);
+  seedReleaseCommit(PREDECESSOR_TAG, PREDECESSOR_PUBLISHED_AT);
   dbModule.replaceReleaseClosureDependencySnapshot(
     dbModule.releaseClosureDependencyIdentity(LOCAL_TAG, []),
   );
@@ -49,7 +52,7 @@ before(async () => {
   const run = scoringModule.buildReleaseScoreRun({
     releases: [dbModule.getRelease(LOCAL_TAG)!],
     oldestScoredStablePredecessorTag: PREDECESSOR_TAG,
-    nowForRelease: () => Date.parse('2026-07-03T00:00:00Z'),
+    nowForRelease: () => Date.parse(SCORE_AT),
   });
   assert.equal(run.recommendedTag, LOCAL_TAG);
   scoringModule.persistReleaseScoreRun(run, {

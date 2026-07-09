@@ -516,7 +516,7 @@ describe('release issue evidence attribution', () => {
       TARGET_TAG,
     );
     assert.equal(releaseLinked.some((row) =>
-      row.number === IN_WINDOW_CLASSIFIER_MISMATCH), false);
+      row.number === IN_WINDOW_CLASSIFIER_MISMATCH), true);
     assert.equal(releaseLinked.some((row) =>
       row.number === OUT_OF_WINDOW_CLASSIFIER_TARGET), false);
 
@@ -602,7 +602,9 @@ describe('release issue evidence attribution', () => {
     const debt = review.rows.find((row) =>
       row.issue.number === RELEASE_LOCAL_OPEN_DEBT);
     assert.ok(debt);
-    assert.ok(['carryoverDebt', 'staleDebt', 'verifiedDebt'].includes(debt.tier));
+    assert.equal(debt.tier, 'carryoverDebt');
+    assert.equal(debt.scoreAffecting, true);
+    assert.match(debt.tierDescription, /capped at 0\.35 points/);
     assert.deepEqual(debt.releaseLocalEvidence, {
       kind: 'exact-version',
       source: 'title',

@@ -463,6 +463,7 @@ const supportedPackageLifecycleEntrypoints = new Map<string, string>([
   ['ingest:fix-provenance', 'scripts/ingest-fix-provenance.mjs'],
   ['promote:quality-db', 'scripts/promote-quality-db.mjs'],
   ['refresh:quality', 'scripts/refresh-quality-db.mjs'],
+  ['score:preview', 'scripts/preview-score.mjs'],
   ['scrape:upstream', 'scripts/scrape-upstream-webui.mjs'],
   ['start', 'dist/index.js'],
   ['test', 'test/run-tests.mjs'],

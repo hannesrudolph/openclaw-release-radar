@@ -23,36 +23,35 @@ import { compareVersions } from './versionMatch';
 //
 // This model answers "should I install this stable?" using install/recommendation gates
 // plus explicit evidence tiers. Release-local blockers and regressions matter
-// most. Historical unresolved backlog remains visible for audit, but contributes
-// no points so a release is not penalized merely because old issues remain open.
+// most. Historical unresolved backlog remains visible for audit and contributes
+// only a small capped penalty so backlog volume cannot dominate release-local evidence.
 
 const HOUR_MS = 60 * 60 * 1000;
 
-export const SCORE_MODEL_VERSION = 'evidence-v30-tooling-exclusion';
+export const SCORE_MODEL_VERSION = 'evidence-v31-score-inflation-recalibration';
 export const REC_THRESHOLD = 7;
 export const RECOMMENDATION_RECENCY_TOLERANCE = 0.5;
 
 const SETTLE_HOURS = 24;
 const HOTFIX_GAP_HOURS = 6;
-const PIVOT_HOURS = 24;
-const BASE = 7.5;
+const BASE = 6.8;
 const HOTFIX_SCORE_CAP = 4.9;
 const NOTICEABLE_CLOSURE_RISK_THRESHOLD = 40;
 const NOTICEABLE_CLOSURE_SCORE_CAP = 8.4;
 const HEAVY_CLOSURE_RISK_THRESHOLD = 60;
 const HEAVY_CLOSURE_SCORE_CAP = 7.9;
 
-const SURVIVAL_MIN = -2.5;
-const SURVIVAL_MAX = 1.8;
+const SURVIVAL_MAX = 0.8;
+const SURVIVAL_SATURATION_HOURS = 168;
 const SHAKEOUT_MAX = 0.8;
 const BREAKING_PER_BULLET = -0.25;
 const BREAKING_MAX_BULLETS = 6;
 
 const VERIFIED_DEBT_MAX = -2.0;
-const CARRYOVER_DEBT_MAX = 0;
+const CARRYOVER_DEBT_MAX = -0.35;
 const STALE_DEBT_MAX = -0.2;
 const CLOSURE_RISK_MAX = -0.5;
-const COVERAGE_MAX = -2.5;
+const COVERAGE_MAX = -1.5;
 const REGRESSION_DOWN = -0.8;
 const REGRESSION_UP = 0.4;
 const RELEASE_CHECK_UP = 0.4;
@@ -736,11 +735,15 @@ function ageHours(publishedAt: string | null, now: number): number | null {
 
 function survivalPoints(input: InstallInput, age: number): number {
   const exposureHours = input.isLatest ? age : input.hoursToNextStable;
+  return clamp(rawSurvivalPoints(exposureHours), 0, SURVIVAL_MAX);
+}
+
+function rawSurvivalPoints(exposureHours: number | null): number {
   if (exposureHours == null) return 0;
-  return clamp(
-    Math.log2(Math.max(1, exposureHours) / PIVOT_HOURS) * 0.7,
-    input.isLatest ? 0 : SURVIVAL_MIN,
-    SURVIVAL_MAX,
+  const postSettleHours = Math.max(0, exposureHours - SETTLE_HOURS);
+  return SURVIVAL_MAX * (
+    postSettleHours /
+    (postSettleHours + SURVIVAL_SATURATION_HOURS)
   );
 }
 
@@ -1440,8 +1443,12 @@ function verifiedDebtPoints(load: number): number {
   return clamp(-Math.log1p(Math.max(0, load)) * 0.35, VERIFIED_DEBT_MAX, 0);
 }
 
-function carryoverDebtPoints(_load: number): number {
-  return 0;
+function carryoverDebtPoints(load: number): number {
+  return clamp(rawCarryoverDebtPoints(load), CARRYOVER_DEBT_MAX, 0);
+}
+
+function rawCarryoverDebtPoints(load: number): number {
+  return -Math.log1p(Math.max(0, load)) * 0.06;
 }
 
 function staleDebtPoints(load: number): number {
@@ -1465,13 +1472,29 @@ function closureRiskScoreCeiling(input: InstallInput): number {
 
 function coveragePoints(rawIssueCount: number, classifiedIssueCount: number): {
   points: number;
+  rawPoints: number;
   ratio: number;
+  missing: number;
 } {
-  if (rawIssueCount <= 0) return { points: 0, ratio: 1 };
-  const ratio = clamp(classifiedIssueCount / rawIssueCount, 0, 1);
-  if (ratio >= 0.95) return { points: 0, ratio };
-  if (ratio >= 0.8) return { points: -0.8, ratio };
-  return { points: COVERAGE_MAX, ratio };
+  if (rawIssueCount <= 0) {
+    return { points: 0, rawPoints: 0, ratio: 1, missing: 0 };
+  }
+  const classified = clamp(classifiedIssueCount, 0, rawIssueCount);
+  const ratio = classified / rawIssueCount;
+  const missing = rawIssueCount - classified;
+  if (missing <= 0) {
+    return { points: 0, rawPoints: 0, ratio, missing: 0 };
+  }
+  const rawPoints = -(
+    0.08 * Math.log1p(missing) +
+    1.5 * (1 - ratio)
+  );
+  return {
+    points: clamp(rawPoints, COVERAGE_MAX, 0),
+    rawPoints,
+    ratio,
+    missing,
+  };
 }
 
 function regressionPoints(openedWeight: number, closedWeight: number): number {
@@ -1717,9 +1740,9 @@ function reasonFor(
   if (debt.carryover > 0 || carryoverDebtCount != null) {
     const count = carryoverDebtCount;
     bits.push(count == null
-      ? `${Math.round(debt.carryover)} inherited/carryover audit weight (0 score points)`
+      ? `${Math.round(debt.carryover)} inherited/carryover risk weight (bounded score penalty)`
       : `${count} inherited/carryover ${plural(count, 'issue group', 'issue groups')} ` +
-        `(audit weight ${Math.round(debt.carryover)}; 0 score points)`);
+        `(risk weight ${Math.round(debt.carryover)}; bounded score penalty)`);
   }
   if (input.unresolvedClosureRiskWeight > 0) {
     const count = positiveInteger(input.unresolvedClosureIssueCount);
@@ -1931,7 +1954,7 @@ const SCORE_LEDGER_COMPONENT_PRESENTATION = {
   },
   carryoverDebt: {
     label: 'Open inherited/carryover context',
-    note: 'Linked inherited or carryover debt retained for audit; it contributes zero score points.',
+    note: 'Linked inherited or carryover debt contributes a logarithmic penalty capped at 0.35 points.',
   },
   staleDebt: {
     label: 'Weak or stale evidence',
@@ -2202,17 +2225,18 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
     );
     addSuppressedComponent(
       'carryoverDebt',
-      'component.carryover_audit_only.v1',
+      'component.carryover_debt_log_penalty.v1',
       [
         ledgerOperand(
           'load',
           finiteNonNegative(args.input.carryoverDebtWeight),
           'weight',
         ),
+        ledgerOperand('coefficient', -0.06, 'points_per_log_weight'),
       ],
-      0,
+      rawCarryoverDebtPoints(args.input.carryoverDebtWeight),
       carryoverDebtPoints(args.input.carryoverDebtWeight),
-      { min: 0, max: 0 },
+      { min: CARRYOVER_DEBT_MAX, max: 0 },
       ['carryoverDebt', 'aliasElection'],
     );
     addSuppressedComponent(
@@ -2251,7 +2275,7 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
     );
     addSuppressedComponent(
       'coverage',
-      'component.classification_coverage.v1',
+      'component.classification_coverage_log_ratio.v1',
       [
         ledgerOperand('rawIssueCount', args.input.rawIssueCount, 'count'),
         ledgerOperand(
@@ -2259,9 +2283,12 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
           args.input.classifiedIssueCount,
           'count',
         ),
+        ledgerOperand('missingIssueCount', coverage.missing, 'count'),
         ledgerOperand('ratio', coverage.ratio, 'ratio'),
+        ledgerOperand('missingLogCoefficient', 0.08, 'points_per_log_count'),
+        ledgerOperand('ratioGapCoefficient', 1.5, 'points_per_ratio_gap'),
       ],
-      coverage.points,
+      coverage.rawPoints,
       coverage.points,
       { min: COVERAGE_MAX, max: 0 },
       ['coverage'],
@@ -2485,9 +2512,10 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
     }
     current = 0;
     const exposureHours = args.input.isLatest ? age : args.input.hoursToNextStable;
-    const survivalRaw = exposureHours == null
+    const postSettleHours = exposureHours == null
       ? 0
-      : Math.log2(Math.max(1, exposureHours) / PIVOT_HOURS) * 0.7;
+      : Math.max(0, exposureHours - SETTLE_HOURS);
+    const survivalRaw = rawSurvivalPoints(exposureHours);
     const shakeoutRaw = Math.log2(1 + Math.max(0, args.input.betaCount)) * 0.25;
     const regressionRaw = rawRegressionPoints(
       args.input.feltOpenedWeight,
@@ -2519,11 +2547,14 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
     );
     addComponent(
       'carryoverDebt',
-      'component.carryover_audit_only.v1',
-      [ledgerOperand('load', finiteNonNegative(args.input.carryoverDebtWeight), 'weight')],
-      0,
+      'component.carryover_debt_log_penalty.v1',
+      [
+        ledgerOperand('load', finiteNonNegative(args.input.carryoverDebtWeight), 'weight'),
+        ledgerOperand('coefficient', -0.06, 'points_per_log_weight'),
+      ],
+      rawCarryoverDebtPoints(args.input.carryoverDebtWeight),
       components.carryoverDebt,
-      { min: 0, max: 0 },
+      { min: CARRYOVER_DEBT_MAX, max: 0 },
       ['carryoverDebt', 'aliasElection'],
     );
     addComponent(
@@ -2552,28 +2583,34 @@ export function buildScoreLedgerV2(args: BuildScoreLedgerV2Input): ScoreLedgerV2
     );
     addComponent(
       'coverage',
-      'component.classification_coverage.v1',
+      'component.classification_coverage_log_ratio.v1',
       [
         ledgerOperand('rawIssueCount', args.input.rawIssueCount, 'count'),
         ledgerOperand('classifiedIssueCount', args.input.classifiedIssueCount, 'count'),
+        ledgerOperand('missingIssueCount', coverage.missing, 'count'),
         ledgerOperand('ratio', coverage.ratio, 'ratio'),
+        ledgerOperand('missingLogCoefficient', 0.08, 'points_per_log_count'),
+        ledgerOperand('ratioGapCoefficient', 1.5, 'points_per_ratio_gap'),
       ],
-      coverage.points,
+      coverage.rawPoints,
       components.coverage,
       { min: COVERAGE_MAX, max: 0 },
       ['coverage'],
     );
     addComponent(
       'survival',
-      'component.stable_survival_log2.v1',
+      'component.stable_survival_saturating.v1',
       [
         ledgerOperand('isLatest', args.input.isLatest, 'boolean'),
         ledgerOperand('exposureHours', exposureHours, 'hours'),
-        ledgerOperand('pivotHours', PIVOT_HOURS, 'hours'),
+        ledgerOperand('settleHours', SETTLE_HOURS, 'hours'),
+        ledgerOperand('postSettleHours', postSettleHours, 'hours'),
+        ledgerOperand('saturationHours', SURVIVAL_SATURATION_HOURS, 'hours'),
+        ledgerOperand('maximum', SURVIVAL_MAX, 'points'),
       ],
       survivalRaw,
       components.survival,
-      { min: args.input.isLatest ? 0 : SURVIVAL_MIN, max: SURVIVAL_MAX },
+      { min: 0, max: SURVIVAL_MAX },
       ['release'],
     );
     addComponent(
@@ -3316,13 +3353,20 @@ function buildScoreLedgerPresentation(
     operation.kind === 'component' &&
     Object.hasOwn(SCORE_LEDGER_COMPONENT_PRESENTATION, operation.code)
   );
+  const survivalOperation = componentOperations.find((operation) =>
+    operation.code === 'survival');
+  const survivalExposureHours = survivalOperation
+    ? operandValue(survivalOperation, 'exposureHours')
+    : null;
   const metricByCode: Record<string, number | string | null> = {
     verifiedDebt: roundLedgerMetric(input.verifiedDebtWeight),
     carryoverDebt: roundLedgerMetric(input.carryoverDebtWeight),
     staleDebt: roundLedgerMetric(input.staleDebtWeight),
     closureRisk: roundLedgerMetric(input.unresolvedClosureRiskWeight),
     coverage: `${input.classifiedIssueCount}/${input.rawIssueCount}`,
-    survival: roundLedgerMetric(input.hoursToNextStable ?? 0),
+    survival: typeof survivalExposureHours === 'number'
+      ? roundLedgerMetric(survivalExposureHours)
+      : null,
     shakeout: input.betaCount,
     regression: `${roundLedgerMetric(input.feltOpenedWeight)} opened weight / ${roundLedgerMetric(input.feltClosedWeight)} fixed weight`,
     breaking: input.breakingCount,

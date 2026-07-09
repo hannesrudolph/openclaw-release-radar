@@ -659,6 +659,8 @@ describe('static scoring/UI contracts', () => {
   it('score explanation prefers backend audit text', () => {
     const html = readFileSync(join(root, 'public/index.html'), 'utf8');
     const readme = readFileSync(join(root, 'README.md'), 'utf8');
+    const score = readFileSync(join(root, 'src/lib/score.ts'), 'utf8');
+    const releaseScoring = readFileSync(join(root, 'src/lib/releaseScoring.ts'), 'utf8');
     assert.match(html, /local\?\.components\?\.explanation/);
     assert.match(html, /structured\.limits/);
     assert.match(html, /structured\.limitDetails/);
@@ -698,7 +700,7 @@ describe('static scoring/UI contracts', () => {
     assert.doesNotMatch(html, /tier: 'staleDebt'/);
     assert.match(html, /high-weight weak\/stale evidence/);
     assert.match(html, /tier: 'openedFeltSerious'/);
-    assert.match(html, /inherited issue context \(zero assessment impact\)/);
+    assert.match(html, /inherited issue context/i);
     assert.match(html, /field-discussed inherited context/);
     assert.match(html, /critical core inherited context/);
     assert.match(html, /Source-only\/static or otherwise unconfirmed findings are weak\/stale evidence/);
@@ -706,9 +708,10 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /Context that does not lower the assessment/);
     assert.match(html, /function isContextOnlyDetail/);
     assert.match(html, /code === 'open_unconfirmed_issue_risk'/);
+    assert.match(html, /detail\?\.metrics\?\.scoreAffecting === true\) return false/);
+    assert.match(html, /detail\?\.metrics\?\.scoreAffecting === false/);
     assert.match(html, /code\.includes\('carryover'\)/);
     assert.match(html, /code\.includes\('inherited'\)/);
-    assert.match(html, /detail\?\.metrics\?\.scoreAffecting === false/);
     assert.match(html, /const limitDetails = allLimitDetails\.filter\(isScoreLimitingDetail\)/);
     assert.match(html, /const contextDetails = allLimitDetails\.filter\(\(detail\) =>\s*!isScoreLimitingDetail\(detail\)\)/);
     assert.match(html, /No additional assessment-lowering evidence was provided for this assessment/);
@@ -719,17 +722,35 @@ describe('static scoring/UI contracts', () => {
     assert.match(html, /componentLabel/);
     assert.match(html, /detail\.label \? `<strong>\$\{esc\(humanizeUiText\(detail\.label\)\)\}:<\/strong> `/);
     assert.match(html, /Assessment-affecting evidence weights/);
-    assert.match(html, /Inherited context \(zero assessment impact\)/);
+    assert.match(html, /inherited context/i);
+    assert.match(html, /category maximum 0\.35 points/);
+    assert.doesNotMatch(html, /Inherited issue context \(zero assessment impact\)/);
     assert.match(html, /Closed-issue risk/);
     const issueEvidence = readFileSync(join(root, 'src/lib/releaseIssueEvidence.ts'), 'utf8');
     assert.match(issueEvidence, /RELEASE_ISSUE_EVIDENCE_TIER_INFO/);
     assert.match(issueEvidence, /summaryByTier/);
     assert.match(issueEvidence, /summarizeIssueEvidenceRows/);
     assert.match(issueEvidence, /Inherited issue context/);
-    assert.match(issueEvidence, /zero score impact and cannot apply a score ceiling/);
-    assert.match(issueEvidence, /Source\/static-only or otherwise unconfirmed evidence/);
-    assert.match(issueEvidence, /scoreAffecting: false/);
+    assert.match(
+      issueEvidence,
+      /(?:cannot|never|does not) appl(?:y|ies) a score ceiling/,
+    );
+    assert.match(
+      issueEvidence,
+      /source\/static-only[\s\S]{0,160}weak evidence/i,
+    );
+    assert.doesNotMatch(
+      issueEvidence,
+      /tier === 'carryoverDebt'[\s\S]{0,100}scoreAffecting: false/,
+    );
+    assert.match(issueEvidence, /scoreAffecting: true/);
     assert.match(issueEvidence, /Closed issues without release-fix credit/);
+    assert.match(score, /const CARRYOVER_DEBT_MAX = -0\.35/);
+    assert.match(score, /return -Math\.log1p\(Math\.max\(0, load\)\) \* 0\.06/);
+    assert.match(
+      releaseScoring,
+      /scoreAffecting: Math\.abs\(numberOrZero\(components\.carryoverDebt\)\) > 0/,
+    );
     assert.match(readme, /\/api\/releases\/:tag\/review\/issues/);
     assert.match(readme, /supports exact `issue`\/`number`/);
     assert.match(readme, /Paginated current-DB issue-evidence rows/);
@@ -1939,12 +1960,53 @@ describe('static scoring/UI contracts', () => {
   it('refresh fetches label timelines for all monitored-window issues', () => {
     const refresh = readFileSync(join(root, 'src/lib/refresh.ts'), 'utf8');
     const scoringDoc = readFileSync(join(root, 'docs/scoring-model.md'), 'utf8');
-    assert.match(refresh, /const initialMonitoredIssueNumbers = page[\s\S]*?issueOverlapsMonitoredWindow\(issue\)[\s\S]*?issue\.number/);
+    const partitioner = refresh.match(
+      /function partitionIssueCatalogForEvidence[\s\S]*?(?=\nfunction issueNumberSetDigest)/,
+    )?.[0] ?? '';
+    assert.match(
+      refresh,
+      /function issueOverlapsMonitoredWindows[\s\S]*?monitoredWindows\.some\(\(window\) =>\s*created < window\.end && closed > window\.start/,
+    );
+    assert.match(
+      partitioner,
+      /if \(issueOverlapsMonitoredWindows\(issue, monitoredWindows\)\) \{\s*requiredEvidenceIssues\.push\(issue\)/,
+    );
+    assert.match(
+      partitioner,
+      /evidenceChunks\.push\(requiredEvidenceIssues\.slice\(offset, offset \+ chunkSize\)\)/,
+    );
+    assert.match(
+      refresh,
+      /const partition = partitionIssueCatalogForEvidence\(\s*catalog\.issues,\s*monitoredWindows,\s*\)/,
+    );
+    assert.match(refresh, /requiredEvidenceIssues = partition\.requiredEvidenceIssues/);
+    assert.match(refresh, /selectedIssues: requiredEvidenceIssues/);
+    assert.match(refresh, /exhaustiveIssueChunks = partition\.evidenceChunks/);
+    assert.match(
+      refresh,
+      /async function\* issuePagesForRefresh[\s\S]*?if \(exhaustiveIssueCrawl\) \{[\s\S]*?yield\* exhaustiveIssueChunks/,
+    );
+    assert.match(
+      refresh,
+      /const evidenceTargets = exhaustiveIssueCrawl\s*\?\s*\{\s*commentIssueNumbers: page\.map\(\(issue\) => issue\.number\),\s*metadataOnlyIssueNumbers: \[\],\s*\}/,
+    );
+    assert.match(
+      refresh,
+      /const initialMonitoredIssueNumbers = evidenceTargets\.commentIssueNumbers/,
+    );
     assert.match(
       refresh,
       /listIssueLabelEvidenceSnapshotsBatch\(\s*initialMonitoredIssueNumbers,/,
     );
+    assert.match(
+      refresh,
+      /const labelEvidence = labelEvidenceSnapshotsByIssue\.get\(issueNumber\)[\s\S]*?labelEvidence\.fetchedCount === labelEvidence\.totalCount[\s\S]*?labelEvidence\.stabilized === true/,
+    );
     assert.match(refresh, /listIssueFixEvidenceBatch\(initialMonitoredIssueNumbers,/);
+    assert.match(
+      refresh,
+      /const completion = issueEvidenceCompletionAttestation\(\s*requiredEvidenceIssues,\s*liveReconciledIssues\.values\(\),\s*issueCatalogAdmission,\s*\);\s*assertIssueEvidenceCompletion\(completion\)/,
+    );
     assert.match(refresh, /replaceVerifiedIssueStateEventSnapshot\(evidence\)/);
     assert.match(readFileSync(join(root, 'src/lib/closureProofAnalysis.ts'), 'utf8'), /deleteIssueCommitReferencesForIssues/);
     assert.match(refresh, /issueCommentSnapshot\(snapshot\)/);
@@ -1961,12 +2023,12 @@ describe('static scoring/UI contracts', () => {
     );
     const pageEvidenceFetch = refresh.indexOf('] = await runIssuePageEvidenceFetchGroup([');
     const pageEvidenceWrite = refresh.indexOf(
-      'assertRefreshWriteAllowed(`issue page ${pagesFetched} evidence persistence`)',
+      'assertRefreshWriteAllowed(`${issueBatchLabel} evidence persistence`)',
       pageEvidenceFetch,
     );
     assert.ok(
       pageEvidenceFetch >= 0 && pageEvidenceWrite > pageEvidenceFetch,
-      'refresh must fetch issue page evidence before transactionally writing page rows',
+      'refresh must fetch issue batch evidence before transactionally writing issue rows',
     );
     const pageEvidenceTransaction = refresh.indexOf(
       'runInWriteTransaction(() => {',

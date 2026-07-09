@@ -3684,6 +3684,36 @@ describe('release fix provenance', () => {
         problem: null,
       });
 
+      const scorePreviewAuthorization =
+        databaseModule.inspectPackageLifecycleAuthorization({
+          entrypoint: join(root, 'scripts', 'preview-score.mjs'),
+          environment: packageLifecycleEnvironment(
+            'score:preview',
+            'tsx scripts/preview-score.mjs',
+          ),
+          parentPid: 8_106,
+          processTable: [
+            {
+              pid: 8_106,
+              parentPid: 8_107,
+              command: '/bin/sh -c tsx scripts/preview-score.mjs',
+            },
+            {
+              pid: 8_107,
+              parentPid: 1,
+              command:
+                'npm run score:preview -- --db-path candidate.db ' +
+                '--month 2026-06',
+            },
+          ],
+        });
+      assert.deepEqual(scorePreviewAuthorization, {
+        authorized: true,
+        claimed: true,
+        event: 'score:preview',
+        problem: null,
+      });
+
       const npmChildAuthorization =
         databaseModule.inspectPackageLifecycleAuthorization({
           entrypoint: join(
@@ -7630,7 +7660,7 @@ describe('release fix provenance', () => {
     assert.deepEqual(db.scoreSourceIdentity(), sourceIdentityBeforeStaleMutation);
   });
 
-  it('rejects prerelease score writes and preserves the last scored stable timestamp', async () => {
+  it('does not let prerelease scores advance the last scored stable timestamp', async () => {
     const db = await freshDb('last-scored-at-stable-only');
     const stableTag = 'v-last-scored-stable';
     const prereleaseTag = 'v-last-scored-beta';

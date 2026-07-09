@@ -1209,8 +1209,9 @@ describe('release scoring DB bridge', () => {
       seedRelease(db, 'v0', '2026-05-20T00:00:00Z');
       seedRelease(db, 'v1', '2026-06-01T00:00:00Z');
       seedRelease(db, 'v1-1', '2026-06-02T00:00:00Z', true);
+      seedRelease(db, 'v1-2', '2026-06-03T00:00:00Z');
       seedRelease(db, 'v2', '2026-06-10T00:00:00Z');
-      activateCatalog(db, ['v2', 'v1-1', 'v1', 'v0']);
+      activateCatalog(db, ['v2', 'v1-2', 'v1-1', 'v1', 'v0']);
 
       const productionRun = scoring.buildReleaseScoreRun({
         releases: [db.getRelease('v1')],
@@ -1232,8 +1233,14 @@ describe('release scoring DB bridge', () => {
         nowForRelease: () => Date.parse('2026-06-11T00:00:00Z'),
       });
 
-      assert.deepEqual(offlineOptions.allFetchedTags, ['v2', 'v1-1', 'v1', 'v0']);
-      assert.deepEqual(offlineOptions.stableTagsNewestFirst, ['v2', 'v1', 'v0']);
+      assert.deepEqual(
+        offlineOptions.allFetchedTags,
+        ['v2', 'v1-2', 'v1-1', 'v1', 'v0'],
+      );
+      assert.deepEqual(
+        offlineOptions.stableTagsNewestFirst,
+        ['v2', 'v1-2', 'v1', 'v0'],
+      );
       assert.equal(productionRun.scored[0].input.hasHotfixSuccessor, true);
       assert.equal(
         offlineRun.scored[0].input.hasHotfixSuccessor,

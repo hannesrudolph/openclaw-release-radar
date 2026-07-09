@@ -9,7 +9,15 @@ import {
   bindScoreExplanationAudit,
   buildScoreLedgerV2,
   installConfidence,
+  REC_THRESHOLD,
+  RECOMMENDATION_RECENCY_TOLERANCE,
+  selectRecommendation,
+  type InstallConfidence,
 } from './score.ts';
+import {
+  recommendationDecisionSummary,
+  type RecommendationDecisionContract,
+} from './recommendationDecision.ts';
 import {
   LABEL_AUTHORITY_EVIDENCE_SCHEMA_VERSION,
   repositoryPermissionObservationRowHash,
@@ -273,27 +281,62 @@ function sortedAuthorityReferences(
   );
 }
 
-function validRecommendationDecision(overrides: Record<string, any> = {}) {
-  return {
+function validRecommendationDecision(
+  confidence: InstallConfidence,
+  overrides: Partial<RecommendationDecisionContract> = {},
+): RecommendationDecisionContract {
+  const releaseTag = 'v-test';
+  const selection = selectRecommendation([{
+    tag: releaseTag,
+    publishedAt: '2026-06-01T00:00:00Z',
+    status: confidence.status,
+    score: confidence.score,
+  }]);
+  const qualifies =
+    confidence.status === 'eligible' &&
+    confidence.score != null &&
+    confidence.score >= REC_THRESHOLD;
+  const selected = selection.selectedTag === releaseTag;
+  const decision: RecommendationDecisionContract = {
     schemaVersion: 1,
     policyCode: 'highest_confidence_with_recency_tolerance',
-    threshold: 7,
-    recencyTolerance: 0.5,
-    selectedTag: 'v-test',
-    selectedScore: 7.5,
-    highestScoringTag: 'v-test',
-    highestScore: 7.5,
-    releaseTag: 'v-test',
-    releaseScore: 7.5,
-    qualifies: true,
-    selected: true,
+    threshold: REC_THRESHOLD,
+    recencyTolerance: RECOMMENDATION_RECENCY_TOLERANCE,
+    selectedTag: selection.selectedTag,
+    selectedScore: selection.selectedScore,
+    highestScoringTag: selection.highestScoringTag,
+    highestScore: selection.highestScore,
+    releaseTag,
+    releaseScore: confidence.score,
+    qualifies,
+    selected,
     recencyRank: 1,
-    scoreRank: 1,
-    scoreDeltaToHighest: 0,
-    decisionCode: 'highest_confidence',
-    summary: 'canonical summary',
+    scoreRank:
+      confidence.status === 'eligible' && confidence.score != null ? 1 : null,
+    scoreDeltaToHighest:
+      confidence.score != null && selection.highestScore != null
+        ? Math.round((selection.highestScore - confidence.score) * 1000) / 1000
+        : null,
+    decisionCode:
+      confidence.status !== 'eligible'
+        ? 'install_gate_active'
+        : !qualifies
+          ? 'below_recommendation_threshold'
+          : selected && releaseTag === selection.highestScoringTag
+            ? 'highest_confidence'
+            : selected
+              ? 'newest_within_confidence_tolerance'
+              : selection.selectedScore != null &&
+                  confidence.score != null &&
+                  confidence.score >= selection.selectedScore
+                ? 'newer_release_within_tolerance_selected'
+                : 'higher_confidence_release_selected',
+    summary: '',
     ...overrides,
   };
+  decision.summary =
+    overrides.summary ?? recommendationDecisionSummary(decision);
+  return decision;
 }
 
 function validReachabilityProof(
@@ -444,7 +487,6 @@ function closureRiskSummary() {
 }
 
 function validPayloads(overrides: Record<string, any> = {}): any {
-  const recommendationDecision = validRecommendationDecision();
   const fixCreditDecision = validFixCreditDecision();
   const commentAuthorityReference = scoreCommentAuthorityReference({
     issueNumber: 101,
@@ -573,6 +615,8 @@ function validPayloads(overrides: Record<string, any> = {}): any {
   };
   const scoreNow = Date.parse('2026-06-02T00:00:00Z');
   const scoreConfidence = installConfidence(scoreInput, scoreNow);
+  const recommendationDecision =
+    validRecommendationDecision(scoreConfidence);
   const scoreLedger = structuredClone(buildScoreLedgerV2({
     input: scoreInput,
     confidence: scoreConfidence,
@@ -739,18 +783,12 @@ function bindCanonicalArtifactProof(payloads: any) {
   payloads.components.components = confidence.components;
   payloads.components.evidenceCoverage = confidence.evidenceCoverage;
   payloads.components.hotfix = confidence.hotfix;
-  for (const decision of [
-    payloads.components.recommendationDecision,
-    payloads.components.explanation.recommendationDecision,
-  ]) {
-    decision.selectedScore = confidence.score;
-    decision.highestScore = confidence.score;
-    decision.releaseScore = confidence.score;
-    decision.qualifies =
-      confidence.status === 'eligible' &&
-      confidence.score != null &&
-      confidence.score >= decision.threshold;
-  }
+  const recommendationDecision =
+    validRecommendationDecision(confidence);
+  payloads.components.recommendationDecision =
+    structuredClone(recommendationDecision);
+  payloads.components.explanation.recommendationDecision =
+    structuredClone(recommendationDecision);
   const ledger = buildScoreLedgerV2({
     input: payloads.input,
     confidence,
@@ -1542,6 +1580,7 @@ describe('score audit payload contracts', () => {
       selectedScore: 6.5,
       highestScoringTag: 'v-high',
       highestScore: 8,
+      releaseScore: 7.5,
       qualifies: false,
       selected: true,
       recencyRank: 0,

@@ -1,6 +1,6 @@
 # Scoring Model
 
-Current model: `evidence-v30-tooling-exclusion`
+Current model: `evidence-v31-score-inflation-recalibration`
 
 The 0-10 value is an ordinal policy/stability assessment. It ranks releases under the current audited policy; it is not a probability, percentage, or claim that a release is issue-free.
 
@@ -64,7 +64,7 @@ Every score-producing refresh repeats the exhaustive `CREATED_AT ASC` path. Issu
 The normal score starts from a base value, then applies bounded components:
 
 - `verifiedDebt`: release-local field/community-confirmed blocker risk.
-- `carryoverDebt` is a legacy machine identifier retained for compatibility. Publicly it is inherited issue context: issue groups linked to the release because they predate its window. They remain visible for audit but contribute zero score points and never apply a score ceiling.
+- `carryoverDebt` is a legacy machine identifier retained for compatibility. Publicly it is inherited issue context: issue groups linked to the release because they predate its window. It contributes a small logarithmic penalty capped at `0.35` points and never applies a score ceiling.
 - `staleDebt`: low-confidence, stale, needs-info, weak, source/static-only, or otherwise unconfirmed evidence risk. This is heavily capped.
 - `closureRisk`: unresolved closed-issue evidence selected by the exclusive risk ledger when it is the strongest adverse representation of its alias group. This is capped and does not score non-bug, reporter-withdrawn, or concretely non-actionable closures.
 - `coverage`: penalty if raw issues exist but classification coverage is incomplete.
@@ -75,9 +75,17 @@ The normal score starts from a base value, then applies bounded components:
 - `releaseVerification`: capped confidence from release commit checks.
 - `artifactVerification`: capped confidence from npm package integrity plus release evidence report verification.
 
+The recalibrated base is `6.8`. Stable survival is zero through the first 24 hours, then uses:
+
+`0.8 * (max(0, exposureHours - 24) / (max(0, exposureHours - 24) + 168))`
+
+The survival reward is therefore bounded by `+0.8`. Age alone can raise the `6.8` base only toward `7.6`; an old release cannot manufacture a near-perfect score. Even with every other favorable component at its cap, the theoretical pre-round maximum is `9.55` (`9.6` at the published one-decimal precision), so `10.0` is not produced merely by waiting.
+
+Inherited issue context uses `-min(0.35, 0.06 * ln(1 + weight))`. Incomplete classification coverage uses `-min(1.5, 0.08 * ln(1 + missing) + 1.5 * (1 - ratio))`, where `missing = rawIssueCount - classifiedIssueCount` after count normalization and `ratio = classifiedIssueCount / rawIssueCount`. The coverage component remains auditable in counterfactuals and ledgers, but persistence still fails closed unless score-producing classification coverage is complete.
+
 The functionality taxonomy distinguishes runtime paths (`core`, `integration`, and `provider`) from non-runtime work. `tooling` covers test infrastructure, CI, builds, linting, formatting, fixtures, harnesses, and developer tooling. Tooling issues carry zero issue weight, do not enter felt opened/closed load, and cannot qualify as default-path impact. Deterministic title correction requires an explicit tooling subject and is vetoed when the title identifies a runtime failure target; CI, test, or build context alone cannot zero a gateway, channel, provider, request, response, authentication, or message-delivery failure. The review issue-evidence API accepts `functionality=tooling` for audit rows that are present; zero-weight open tooling issues do not enter score-evidence tiers.
 
-Each canonical/classifier alias group elects exactly one score-affecting adverse contribution across verified debt, stale debt, closure risk, and regression. Carryover groups remain visible alongside that ledger as audit-only context. This preserves exclusive numerical accounting while preventing inherited backlog volume from being treated as release instability. Release-unresolved issues remain debt even when their current global state later becomes closed. Resolved, neutral, and contained-in-tag groups receive no regression penalty; a contained fix receives positive regression credit only when it is also proven first-containing.
+Each canonical/classifier alias group elects exactly one score-affecting adverse contribution across verified debt, carryover debt, stale debt, closure risk, and regression. This preserves exclusive numerical accounting while the `0.35` carryover cap prevents inherited backlog volume from dominating release-local evidence. Release-unresolved issues remain debt even when their current global state later becomes closed. Resolved, neutral, and contained-in-tag groups receive no regression penalty; a contained fix receives positive regression credit only when it is also proven first-containing.
 
 When unresolved closed-release risk is meaningful, the model also applies score ceilings. The numeric closure penalty remains exclusive with verified debt, stale debt, and regression, but the ceiling uses a separate deduplicated affirmative closure-risk weight computed before that channel election. This prevents a verified or stale debt representative from erasing a known-not-in-release, open-canonical, or unsupported-closure ceiling for the same alias group. Moderate affirmative weight caps very high scores at `8.4`; substantial affirmative weight caps at `7.9`. `missing_evidence` is never included in the ceiling weight. Raw report volume does not trigger a ceiling, and canonical issues or duplicate clusters contribute one maximum-weight affirmative group.
 
@@ -88,7 +96,7 @@ When unresolved closed-release risk is meaningful, the model also applies score 
 The ordered `operations` array is authoritative score arithmetic. Every operation records a stable `formulaCode`, typed operands with units, raw and bounded points, explicit bounds, running `before`/`after` values, whether it applied, any predicate result, the complete evidence-manifest keys it consumed, and a digest of those manifests. The derivation records:
 
 - exact predicates for advisory exposure, the 24-hour settle threshold, the non-latest hotfix condition or `<6` hour successor gap, and closure-risk thresholds at weights `40` and `60`;
-- every bounded component adjustment;
+- every bounded component adjustment, including the exact survival, carryover, and incomplete-coverage operands;
 - the explicit `0..10` range clamp;
 - closure ceilings at `8.4` or `7.9` and the hotfix ceiling at `4.9`;
 - final one-decimal rounding.
@@ -493,7 +501,7 @@ curl -s http://127.0.0.1:8787/api/releases/v2026.6.10/review \
 - `positives`: human-readable favorable evidence lines.
 - `positiveDetails`: machine-readable entries aligned 1:1 with `positives`.
 - `limits`: legacy human-readable detail lines. Public renderers must not place zero-impact entries under score-lowering or score-limiting headings.
-- `limitDetails`: machine-readable entries aligned 1:1 with `limits`. Entries with `metrics.scoreAffecting: false` are context only; inherited carryover context must be rendered separately from score-affecting limits.
+- `limitDetails`: machine-readable entries aligned 1:1 with `limits`. Entries with `metrics.scoreAffecting: false` are context only. Current inherited/carryover details set `scoreAffecting: true` when their bounded `0.35`-point category penalty is nonzero; renderers may retain the reason-code fallback only for legacy payloads that lack this flag.
 - `verdict`: install-facing interpretation of the score.
 - `recommendationDecision`: validated recommendation policy, threshold, recency tolerance, selected/highest-scoring releases and scores, ranks, score deltas, and decision reason.
 

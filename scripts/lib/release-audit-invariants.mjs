@@ -4079,7 +4079,7 @@ function releaseScoreEvidenceForAudit({ failures, tag, reader, release }) {
     publishedAt: release?.published_at ?? null,
     isLatest: stableTags[0] === tag,
     hoursToNextStable: release?.hours_to_next_stable ?? null,
-    hasHotfixSuccessor: hasHotfixSuccessor(activeTags, tag),
+    hasHotfixSuccessor: hasHotfixSuccessor(activeRows, tag),
     betaCount: Number(release?.beta_count ?? 0),
     breakingCount: Number(release?.breaking_count ?? 0),
   };

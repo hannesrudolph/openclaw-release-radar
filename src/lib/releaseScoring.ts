@@ -697,6 +697,7 @@ function buildReleaseScoreRunSnapshot(options: ReleaseScoreRunOptions): ReleaseS
         canonicalLatestStable,
       ),
       allFetchedTags,
+      activeReleaseCatalog: activeCatalog,
       stableTagsNewestFirst,
       predecessorTag: predecessorContext.predecessorByReleaseTag[release.tag] ?? null,
       oldestScoredStableTag: predecessorContext.oldestScoredStableTag,
@@ -3265,6 +3266,9 @@ function scoreRelease(args: {
   release: ReleaseRow;
   isLatest: boolean;
   allFetchedTags: string[];
+  activeReleaseCatalog: Array<
+    Pick<ReleaseRow, 'tag' | 'published_at' | 'prerelease'>
+  >;
   stableTagsNewestFirst: string[];
   predecessorTag: string | null;
   oldestScoredStableTag: string | null;
@@ -3457,14 +3461,7 @@ function scoreRelease(args: {
     if (otherReleaseEvidenceByIssue.has(row.number)) {
       return otherReleaseEvidenceByIssue.get(row.number) ?? null;
     }
-    if (
-      targetReleaseEvidence(row) != null ||
-      hasExplicitReleaseMismatch({
-        ...row,
-        releaseLocalEvidence: null,
-        releaseExplicitlyUnaffected: false,
-      }, rel.tag)
-    ) {
+    if (targetReleaseEvidence(row) != null || targetUnaffected(row)) {
       otherReleaseEvidenceByIssue.set(row.number, null);
       return null;
     }
@@ -3834,7 +3831,10 @@ function scoreRelease(args: {
     publishedAt: rel.published_at,
     isLatest: args.isLatest,
     hoursToNextStable: rel.hours_to_next_stable,
-    hasHotfixSuccessor: hasHotfixSuccessor(args.allFetchedTags, rel.tag),
+    hasHotfixSuccessor: hasHotfixSuccessor(
+      args.activeReleaseCatalog,
+      rel.tag,
+    ),
     betaCount: rel.beta_count,
     breakingCount: rel.breaking_count,
     feltOpenedWeight,
@@ -4289,7 +4289,7 @@ function buildScoreExplanation(
     const example = issueListText(carryover, 3);
     addLimit(
       'open_unconfirmed_issue_risk',
-      `There are open inherited/carryover issue groups linked to this release, but they are not proven release-local blockers. They remain visible for audit and follow-up, contribute 0 score points, and cannot apply a score ceiling; backlog volume is not treated as release instability.` +
+      `There are open inherited/carryover issue groups linked to this release, but they are not proven release-local blockers. This contributes ${penaltyText(components.carryoverDebt)}; this category is capped at a ${SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty} point penalty and cannot apply a score ceiling, so backlog volume cannot dominate release-local evidence.` +
       sentenceSuffix('Top examples', example),
       {
         metrics: {
@@ -4299,8 +4299,8 @@ function buildScoreExplanation(
           storedExampleWeight: roundMetric(debtSummary.carryover?.storedWeight ?? carryoverDebt.reduce((sum: number, item: any) => sum + Number(item.weight ?? 0), 0)),
           cappedPenalty: Math.abs(numberOrZero(components.carryoverDebt)),
           maxPenalty: SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty,
-          capApplied: false,
-          scoreAffecting: false,
+          capApplied: Math.abs(numberOrZero(components.carryoverDebt)) >= SCORE_COMPONENT_LIMITS.carryoverDebtMaxPenalty,
+          scoreAffecting: Math.abs(numberOrZero(components.carryoverDebt)) > 0,
           byInstallImpactClass: debtSummary.carryover?.byInstallImpactClass ?? {},
         },
         issueRefs: issueRefs(carryoverDebt, 5),
@@ -5638,48 +5638,10 @@ function releaseCheckContextHasLink(context: unknown): boolean {
   }
 }
 
-function hasExplicitReleaseMismatch(
-  row: {
-    affects_version?: string | null;
-    title?: string | null;
-    body?: string | null;
-    releaseLocalEvidence?: ReleaseLocalEvidence | null;
-    releaseExplicitlyUnaffected?: boolean;
-  },
-  releaseTag: string,
-): boolean {
-  if (row.releaseExplicitlyUnaffected === true) return true;
-  if (
-    row.releaseExplicitlyUnaffected !== false &&
-    releaseExplicitlyUnaffected(row, releaseTag)
-  ) {
-    return true;
-  }
-  if (
-    row.releaseLocalEvidence?.kind === 'exact-version' &&
-    releaseVersionsMatch(row.releaseLocalEvidence.version, releaseTag)
-  ) {
-    return false;
-  }
-  if (exactReleaseLocalEvidence(row, releaseTag) != null) return false;
-  if (
-    row.releaseLocalEvidence?.kind === 'exact-version' &&
-    RELEASE_TAG_RE.test(row.releaseLocalEvidence.version) &&
-    !releaseVersionsMatch(row.releaseLocalEvidence.version, releaseTag)
-  ) {
-    return true;
-  }
-  const affectsVersion = String(row.affects_version ?? '').trim();
-  if (
-    RELEASE_TAG_RE.test(affectsVersion) &&
-    !releaseVersionsMatch(affectsVersion, releaseTag)
-  ) {
-    return true;
-  }
-  return issueTextReleaseVersions(row).some((version) =>
-    !releaseVersionsMatch(version, releaseTag) &&
-    exactReleaseLocalEvidence(row, version) != null
-  );
+function hasAuthoritativeReleaseExclusion(row: {
+  releaseExplicitlyUnaffected?: boolean;
+}): boolean {
+  return row.releaseExplicitlyUnaffected === true;
 }
 
 function isReleaseLocalDebtIssue(
@@ -5714,19 +5676,6 @@ function releaseVersionsMatch(left: string, right: string): boolean {
   } catch {
     return normalizeReleaseToken(left) === normalizeReleaseToken(right);
   }
-}
-
-function issueTextReleaseVersions(
-  row: { title?: string | null; body?: string | null },
-): string[] {
-  const versions = new Set<string>();
-  for (const text of [String(row.title ?? ''), String(row.body ?? '')]) {
-    for (const match of text.matchAll(EXPLICIT_RELEASE_TOKEN_RE)) {
-      const version = String(match[2] ?? '');
-      if (RELEASE_TAG_RE.test(version)) versions.add(version);
-    }
-  }
-  return [...versions];
 }
 
 export interface IssueFieldEvidence {
@@ -6240,26 +6189,18 @@ export function releaseScopedDebtState(
 
 export function releaseRegressionOpenedRows<T extends {
   state?: string | null;
-  affects_version?: string | null;
-  title?: string | null;
-  body?: string | null;
-  releaseLocalEvidence?: ReleaseLocalEvidence | null;
   releaseExplicitlyUnaffected?: boolean;
-}>(rows: T[], releaseTag?: string): T[] {
+}>(rows: T[], _releaseTag?: string): T[] {
   return rows.filter((row) =>
     row.state !== 'open' &&
-    (!releaseTag || !hasExplicitReleaseMismatch(row, releaseTag))
+    !hasAuthoritativeReleaseExclusion(row)
   );
 }
 
 export function releaseLinkedIssueRows<T extends {
-  affects_version?: string | null;
-  title?: string | null;
-  body?: string | null;
-  releaseLocalEvidence?: ReleaseLocalEvidence | null;
   releaseExplicitlyUnaffected?: boolean;
-}>(rows: T[], releaseTag: string): T[] {
-  return rows.filter((row) => !hasExplicitReleaseMismatch(row, releaseTag));
+}>(rows: T[], _releaseTag: string): T[] {
+  return rows.filter((row) => !hasAuthoritativeReleaseExclusion(row));
 }
 
 function releaseReferenceAliases(releaseTag: string): string[] {

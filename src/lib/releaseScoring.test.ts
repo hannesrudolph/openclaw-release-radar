@@ -579,6 +579,7 @@ describe('release score explanations', () => {
     );
   });
 
+  // Historical baseline identity; current assertions require authoritative exclusion.
   it('ignores display-only classifier attribution but excludes explicit release mismatches', () => {
     const wrongReleaseCommentEvidence =
       scoring.__releaseScoringTest.exactReleaseLocalEvidence(
@@ -652,16 +653,22 @@ describe('release score explanations', () => {
         title: 'Session state is lost',
         body: 'Observed session state loss on v2026.6.11 after upgrade.',
       },
+      {
+        number: 11,
+        state: 'closed',
+        affects_version: 'v2026.6.11',
+        releaseExplicitlyUnaffected: true,
+      },
     ];
     assert.deepEqual(
       scoring.__releaseScoringTest.releaseRegressionOpenedRows(rows, 'v2026.6.11')
         .map((row: any) => row.number),
-      [1, 3, 5, 6, 9, 10],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     );
     assert.deepEqual(
       scoring.__releaseScoringTest.releaseLinkedIssueRows(rows, 'v2026.6.11')
         .map((row: any) => row.number),
-      [1, 3, 5, 6, 9, 10],
+      [1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
     );
   });
 
@@ -912,6 +919,7 @@ describe('release score explanations', () => {
     ), null);
   });
 
+  // Historical baseline identity; raw prose alone no longer excludes interval attribution.
   it('excludes #98197 explicit unaffected claims from locality, regression, and closure risk', () => {
     const row = {
       number: 98197,
@@ -931,9 +939,17 @@ describe('release score explanations', () => {
     assert.deepEqual(scoring.__releaseScoringTest.releaseLinkedIssueRows(
       [row],
       'v2026.6.11',
-    ), []);
+    ), [row]);
     assert.deepEqual(scoring.__releaseScoringTest.releaseRegressionOpenedRows(
       [row],
+      'v2026.6.11',
+    ), [row]);
+    assert.deepEqual(scoring.__releaseScoringTest.releaseLinkedIssueRows(
+      [{ ...row, releaseExplicitlyUnaffected: true }],
+      'v2026.6.11',
+    ), []);
+    assert.deepEqual(scoring.__releaseScoringTest.releaseRegressionOpenedRows(
+      [{ ...row, releaseExplicitlyUnaffected: true }],
       'v2026.6.11',
     ), []);
     assert.deepEqual(scoring.__releaseScoringTest.releaseClosureRiskCandidateRows(
@@ -2370,7 +2386,7 @@ describe('release score explanations', () => {
       reason: '3 inherited/carryover issue groups; 3 unresolved closed-release risk groups',
       components: {
         verifiedDebt: 0,
-        carryoverDebt: -0.4,
+        carryoverDebt: -0.12,
         staleDebt: -0.1,
         closureRisk: -0.3,
         coverage: 0,
@@ -2586,10 +2602,10 @@ describe('release score explanations', () => {
     assert.ok((carryover.metrics?.count ?? 0) > 0);
     assert.equal(run.scored[0].input.carryoverDebtIssueCount, carryover.metrics?.count);
     assert.match(run.scored[0].conf.reason, new RegExp(`${carryover.metrics?.count} inherited/carryover issue groups`));
-    assert.match(carryover.text, /contribute 0 score points/);
-    assert.equal(carryover.metrics?.maxPenalty, 0);
+    assert.match(carryover.text, /contributes a 0\.12 point penalty/);
+    assert.equal(carryover.metrics?.maxPenalty, 0.35);
     assert.equal(carryover.metrics?.capApplied, false);
-    assert.equal(carryover.metrics?.scoreAffecting, false);
+    assert.equal(carryover.metrics?.scoreAffecting, true);
     assert.equal(carryover.metrics?.storedExampleCount, (run.scored[0].debtEvidence as any).carryoverDebt.length);
     assert.ok((carryover.metrics?.storedExampleWeight ?? 0) <= (carryover.metrics?.rawWeight ?? 0));
     assert.equal(typeof carryover.metrics?.byInstallImpactClass, 'object');

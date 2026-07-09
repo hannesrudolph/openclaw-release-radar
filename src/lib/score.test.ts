@@ -375,15 +375,65 @@ describe('installConfidence — gates', () => {
 });
 
 describe('installConfidence — graded signals', () => {
+  // Historical baseline identity; v31 intentionally starts at 6.8 in caution.
   it('eligible baseline (typical lifetime, no other signal) starts in the ok band', () => {
     const r = installConfidence(mk(), NOW);
     assert.equal(r.status, 'eligible');
-    assert.ok(r.score! >= 7 && r.score! < 8, `expected ok baseline, got ${r.score}`);
+    assert.equal(r.score, 6.8);
+    assert.equal(r.band, 'caution');
   });
 
   it('longer survival before the next stable scores higher', () => {
+    assert.ok(score({ hoursToNextStable: 192 }) > score({ hoursToNextStable: 96 }));
     assert.ok(score({ hoursToNextStable: 96 }) > score({ hoursToNextStable: 24 }));
-    assert.ok(score({ hoursToNextStable: 24 }) > score({ hoursToNextStable: 8 }));
+    assert.equal(score({ hoursToNextStable: 24 }), score({ hoursToNextStable: 8 }));
+    assert.equal(
+      installConfidence(mk({ hoursToNextStable: Number.MAX_VALUE }), NOW)
+        .components?.survival,
+      0.8,
+    );
+  });
+
+  it('keeps age-only confidence at 7.6 and the full no-risk theoretical maximum at 9.6', () => {
+    const ageOnly = installConfidence(mk({
+      hoursToNextStable: Number.MAX_VALUE,
+    }), NOW);
+    const theoreticalMaximum = installConfidence(mk({
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
+    }), NOW);
+
+    assert.equal(ageOnly.score, 7.6);
+    assert.equal(theoreticalMaximum.score, 9.6);
+    assert.equal(theoreticalMaximum.scoreRangeClamp, 0);
+    assert.equal(theoreticalMaximum.components?.base, 6.8);
+    assert.equal(theoreticalMaximum.components?.survival, 0.8);
+    assert.equal(theoreticalMaximum.components?.shakeout, 0.8);
+    assert.equal(theoreticalMaximum.components?.regression, 0.4);
+    assert.equal(theoreticalMaximum.components?.releaseVerification, 0.4);
+    assert.equal(theoreticalMaximum.components?.artifactVerification, 0.35);
+  });
+
+  it('puts v2026.6.11-like age and beta operands near 7.7 before adverse components', () => {
+    const result = installConfidence(mk({
+      isLatest: true,
+      hoursToNextStable: null,
+      publishedAt: hoursAgo(192),
+      betaCount: 3,
+    }), NOW);
+
+    assert.equal(result.components?.base, 6.8);
+    assert.equal(result.components?.survival, 0.4);
+    assert.equal(result.components?.shakeout, 0.5);
+    assert.equal(result.score, 7.7);
   });
 
   it('more beta shakeout raises confidence', () => {
@@ -482,13 +532,24 @@ describe('installConfidence — graded signals', () => {
     assert.ok(score({ verifiedDebtWeight: 1 }) > score({ verifiedDebtWeight: 30 }));
   });
 
+  // Historical baseline identity; v31 replaces audit-only carryover with a capped penalty.
   it('carryover debt is audit-only while stale debt remains capped below verified blockers', () => {
     const base = score();
     const verified = score({ verifiedDebtWeight: 100 });
-    const carryover = score({ carryoverDebtWeight: 100 });
+    const carryover = installConfidence(mk({ carryoverDebtWeight: 100 }), NOW);
+    const cappedCarryover = installConfidence(mk({
+      carryoverDebtWeight: Number.MAX_VALUE,
+    }), NOW);
     const stale = score({ staleDebtWeight: 100 });
-    assert.ok(verified < carryover);
-    assert.equal(carryover, base);
+
+    assert.ok(verified < carryover.score!);
+    assert.ok(carryover.score! < base);
+    assert.ok(stale > carryover.score!);
+    assert.ok(Math.abs(
+      (carryover.components?.carryoverDebt ?? NaN) +
+      Math.min(0.35, 0.06 * Math.log1p(100)),
+    ) < 1e-12);
+    assert.equal(cappedCarryover.components?.carryoverDebt, -0.35);
     assert.ok(stale > verified);
   });
 
@@ -520,10 +581,10 @@ describe('installConfidence — graded signals', () => {
     assert.equal(result.band, 'solid');
     assert.ok(result.score != null && result.score >= 8, `expected a solid score, got ${result.score}`);
     assert.equal(Math.abs(result.components?.verifiedDebt ?? NaN), 0);
-    assert.equal(result.components?.carryoverDebt, 0);
+    assert.equal(result.components?.carryoverDebt, -0.35);
     assert.equal(result.components?.staleDebt, -0.2);
     assert.equal(Math.abs(result.components?.closureRisk ?? NaN), 0);
-    assert.match(result.reason, /200 inherited\/carryover issue groups \(audit weight 500; 0 score points\)/);
+    assert.match(result.reason, /200 inherited\/carryover issue groups \(risk weight 500; bounded score penalty\)/);
   });
 
   it('short reason uses issue counts beside risk weights when available', () => {
@@ -535,7 +596,7 @@ describe('installConfidence — graded signals', () => {
       unresolvedClosureIssueCount: 118,
     }), NOW);
 
-    assert.match(result.reason, /228 inherited\/carryover issue groups \(audit weight 506; 0 score points\)/);
+    assert.match(result.reason, /228 inherited\/carryover issue groups \(risk weight 506; bounded score penalty\)/);
     assert.match(result.reason, /118 unresolved closed-release risk groups \(risk weight 93\)/);
     assert.doesNotMatch(result.reason, /506 open unconfirmed issue-risk weight/);
   });
@@ -656,11 +717,12 @@ describe('installConfidence — graded signals', () => {
 
   it('moderate unresolved closure risk caps very high scores without blocking solid outright', () => {
     const risky = installConfidence(mk({
-      hoursToNextStable: 96,
-      betaCount: 10,
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
       releaseCheckState: 'SUCCESS',
-      releaseCheckTotal: 7,
-      releaseCheckSuccess: 7,
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
       artifactVerified: true,
       ciReportVerified: true,
       releaseIntegrityPresent: true,
@@ -706,8 +768,18 @@ describe('installConfidence — graded signals', () => {
   it('incomplete evidence coverage lowers confidence', () => {
     const complete = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 100 }), NOW);
     const partial = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 40 }), NOW);
+    const empty = installConfidence(mk({ rawIssueCount: 100, classifiedIssueCount: 0 }), NOW);
+    const expectedPartialPenalty = -Math.min(
+      1.5,
+      0.08 * Math.log1p(60) + 1.5 * (1 - 0.4),
+    );
+
     assert.ok(partial.score! < complete.score!);
     assert.equal(partial.evidenceCoverage, 0.4);
+    assert.ok(Math.abs(
+      (partial.components?.coverage ?? NaN) - expectedPartialPenalty,
+    ) < 1e-12);
+    assert.equal(empty.components?.coverage, -1.5);
   });
 
   it('score never leaves [0,10] under extreme inputs', () => {
@@ -718,16 +790,22 @@ describe('installConfidence — graded signals', () => {
 
   it('retains precision when an adjustment is inserted before a closure cap', () => {
     const result = installConfidence(mk({
-      isLatest: true,
-      hoursToNextStable: null,
-      betaCount: 1,
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
       breakingCount: 3,
       feltOpenedWeight: 50,
-      feltClosedWeight: 50,
+      feltClosedWeight: 139,
       staleDebtWeight: 1,
       unresolvedClosureRiskWeight: 40,
       rawIssueCount: 100,
       classifiedIssueCount: 100,
+      releaseCheckState: 'SUCCESS',
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
+      artifactVerified: true,
+      ciReportVerified: true,
+      releaseIntegrityPresent: true,
+      releaseShaMatches: true,
     }), NOW);
     const components = result.components!;
     assert.equal(result.score, 8.3);
@@ -758,14 +836,13 @@ describe('installConfidence — graded signals', () => {
   });
 
   it('keeps range clamps distinct and reconciles generated scores after caps', () => {
-    const upperClamped = installConfidence(mk({
-      isLatest: true,
-      hoursToNextStable: null,
-      betaCount: 999,
-      feltClosedWeight: 999,
+    const theoreticalMaximum = installConfidence(mk({
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
       releaseCheckState: 'SUCCESS',
-      releaseCheckTotal: 70,
-      releaseCheckSuccess: 70,
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
       artifactVerified: true,
       ciReportVerified: true,
       releaseIntegrityPresent: true,
@@ -786,16 +863,17 @@ describe('installConfidence — graded signals', () => {
       releaseCheckFailure: 10,
       artifactMismatch: 'mismatch',
     }), NOW);
-    assert.ok((upperClamped.scoreRangeClamp ?? 0) < 0);
+    assert.equal(theoreticalMaximum.scoreRangeClamp, 0);
+    assert.equal(theoreticalMaximum.score, 9.6);
     assert.ok((lowerClamped.scoreRangeClamp ?? 0) > 0);
     const closureCapped = installConfidence(mk({
-      hoursToNextStable: 96,
-      betaCount: 999,
-      feltClosedWeight: 999,
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
       unresolvedClosureRiskWeight: 45,
       releaseCheckState: 'SUCCESS',
-      releaseCheckTotal: 70,
-      releaseCheckSuccess: 70,
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
       artifactVerified: true,
       ciReportVerified: true,
       releaseIntegrityPresent: true,
@@ -1583,6 +1661,7 @@ describe('openDebtLoad — current issue debt', () => {
     assert.ok(explanation.loads.carryover > 0);
   });
 
+  // Historical baseline identity; v31 now allows only the bounded carryover penalty.
   it('keeps 100 unchanged carryover groups visible without changing the score', () => {
     const explanation = explainOpenDebtLoad(Array.from({ length: 100 }, (_, index) =>
       dc({
@@ -1600,8 +1679,12 @@ describe('openDebtLoad — current issue debt', () => {
 
     assert.equal(explanation.evidence.length, 100);
     assert.ok(explanation.loads.carryover > 0);
-    assert.equal(withCarryover.components?.carryoverDebt, 0);
-    assert.equal(withCarryover.score, baseline.score);
+    assert.ok(Math.abs(
+      (withCarryover.components?.carryoverDebt ?? NaN) +
+      Math.min(0.35, 0.06 * Math.log1p(explanation.loads.carryover)),
+    ) < 1e-12);
+    assert.ok(withCarryover.score! < baseline.score!);
+    assert.ok(baseline.score! - withCarryover.score! <= 0.4);
   });
 
   it('keeps classifier-slug peers additive instead of electing one contribution', () => {
@@ -2380,11 +2463,12 @@ describe('exclusive issue risk ledger', () => {
       closureRisk: affirmativeClosureRisk,
     });
     const result = installConfidence(mk({
-      hoursToNextStable: 96,
-      betaCount: 10,
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
       releaseCheckState: 'SUCCESS',
-      releaseCheckTotal: 7,
-      releaseCheckSuccess: 7,
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
       artifactVerified: true,
       ciReportVerified: true,
       releaseIntegrityPresent: true,
@@ -2792,16 +2876,15 @@ describe('ScoreLedgerV2', () => {
       /manifest verifiedDebt digest|semantic replay|ledger digest/.test(problem)));
   });
 
+  // Historical baseline identity; v31's theoretical maximum leaves the upper clamp nonbinding.
   it('records binding upper and lower score range clamps explicitly', () => {
-    const upperInput = mk({
-      isLatest: true,
-      publishedAt: daysAgo(365),
-      hoursToNextStable: null,
-      betaCount: 1_000,
-      feltClosedWeight: 1_000,
+    const maximumInput = mk({
+      hoursToNextStable: Number.MAX_VALUE,
+      betaCount: Number.MAX_SAFE_INTEGER,
+      feltClosedWeight: Number.MAX_VALUE,
       releaseCheckState: 'SUCCESS',
-      releaseCheckTotal: 1_000,
-      releaseCheckSuccess: 1_000,
+      releaseCheckTotal: Number.MAX_VALUE,
+      releaseCheckSuccess: Number.MAX_VALUE,
       artifactVerified: true,
       ciReportVerified: true,
       releaseIntegrityPresent: true,
@@ -2820,7 +2903,10 @@ describe('ScoreLedgerV2', () => {
       releaseCheckFailure: 100,
       artifactMismatch: 'mismatch',
     });
-    for (const [input, expectedAfter] of [[upperInput, 10], [lowerInput, 0]] as const) {
+    for (const [input, expectedApplied, expectedAfter] of [
+      [maximumInput, false, 9.55],
+      [lowerInput, true, 0],
+    ] as const) {
       const confidence = installConfidence(input, NOW);
       const ledger = buildScoreLedgerV2({
         input,
@@ -2829,10 +2915,69 @@ describe('ScoreLedgerV2', () => {
         ...scoreLedgerRiskArgs(input),
       });
       const operation = ledger.operations.find((item) => item.code === 'scoreRangeClamp')!;
-      assert.equal(operation.applied, true);
-      assert.equal(operation.after, expectedAfter);
+      assert.equal(operation.applied, expectedApplied);
+      assert.ok(Math.abs(Number(operation.after) - expectedAfter) < 1e-12);
       assert.deepEqual(scoreLedgerV2Problems(ledger, { input, confidence }), []);
     }
+  });
+
+  it('replays recalibrated survival, carryover, and coverage operations into exact presentation rows', () => {
+    const input = mk({
+      isLatest: true,
+      hoursToNextStable: null,
+      publishedAt: hoursAgo(192),
+      betaCount: 3,
+      carryoverDebtWeight: 100,
+      rawIssueCount: 100,
+      classifiedIssueCount: 40,
+    });
+    const confidence = installConfidence(input, NOW);
+    const ledger = buildScoreLedgerV2({
+      input,
+      confidence,
+      now: NOW,
+      ...scoreLedgerRiskArgs(input),
+    });
+    const survival = ledger.operations.find((item) => item.code === 'survival')!;
+    const carryover = ledger.operations.find((item) => item.code === 'carryoverDebt')!;
+    const coverage = ledger.operations.find((item) => item.code === 'coverage')!;
+
+    assert.equal(survival.formulaCode, 'component.stable_survival_saturating.v1');
+    assert.equal(survival.rawPoints, 0.4);
+    assert.equal(survival.boundedPoints, confidence.components?.survival);
+    assert.equal(
+      survival.operands.find((operand) => operand.name === 'postSettleHours')?.value,
+      168,
+    );
+    assert.equal(
+      ledger.rows.find((row) => row.key === 'survival')?.metric,
+      192,
+    );
+    assert.equal(carryover.formulaCode, 'component.carryover_debt_log_penalty.v1');
+    assert.ok(Math.abs(
+      Number(carryover.rawPoints) + 0.06 * Math.log1p(100),
+    ) < 1e-12);
+    assert.equal(carryover.boundedPoints, confidence.components?.carryoverDebt);
+    assert.equal(coverage.formulaCode, 'component.classification_coverage_log_ratio.v1');
+    assert.equal(
+      coverage.operands.find((operand) => operand.name === 'missingIssueCount')?.value,
+      60,
+    );
+    assert.ok(Math.abs(
+      Number(coverage.rawPoints) +
+      (0.08 * Math.log1p(60) + 1.5 * 0.6),
+    ) < 1e-12);
+    assert.equal(coverage.boundedPoints, confidence.components?.coverage);
+    assert.equal(
+      ledger.rows.find((row) => row.key === 'carryoverDebt')?.points,
+      round3(confidence.components?.carryoverDebt ?? NaN),
+    );
+    assert.equal(
+      ledger.rows.find((row) => row.key === 'coverage')?.points,
+      round3(confidence.components?.coverage ?? NaN),
+    );
+    assert.equal(ledger.scoreAfterCaps, confidence.score);
+    assert.deepEqual(scoreLedgerV2Problems(ledger, { input, confidence }), []);
   });
 
   it('records CVE gate arithmetic, counterfactual binding, and advisory identities', () => {

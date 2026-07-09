@@ -612,6 +612,7 @@ import {
   buildIssueLabelEvidenceSnapshot,
 } from './issueLabelEvidenceSnapshot';
 import {
+  canonicalIssueContentDigest,
   issueCatalogSnapshotCatalog,
   type IssueCatalogSnapshot,
 } from './issueCatalogSnapshot';
@@ -1451,6 +1452,315 @@ function issuePageEvidenceTargets(
     else metadataOnlyIssueNumbers.push(issue.number);
   }
   return { commentIssueNumbers, metadataOnlyIssueNumbers };
+}
+
+interface MonitoredIssueWindow {
+  start: number;
+  end: number;
+}
+
+interface IssueCatalogEvidencePartition<T extends GhIssue = GhIssue> {
+  requiredEvidenceIssues: T[];
+  metadataOnlyIssues: T[];
+  evidenceChunks: T[][];
+}
+
+interface IssueCatalogAdmissionMetadata {
+  schemaVersion: 1;
+  source: 'issue_catalog_snapshot';
+  snapshotId: string;
+  cutoffAt: string;
+  catalogIssueCount: number;
+  catalogMembershipDigest: string;
+  catalogContentDigest: string;
+  selectedIssueCount: number;
+  selectedIssueNumberDigest: string;
+  selectedContentDigest: string;
+}
+
+interface IssueEvidenceCompletionAttestation {
+  schemaVersion: 1;
+  admissionSnapshotId: string;
+  admissionCutoffAt: string;
+  admissionSelectedContentDigest: string;
+  requiredIssueCount: number;
+  requiredIssueNumberDigest: string;
+  liveReconciledIssueCount: number;
+  liveReconciledIssueNumberDigest: string;
+  liveReconciledContentDigest: string;
+  complete: boolean;
+}
+
+interface IssueCatalogMetadataMaterializationResult {
+  issueCount: number;
+  upsertedCount: number;
+  preservedCount: number;
+}
+
+const ISSUE_EVIDENCE_CHUNK_SIZE = 100;
+
+function issueOverlapsMonitoredWindows(
+  issue: Pick<GhIssue, 'created_at' | 'closed_at'>,
+  monitoredWindows: readonly MonitoredIssueWindow[],
+): boolean {
+  const created = Date.parse(issue.created_at);
+  const closed = issue.closed_at ? Date.parse(issue.closed_at) : Infinity;
+  return Number.isFinite(created) &&
+    (issue.closed_at == null || Number.isFinite(closed)) &&
+    monitoredWindows.some((window) =>
+      created < window.end && closed > window.start
+    );
+}
+
+function partitionIssueCatalogForEvidence<T extends GhIssue>(
+  issues: readonly T[],
+  monitoredWindows: readonly MonitoredIssueWindow[],
+  chunkSize = ISSUE_EVIDENCE_CHUNK_SIZE,
+): IssueCatalogEvidencePartition<T> {
+  if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
+    throw new Error(
+      `Issue evidence chunkSize must be a positive integer, got ${chunkSize}`,
+    );
+  }
+  const requiredEvidenceIssues: T[] = [];
+  const metadataOnlyIssues: T[] = [];
+  for (const issue of issues) {
+    if (issueOverlapsMonitoredWindows(issue, monitoredWindows)) {
+      requiredEvidenceIssues.push(issue);
+    } else {
+      metadataOnlyIssues.push(issue);
+    }
+  }
+  const evidenceChunks: T[][] = [];
+  for (
+    let offset = 0;
+    offset < requiredEvidenceIssues.length;
+    offset += chunkSize
+  ) {
+    evidenceChunks.push(requiredEvidenceIssues.slice(offset, offset + chunkSize));
+  }
+  return {
+    requiredEvidenceIssues,
+    metadataOnlyIssues,
+    evidenceChunks,
+  };
+}
+
+function issueNumberSetDigest(issueNumbers: Iterable<number>): string {
+  const canonical = [...new Set(issueNumbers)];
+  for (const issueNumber of canonical) {
+    if (!Number.isInteger(issueNumber) || issueNumber <= 0) {
+      throw new Error(
+        `Issue-number digest requires positive integers, got ${issueNumber}`,
+      );
+    }
+  }
+  canonical.sort((left, right) => left - right);
+  return createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
+}
+
+function issueSetContentDigest(issues: readonly GhIssue[]): string {
+  return canonicalIssueContentDigest(
+    issues.length,
+    issues.map((issue) => ({
+      nodeId: issue.node_id,
+      issue,
+    })),
+  );
+}
+
+function issueCatalogAdmissionMetadata(args: {
+  snapshotId: string;
+  cutoffAt: string;
+  catalogMetadata: GhIssueCatalogMetadata;
+  selectedIssues: readonly GhIssue[];
+}): IssueCatalogAdmissionMetadata {
+  if (!Number.isFinite(Date.parse(args.cutoffAt))) {
+    throw new Error(`Issue catalog admission cutoff is invalid: ${args.cutoffAt}`);
+  }
+  return {
+    schemaVersion: 1,
+    source: 'issue_catalog_snapshot',
+    snapshotId: args.snapshotId,
+    cutoffAt: args.cutoffAt,
+    catalogIssueCount: args.catalogMetadata.nodeCount,
+    catalogMembershipDigest: args.catalogMetadata.membershipDigest,
+    catalogContentDigest: args.catalogMetadata.contentDigest,
+    selectedIssueCount: args.selectedIssues.length,
+    selectedIssueNumberDigest: issueNumberSetDigest(
+      args.selectedIssues.map((issue) => issue.number),
+    ),
+    selectedContentDigest: issueSetContentDigest(args.selectedIssues),
+  };
+}
+
+function issueEvidenceCompletionAttestation(
+  requiredIssues: readonly GhIssue[],
+  liveReconciledIssues: Iterable<GhIssue>,
+  admission: IssueCatalogAdmissionMetadata,
+): IssueEvidenceCompletionAttestation {
+  const required = new Map(
+    requiredIssues.map((issue) => [issue.number, issue] as const),
+  );
+  const liveReconciled = new Map(
+    [...liveReconciledIssues].map((issue) => [issue.number, issue] as const),
+  );
+  const requiredIssueNumberDigest = issueNumberSetDigest(required.keys());
+  const liveReconciledIssueNumberDigest =
+    issueNumberSetDigest(liveReconciled.keys());
+  const requiredContentDigest = issueSetContentDigest([...required.values()]);
+  if (
+    admission.selectedIssueCount !== required.size ||
+    admission.selectedIssueNumberDigest !== requiredIssueNumberDigest ||
+    admission.selectedContentDigest !== requiredContentDigest
+  ) {
+    throw new Error(
+      'Issue evidence requirements do not match the snapshot admission selection',
+    );
+  }
+  return {
+    schemaVersion: 1,
+    admissionSnapshotId: admission.snapshotId,
+    admissionCutoffAt: admission.cutoffAt,
+    admissionSelectedContentDigest: admission.selectedContentDigest,
+    requiredIssueCount: required.size,
+    requiredIssueNumberDigest,
+    liveReconciledIssueCount: liveReconciled.size,
+    liveReconciledIssueNumberDigest,
+    liveReconciledContentDigest: issueSetContentDigest(
+      [...liveReconciled.values()],
+    ),
+    complete:
+      required.size === liveReconciled.size &&
+      requiredIssueNumberDigest === liveReconciledIssueNumberDigest,
+  };
+}
+
+function assertIssueEvidenceCompletion(
+  attestation: IssueEvidenceCompletionAttestation,
+): void {
+  if (!attestation.complete) {
+    throw new Error(
+      `Live issue evidence reconciled ${attestation.liveReconciledIssueCount} ` +
+      `issue(s) with digest ${attestation.liveReconciledIssueNumberDigest}, ` +
+      `expected ${attestation.requiredIssueCount} issue(s) with digest ` +
+      attestation.requiredIssueNumberDigest,
+    );
+  }
+}
+
+function issueCatalogProcessingCounts(
+  metadata: Pick<
+    GhIssueCatalogMetadata,
+    'totalCount' | 'nodeCount' | 'uniqueCount' | 'pageCount' | 'pagesFetched'
+  >,
+  partition: IssueCatalogEvidencePartition,
+): {
+  catalogPageCount: number;
+  pagesFetched: number;
+  issuesFetched: number;
+  requiredEvidenceIssueCount: number;
+  metadataOnlyIssuesObserved: number;
+  evidenceChunkCount: number;
+} {
+  const requiredEvidenceIssueCount = partition.requiredEvidenceIssues.length;
+  const metadataOnlyIssuesObserved = partition.metadataOnlyIssues.length;
+  const partitionedIssueCount =
+    requiredEvidenceIssueCount + metadataOnlyIssuesObserved;
+  const chunkedIssueCount = partition.evidenceChunks.reduce(
+    (total, chunk) => total + chunk.length,
+    0,
+  );
+  if (
+    metadata.totalCount !== metadata.nodeCount ||
+    metadata.uniqueCount !== metadata.nodeCount ||
+    partitionedIssueCount !== metadata.nodeCount
+  ) {
+    throw new Error(
+      `Issue catalog processing counts do not cover the exhaustive catalog: ` +
+      `${partitionedIssueCount} partitioned, ${metadata.nodeCount} fetched, ` +
+      `${metadata.uniqueCount} unique, ${metadata.totalCount} total`,
+    );
+  }
+  if (chunkedIssueCount !== requiredEvidenceIssueCount) {
+    throw new Error(
+      `Issue evidence chunks cover ${chunkedIssueCount} issue(s), expected ` +
+      `${requiredEvidenceIssueCount}`,
+    );
+  }
+  return {
+    catalogPageCount: metadata.pageCount,
+    pagesFetched: metadata.pagesFetched,
+    issuesFetched: metadata.nodeCount,
+    requiredEvidenceIssueCount,
+    metadataOnlyIssuesObserved,
+    evidenceChunkCount: partition.evidenceChunks.length,
+  };
+}
+
+function materializeIssueCatalogMetadata(
+  issues: readonly GhIssue[],
+  assertCanWrite: (stage: string) => void,
+  dependencies: {
+    upsertMetadata?: typeof upsertIssueMetadata;
+    getPersisted?: (issueNumber: number) => IssueRow | undefined;
+    transaction?: typeof runInWriteTransaction;
+  } = {},
+): IssueCatalogMetadataMaterializationResult {
+  const upsertMetadata = dependencies.upsertMetadata ?? upsertIssueMetadata;
+  const getPersisted = dependencies.getPersisted ?? getIssue;
+  return runLeaseFencedWrite(
+    'issue catalog metadata materialization',
+    assertCanWrite,
+    () => {
+      let upsertedCount = 0;
+      let preservedCount = 0;
+      for (const issue of issues) {
+        const incoming = issueRowFromRemoteMetadata(issue);
+        const persisted = getPersisted(issue.number);
+        if (
+          persisted?.node_id != null &&
+          persisted.node_id !== incoming.node_id
+        ) {
+          throw new Error(
+            `Persisted issue #${issue.number} node ID changed from ` +
+            `${persisted.node_id} to ${incoming.node_id}`,
+          );
+        }
+        if (persisted && persisted.created_at !== incoming.created_at) {
+          throw new Error(
+            `Persisted issue #${issue.number} created_at changed from ` +
+            `${persisted.created_at} to ${incoming.created_at}`,
+          );
+        }
+        const incomingUpdatedAt = Date.parse(incoming.updated_at);
+        if (!Number.isFinite(incomingUpdatedAt)) {
+          throw new Error(
+            `Issue #${issue.number} has invalid updated_at ${incoming.updated_at}`,
+          );
+        }
+        const persistedUpdatedAt = persisted
+          ? Date.parse(persisted.updated_at)
+          : NaN;
+        if (
+          persisted &&
+          Number.isFinite(persistedUpdatedAt) &&
+          persistedUpdatedAt >= incomingUpdatedAt
+        ) {
+          preservedCount++;
+          continue;
+        }
+        upsertMetadata(incoming);
+        upsertedCount++;
+      }
+      return {
+        issueCount: issues.length,
+        upsertedCount,
+        preservedCount,
+      };
+    },
+    dependencies.transaction ?? runInWriteTransaction,
+  );
 }
 
 function persistReconciledIssueEvidence(
@@ -2885,6 +3195,199 @@ function issueCrawlMetadataProblems(
     if (Array.isArray(crawl.classificationFailures) && crawl.classificationFailures.length > 0) {
       problems.push('classificationFailures must be empty before score persistence');
     }
+    const processingCountFields = [
+      'catalogPageCount',
+      'pagesFetched',
+      'issuesFetched',
+      'requiredEvidenceIssueCount',
+      'monitoredIssuesFetched',
+      'commentSnapshotIssuesRequested',
+      'metadataOnlyIssuesObserved',
+      'evidenceChunkCount',
+      'evidenceChunksProcessed',
+      'metadataIssuesMaterialized',
+      'metadataIssuesUpserted',
+      'metadataIssuesPreserved',
+    ] as const;
+    for (const field of processingCountFields) {
+      if (!Number.isInteger(crawl[field]) || crawl[field] < 0) {
+        problems.push(`${field} must be a non-negative integer`);
+      }
+    }
+    if (crawl.catalogPageCount !== pagination.pageCount) {
+      problems.push('catalogPageCount must equal exhaustive pagination pageCount');
+    }
+    if (crawl.pagesFetched !== pagination.pagesFetched) {
+      problems.push('pagesFetched must equal exhaustive catalog pagesFetched');
+    }
+    if (crawl.issuesFetched !== pagination.fetchedCount) {
+      problems.push('issuesFetched must equal exhaustive pagination fetchedCount');
+    }
+    if (
+      Number.isInteger(crawl.requiredEvidenceIssueCount) &&
+      Number.isInteger(crawl.metadataOnlyIssuesObserved) &&
+      crawl.requiredEvidenceIssueCount + crawl.metadataOnlyIssuesObserved !==
+        crawl.issuesFetched
+    ) {
+      problems.push(
+        'requiredEvidenceIssueCount plus metadataOnlyIssuesObserved must equal issuesFetched',
+      );
+    }
+    if (
+      Number.isInteger(crawl.requiredEvidenceIssueCount) &&
+      crawl.evidenceChunkCount !==
+        Math.ceil(crawl.requiredEvidenceIssueCount / ISSUE_EVIDENCE_CHUNK_SIZE)
+    ) {
+      problems.push('evidenceChunkCount must densely cover required evidence issues');
+    }
+    if (crawl.evidenceChunksProcessed !== crawl.evidenceChunkCount) {
+      problems.push('evidenceChunksProcessed must equal evidenceChunkCount');
+    }
+    if (crawl.commentSnapshotIssuesRequested !== crawl.requiredEvidenceIssueCount) {
+      problems.push(
+        'commentSnapshotIssuesRequested must equal requiredEvidenceIssueCount',
+      );
+    }
+    if (crawl.monitoredIssuesFetched !== crawl.requiredEvidenceIssueCount) {
+      problems.push(
+        'monitoredIssuesFetched must equal requiredEvidenceIssueCount',
+      );
+    }
+    if (crawl.metadataIssuesMaterialized !== crawl.issuesFetched) {
+      problems.push('metadataIssuesMaterialized must equal issuesFetched');
+    }
+    if (
+      crawl.metadataIssuesUpserted + crawl.metadataIssuesPreserved !==
+      crawl.metadataIssuesMaterialized
+    ) {
+      problems.push(
+        'metadataIssuesUpserted plus metadataIssuesPreserved must equal ' +
+        'metadataIssuesMaterialized',
+      );
+    }
+    const admission = crawl.catalogAdmission;
+    if (!admission || typeof admission !== 'object' || Array.isArray(admission)) {
+      problems.push('catalogAdmission must be an object before score persistence');
+    } else {
+      if (admission.schemaVersion !== 1) {
+        problems.push('catalogAdmission schemaVersion must equal 1');
+      }
+      if (admission.source !== 'issue_catalog_snapshot') {
+        problems.push(
+          'catalogAdmission source must equal issue_catalog_snapshot',
+        );
+      }
+      if (
+        typeof admission.cutoffAt !== 'string' ||
+        !Number.isFinite(Date.parse(admission.cutoffAt))
+      ) {
+        problems.push('catalogAdmission cutoffAt must be a valid timestamp');
+      }
+      if (admission.catalogIssueCount !== crawl.issuesFetched) {
+        problems.push('catalogAdmission catalogIssueCount must equal issuesFetched');
+      }
+      if (
+        !isSha256Hex(admission.catalogMembershipDigest) ||
+        admission.catalogMembershipDigest !== pagination.membershipDigest
+      ) {
+        problems.push(
+          'catalogAdmission catalogMembershipDigest must match exhaustive pagination',
+        );
+      }
+      if (
+        !isSha256Hex(admission.catalogContentDigest) ||
+        admission.catalogContentDigest !== pagination.contentDigest
+      ) {
+        problems.push(
+          'catalogAdmission catalogContentDigest must match exhaustive pagination',
+        );
+      }
+      if (admission.selectedIssueCount !== crawl.requiredEvidenceIssueCount) {
+        problems.push(
+          'catalogAdmission selectedIssueCount must match required evidence count',
+        );
+      }
+      if (!isSha256Hex(admission.selectedIssueNumberDigest)) {
+        problems.push(
+          'catalogAdmission selectedIssueNumberDigest must be SHA-256',
+        );
+      }
+      if (!isSha256Hex(admission.selectedContentDigest)) {
+        problems.push('catalogAdmission selectedContentDigest must be SHA-256');
+      }
+    }
+
+    const completion = crawl.evidenceCompletion;
+    if (
+      !completion ||
+      typeof completion !== 'object' ||
+      Array.isArray(completion)
+    ) {
+      problems.push(
+        'evidenceCompletion must be an object before score persistence',
+      );
+    } else {
+      if (completion.schemaVersion !== 1) {
+        problems.push('evidenceCompletion schemaVersion must equal 1');
+      }
+      if (
+        !admission ||
+        completion.admissionSnapshotId !== admission.snapshotId ||
+        completion.admissionCutoffAt !== admission.cutoffAt ||
+        completion.admissionSelectedContentDigest !==
+          admission.selectedContentDigest
+      ) {
+        problems.push(
+          'evidenceCompletion must bind the snapshot admission cutoff and content',
+        );
+      }
+      if (
+        completion.requiredIssueCount !== crawl.requiredEvidenceIssueCount
+      ) {
+        problems.push(
+          'evidenceCompletion requiredIssueCount must match crawl counters',
+        );
+      }
+      if (
+        completion.liveReconciledIssueCount !==
+        crawl.requiredEvidenceIssueCount
+      ) {
+        problems.push(
+          'evidenceCompletion liveReconciledIssueCount must cover every required issue',
+        );
+      }
+      if (
+        !admission ||
+        completion.requiredIssueNumberDigest !==
+          admission.selectedIssueNumberDigest
+      ) {
+        problems.push(
+          'evidenceCompletion required digest must match snapshot admission',
+        );
+      }
+      if (
+        !isSha256Hex(completion.requiredIssueNumberDigest) ||
+        !isSha256Hex(completion.liveReconciledIssueNumberDigest)
+      ) {
+        problems.push('evidenceCompletion issue-number digests must be SHA-256');
+      } else if (
+        completion.requiredIssueNumberDigest !==
+        completion.liveReconciledIssueNumberDigest
+      ) {
+        problems.push(
+          'evidenceCompletion live-reconciled digest must match required digest',
+        );
+      }
+      if (!isSha256Hex(completion.liveReconciledContentDigest)) {
+        problems.push(
+          'evidenceCompletion liveReconciledContentDigest must be SHA-256',
+        );
+      }
+      if (completion.complete !== true) {
+        problems.push('evidenceCompletion complete must be true');
+      }
+    }
+
     const snapshot = crawl.catalogSnapshot;
     if (!snapshot || typeof snapshot !== 'object' || Array.isArray(snapshot)) {
       problems.push('catalogSnapshot must be an object before score persistence');
@@ -2934,6 +3437,23 @@ function issueCrawlMetadataProblems(
       }
       if (!isSha256Hex(snapshot.consumptionContentHash)) {
         problems.push('catalogSnapshot consumptionContentHash must be SHA-256');
+      }
+    }
+    if (
+      admission &&
+      typeof admission === 'object' &&
+      !Array.isArray(admission) &&
+      snapshot &&
+      typeof snapshot === 'object' &&
+      !Array.isArray(snapshot)
+    ) {
+      if (admission.snapshotId !== snapshot.snapshotId) {
+        problems.push('catalogAdmission must bind the consumed catalog snapshot');
+      }
+      if (admission.cutoffAt !== snapshot.capturedAt) {
+        problems.push(
+          'catalogAdmission cutoffAt must equal catalogSnapshot capturedAt',
+        );
       }
     }
 
@@ -3387,6 +3907,19 @@ function successReceiptPayload(args: {
   if (!issueCrawl) {
     throw new Error('Refresh success receipt requires persisted issue crawl metadata');
   }
+  const catalogAdmission = (
+    issueCrawl as { catalogAdmission?: Partial<IssueCatalogAdmissionMetadata> }
+  ).catalogAdmission;
+  const snapshotCutoffAt = catalogAdmission?.cutoffAt;
+  if (
+    catalogAdmission?.source !== 'issue_catalog_snapshot' ||
+    typeof snapshotCutoffAt !== 'string' ||
+    !Number.isFinite(Date.parse(snapshotCutoffAt))
+  ) {
+    throw new Error(
+      'Refresh success receipt requires a valid issue catalog snapshot admission cutoff',
+    );
+  }
   const catalogAttestation = args.scorePersistence.catalogAttestation;
   if (!catalogAttestation) {
     throw new Error('Refresh success receipt requires catalog attestation');
@@ -3475,6 +4008,7 @@ function successReceiptPayload(args: {
     },
     issueCrawl: {
       metaKey: ISSUE_CRAWL_META_KEY,
+      snapshotCutoffAt,
       metadataDigest: createHash('sha256').update(canonicalJson(issueCrawl)).digest('hex'),
       metadata: issueCrawl,
     },
@@ -4000,13 +4534,24 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         ) != null,
         baseline: issueBaselineAtRefreshStart,
         pagination: null,
+        catalogAdmission: null,
+        evidenceCompletion: null,
         promptSweep: false,
         staleClassificationsAtStart: countStaleClassifications(PROMPT_VERSION),
         monitoredReleaseCount: config.limits.releases,
         oldestMonitoredAt: null,
+        catalogPageCount: 0,
         pagesFetched: 0,
         issuesFetched: 0,
+        requiredEvidenceIssueCount: 0,
         monitoredIssuesFetched: 0,
+        commentSnapshotIssuesRequested: 0,
+        metadataOnlyIssuesObserved: 0,
+        evidenceChunkCount: 0,
+        evidenceChunksProcessed: 0,
+        metadataIssuesMaterialized: 0,
+        metadataIssuesUpserted: 0,
+        metadataIssuesPreserved: 0,
         maxIssuePages: config.refresh.maxIssuePages,
         stopReason: 'evidence_failure',
         crossedOldestEver: false,
@@ -4580,9 +5125,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
       })
       .filter((window) => Number.isFinite(window.start));
     const issueOverlapsMonitoredWindow = (issue: GhIssue): boolean => {
-      const created = Date.parse(issue.created_at);
-      const closed = issue.closed_at ? Date.parse(issue.closed_at) : Infinity;
-      return monitoredWindows.some((window) => created < window.end && closed > window.start);
+      return issueOverlapsMonitoredWindows(issue, monitoredWindows);
     };
 
     // After a PROMPT_VERSION bump, rows written under the old prompt are stale but
@@ -4598,11 +5141,16 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
     const fullIssueBackfill = config.refresh.fullIssueBackfill;
     const exhaustiveIssueCrawl = true;
     const MAX_PAGES = config.refresh.maxIssuePages;
+    let catalogPageCount = 0;
     let pagesFetched = 0;
     let issuesFetched = 0;
+    let requiredEvidenceIssueCount = 0;
     let monitoredIssuesFetched = 0;
     let commentSnapshotIssuesRequested = 0;
     let metadataOnlyIssuesObserved = 0;
+    let evidenceChunkCount = 0;
+    let evidenceChunksProcessed = 0;
+    let metadataIssuesMaterialized = 0;
     let commenterScanTruncatedCount = 0;
     let classifiedCount = 0;
     const classificationFailures: string[] = [];
@@ -4611,43 +5159,69 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
     let issuePagination: IssueCrawlPagination | null = null;
     let completedIssueCatalog: GhIssueCatalogMetadata | null = null;
     let issueCatalogSnapshot: IssueCatalogSnapshotRunMetadata | null = null;
+    let issueCatalogAdmission: IssueCatalogAdmissionMetadata | null = null;
     let issueCatalogAttestation: IssueCatalogPublicationAttestation | null = null;
-    const buildIssueCrawlMeta = () => ({
-      schemaVersion: ISSUE_CRAWL_SCHEMA_VERSION,
-      repository: issueRepositoryIdentity(),
-      startedAt: refreshStartedAt,
-      finishedAt: new Date().toISOString(),
-      fullIssueBackfill,
-      crawlMode: exhaustiveIssueCrawl ? 'exhaustive' : 'incremental',
-      backfillCompleteAtStart: backfillDone,
-      backfillCompleteAfterRun: parseIssueCrawlBaseline(
-        getMeta(ISSUE_CRAWL_BASELINE_META_KEY) ?? null,
-      ) != null,
-      baseline: issueBaseline,
-      pagination: issuePagination,
-      catalogSnapshot: issueCatalogSnapshot,
-      catalogAttestation: issueCatalogAttestation,
-      promptSweep,
-      staleClassificationsAtStart: staleRows,
-      monitoredReleaseCount,
-      oldestMonitoredAt: Number.isFinite(oldestMonitoredMs) ? new Date(oldestMonitoredMs).toISOString() : null,
-      pagesFetched,
-      issuesFetched,
-      monitoredIssuesFetched,
-      commentSnapshotIssuesRequested,
-      metadataOnlyIssuesObserved,
-      maxIssuePages: MAX_PAGES,
-      stopReason: issuePaginationStopReason,
-      crossedOldestEver,
-      commenterScanTruncatedCount,
-      classificationFailures,
-      evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
-      advisoryProvenance,
-      releaseCatalog: releaseCatalog.metadata,
-      scorePersisted: false,
-      scorePersistedAt: null,
-      timings: timingSnapshot(),
-    });
+    let requiredEvidenceIssues: GhIssue[] | null = null;
+    const liveReconciledIssues = new Map<number, GhIssue>();
+    let metadataIssuesUpserted = 0;
+    let metadataIssuesPreserved = 0;
+    const buildIssueCrawlMeta = () => {
+      const evidenceCompletion =
+        issueCatalogAdmission && requiredEvidenceIssues
+          ? issueEvidenceCompletionAttestation(
+              requiredEvidenceIssues,
+              liveReconciledIssues.values(),
+              issueCatalogAdmission,
+            )
+          : null;
+      return {
+        schemaVersion: ISSUE_CRAWL_SCHEMA_VERSION,
+        repository: issueRepositoryIdentity(),
+        startedAt: refreshStartedAt,
+        finishedAt: new Date().toISOString(),
+        fullIssueBackfill,
+        crawlMode: exhaustiveIssueCrawl ? 'exhaustive' : 'incremental',
+        backfillCompleteAtStart: backfillDone,
+        backfillCompleteAfterRun: parseIssueCrawlBaseline(
+          getMeta(ISSUE_CRAWL_BASELINE_META_KEY) ?? null,
+        ) != null,
+        baseline: issueBaseline,
+        pagination: issuePagination,
+        catalogSnapshot: issueCatalogSnapshot,
+        catalogAdmission: issueCatalogAdmission,
+        evidenceCompletion,
+        catalogAttestation: issueCatalogAttestation,
+        promptSweep,
+        staleClassificationsAtStart: staleRows,
+        monitoredReleaseCount,
+        oldestMonitoredAt: Number.isFinite(oldestMonitoredMs)
+          ? new Date(oldestMonitoredMs).toISOString()
+          : null,
+        catalogPageCount,
+        pagesFetched,
+        issuesFetched,
+        requiredEvidenceIssueCount,
+        monitoredIssuesFetched,
+        commentSnapshotIssuesRequested,
+        metadataOnlyIssuesObserved,
+        evidenceChunkCount,
+        evidenceChunksProcessed,
+        metadataIssuesMaterialized,
+        metadataIssuesUpserted,
+        metadataIssuesPreserved,
+        maxIssuePages: MAX_PAGES,
+        stopReason: issuePaginationStopReason,
+        crossedOldestEver,
+        commenterScanTruncatedCount,
+        classificationFailures,
+        evidenceRefreshFailures: summarizeFailures(evidenceRefreshFailures),
+        advisoryProvenance,
+        releaseCatalog: releaseCatalog.metadata,
+        scorePersisted: false,
+        scorePersistedAt: null,
+        timings: timingSnapshot(),
+      };
+    };
 
     if (!exhaustiveIssueCrawl && !issueBaseline) {
       issuePaginationStopReason = 'evidence_failure';
@@ -4679,42 +5253,15 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
       throw new Error(`${message}; rerun with FULL_ISSUE_BACKFILL=true`);
     }
 
+    let exhaustiveIssueChunks: GhIssue[][] | null = null;
     async function* issuePagesForRefresh(): AsyncGenerator<GhIssue[], void, void> {
       if (exhaustiveIssueCrawl) {
-        const resolution = await resolveIssueCatalogSnapshotForRefresh({
-          repository: issueRepositoryIdentity(),
-          observedAt: refreshStartedAt,
-          maxAgeMs: config.refresh.issueCatalogSnapshotMaxAgeHours * 60 * 60 * 1000,
-          fetchCatalog: () => fetchIssueCatalog({
-            maxPagesPerConnection: MAX_PAGES,
-            perPage: config.refresh.issuePageSize,
-            signal,
-          }),
-        });
-        const catalog = issueCatalogSnapshotCatalog(resolution.snapshot);
-        issueCatalogSnapshot = {
-          schemaVersion: 1,
-          snapshotId: resolution.snapshot.header.snapshotId,
-          contentHash: resolution.snapshot.header.contentHash,
-          capturedAt: resolution.snapshot.header.capturedAt,
-          resumed: resolution.resumed,
-          priorStatus: resolution.priorStatus,
-          maxAgeHours: config.refresh.issueCatalogSnapshotMaxAgeHours,
-          consumedAt: null,
-          consumedByRunId: null,
-          consumptionContentHash: null,
-        };
-        console.log(
-          `[refresh] ${resolution.resumed ? 'resuming' : 'staged'} exhaustive issue catalog ` +
-          `${resolution.snapshot.header.snapshotId} ` +
-          `(${resolution.snapshot.header.rowCount} issues captured ` +
-          `${resolution.snapshot.header.capturedAt})`,
-        );
-        completedIssueCatalog = catalog.metadata;
-        issuePagination = issuePaginationFromCatalog(catalog.metadata);
-        for (let offset = 0; offset < catalog.issues.length; offset += 100) {
-          yield catalog.issues.slice(offset, offset + 100);
+        if (!exhaustiveIssueChunks) {
+          throw new Error(
+            'Exhaustive issue evidence chunks were requested before catalog resolution',
+          );
         }
+        yield* exhaustiveIssueChunks;
         return;
       }
 
@@ -4746,40 +5293,163 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
     refreshLease.renew('issue crawl');
     activeStageTimer.ensure('issue.classification');
     const finishIssueCrawlTiming = activeStageTimer.start('issue.crawl');
+    let issueProcessingIndex = 0;
     try {
+      if (exhaustiveIssueCrawl) {
+        let resolution: Awaited<
+          ReturnType<typeof resolveIssueCatalogSnapshotForRefresh>
+        >;
+        try {
+          resolution = await resolveIssueCatalogSnapshotForRefresh({
+            repository: issueRepositoryIdentity(),
+            observedAt: refreshStartedAt,
+            maxAgeMs:
+              config.refresh.issueCatalogSnapshotMaxAgeHours * 60 * 60 * 1000,
+            fetchCatalog: () => fetchIssueCatalog({
+              maxPagesPerConnection: MAX_PAGES,
+              perPage: config.refresh.issuePageSize,
+              signal,
+            }),
+          });
+        } catch (error) {
+          throw new IssuePaginationFailure(error);
+        }
+        const catalog = issueCatalogSnapshotCatalog(resolution.snapshot);
+        issueCatalogSnapshot = {
+          schemaVersion: 1,
+          snapshotId: resolution.snapshot.header.snapshotId,
+          contentHash: resolution.snapshot.header.contentHash,
+          capturedAt: resolution.snapshot.header.capturedAt,
+          resumed: resolution.resumed,
+          priorStatus: resolution.priorStatus,
+          maxAgeHours: config.refresh.issueCatalogSnapshotMaxAgeHours,
+          consumedAt: null,
+          consumedByRunId: null,
+          consumptionContentHash: null,
+        };
+        console.log(
+          `[refresh] ${resolution.resumed ? 'resuming' : 'staged'} exhaustive issue catalog ` +
+          `${resolution.snapshot.header.snapshotId} ` +
+          `(${resolution.snapshot.header.rowCount} issues captured ` +
+          `${resolution.snapshot.header.capturedAt})`,
+        );
+        completedIssueCatalog = catalog.metadata;
+        issuePagination = issuePaginationFromCatalog(catalog.metadata);
+        catalogPageCount = catalog.metadata.pageCount;
+        pagesFetched = catalog.metadata.pagesFetched;
+        issuesFetched = catalog.metadata.nodeCount;
+        const partition = partitionIssueCatalogForEvidence(
+          catalog.issues,
+          monitoredWindows,
+        );
+        const counts = issueCatalogProcessingCounts(
+          catalog.metadata,
+          partition,
+        );
+        catalogPageCount = counts.catalogPageCount;
+        pagesFetched = counts.pagesFetched;
+        issuesFetched = counts.issuesFetched;
+        requiredEvidenceIssueCount = counts.requiredEvidenceIssueCount;
+        metadataOnlyIssuesObserved = counts.metadataOnlyIssuesObserved;
+        evidenceChunkCount = counts.evidenceChunkCount;
+        requiredEvidenceIssues = partition.requiredEvidenceIssues;
+        issueCatalogAdmission = issueCatalogAdmissionMetadata({
+          snapshotId: resolution.snapshot.header.snapshotId,
+          cutoffAt: resolution.snapshot.header.capturedAt,
+          catalogMetadata: catalog.metadata,
+          selectedIssues: requiredEvidenceIssues,
+        });
+        try {
+          const materialization = materializeIssueCatalogMetadata(
+            catalog.issues,
+            assertRefreshWriteAllowed,
+          );
+          metadataIssuesMaterialized = materialization.issueCount;
+          metadataIssuesUpserted = materialization.upsertedCount;
+          metadataIssuesPreserved = materialization.preservedCount;
+        } catch (error) {
+          issuePaginationStopReason = 'evidence_failure';
+          const message = recordEvidenceRefreshFailure(
+            'issue-metadata-materialization',
+            issueRepositoryIdentity(),
+            error,
+            {
+              catalogIssueCount: catalog.metadata.nodeCount,
+              catalogPageCount: catalog.metadata.pageCount,
+              catalogPagesFetched: catalog.metadata.pagesFetched,
+              admissionCutoffAt: issueCatalogAdmission.cutoffAt,
+              selectedIssueCount: issueCatalogAdmission.selectedIssueCount,
+              selectedContentDigest:
+                issueCatalogAdmission.selectedContentDigest,
+            },
+          );
+          persistIssueCrawlMeta(buildIssueCrawlMeta());
+          throw new Error(
+            `${message}; rolled back exhaustive issue metadata materialization`,
+            { cause: error },
+          );
+        }
+        crossedOldestEver = catalog.issues.some((issue) =>
+          Date.parse(issue.updated_at) < oldestMonitoredMs
+        );
+        exhaustiveIssueChunks = partition.evidenceChunks;
+        console.log(
+          `[refresh] materialized ${metadataIssuesMaterialized} catalog issue metadata row(s); ` +
+          `${metadataIssuesUpserted} upserted and ${metadataIssuesPreserved} ` +
+          `equal/newer row(s) preserved; ` +
+          `${requiredEvidenceIssueCount} issue(s) require evidence in ` +
+          `${evidenceChunkCount} dense chunk(s)`,
+        );
+      }
+
       paginate: for await (const page of withIssuePaginationFailureBoundary(issuePagesForRefresh())) {
-      pagesFetched++;
-      issuesFetched += page.length;
+      issueProcessingIndex++;
+      if (!exhaustiveIssueCrawl) {
+        pagesFetched++;
+        issuesFetched += page.length;
+      }
 
       // Page can be empty after PR filtering — keep going until we hit a real signal
       // or run out of pages.
       let allUnchanged = page.length > 0;
       let crossedOldest = false;
       const toClassify: GhIssue[] = [];
-      const initialMonitoredIssueNumbers = page
-        .filter((issue) => issueOverlapsMonitoredWindow(issue))
-        .map((issue) => issue.number);
-      const monitoredIssueNumberSet = new Set(initialMonitoredIssueNumbers);
-      const evidenceTargets = {
-        commentIssueNumbers: initialMonitoredIssueNumbers,
-        metadataOnlyIssueNumbers: page
-          .filter((issue) => !monitoredIssueNumberSet.has(issue.number))
-          .map((issue) => issue.number),
-      };
+      const evidenceTargets = exhaustiveIssueCrawl
+        ? {
+            commentIssueNumbers: page.map((issue) => issue.number),
+            metadataOnlyIssueNumbers: [],
+          }
+        : issuePageEvidenceTargets(page, issueOverlapsMonitoredWindow);
+      const initialMonitoredIssueNumbers = evidenceTargets.commentIssueNumbers;
       const commentIssueNumbers = initialMonitoredIssueNumbers;
       const requiredCommentIssueSet = new Set(commentIssueNumbers);
       commentSnapshotIssuesRequested += commentIssueNumbers.length;
-      metadataOnlyIssuesObserved += evidenceTargets.metadataOnlyIssueNumbers.length;
+      if (!exhaustiveIssueCrawl) {
+        metadataOnlyIssuesObserved += evidenceTargets.metadataOnlyIssueNumbers.length;
+      }
       const pageExpectedRevisions = issueEvidenceRevisions(page.map((issue) => issue.number));
       const evidenceFailureCountBeforePage = evidenceRefreshFailures.length;
-      const pageEvidenceScope = `page ${pagesFetched}`;
+      const classificationFailureCountBeforeBatch = classificationFailures.length;
+      const issueBatchLabel = exhaustiveIssueCrawl
+        ? `issue evidence chunk ${issueProcessingIndex}`
+        : `issue page ${pagesFetched}`;
+      const pageEvidenceScope = exhaustiveIssueCrawl
+        ? `evidence chunk ${issueProcessingIndex}/${evidenceChunkCount}`
+        : `page ${pagesFetched}`;
       const pageEvidenceContext = {
         refreshRunId: runId,
-        page: pagesFetched,
+        page: exhaustiveIssueCrawl ? issueProcessingIndex : pagesFetched,
+        evidenceChunk: exhaustiveIssueCrawl ? issueProcessingIndex : null,
+        evidenceChunkCount: exhaustiveIssueCrawl ? evidenceChunkCount : null,
+        catalogPageCount: exhaustiveIssueCrawl ? catalogPageCount : null,
+        catalogPagesFetched: exhaustiveIssueCrawl ? pagesFetched : null,
         issueCount: page.length,
         monitoredIssueCount: initialMonitoredIssueNumbers.length,
         commentSnapshotIssueCount: commentIssueNumbers.length,
         metadataOnlyIssueCount: evidenceTargets.metadataOnlyIssueNumbers.length,
+        catalogMetadataOnlyIssueCount: exhaustiveIssueCrawl
+          ? metadataOnlyIssuesObserved
+          : null,
         commentRequirement: 'monitored_release_overlap',
         requiredCommentIssueNumbers: commentIssueNumbers,
         firstIssueNumber: page[0]?.number ?? null,
@@ -5092,18 +5762,17 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
           throw new Error(`${message}; refusing to classify or persist mismatched issue metadata`);
         }
       }
-      const monitoredIssueNumbers = effectivePage
-        .filter((issue) => issueOverlapsMonitoredWindow(issue))
-        .map((issue) => issue.number);
-      monitoredIssuesFetched += monitoredIssueNumbers.length;
+      monitoredIssuesFetched += exhaustiveIssueCrawl
+        ? initialMonitoredIssueNumbers.length
+        : effectivePage.filter((issue) => issueOverlapsMonitoredWindow(issue)).length;
 
       // Pass 1: upsert + decide what needs LLM. Page evidence writes are atomic:
       // a failed row cannot leave mixed issue/label/state evidence for this page.
       try {
-        assertRefreshWriteAllowed(`issue page ${pagesFetched} evidence persistence`);
+        assertRefreshWriteAllowed(`${issueBatchLabel} evidence persistence`);
         runInWriteTransaction(() => {
           assertRefreshWriteAllowed(
-            `issue page ${pagesFetched} evidence persistence transaction`,
+            `${issueBatchLabel} evidence persistence transaction`,
           );
           assertIssueEvidenceRevisions(pageExpectedRevisions);
           for (const issue of effectivePage) {
@@ -5164,8 +5833,8 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
             if (Date.parse(issueUpdatedAt) < oldestMonitoredMs) crossedOldest = true;
 
             // Full history is fetched for accurate open/closed linkage, but spend
-            // classification tokens only on issues whose lifetime overlaps a release
-            // being scored. Closed-before-release issues cannot affect that score.
+            // classification tokens only on issues admitted by snapshot lifetime
+            // overlap at the recorded catalog cutoff.
             if (!requiresComments) continue;
             if (!snapshot) {
               throw new Error(`Required comment snapshot missing for issue #${issue.number}`);
@@ -5202,7 +5871,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
             toClassify.push(issue);
           }
           assertRefreshWriteAllowed(
-            `issue page ${pagesFetched} evidence persistence commit`,
+            `${issueBatchLabel} evidence persistence commit`,
           );
         });
       } catch (error) {
@@ -5290,7 +5959,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
       if (stagedClassifications.length > 0) {
         try {
           throwIfAborted(signal);
-          refreshLease.assertHeld(`issue page ${pagesFetched} classification persistence`);
+          refreshLease.assertHeld(`${issueBatchLabel} classification persistence`);
           const stagedExpectedRevisions = new Map<number, IssueEvidenceRevision>();
           for (const row of stagedClassifications) {
             const evidenceRevisions = classificationExpectedRevisions.get(row.issueNumber);
@@ -5303,7 +5972,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
           }
           runInWriteTransaction(() => {
             assertRefreshWriteAllowed(
-              `issue page ${pagesFetched} classification persistence transaction`,
+              `${issueBatchLabel} classification persistence transaction`,
             );
             assertIssueEvidenceRevisions(stagedExpectedRevisions);
             for (const row of stagedClassifications) {
@@ -5325,7 +5994,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
               );
             }
             assertRefreshWriteAllowed(
-              `issue page ${pagesFetched} classification persistence commit`,
+              `${issueBatchLabel} classification persistence commit`,
             );
           });
           classifiedCount += stagedClassifications.length;
@@ -5354,6 +6023,26 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         );
       }
 
+      if (
+        exhaustiveIssueCrawl &&
+        classificationFailures.length === classificationFailureCountBeforeBatch
+      ) {
+        const effectiveIssuesByNumber = new Map(
+          effectivePage.map((issue) => [issue.number, issue] as const),
+        );
+        for (const issueNumber of initialMonitoredIssueNumbers) {
+          const liveIssue = effectiveIssuesByNumber.get(issueNumber);
+          if (!liveIssue) {
+            throw new Error(
+              `Live-reconciled issue #${issueNumber} is missing from ` +
+              `${issueBatchLabel}`,
+            );
+          }
+          liveReconciledIssues.set(issueNumber, liveIssue);
+        }
+        evidenceChunksProcessed++;
+      }
+
       if (crossedOldest) crossedOldestEver = true;
 
       // During an exhaustive crawl, do not stop on timestamps or page sameness:
@@ -5369,6 +6058,7 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         break paginate;
       }
       if (
+        !exhaustiveIssueCrawl &&
         pagesFetched >= MAX_PAGES &&
         (issuePagination as IssueCrawlPagination | null)?.exhausted !== true
       ) {
@@ -5387,13 +6077,22 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         )
           ? 'page_cap'
           : 'evidence_failure';
-        const scope = pagesFetched > 0 ? `after page ${pagesFetched}` : 'before first page';
+        const scope = exhaustiveIssueCrawl
+          ? issueProcessingIndex > 0
+            ? `after evidence chunk ${issueProcessingIndex}`
+            : 'before first evidence chunk'
+          : pagesFetched > 0
+            ? `after page ${pagesFetched}`
+            : 'before first page';
         failIssuePagination({
           cause: error.paginationCause,
           scope,
           context: {
+            catalogPageCount,
             pagesFetched,
             issuesFetched,
+            evidenceChunkCount,
+            evidenceChunksProcessed,
             monitoredIssuesFetched,
             maxIssuePages: MAX_PAGES,
           },
@@ -5407,13 +6106,23 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         throw error;
       }
       issuePaginationStopReason = 'evidence_failure';
+      const scope = exhaustiveIssueCrawl
+        ? issueProcessingIndex > 0
+          ? `evidence chunk ${issueProcessingIndex}`
+          : 'before first evidence chunk'
+        : pagesFetched > 0
+          ? `page ${pagesFetched}`
+          : 'before first page';
       const message = recordEvidenceRefreshFailure(
         'issue-crawl',
-        pagesFetched > 0 ? `page ${pagesFetched}` : 'before first page',
+        scope,
         error,
         {
+          catalogPageCount,
           pagesFetched,
           issuesFetched,
+          evidenceChunkCount,
+          evidenceChunksProcessed,
           monitoredIssuesFetched,
           maxIssuePages: MAX_PAGES,
         },
@@ -5450,6 +6159,74 @@ export async function refresh(options: RefreshOptions = {}): Promise<{
         classificationFailures: summarized,
       });
       throw new Error(`Classification failed for ${classificationFailures.length} issue(s); refusing to persist scores`);
+    }
+
+    try {
+      if (!issueCatalogAdmission || !requiredEvidenceIssues) {
+        throw new Error(
+          'Issue catalog admission metadata is missing after exhaustive processing',
+        );
+      }
+      const completion = issueEvidenceCompletionAttestation(
+        requiredEvidenceIssues,
+        liveReconciledIssues.values(),
+        issueCatalogAdmission,
+      );
+      assertIssueEvidenceCompletion(completion);
+      if (
+        issueCatalogAdmission.catalogIssueCount !== issuesFetched ||
+        requiredEvidenceIssueCount !== requiredEvidenceIssues.length ||
+        requiredEvidenceIssueCount + metadataOnlyIssuesObserved !== issuesFetched ||
+        commentSnapshotIssuesRequested !== requiredEvidenceIssueCount ||
+        evidenceChunksProcessed !== evidenceChunkCount ||
+        metadataIssuesMaterialized !== issuesFetched ||
+        metadataIssuesUpserted + metadataIssuesPreserved !==
+          metadataIssuesMaterialized
+      ) {
+        throw new Error(
+          `Issue catalog processing counters are incomplete: ` +
+          `${issuesFetched} catalog issue(s), ${requiredEvidenceIssueCount} ` +
+          `requiring evidence, ${metadataOnlyIssuesObserved} metadata-only, ` +
+          `${evidenceChunksProcessed}/${evidenceChunkCount} chunks, ` +
+          `${metadataIssuesMaterialized} materialized ` +
+          `(${metadataIssuesUpserted} upserted, ` +
+          `${metadataIssuesPreserved} preserved)`,
+        );
+      }
+    } catch (error) {
+      issuePaginationStopReason = 'evidence_failure';
+      const completion =
+        issueCatalogAdmission && requiredEvidenceIssues
+          ? issueEvidenceCompletionAttestation(
+              requiredEvidenceIssues,
+              liveReconciledIssues.values(),
+              issueCatalogAdmission,
+            )
+          : null;
+      const message = recordEvidenceRefreshFailure(
+        'issue-evidence-completion',
+        issueRepositoryIdentity(),
+        error,
+        {
+          catalogAdmission: issueCatalogAdmission,
+          evidenceCompletion: completion,
+          catalogIssueCount: issuesFetched,
+          requiredEvidenceIssueCount,
+          metadataOnlyIssuesObserved,
+          commentSnapshotIssuesRequested,
+          evidenceChunkCount,
+          evidenceChunksProcessed,
+          metadataIssuesMaterialized,
+          metadataIssuesUpserted,
+          metadataIssuesPreserved,
+        },
+      );
+      issueCrawlMeta = buildIssueCrawlMeta();
+      persistIssueCrawlMeta(issueCrawlMeta);
+      throw new Error(
+        `${message}; refusing to consume the issue catalog snapshot`,
+        { cause: error },
+      );
     }
 
     const completedCatalog = completedIssueCatalog as GhIssueCatalogMetadata | null;
@@ -6730,6 +7507,14 @@ export const __refreshTest = {
   issuePaginationFromCatalog,
   issuePaginationFromIncrementalSweep,
   issuePaginationFromPage,
+  issueCatalogProcessingCounts,
+  issueEvidenceCompletionAttestation,
+  assertIssueEvidenceCompletion,
+  issueNumberSetDigest,
+  issueCatalogAdmissionMetadata,
+  issueOverlapsMonitoredWindows,
+  partitionIssueCatalogForEvidence,
+  materializeIssueCatalogMetadata,
   issuePageEvidenceTargets,
   runIssuePageEvidenceFetchGroup,
   runLeaseFencedWrite,

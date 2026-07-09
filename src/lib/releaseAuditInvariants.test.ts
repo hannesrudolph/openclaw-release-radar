@@ -1030,7 +1030,7 @@ const defaultScoreInput = {
   isLatest: true,
   hoursToNextStable: null,
   hasHotfixSuccessor: false,
-  betaCount: 0,
+  betaCount: 1,
   breakingCount: 0,
   feltOpenedWeight: 0,
   feltClosedWeight: 0,
@@ -1062,6 +1062,15 @@ const defaultScoreConfidence = installConfidence(
   defaultScoreInput,
   Date.parse(auditScoredAt),
 );
+if (defaultScoreConfidence.score == null) {
+  throw new Error('default audit fixture must produce a numeric score');
+}
+const defaultScore = defaultScoreConfidence.score;
+const defaultBand = defaultScoreConfidence.band;
+const defaultRecommended = defaultScore >= 7;
+if (!defaultRecommended) {
+  throw new Error('default audit fixture must qualify for recommendation');
+}
 const defaultScoreReason = defaultScoreConfidence.reason;
 
 function debtTierSummaryFixture() {
@@ -1389,9 +1398,9 @@ function reader(overrides: Partial<{
       hours_to_next_stable: defaultScoreInput.hoursToNextStable,
       beta_count: defaultScoreInput.betaCount,
       breaking_count: defaultScoreInput.breakingCount,
-      final_score: 7.5,
+      final_score: defaultScore,
       state: 'eligible',
-      recommended: 1,
+      recommended: Number(defaultRecommended),
       scored_at: auditScoredAt,
       score_reason: defaultScoreReason,
       negative_issues: 1,
@@ -1853,8 +1862,9 @@ function scoreExplanationFixture(overrides: any = {}) {
     evidenceSources: scoreLedgerEvidenceSourcesFixture(overrides.evidence),
   });
   const recommendationSummary =
-    'Decision highest_confidence: release v1 (score 7.5); selected v1 (score 7.5); ' +
-    'highest-scoring qualifying release v1 (score 7.5); threshold 7.0; recency tolerance 0.5. ' +
+    `Decision highest_confidence: release v1 (score ${defaultScore.toFixed(1)}); ` +
+    `selected v1 (score ${defaultScore.toFixed(1)}); highest-scoring qualifying release v1 ` +
+    `(score ${defaultScore.toFixed(1)}); threshold 7.0; recency tolerance 0.5. ` +
     'This release is recommended as the highest-confidence qualifying release.';
   const humanRecommendationSummary =
     'Recommended at the highest audited score; the newest release wins when scores are equal.';
@@ -1881,13 +1891,13 @@ function scoreExplanationFixture(overrides: any = {}) {
       threshold: 7,
       recencyTolerance: 0.5,
       selectedTag: 'v1',
-      selectedScore: 7.5,
+      selectedScore: defaultScore,
       highestScoringTag: 'v1',
-      highestScore: 7.5,
+      highestScore: defaultScore,
       releaseTag: 'v1',
-      releaseScore: 7.5,
-      qualifies: true,
-      selected: true,
+      releaseScore: defaultScore,
+      qualifies: defaultRecommended,
+      selected: defaultRecommended,
       recencyRank: 1,
       scoreRank: 1,
       scoreDeltaToHighest: 0,
@@ -2176,10 +2186,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
     schemaVersion: 4,
     snapshotId,
     tag: 'v1',
-    score: 7.5,
-    band: 'ok',
+    score: defaultScore,
+    band: defaultBand,
     status: 'eligible',
-    recommended: true,
+    recommended: defaultRecommended,
     reason: defaultScoreReason,
     negativeIssues: 1,
     positiveIssues: 0,
@@ -2740,10 +2750,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         schemaVersion: 2,
         snapshotId,
         tag: 'v1',
-        finalScore: 7.5,
-        band: 'ok',
+        finalScore: defaultScore,
+        band: defaultBand,
         status: 'eligible',
-        recommended: true,
+        recommended: defaultRecommended,
         reason: defaultScoreReason,
         negativeIssues: 1,
         positiveIssues: 0,
@@ -2760,10 +2770,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         snapshotId,
         tag: 'v1',
         publishedAt: releasePublishedAt,
-        finalScore: 7.5,
+        finalScore: defaultScore,
         status: 'eligible',
-        band: 'ok',
-        recommended: true,
+        band: defaultBand,
+        recommended: defaultRecommended,
         scoredAt: auditScoredAt,
         scoreAudit,
         dataFreshness,
@@ -2778,10 +2788,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
           tag: 'v1',
           local: {
             schemaVersion: 1,
-            score: 7.5,
-            band: 'ok',
+            score: defaultScore,
+            band: defaultBand,
             status: 'eligible',
-            recommended: true,
+            recommended: defaultRecommended,
             reason: defaultScoreReason,
             negativeIssues: 1,
             positiveIssues: 0,
@@ -2819,10 +2829,10 @@ function apiFixtureFetchJson(mutator?: (dataFreshness: any, publicRelease: any) 
         auditLinks,
         local: {
           schemaVersion: 1,
-          score: 7.5,
-          band: 'ok',
+          score: defaultScore,
+          band: defaultBand,
           status: 'eligible',
-          recommended: true,
+          recommended: defaultRecommended,
           reason: defaultScoreReason,
           negativeIssues: 1,
           positiveIssues: 0,
@@ -3689,7 +3699,7 @@ describe('verifyReleaseAudit', () => {
           tag: 'v1-1',
           published_at: '2026-01-01T01:00:00Z',
           catalog_rank: 0,
-          prerelease: 1,
+          prerelease: 0,
         }, {
           tag: 'v1',
           published_at: defaultScoreInput.publishedAt,
@@ -3708,6 +3718,37 @@ describe('verifyReleaseAudit', () => {
       /score input hasHotfixSuccessor \(false\) must match bound evidence \(true\)/.test(
         failure,
       )));
+  });
+
+  it('does not reconstruct prerelease or older hotfix-shaped tags as successors', async () => {
+    const result = await verifyReleaseAudit({
+      reader: reader({
+        activeReleaseRows: [{
+          tag: 'v1-2',
+          published_at: '2026-01-01T01:00:00Z',
+          catalog_rank: 0,
+          prerelease: 1,
+        }, {
+          tag: 'v1',
+          published_at: defaultScoreInput.publishedAt,
+          catalog_rank: 1,
+          prerelease: 0,
+        }, {
+          tag: 'v1-1',
+          published_at: '2025-12-31T23:00:00Z',
+          catalog_rank: 2,
+          prerelease: 0,
+        }, {
+          tag: predecessorTag,
+          published_at: '2025-12-01T00:00:00Z',
+          catalog_rank: 3,
+          prerelease: 0,
+        }],
+      }),
+    });
+
+    assert.ok(result.failures.every((failure) =>
+      !/score input hasHotfixSuccessor/.test(failure)));
   });
 
   it('rejects self-consistent rehashed coverage evidence that contradicts DB rows', async () => {
@@ -3981,7 +4022,7 @@ describe('verifyReleaseAudit', () => {
       reader: reader({
         releases: [{
           tag: 'v1',
-          final_score: 7.5,
+          final_score: defaultScore,
           state: 'eligible',
           recommended: 0,
           scored_at: auditScoredAt,
